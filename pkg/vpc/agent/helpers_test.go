@@ -448,8 +448,8 @@ type testAgent struct {
 
 	extraMu sync.Mutex
 	extras  map[string]netip.Addr // Last address of each extra attachment, from OnAttachment and OnDetach.
-	// log has "attach name address", "deprecate name address" or "detach name
-	// address" for each callback of an address, in order.
+	// log has "attach name address", "deprecate name address", "prefer name
+	// address" or "detach name address" for each callback of an address, in order.
 	log []string
 }
 
@@ -507,6 +507,8 @@ type agentOptions struct {
 	rttChoice bool
 	// rttWait sets the wait of the relay choice. Zero keeps it.
 	rttWait time.Duration
+	// refuseOpen makes the peer service refuse each peer session.
+	refuseOpen bool
 }
 
 // noGrantsService is a peer service that does not have the Grants call.
@@ -518,11 +520,21 @@ func (noGrantsService) Grants(ctx context.Context, in *dp.GrantsRequest) (*empty
 	return dp.UnimplementedPeerServer{}.Grants(ctx, in)
 }
 
+// refuseOpenService is a peer service that refuses each peer session.
+type refuseOpenService struct {
+	dp.PeerServer
+}
+
+func (refuseOpenService) Open(context.Context, *dp.OpenRequest) (*dp.OpenResponse, error) {
+	return nil, rpc.Errorf(rpc.Unavailable, "the test refuses peer sessions")
+}
+
 // lossyConn drops the sent packets that are larger than a max that is not zero.
 // While limitProbes is set, it sends only probeBudget more path probes.
 type lossyConn struct {
 	net.PacketConn
 	max         atomic.Int32
+	bigProbes   atomic.Bool // Path probes larger than max are sent too.
 	limitProbes atomic.Bool
 	probeBudget atomic.Int32
 	probes      atomic.Int32 // Path probes to send, with the dropped ones.
@@ -554,13 +566,14 @@ func (c *lossyConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		c.runs[i].n++
 		c.mu.Unlock()
 	}
-	if len(p) > 0 && p[0] == p2p.TypeProbe {
+	probe := len(p) > 0 && p[0] == p2p.TypeProbe
+	if probe {
 		c.probes.Add(1)
 		if c.limitProbes.Load() && c.probeBudget.Add(-1) < 0 {
 			return len(p), nil
 		}
 	}
-	if m := int(c.max.Load()); m != 0 && len(p) > m {
+	if m := int(c.max.Load()); m != 0 && len(p) > m && !(probe && c.bigProbes.Load()) {
 		return len(p), nil
 	}
 	return c.PacketConn.WriteTo(p, addr)
@@ -742,6 +755,10 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 			ta.note(t, "deprecate", at.Name, at.Address)
 			ta.deprecateAddr(t, at.Address)
 		},
+		OnPreferred: func(at Attachment) {
+			ta.note(t, "prefer", at.Name, at.Address)
+			ta.preferAddr(t, at.Address)
+		},
 		OnDetach: func(at Attachment) {
 			ta.extraMu.Lock()
 			if ta.extras[at.Name] == at.Address {
@@ -780,6 +797,10 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	if opts.noGrants {
 		ta.a.mux = rpc.NewMux()
 		dp.RegisterPeerServer(ta.a.mux, noGrantsService{&peerService{a: ta.a}})
+	}
+	if opts.refuseOpen {
+		ta.a.mux = rpc.NewMux()
+		dp.RegisterPeerServer(ta.a.mux, refuseOpenService{&peerService{a: ta.a}})
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ta.cancel = cancel
@@ -833,11 +854,11 @@ func (ta *testAgent) note(t *testing.T, event, name string, addr netip.Addr) {
 	defer ta.extraMu.Unlock()
 	held := false
 	for _, e := range ta.log {
-		if f := strings.Fields(e); f[2] == addr.String() && f[0] != "deprecate" {
+		if f := strings.Fields(e); f[2] == addr.String() && (f[0] == "attach" || f[0] == "detach") {
 			held = f[0] == "attach"
 		}
 	}
-	if event != "deprecate" && held == (event == "attach") {
+	if (event == "attach" || event == "detach") && held == (event == "attach") {
 		t.Errorf("agent %s: %s of address %s in the wrong order: %v", name, event, addr, ta.log)
 	}
 	ta.log = append(ta.log, event+" "+name+" "+addr.String())
@@ -853,6 +874,19 @@ func (ta *testAgent) deprecateAddr(t *testing.T, addr netip.Addr) {
 	}
 	if err != nil {
 		t.Errorf("deprecate address %s: %v", addr, err)
+	}
+}
+
+// preferAddr makes addr preferred again in the netstack.
+func (ta *testAgent) preferAddr(t *testing.T, addr netip.Addr) {
+	var err error
+	if ta.ns != nil {
+		err = ta.ns.PreferAddr(netip.PrefixFrom(addr, addr.BitLen()))
+	} else if terr := ta.stack.SetAddressLifetimes(1, tcpip.AddrFromSlice(addr.AsSlice()), stack.AddressLifetimes{}); terr != nil {
+		err = errors.New(terr.String())
+	}
+	if err != nil {
+		t.Errorf("prefer address %s: %v", addr, err)
 	}
 }
 

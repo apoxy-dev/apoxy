@@ -26,9 +26,6 @@ const reportInterval = 500 * time.Millisecond
 // sendReports sends the receive counters of the SAs of p to the peer when they
 // change, until the session closes. The peer gives them to its breaker.
 func (p *peer) sendReports() {
-	if p.quic {
-		return
-	}
 	ctx := p.qc.Context()
 	t := time.NewTicker(reportInterval)
 	defer t.Stop()
@@ -79,9 +76,6 @@ func (s *peerService) Reports(ctx context.Context, st rpc.ClientStreamServer[dp.
 	case <-p.ready:
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	}
-	if p.quic {
-		return nil, rpc.Errorf(rpc.FailedPrecondition, "data to this peer goes through the relay")
 	}
 	for {
 		m, err := st.Recv()

@@ -660,46 +660,116 @@ func TestHandleDataConcurrent(t *testing.T) {
 	assert.Len(t, dev.out, readers*frames)
 }
 
-// TestNoRoute checks that Config.NoRoute gets the packets with no route or no
-// transmit SA, and no other packets.
-func TestNoRoute(t *testing.T) {
+// relayOf adds a relay to the link of n at the socket of the other node, with
+// default routes and SAs from the other node.
+func relayOf(t *testing.T, n *node) *Peer {
+	t.Helper()
+	r, err := n.l.AddRelay(addrOf(n.other.tr))
+	require.NoError(t, err)
+	for _, pfx := range []string{"0.0.0.0/0", "::/0"} {
+		require.NoError(t, n.b.AddRoute(netip.MustParsePrefix(pfx), r))
+	}
+	rx, err := n.other.l.AddPeer(addrOf(n.tr))
+	require.NoError(t, err)
+	req, err := rx.Offer(time.Now())
+	require.NoError(t, err)
+	_, err = r.Apply(req, time.Now())
+	require.NoError(t, err)
+	return r
+}
+
+// TestRelayRoutes checks the send routes of a link with a relay. A packet with no
+// up agent peer goes to the relay, and NoPeer gets the ones with no agent peer.
+func TestRelayRoutes(t *testing.T) {
 	a, b := newPair(t)
-	var got [][]byte
-	a.b.noRoute = func(l *Link, pkt []byte) {
+	offer(t, time.Now(), a, b)
+	r := relayOf(t, a)
+	var got []netip.Addr
+	a.b.noPeer = func(l *Link, pkt []byte, rx bool) {
 		assert.Same(t, a.l, l)
-		got = append(got, bytes.Clone(pkt))
+		assert.False(t, rx)
+		dst, _ := innerDst(pkt)
+		got = append(got, dst)
 	}
 	far := netip.MustParseAddr("10.9.9.9")
-	ok := packet(a.v4, b.v4, 17, 1, 2, 100)
-	// The rows run in order: the SAs come before the second row.
-	cases := []struct {
-		name  string
-		offer bool
-		pkt   []byte
-		hook  bool
-		want  Stats
+	host := netip.PrefixFrom(b.v4, 32)
+	steps := []struct {
+		name string
+		do   func() error
+		dst  netip.Addr
+		want *Peer
+		hook bool // NoPeer gets the packet.
 	}{
-		{name: "no transmit SA", pkt: ok, hook: true, want: Stats{TxNoRoute: 1}},
-		{name: "no route", offer: true, pkt: packet(a.v4, far, 17, 1, 2, 100), hook: true, want: Stats{TxNoRoute: 1}},
-		{name: "routed", pkt: ok},
-		{name: "too large", pkt: packet(a.v4, b.v4, 17, 1, 2, DefaultMTU+1), want: Stats{TxDrops: 1}},
+		{name: "agent peer up", dst: b.v4, want: a.peer},
+		{name: "agent peer down", do: func() error { return a.peer.SetUp(false) }, dst: b.v4, want: r},
+		{name: "no agent peer", dst: far, want: r, hook: true},
+		{name: "relay route of a prefix of the agent peer", do: func() error { return a.b.AddRoute(host, r) }, dst: b.v4, want: r},
+		{name: "agent peer up again", do: func() error { return a.peer.SetUp(true) }, dst: b.v4, want: a.peer},
+		{name: "agent peer down again", do: func() error { return a.peer.SetUp(false) }, dst: b.v6, want: r},
+		{name: "agent peer up, relay route removed", do: func() error {
+			_ = a.b.RemoveRoute(host, r)
+			return a.peer.SetUp(true)
+		}, dst: b.v4, want: a.peer},
+		{name: "agent peer removed", do: func() error {
+			a.b.RemovePeer(a.peer)
+			return nil
+		}, dst: b.v4, want: r, hook: true},
+	}
+	for _, st := range steps {
+		if st.do != nil {
+			require.NoError(t, st.do(), st.name)
+		}
+		got = nil
+		pkt := packet(a.v4, st.dst, 17, 1, 2, 100)
+		if st.dst.Is6() {
+			pkt = packet(a.v6, st.dst, 17, 1, 2, 100)
+		}
+		var f netstack.TxFrame
+		require.NoError(t, a.b.prepare(pkt, &f), st.name)
+		sa, _ := st.want.txSA(pkt)
+		assert.Same(t, sa, f.SA, st.name)
+		if st.hook {
+			assert.Equal(t, []netip.Addr{st.dst}, got, st.name)
+		} else {
+			assert.Empty(t, got, st.name)
+		}
+	}
+	assert.ErrorIs(t, a.peer.SetUp(true), ErrClosed)
+}
+
+// TestTake checks the received inner packets that the driver does not get, and
+// the ones that NoPeer gets.
+func TestTake(t *testing.T) {
+	a, b := newPair(t)
+	far := netip.MustParseAddr("10.9.9.9")
+	far6 := netip.MustParseAddr("fd00::9")
+	frag := packet(far, a.v4, 17, 1, 3784, 100)
+	frag[7] = 8 // A fragment after the first one has no UDP header.
+	cases := []struct {
+		name string
+		pkt  []byte
+		bfd  bool // OnBFD gets the packet, and the driver does not.
+		hook bool // NoPeer gets the packet.
+	}{
+		{name: "BFD from an agent peer", pkt: packet(b.v4, a.v4, 17, 49152, 3784, 52), bfd: true},
+		{name: "IPv6 BFD from a relay", pkt: packet(far6, a.v6, 17, 49152, 3784, 72), bfd: true},
+		{name: "from an agent peer", pkt: packet(b.v6, a.v6, 17, 1, 2, 100)},
+		{name: "from a relay", pkt: packet(far, a.v4, 17, 1, 2, 100), hook: true},
+		{name: "TCP to the BFD port", pkt: packet(far6, a.v6, 6, 1, 3784, 100), hook: true},
+		{name: "fragment", pkt: frag, hook: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.offer {
-				offer(t, time.Now(), a, b)
+			var bfd, hook [][]byte
+			a.b.onBFD = func(pkt []byte) { bfd = append(bfd, pkt) }
+			a.b.noPeer = func(l *Link, pkt []byte, rx bool) {
+				assert.Same(t, a.l, l)
+				assert.True(t, rx)
+				hook = append(hook, pkt)
 			}
-			got = nil
-			before := a.b.Stats()
-			phy := make([]byte, 2048)
-			n, _ := (&driver{b: a.b}).VirtToPhy(tc.pkt, phy)
-			assert.Equal(t, tc.want, sub(a.b.Stats(), before))
-			if tc.hook {
-				assert.Zero(t, n)
-				assert.Equal(t, [][]byte{tc.pkt}, got)
-			} else {
-				assert.Empty(t, got)
-			}
+			assert.Equal(t, !tc.bfd, a.b.take(tc.pkt))
+			assert.Equal(t, tc.bfd, len(bfd) == 1)
+			assert.Equal(t, tc.hook, len(hook) == 1)
 		})
 	}
 }

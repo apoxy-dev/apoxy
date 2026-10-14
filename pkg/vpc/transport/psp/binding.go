@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,9 +103,13 @@ type Config struct {
 	MTU int
 	// DeviceMTU is the MTU of the device on the binding, at most MTU. Zero means MTU.
 	DeviceMTU int
-	// NoRoute gets the inner packets that fail with ErrNoRoute and their link,
-	// or nil. It runs on the send path, so it must not block or keep pkt.
-	NoRoute func(l *Link, pkt []byte)
+	// NoPeer gets the inner packets of a relay route to or from an address that
+	// no agent peer of their link has, and their link, or nil. rx is true for a
+	// received packet. It runs on the data path, so it must not block or keep pkt.
+	NoPeer func(l *Link, pkt []byte, rx bool)
+	// OnBFD gets the received inner UDP packets to the BFD port, which do not go
+	// to the driver, or nil. It must not block or keep pkt.
+	OnBFD func(pkt []byte)
 	// OnTrip gets each change of a breaker limit. The peer is nil for the QUIC
 	// data path. It must not block.
 	OnTrip func(*Peer, Trip)
@@ -112,21 +117,22 @@ type Config struct {
 
 // Binding is the data path of one VPC on one agent socket.
 type Binding struct {
-	tr      *quic.Transport
-	demux   *Demux
-	vni     uint32
-	mtu     int
-	devMTU  int
-	clamp   atomic.Int32 // MTU for the MSS of TCP SYN packets. Zero means off.
-	ptb     limiter      // Limits the packet too big errors.
-	table   *engine.RxTable
-	rxq     *engine.RxQueue
-	recv    *keys.Receiver
-	send    *keys.Sender
-	seed    maphash.Seed
-	quic    breaker // Breaker of the QUIC data path.
-	noRoute func(l *Link, pkt []byte)
-	onTrip  func(*Peer, Trip)
+	tr     *quic.Transport
+	demux  *Demux
+	vni    uint32
+	mtu    int
+	devMTU int
+	clamp  atomic.Int32 // MTU for the MSS of TCP SYN packets. Zero means off.
+	ptb    limiter      // Limits the packet too big errors.
+	table  *engine.RxTable
+	rxq    *engine.RxQueue
+	recv   *keys.Receiver
+	send   *keys.Sender
+	seed   maphash.Seed
+	quic   breaker // Breaker of the QUIC data path.
+	noPeer func(l *Link, pkt []byte, rx bool)
+	onBFD  func(pkt []byte)
+	onTrip func(*Peer, Trip)
 
 	// sources has the link of each source prefix, and def is the link of the other
 	// sources. only is the link of a binding with one link, which sends each packet.
@@ -199,21 +205,22 @@ func New(cfg Config) (*Binding, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &Binding{
-		tr:      cfg.Transport,
-		demux:   cfg.Demux,
-		vni:     cfg.VNI,
-		mtu:     cfg.MTU,
-		devMTU:  cfg.DeviceMTU,
-		table:   table,
-		rxq:     table.Queue(0),
-		recv:    recv,
-		send:    send,
-		seed:    maphash.MakeSeed(),
-		noRoute: cfg.NoRoute,
-		onTrip:  cfg.OnTrip,
-		ctx:     ctx,
-		cancel:  cancel,
-		peers:   map[*keys.Peer]*Peer{},
+		tr:     cfg.Transport,
+		demux:  cfg.Demux,
+		vni:    cfg.VNI,
+		mtu:    cfg.MTU,
+		devMTU: cfg.DeviceMTU,
+		table:  table,
+		rxq:    table.Queue(0),
+		recv:   recv,
+		send:   send,
+		seed:   maphash.MakeSeed(),
+		noPeer: cfg.NoPeer,
+		onBFD:  cfg.OnBFD,
+		onTrip: cfg.OnTrip,
+		ctx:    ctx,
+		cancel: cancel,
+		peers:  map[*keys.Peer]*Peer{},
 	}
 	b.ptb.rate.Store(tooBigRate)
 	if b.onTrip == nil {
@@ -370,7 +377,7 @@ func (b *Binding) removeLocked(p *Peer) keys.Request {
 	_, _ = p.tx.Apply(keys.Request{Op: keys.OpRevoke, SPIs: spis}, time.Time{})
 	p.updateLanes()
 	for _, pfx := range p.routes {
-		p.l.routes.Remove(pfx, p)
+		p.l.removeRoute(pfx, p)
 	}
 	p.freeSlot()
 	p.routes, p.removed = nil, true
@@ -535,8 +542,8 @@ func (b *Binding) laneConn(lane byte) *net.UDPConn {
 	return b.laneConns[lane].Load()
 }
 
-// AddRoute sends the inner packets of the link of p for pfx to p, and lets p send from
-// pfx. A prefix has one peer on a link.
+// AddRoute sends the inner packets of the link of p for pfx to p while p is up, and lets
+// p send from pfx. A prefix has one agent peer and one relay on a link.
 func (b *Binding) AddRoute(pfx netip.Prefix, p *Peer) error {
 	pfx = pfx.Masked()
 	b.mu.Lock()
@@ -544,13 +551,11 @@ func (b *Binding) AddRoute(pfx netip.Prefix, p *Peer) error {
 	if p.removed {
 		return ErrClosed
 	}
-	if err := p.l.routes.Add(pfx, p); err != nil {
-		return err
+	if slices.Contains(p.routes, pfx) {
+		return nil
 	}
-	for _, have := range p.routes {
-		if have == pfx {
-			return nil
-		}
+	if err := p.l.addRoute(pfx, p); err != nil {
+		return err
 	}
 	p.routes = append(p.routes, pfx)
 	return nil
@@ -561,15 +566,12 @@ func (b *Binding) RemoveRoute(pfx netip.Prefix, p *Peer) bool {
 	pfx = pfx.Masked()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if !p.l.routes.Remove(pfx, p) {
+	i := slices.Index(p.routes, pfx)
+	if i < 0 {
 		return false
 	}
-	for i, have := range p.routes {
-		if have == pfx {
-			p.routes = append(p.routes[:i], p.routes[i+1:]...)
-			break
-		}
-	}
+	p.routes = slices.Delete(p.routes, i, i+1)
+	p.l.removeRoute(pfx, p)
 	return true
 }
 
@@ -734,8 +736,11 @@ func (b *Binding) open(d *driver, pkt []byte) {
 }
 
 // deliver gives the inner packet buf[off:] of the PSP path or the QUIC path to the driver,
-// after the MSS clamp. Both paths deliver only here. The PSP path sets batch.
+// after the MSS clamp. Both paths deliver only here, and the receive pipe. The PSP path sets batch.
 func (b *Binding) deliver(d *driver, buf []byte, off int, batch bool) {
+	if !b.take(buf[off:]) {
+		return
+	}
 	b.clampMSS(buf[off:], b.quicPath())
 	if batch && d.batch != nil {
 		d.batch.add(buf[off:])
@@ -745,5 +750,35 @@ func (b *Binding) deliver(d *driver, buf []byte, off int, batch bool) {
 		b.stats.rxPackets.Add(1)
 	} else {
 		b.stats.rxDrops.Add(1)
+	}
+}
+
+// take checks a received inner packet before the driver gets it. A BFD packet goes
+// to OnBFD and not to the driver. It reports whether the driver gets the packet.
+func (b *Binding) take(inner []byte) bool {
+	if b.onBFD != nil && isBFD(inner) {
+		b.onBFD(inner)
+		return false
+	}
+	if b.noPeer != nil {
+		b.fromRelay(inner)
+	}
+	return true
+}
+
+// fromRelay gives NoPeer a received inner packet whose source no agent peer of its
+// link has: a relay sent it.
+func (b *Binding) fromRelay(inner []byte) {
+	src, ok := innerSrc(inner)
+	if !ok {
+		return
+	}
+	l := b.only.Load()
+	if l == nil {
+		dst, _ := innerDst(inner)
+		l = b.addrLink(dst)
+	}
+	if l != nil && l.noPeer(src) {
+		b.noPeer(l, inner, true)
 	}
 }

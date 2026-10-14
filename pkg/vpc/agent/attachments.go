@@ -453,10 +453,14 @@ func (a *Agent) detachRelay(ctx context.Context, ps []placed) {
 	}
 }
 
-// queueAttached queues OnAttachment for x on rc. attMu must be held.
+// queueAttached queues OnAttachment for x on rc, and OnDeprecated when the
+// addresses of rc are deprecated. attMu must be held.
 func (a *Agent) queueAttached(rc *relayConn, x *extra) {
+	at := rc.attachmentOf(x)
 	if f := a.cfg.OnAttachment; f != nil {
-		at := rc.attachmentOf(x)
+		a.events = append(a.events, func() { f(at) })
+	}
+	if f := a.cfg.OnDeprecated; f != nil && rc.deprecated {
 		a.events = append(a.events, func() { f(at) })
 	}
 }

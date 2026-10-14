@@ -401,6 +401,14 @@ func (f *fakeOverlay) deprecate(addr netip.Addr) error {
 	return nil
 }
 
+func (f *fakeOverlay) prefer(addr netip.Addr) error {
+	if !slices.Contains(f.addrs, addr) {
+		return errors.New("no such address")
+	}
+	f.deprecated = slices.DeleteFunc(f.deprecated, func(a netip.Addr) bool { return a == addr })
+	return nil
+}
+
 func (f *fakeOverlay) delAddr(addr netip.Addr) error {
 	i := slices.Index(f.addrs, addr)
 	if i < 0 {
@@ -454,10 +462,22 @@ func TestHostDeviceAddresses(t *testing.T) {
 			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
 		},
 		{
-			name: "relay A drains",
+			name: "session B is a backup",
+			do: func() {
+				h.deprecated(agent.Attachment{Base: true, Address: baseB})
+				h.deprecated(xB)
+			},
+			wantAddrs:      []netip.Addr{baseA, baseB, xA.Address, xB.Address},
+			wantDeprecated: []netip.Addr{baseB, xB.Address},
+			wantHost:       []string{"10.0.0.1", "10.1.0.1"},
+		},
+		{
+			name: "relay A drains, so session B is preferred",
 			do: func() {
 				h.deprecated(agent.Attachment{Base: true, Address: baseA})
 				h.deprecated(xA)
+				h.preferred(agent.Attachment{Base: true, Address: baseB})
+				h.preferred(xB)
 			},
 			wantAddrs:      []netip.Addr{baseA, baseB, xA.Address, xB.Address},
 			wantDeprecated: []netip.Addr{baseA, xA.Address},
@@ -488,6 +508,7 @@ func TestHostDeviceAddresses(t *testing.T) {
 			name: "an address that is not on the device",
 			do: func() {
 				h.deprecated(xA)
+				h.preferred(xA)
 				h.detach(agent.Attachment{Base: true, Address: baseA})
 			},
 			wantAddrs: []netip.Addr{baseB},

@@ -172,9 +172,9 @@ func TestPrepareSegs(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				hooks := 0
-				a.b.noRoute = func(*Link, []byte) { hooks++ }
+				a.b.noPeer = func(*Link, []byte, bool) { hooks++ }
 				g.rate.Store(tc.rate)
-				defer func() { a.b.noRoute = nil; g.rate.Store(0); g.tat.Store(0) }()
+				defer func() { a.b.noPeer = nil; g.rate.Store(0); g.tat.Store(0) }()
 				var before, f, after netstack.TxFrame
 				require.True(t, d.Prepare(one, &before))
 				sent, stats := g.sent.Load(), a.b.Stats()

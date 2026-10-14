@@ -111,7 +111,7 @@ func TestPSPPathLost(t *testing.T) {
 			for _, p := range a.a.peers {
 				if p.bp != nil {
 					live++
-					assert.True(t, p.quic, "a peer session does not go through the relay")
+					assert.False(t, p.up, "the route to a peer is down in QUIC mode")
 				}
 			}
 			a.a.mu.Unlock()

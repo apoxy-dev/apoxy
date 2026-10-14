@@ -76,7 +76,14 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 		_ = udp.Close()
 	})
 	a.bind = b
-	l, err := b.AddLink()
+	a.conns = []*relayConn{stubSession(t, a)}
+	return a
+}
+
+// stubSession returns an unconnected relay session of a with its own link.
+func stubSession(t *testing.T, a *Agent) *relayConn {
+	t.Helper()
+	l, err := a.bind.AddLink()
 	require.NoError(t, err)
 	rc := &relayConn{
 		a:         a,
@@ -90,10 +97,12 @@ func (w *world) stubAgent(t *testing.T, name string) *Agent {
 	}
 	rc.ctx, rc.cancel = context.WithCancel(context.Background())
 	t.Cleanup(rc.cancel)
-	rc.relay, err = l.AddPeer(rc.relayAddr)
+	rc.relay, err = l.AddRelay(rc.relayAddr)
 	require.NoError(t, err)
-	a.conns = []*relayConn{rc}
-	return a
+	for _, pfx := range defaultRoutes {
+		require.NoError(t, a.bind.AddRoute(pfx, rc.relay))
+	}
+	return rc
 }
 
 // stubPeer adds a peer session from the agent called name to a.
@@ -107,8 +116,7 @@ func stubPeer(a *Agent, name string, dialer bool) (*peer, *fakeConn) {
 		subject: identity.ID{Project: testProject, VPC: testVPC, Agent: name}.String(),
 		ready:   make(chan struct{}),
 		granted: make(chan struct{}),
-		keyed:   make(chan struct{}),
-		offered: make(chan struct{}),
+		settled: make(chan struct{}),
 		spis:    map[uint32]spiRow{},
 	}
 	a.mu.Lock()
@@ -173,10 +181,10 @@ func TestAdmit(t *testing.T) {
 		{name: "QUIC pair with a bad grant", mode: dp.Mode_MODE_QUIC, claims: func(c *dp.GrantClaims) { c.Vpc.VpcUid = "vpc-2" }, wantText: "another VPC"},
 		{name: "QUIC pair route taken", mode: dp.Mode_MODE_QUIC, taken: true, wantErr: engine.ErrRouteTaken},
 		{name: "peer moved to QUIC mode", mode: dp.Mode_MODE_QUIC, old: &old{instance: 7}, instance: 7, wantQUIC: true},
-		{name: "QUIC pair with crossed dials", mode: dp.Mode_MODE_QUIC, old: &old{dialer: true, instance: 7, mode: dp.Mode_MODE_QUIC}, instance: 7, keepOld: true, wantQUIC: true},
+		{name: "QUIC pair with crossed dials", mode: dp.Mode_MODE_QUIC, old: &old{dialer: true, instance: 7, mode: dp.Mode_MODE_QUIC}, instance: 7, wantErr: errDuplicate, keepOld: true},
 		{name: "QUIC pair, peer dials again", mode: dp.Mode_MODE_QUIC, old: &old{instance: 7, mode: dp.Mode_MODE_QUIC}, instance: 7, wantQUIC: true},
 		{name: "QUIC pair, this agent dials again", mode: dp.Mode_MODE_QUIC, old: &old{dialer: true, instance: 7, mode: dp.Mode_MODE_QUIC}, dialer: true, instance: 7, wantQUIC: true},
-		{name: "QUIC pair, another instance dials", mode: dp.Mode_MODE_QUIC, old: &old{instance: 6, mode: dp.Mode_MODE_QUIC}, instance: 7, keepOld: true, wantQUIC: true},
+		{name: "QUIC pair, another instance dials", mode: dp.Mode_MODE_QUIC, old: &old{instance: 6, mode: dp.Mode_MODE_QUIC}, instance: 7, wantQUIC: true},
 		{name: "QUIC pair, peer dials again on another relay session", mode: dp.Mode_MODE_QUIC, old: &old{instance: 7, mode: dp.Mode_MODE_QUIC, other: true}, instance: 7, keepOld: true, wantQUIC: true},
 		{name: "other relay CA", cert: otherRelayCert, wantText: "unknown authority"},
 		{name: "other project", claims: func(c *dp.GrantClaims) { c.Vpc.ProjectId = "project-b" }, wantText: "another VPC"},
@@ -243,15 +251,13 @@ func TestAdmit(t *testing.T) {
 			var oldConn *fakeConn
 			if tc.old != nil {
 				op, qc := stubPeer(a, "b", tc.old.dialer)
+				if tc.old.other {
+					op.rc = stubSession(t, a)
+				}
 				mode := cmp.Or(tc.old.mode, dp.Mode_MODE_PSP)
 				g, _ := grant(t, relayCert, nil)
 				require.NoError(t, a.admit(op, nil, g, tc.old.instance, mode, 1))
 				oldConn = qc
-				if tc.old.other {
-					l, err := a.bind.AddLink()
-					require.NoError(t, err)
-					op.rc = &relayConn{a: a, state: connAttached, qc: newFakeConn(), link: l}
-				}
 			}
 			cert := tc.cert
 			if cert == nil {
@@ -276,8 +282,10 @@ func TestAdmit(t *testing.T) {
 			default:
 				require.NoError(t, err)
 				assert.NotNil(t, p.bp)
-				assert.Equal(t, tc.wantQUIC, p.quic)
-				assert.Equal(t, tc.wantQUIC, p.bp == a.primary().relay, "QUIC pairs use the relay peer")
+				assert.Equal(t, tc.wantQUIC && !tc.selfQUIC, p.quic)
+				assert.NotEqual(t, a.primary().relay, p.bp, "each pair has its own peer in the binding")
+				assert.False(t, p.up, "the route to the peer waits for BFD Up")
+				assert.Equal(t, tc.wantQUIC, closed(p.settled), "the packets of a QUIC pair use the default route at once")
 				assert.Equal(t, relay.OverlayAddr(netip.MustParsePrefix(claims.GetAddresses()[0])), p.addr)
 				assert.Equal(t, claims.GetAttachmentId(), p.attachmentID())
 				select {
@@ -469,7 +477,7 @@ func TestRefusedDuplicate(t *testing.T) {
 	}
 }
 
-func TestWaitKeys(t *testing.T) {
+func TestWaitPath(t *testing.T) {
 	w := newWorld(t)
 	dup := quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)
 	bad := quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_BAD_GRANT)
@@ -498,8 +506,7 @@ func TestWaitKeys(t *testing.T) {
 			}
 			p, qc := open()
 			if tc.close == nil {
-				close(p.keyed)
-				close(p.offered)
+				p.settle()
 			} else {
 				qc.cancel(tc.close)
 			}
@@ -509,12 +516,11 @@ func TestWaitKeys(t *testing.T) {
 				close(a.admitted)
 				a.admitted = make(chan struct{})
 				a.mu.Unlock()
-				close(q.keyed)
-				close(q.offered)
+				q.settle()
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
-			err := a.waitKeys(ctx, p, netip.MustParseAddr("fd00:b::1"))
+			err := a.waitPath(ctx, p, netip.MustParseAddr("fd00:b::1"))
 			if tc.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -588,24 +594,23 @@ func TestApplyKeys(t *testing.T) {
 		wantCode    rpc.Code
 		wantRefused []uint32
 		wantCalls   []string
-		wantKeyed   bool
 		wantRows    []uint32 // SPIs that the agent registered for the peer.
 		wantSending []uint32 // SPIs that the binding sends with after req.
 	}{
 		{
 			name: "offer", req: offer,
 			wantCalls: []string{"register [1 2], sending []"},
-			wantKeyed: true, wantRows: []uint32{1, 2}, wantSending: []uint32{1, 2},
+			wantRows:  []uint32{1, 2}, wantSending: []uint32{1, 2},
 		},
 		{
 			name: "rekey", before: &offer, req: sas(keys.OpRekey, 3),
 			wantCalls: []string{"register [3], sending []"},
-			wantKeyed: true, wantRows: []uint32{1, 2, 3}, wantSending: []uint32{2, 3},
+			wantRows:  []uint32{1, 2, 3}, wantSending: []uint32{2, 3},
 		},
 		{
 			name: "revoke", before: &offer, req: keys.Request{Op: keys.OpRevoke, SPIs: []uint32{1}},
 			wantCalls: []string{"unregister [1], sending []"},
-			wantKeyed: true, wantRows: []uint32{2}, wantSending: []uint32{2},
+			wantRows:  []uint32{2}, wantSending: []uint32{2},
 		},
 		{
 			name: "relay has an SPI for another peer", other: []uint32{1},
@@ -618,7 +623,7 @@ func TestApplyKeys(t *testing.T) {
 			name: "binding has an SPI for another peer", other: []uint32{1}, req: offer,
 			wantRefused: []uint32{1},
 			wantCalls:   []string{"register [1 2], sending [1]", "unregister [1], sending [1]"},
-			wantKeyed:   true, wantRows: []uint32{2}, wantSending: []uint32{1, 2},
+			wantRows:    []uint32{2}, wantSending: []uint32{1, 2},
 		},
 		{
 			name: "relay fails", relayErr: rpc.Errorf(rpc.Unavailable, "down"), req: offer,
@@ -660,12 +665,6 @@ func TestApplyKeys(t *testing.T) {
 			assert.Equal(t, tc.wantCode, rpc.CodeOf(err), "error: %v", err)
 			assert.ElementsMatch(t, tc.wantRefused, res.GetRefusedSpis())
 			assert.Equal(t, tc.wantCalls, r.calls)
-			select {
-			case <-p.keyed:
-				assert.True(t, tc.wantKeyed, "keyed")
-			default:
-				assert.False(t, tc.wantKeyed, "keyed")
-			}
 			assert.ElementsMatch(t, tc.wantRows, slices.Collect(maps.Keys(p.spis)))
 			assert.ElementsMatch(t, tc.wantSending, r.sending([]uint32{1, 2, 3}))
 		})
@@ -733,15 +732,15 @@ func signGrant(t *testing.T, cert *tls.Certificate, name, prefix string) *dp.Att
 	return g
 }
 
-// TestQUICRoutes checks that a closed QUIC pair removes only the routes that
-// no other QUIC pair has, and keeps the relay peer.
+// TestQUICRoutes checks that each QUIC pair has its own peer in the binding,
+// whose route stays down, and that a closed pair removes its routes.
 func TestQUICRoutes(t *testing.T) {
 	w := newWorld(t)
 	cert := w.relayCA.relayCert(t, "relay-1")
 	a := w.stubAgent(t, "a")
 	other, err := a.primary().link.AddPeer(netip.MustParseAddrPort("127.0.0.1:444"))
 	require.NoError(t, err)
-	// routed reports whether a route to the relay peer has pfx.
+	// routed reports whether a peer of an agent has pfx.
 	routed := func(pfx string) bool {
 		p := netip.MustParsePrefix(pfx)
 		err := a.bind.AddRoute(p, other)
@@ -755,13 +754,14 @@ func TestQUICRoutes(t *testing.T) {
 		require.NoError(t, a.admit(p, nil, signGrant(t, cert, name, prefix), 7, dp.Mode_MODE_QUIC, 1))
 		return p
 	}
-	// Crossed dials with b leave two sessions.
-	b1, b2 := admit("b", true, "fd00:b::/96"), admit("b", false, "fd00:b::/96")
-	c := admit("c", true, "fd00:c::/96")
+	b, c := admit("b", true, "fd00:b::/96"), admit("c", true, "fd00:c::/96")
+	for _, p := range []*peer{b, c} {
+		assert.NotSame(t, a.primary().relay, p.bp)
+		assert.Equal(t, "down", routeTo(a, p.addr).State)
+	}
+	assert.NotSame(t, b.bp, c.bp)
 
-	a.dropPeer(b1)
-	assert.True(t, routed("fd00:b::/96"), "the other session with b keeps the route")
-	a.dropPeer(b2)
+	a.dropPeer(b)
 	assert.False(t, routed("fd00:b::/96"))
 	assert.True(t, routed("fd00:c::/96"))
 	a.dropPeer(c)

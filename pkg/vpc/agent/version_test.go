@@ -264,11 +264,13 @@ func TestGrantsUnimplemented(t *testing.T) {
 	ea, eb := a.attached(t), b.attached(t)
 	echo(t, a.stack, ea.addr, 9000)
 	echo(t, b.stack, eb.addr, 9001)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// b opens the peer session first, so the packets of a start no second one.
+	require.NoError(t, b.a.Connect(ctx, ea.addr))
 	ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
 	pa, pb := onlyPeer(t, a.a), onlyPeer(t, b.a)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	noGrants := func() bool {
 		pa.mu.Lock()
 		defer pa.mu.Unlock()

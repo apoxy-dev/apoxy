@@ -325,9 +325,12 @@ func TestExtraAttachments(t *testing.T) {
 			if tc.before {
 				attach()
 			}
+			// The dialer opens the peer session first, so the packets start no second one.
 			if tc.aDials {
+				require.NoError(t, a.a.Connect(ctx, eb.addr))
 				ping(t, a.stack, ea.addr, eb.addr, 9001, "to b")
 			} else {
+				require.NoError(t, b.a.Connect(ctx, ea.addr))
 				ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
 			}
 			pa, pb := onlyPeer(t, a.a), onlyPeer(t, b.a)
@@ -360,9 +363,11 @@ func TestExtraAttachments(t *testing.T) {
 	}
 }
 
-// onlyPeer returns the one peer session of a.
+// onlyPeer waits until a has one peer session and returns it. A packet goes on
+// the default route at once and starts the peer session, so the session comes later.
 func onlyPeer(t *testing.T, a *Agent) *peer {
 	t.Helper()
+	require.Eventually(t, func() bool { return peerCount(a) == 1 }, 5*time.Second, time.Millisecond, "one peer session")
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	require.Len(t, a.peers, 1)
@@ -484,7 +489,12 @@ func TestSendAfterGrantEnd(t *testing.T) {
 			default:
 				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b")
 			}
-			assert.NotSame(t, old, g.cur, "a sent the grant that has ended")
+			// The packet starts the peer session after it went on the default route.
+			assert.Eventually(t, func() bool {
+				g.mu.Lock()
+				defer g.mu.Unlock()
+				return g.cur != old
+			}, 5*time.Second, 10*time.Millisecond, "a sent the grant that has ended")
 		})
 	}
 }

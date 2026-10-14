@@ -31,11 +31,38 @@ type Peer struct {
 	slot atomic.Int32
 	// flows has the lane of each flow slot. txSA reads and writes it.
 	flows [flowSlots]atomic.Uint32
+	// relay is true for the relay of a link, from AddRelay.
+	relay bool
 
 	// Guarded by b.mu.
 	routes  []netip.Prefix
+	up      bool // The routes of p are in the send routes. A relay is always up.
 	removed bool
 	rxSPIs  map[uint32]struct{} // Receive SAs. RxReport removes the deleted ones.
+}
+
+// SetUp puts the routes of an agent peer in the send routes, or takes them out. While
+// the peer is not up, its packets use the relay route of their destination.
+func (p *Peer) SetUp(up bool) error {
+	b := p.b
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if p.removed {
+		return ErrClosed
+	}
+	if p.relay || p.up == up {
+		return nil
+	}
+	p.up = up
+	var err error
+	for _, pfx := range p.routes {
+		if !up {
+			p.l.hide(pfx, p)
+		} else if e := p.l.show(pfx, p); err == nil {
+			err = e
+		}
+	}
+	return err
 }
 
 // SetAddr changes the address that packets to the peer go to.

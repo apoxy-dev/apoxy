@@ -280,6 +280,15 @@ func (s *Stack) DeprecateAddr(addr netip.Prefix) error {
 	return nil
 }
 
+// PreferAddr ends DeprecateAddr for addr: a new connection can use it again.
+func (s *Stack) PreferAddr(addr netip.Prefix) error {
+	nsAddr := tcpip.AddrFromSlice(addr.Addr().AsSlice())
+	if err := s.Stack.SetAddressLifetimes(s.NICID, nsAddr, stack.AddressLifetimes{}); err != nil {
+		return fmt.Errorf("could not prefer address: %v", err)
+	}
+	return nil
+}
+
 // ForwardTo forwards all inbound TCP and UDP traffic to the upstream network.
 func (s *Stack) ForwardTo(ctx context.Context, upstream network.Network) error {
 	// Allow outgoing packets to have a source address different from the NIC.

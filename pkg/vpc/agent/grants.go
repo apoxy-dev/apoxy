@@ -407,12 +407,8 @@ func (p *peer) matches(res *dp.ResolvePeerResponse) bool {
 func (a *Agent) routeGrant(p *peer, prefixes []netip.Prefix) error {
 	for i, pfx := range prefixes {
 		if err := a.bind.AddRoute(pfx, p.bp); err != nil {
-			if p.quic {
-				a.unrouteQUIC(p, prefixes[:i])
-			} else {
-				for _, q := range prefixes[:i] {
-					a.bind.RemoveRoute(q, p.bp)
-				}
+			for _, q := range prefixes[:i] {
+				a.bind.RemoveRoute(q, p.bp)
 			}
 			return fmt.Errorf("route %s: %w", pfx, err)
 		}
@@ -449,12 +445,8 @@ func (a *Agent) dropGrant(p *peer, id string) {
 			}
 		}
 	}
-	if p.quic {
-		a.unrouteQUIC(p, prefixes)
-	} else {
-		for _, pfx := range prefixes {
-			a.bind.RemoveRoute(pfx, p.bp)
-		}
+	for _, pfx := range prefixes {
+		a.bind.RemoveRoute(pfx, p.bp)
 	}
 }
 

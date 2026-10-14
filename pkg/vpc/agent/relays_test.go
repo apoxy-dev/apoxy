@@ -5,7 +5,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -108,11 +107,30 @@ func spiCount(p *peer) int {
 	return len(p.spis)
 }
 
-// peersOf returns the peer sessions of a.
-func peersOf(a *Agent) []*peer {
+// openPeers returns the open peer sessions of a. A dial that crossed one of them
+// can add a session for a short time that does not open.
+func openPeers(a *Agent) []*peer {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return slices.Collect(maps.Values(a.peers))
+	var ps []*peer
+	for _, p := range a.peers {
+		if p.bp != nil {
+			ps = append(ps, p)
+		}
+	}
+	return ps
+}
+
+// openPeer returns the peer session of a if a has one and it is open, or nil.
+func openPeer(a *Agent) *peer {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range a.peers {
+		if len(a.peers) == 1 && p.bp != nil {
+			return p
+		}
+	}
+	return nil
 }
 
 // TestPeerOnOtherRelay sends UDP both ways between agent a on relay-1 and agent b
@@ -168,11 +186,13 @@ func TestPeerOnOtherRelay(t *testing.T) {
 			// With no session, the first packet opens it through the two relays.
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b")
 			ping(t, b.stack, eb.addr, ea.addr, 9002, "to a")
-			// A QUIC pair keeps the two sessions of crossed dials. A PSP pair keeps one.
-			kept := func(n int) bool { return n == 1 || (tc.both && tc.bridge && n == 2) }
-			require.Eventually(t, func() bool { return kept(peerCount(a.a)) && kept(peerCount(b.a)) },
+			// Crossed dials keep one session. The pings do not wait for it to open.
+			require.Eventually(t, func() bool { return openPeer(a.a) != nil && openPeer(b.a) != nil },
 				5*time.Second, 10*time.Millisecond, "sessions that stay")
-			pas, pbs := peersOf(a.a), peersOf(b.a)
+			if !tc.bridge {
+				routeUp(t, a, b, ea, eb)
+			}
+			pas, pbs := openPeers(a.a), openPeers(b.a)
 			require.Len(t, pbs, len(pas))
 			if !tc.both {
 				assert.True(t, pas[0].dialer, "a dialed")
@@ -189,9 +209,10 @@ func TestPeerOnOtherRelay(t *testing.T) {
 				rc := side.ta.current()
 				for _, p := range side.peers {
 					assert.Equal(t, unmap(rc.relayAddr), unmap(p.bp.Addr()), "address of the peer of %s", side.name)
-					assert.Equal(t, tc.bridge, p.quic)
+					assert.NotSame(t, rc.relay, p.bp)
+					assert.Equal(t, !tc.bridge, routeTo(side.ta.a, p.addr).State == "up", "route of the pair at %s", side.name)
 					if tc.bridge {
-						assert.Same(t, rc.relay, p.bp)
+						assert.Zero(t, rxCountOf(p.bp).packets, "packets with the SAs of the pair at %s", side.name)
 					} else {
 						assert.NotZero(t, rxCountOf(p.bp).packets, "packets with the SAs of the pair at %s", side.name)
 					}
@@ -204,11 +225,9 @@ func TestPeerOnOtherRelay(t *testing.T) {
 			if tc.bridge {
 				assert.Zero(t, spis[a]+spis[b], "SPIs at the relays")
 			} else {
-				// The agents have SAs of each other, and use no SA of a relay.
+				// The agents have SAs of each other. The first packets went through the relays.
 				assert.NotZero(t, spis[a], "SPIs of a at relay-1")
 				assert.NotZero(t, spis[b], "SPIs of b at relay-2")
-				assert.Zero(t, rxCountOf(a.current().relay).packets, "packets with the SAs of a for relay-1")
-				assert.Zero(t, rxCountOf(b.current().relay).packets, "packets with the SAs of b for relay-2")
 			}
 
 			ping(t, a.stack, ea.addr, far, 9001, "to a route of b")
@@ -223,8 +242,8 @@ func TestPeerOnOtherRelay(t *testing.T) {
 			assert.ElementsMatch(t, []string{b.current().attachmentID, x.ID}, both.GetAttachmentIds())
 			ping(t, a.stack, ea.addr, x.Address, 9003, "to b-2")
 			ping(t, b.stack, x.Address, ea.addr, 9002, "from b-2")
-			assert.ElementsMatch(t, pas, peersOf(a.a), "a keeps its peer sessions")
-			assert.ElementsMatch(t, pbs, peersOf(b.a), "b keeps its peer sessions")
+			assert.ElementsMatch(t, pas, openPeers(a.a), "a keeps its peer sessions")
+			assert.ElementsMatch(t, pbs, openPeers(b.a), "b keeps its peer sessions")
 			assert.Zero(t, unreachableIn(a)+unreachableIn(b), "ICMP errors")
 			assert.Empty(t, meshDrops(t, r1, r2), "drops between the relays")
 
@@ -233,8 +252,19 @@ func TestPeerOnOtherRelay(t *testing.T) {
 			require.Eventually(t, func() bool {
 				return peerCount(a.a) == 0 && !slices.Contains(a.routeSet(), eb.prefixes[0])
 			}, 5*time.Second, 10*time.Millisecond, "a has no session and no route of b")
-			send(t, a.stack, ea.addr, eb.addr, 9000, "after b left")
-			require.Eventually(t, func() bool { return unreachableIn(a) == 1 }, 5*time.Second, 10*time.Millisecond)
+			// The relay sends one NoRoute a second for an address, and the close of the
+			// session of a can use it. So a sends again after a second with no ICMP error.
+			var sent time.Time
+			require.Eventually(t, func() bool {
+				if unreachableIn(a) > 0 {
+					return true
+				}
+				if time.Since(sent) > 1100*time.Millisecond {
+					sent = time.Now()
+					send(t, a.stack, ea.addr, eb.addr, 9000, "after b left")
+				}
+				return false
+			}, 5*time.Second, 10*time.Millisecond, "ICMP error after b left")
 			assert.Zero(t, peerCount(a.a))
 		})
 	}
@@ -263,10 +293,9 @@ func TestFirstPacketOnOtherRelay(t *testing.T) {
 			require.False(t, got.IsZero(), "no echo in 3 s")
 			t.Logf("first echo after %d ms, drops of relay-1 %v, drops of relay-2 %v",
 				got.Sub(start).Milliseconds(), relayDrops(t, r1), relayDrops(t, r2))
-			// The agent did not mark b as failed, and it keeps the session.
-			assert.Zero(t, a.a.Stats().HoldDrops)
+			// The agent keeps the session.
 			assert.Zero(t, unreachableIn(a), "ICMP errors")
-			assert.Equal(t, 1, peerCount(a.a))
+			require.Eventually(t, func() bool { return peerCount(a.a) == 1 }, 5*time.Second, 10*time.Millisecond)
 			assert.Empty(t, meshDrops(t, r1, r2), "drops between the relays")
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "second packet")
 		})
@@ -295,6 +324,9 @@ func TestPeerAfterMoveToOtherRelay(t *testing.T) {
 			echo(t, b.stack, eb.addr, 9000)
 			echo(t, a.stack, ea.addr, 9001)
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "on one relay")
+			// The ping does not wait for the peer session. It must open before the move.
+			require.Eventually(t, func() bool { return openPeer(a.a) != nil && openPeer(b.a) != nil },
+				5*time.Second, 10*time.Millisecond, "session on one relay")
 			assert.Equal(t, dp.Reach_REACH_LOCAL, a.resolved(t, eb.addr).GetReach())
 
 			// The attached session of a ends, and its relay takes no new session, so a
@@ -310,9 +342,10 @@ func TestPeerAfterMoveToOtherRelay(t *testing.T) {
 			ping(t, a.stack, moved.addr, eb.addr, 9000, "to the relay before the move")
 			b.hasRoutes(t, moved.prefixes[0])
 			ping(t, b.stack, eb.addr, moved.addr, 9001, "to the relay after the move")
-			require.Eventually(t, func() bool { return peerCount(a.a) == 1 && peerCount(b.a) == 1 },
-				5*time.Second, 10*time.Millisecond, "one session stays")
-			assert.Same(t, a.current(), onlyPeer(t, a.a).rc, "the peer session of a is on its new relay session")
+			require.Eventually(t, func() bool {
+				p := openPeer(a.a)
+				return p != nil && p.rc == a.current() && openPeer(b.a) != nil
+			}, 5*time.Second, 10*time.Millisecond, "one session stays, on the new relay session of a")
 			assert.Equal(t, unmap(a.current().relayAddr), unmap(onlyPeer(t, a.a).bp.Addr()))
 		})
 	}
@@ -349,6 +382,10 @@ func TestPeerAfterDrain(t *testing.T) {
 			a.hasRoutes(t, eb.prefixes[0])
 			assert.Equal(t, dp.Reach_REACH_TRUNK, a.resolved(t, eb.addr).GetReach())
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "before the drain")
+			// The ping does not wait for the peer session. An open that runs when the relay
+			// stops can leave a session on the other agent that does not open.
+			require.Eventually(t, func() bool { return openPeer(a.a) != nil && openPeer(b.a) != nil },
+				5*time.Second, 10*time.Millisecond, "session through relay-1")
 
 			prev := a.current()
 			end := drain(t, r1, r1.mesh.Alternates())
@@ -363,9 +400,10 @@ func TestPeerAfterDrain(t *testing.T) {
 			ping(t, a.stack, moved.addr, eb.addr, 9000, "after the drain")
 			b.hasRoutes(t, moved.prefixes[0])
 			ping(t, b.stack, eb.addr, moved.addr, 9001, "to the relay after the drain")
-			require.Eventually(t, func() bool { return peerCount(a.a) == 1 && peerCount(b.a) == 1 },
-				5*time.Second, 10*time.Millisecond, "one session stays")
-			assert.Same(t, a.current(), onlyPeer(t, a.a).rc, "the peer session of a is on its new relay session")
+			require.Eventually(t, func() bool {
+				p := openPeer(a.a)
+				return p != nil && p.rc == a.current() && openPeer(b.a) != nil
+			}, 5*time.Second, 10*time.Millisecond, "one session stays, on the new relay session of a")
 		})
 	}
 }
@@ -437,7 +475,7 @@ func TestDialReach(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			require.NoError(t, a.a.waitKeys(ctx, p, eb.addr))
+			require.NoError(t, a.a.waitPath(ctx, p, eb.addr))
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b")
 			assert.Same(t, p, onlyPeer(t, a.a))
 		})

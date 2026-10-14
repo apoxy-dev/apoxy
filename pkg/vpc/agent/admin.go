@@ -28,16 +28,23 @@ type Attacher interface {
 	Attachments() []Attachment
 }
 
+// Admin is the agent that the admin API serves. Agent implements it.
+type Admin interface {
+	Attacher
+	Routes() []Route
+}
+
 // AdminHandler serves the admin API of a, with JSON bodies:
 //
 //	GET    /v1/attachments         200 with all attachments.
 //	POST   /v1/attachments         200 with the attachment of an AttachmentSpec.
 //	DELETE /v1/attachments/{name}  204.
+//	GET    /debug/routes           200 with the routes, as text with ?format=text.
 //
 // The errors are 400 for a request that is not valid, 404 for an unknown
 // name, 409 for a name in use or the attachment of Config, and 503 when the
 // agent has no relay session or the relay fails.
-func AdminHandler(a Attacher) http.Handler {
+func AdminHandler(a Admin) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/attachments", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.Attachments())
@@ -64,7 +71,29 @@ func AdminHandler(a Attacher) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("GET /debug/routes", func(w http.ResponseWriter, r *http.Request) {
+		writeRoutes(w, r.URL.Query().Get("format"), a.Routes())
+	})
 	return mux
+}
+
+// writeRoutes writes routes as JSON, or with format "text" one route on each
+// line in the form of ip route.
+func writeRoutes(w http.ResponseWriter, format string, routes []Route) {
+	if routes == nil {
+		routes = []Route{}
+	}
+	switch format {
+	case "", "json":
+		writeJSON(w, http.StatusOK, routes)
+	case "text":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		for _, rt := range routes {
+			fmt.Fprintln(w, rt)
+		}
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Errorf("unknown format %q: use json or text", format))
+	}
 }
 
 func adminStatus(err error) int {
@@ -91,7 +120,7 @@ func writeError(w http.ResponseWriter, code int, err error) {
 
 // ServeAdmin serves AdminHandler(a) on the unix socket at path until ctx
 // ends, then removes the socket. Only this user and root can connect.
-func ServeAdmin(ctx context.Context, path string, a Attacher) error {
+func ServeAdmin(ctx context.Context, path string, a Admin) error {
 	ln, err := listenAdmin(path)
 	if err != nil {
 		return err

@@ -107,7 +107,8 @@ func TestTunForeignSource(t *testing.T) {
 }
 
 // TestTunDeprecate checks that the kernel does not select a deprecated overlay
-// address as the source of a new connection, and keeps the address.
+// address as the source of a new connection, keeps the address, and selects it
+// again after prefer.
 func TestTunDeprecate(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to make a network namespace")
@@ -118,13 +119,16 @@ func TestTunDeprecate(t *testing.T) {
 	steps := []struct {
 		name      string
 		deprecate netip.Addr
+		prefer    netip.Addr
 		remove    netip.Addr
 		wantSrc   netip.Addr
 		wantAddrs map[netip.Addr]bool // Addresses on the device, true when deprecated.
 	}{
 		{name: "first drains", deprecate: first, wantSrc: second, wantAddrs: map[netip.Addr]bool{first: true, second: false}},
 		{name: "second drains also", deprecate: second, wantAddrs: map[netip.Addr]bool{first: true, second: true}},
-		{name: "first ends", remove: first, wantSrc: second, wantAddrs: map[netip.Addr]bool{second: true}},
+		{name: "second is preferred again", prefer: second, wantSrc: second, wantAddrs: map[netip.Addr]bool{first: true, second: false}},
+		{name: "first ends", remove: first, wantSrc: second, wantAddrs: map[netip.Addr]bool{second: false}},
+		{name: "second drains again", deprecate: second, wantAddrs: map[netip.Addr]bool{second: true}},
 	}
 	err := netns.Do(ns, func() error {
 		vpc0 := upVeth(t, "vpc0")
@@ -135,6 +139,9 @@ func TestTunDeprecate(t *testing.T) {
 		for _, st := range steps {
 			if st.deprecate.IsValid() {
 				require.NoError(t, dev.deprecate(st.deprecate), st.name)
+			}
+			if st.prefer.IsValid() {
+				require.NoError(t, dev.prefer(st.prefer), st.name)
 			}
 			if st.remove.IsValid() {
 				require.NoError(t, dev.delAddr(st.remove), st.name)

@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"maps"
 	"net/netip"
 	"slices"
 	"testing"
@@ -199,16 +200,17 @@ func TestDNS(t *testing.T) {
 }
 
 // TestRoutesOfOtherRelays checks which agents get the routes of an attachment on
-// another relay of a mesh, and which send to it. The others get an ICMP error.
+// another relay of a mesh, and which open a peer session to it. Each agent sends
+// to it at once on the default route.
 func TestRoutesOfOtherRelays(t *testing.T) {
 	cases := []struct {
 		name      string
 		localOnly bool
 		version   func() *dp.Version // Nil means an agent of this build.
 		gets      bool
-		sends     bool
+		dials     bool // The agent opens the peer session to b.
 	}{
-		{name: "agent of this build", gets: true, sends: true},
+		{name: "agent of this build", gets: true, dials: true},
 		{name: "local routes only", localOnly: true},
 		{name: "agent of revision 5", version: revision5},
 		{name: "agent one revision before the peer sessions to other relays", version: beforeReach, gets: true},
@@ -249,21 +251,19 @@ func TestRoutesOfOtherRelays(t *testing.T) {
 			inRoute := netip.MustParseAddr("fd99::5")
 			b.netstack(t, b.binding(), inRoute, false)
 			watcher.resolved(t, eb.addr)
-			for i, dst := range []netip.Addr{eb.addr, inRoute} {
-				if tc.sends {
-					echo(t, b.stack, dst, 9000)
-					ping(t, a.stack, ea.addr, dst, 9000, "to another relay")
-					continue
-				}
-				send(t, a.stack, ea.addr, dst, 9000, "to another relay")
-				require.Eventually(t, func() bool { return unreachableIn(a) == uint64(i+1) }, 5*time.Second, 10*time.Millisecond)
-				assert.Equal(t, uint64(i+1), a.a.Stats().HoldDrops)
+			for _, dst := range []netip.Addr{eb.addr, inRoute} {
+				echo(t, b.stack, dst, 9000)
+				ping(t, a.stack, ea.addr, dst, 9000, "to another relay")
 			}
-			if tc.sends {
-				assert.Equal(t, 1, peerCount(a.a))
-				assert.Zero(t, unreachableIn(a), "ICMP errors")
-			} else {
-				assert.Zero(t, peerCount(a.a))
+			assert.Zero(t, unreachableIn(a), "ICMP errors")
+			// The packets start the peer session after they went on the default route.
+			// b can open it also, when the packets come to b first.
+			require.Eventually(t, func() bool { return peerCount(a.a) == 1 }, 5*time.Second, 10*time.Millisecond, "one peer session")
+			if !tc.dials {
+				a.a.mu.Lock()
+				dialed := slices.ContainsFunc(slices.Collect(maps.Values(a.a.peers)), func(p *peer) bool { return p.dialer })
+				a.a.mu.Unlock()
+				assert.False(t, dialed, "a opened a peer session")
 			}
 			assert.NoError(t, a.current().qc.Context().Err(), "relay session of a")
 

@@ -87,14 +87,17 @@ type rxSet struct {
 	res    []openResult // The result of Open for each slot.
 	out    []rxPacket   // The packets for the netstack, in slot order. The first nout are set.
 	nout   int
+	nbfd   int           // The BFD packets in res.
 	opened chan struct{} // Gets one token when an open worker finished the set.
 }
 
-// openResult is the result of Open for one slot. ok is false when Open failed.
+// openResult is the result of Open for one slot. ok is false when Open failed, and
+// for a BFD packet, which does not go to the netstack.
 type openResult struct {
 	o     engine.Opened
 	inner []byte // The inner packet, in the slot.
 	ok    bool
+	bfd   bool
 }
 
 // newRxPipe starts the consumer of d and workers open workers. They give the packets to
@@ -229,7 +232,7 @@ func (p *rxPipe) flush(lane int) {
 func (p *rxPipe) open() {
 	for s := range p.work {
 		if p.stopped() {
-			s.nout = 0
+			s.nout, s.nbfd = 0, 0
 		} else {
 			p.openSet(s)
 		}
@@ -242,11 +245,20 @@ func (p *rxPipe) open() {
 func (p *rxPipe) openSet(s *rxSet) {
 	b := p.d.b
 	quic := b.quicPath()
+	s.nbfd = 0
 	for i, pkt := range s.slots[:s.n] {
 		inner, o, err := b.rxq.Open(pkt)
 		if err != nil {
 			s.res[i] = openResult{}
 			continue
+		}
+		if b.onBFD != nil && isBFD(inner) {
+			s.res[i] = openResult{o: o, inner: inner, bfd: true}
+			s.nbfd++
+			continue
+		}
+		if b.noPeer != nil {
+			b.fromRelay(inner)
 		}
 		b.clampMSS(inner, quic)
 		s.res[i] = openResult{o: o, inner: inner, ok: true}
@@ -276,6 +288,7 @@ func (p *rxPipe) run() {
 					r.pkb.DecRef()
 				}
 			}
+			drops -= p.takeBFD(s)
 			if drops > 0 {
 				b.stats.rxDrops.Add(uint64(drops))
 			}
@@ -307,6 +320,24 @@ func (p *rxPipe) accept(res []openResult) bool {
 		}
 	}
 	return ok
+}
+
+// takeBFD gives the BFD packets of s that pass the replay window to OnBFD, and
+// returns their number.
+func (p *rxPipe) takeBFD(s *rxSet) int {
+	n := 0
+	for i := 0; s.nbfd > 0 && i < s.n; i++ {
+		r := &s.res[i]
+		if !r.bfd {
+			continue
+		}
+		s.nbfd--
+		if p.d.b.rxq.Accept(r.o) == nil {
+			p.d.b.onBFD(r.inner)
+			n++
+		}
+	}
+	return n
 }
 
 // wait waits until an open worker finished s. It returns false when the pipe stops first.

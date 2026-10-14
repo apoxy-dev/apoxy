@@ -3,6 +3,7 @@
 package psp
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -16,20 +17,25 @@ import (
 // Link is the routes of one relay connection. An inner packet uses the link of
 // its source address, so a prefix has one peer on each link.
 type Link struct {
-	b      *Binding
+	b *Binding
+	// routes are the send routes: the route of an agent peer that is up, else
+	// the route of a relay.
 	routes engine.Routes[*Peer]
+	// peers has the prefixes of the agent peers, up or not, for their source checks.
+	peers engine.Routes[*Peer]
 	// routed reports whether a peer of the link has a route to an address.
 	routed func(netip.Addr) bool
 
 	// Guarded by b.mu.
 	sources []netip.Prefix
+	relays  map[netip.Prefix]*Peer // The relay route of each prefix.
 	removed bool
 }
 
 // AddLink adds a link with no sources and no peers. While the binding has one
 // link, each packet uses it.
 func (b *Binding) AddLink() (*Link, error) {
-	l := &Link{b: b}
+	l := &Link{b: b, relays: map[netip.Prefix]*Peer{}}
 	l.routed = func(a netip.Addr) bool {
 		_, ok := l.routes.Lookup(a)
 		return ok
@@ -114,8 +120,15 @@ func (b *Binding) linkOf(pkt []byte) *Link {
 // sourceLink returns the link that has the source address of an inner packet,
 // or else the default link.
 func (b *Binding) sourceLink(pkt []byte) *Link {
-	if src, ok := innerSrc(pkt); ok {
-		if l, ok := b.sources.Lookup(src); ok {
+	src, _ := innerSrc(pkt)
+	return b.addrLink(src)
+}
+
+// addrLink returns the link that has the address a of this agent, or else the
+// default link.
+func (b *Binding) addrLink(a netip.Addr) *Link {
+	if a.IsValid() {
+		if l, ok := b.sources.Lookup(a); ok {
 			return l
 		}
 	}
@@ -126,15 +139,30 @@ func (b *Binding) sourceLink(pkt []byte) *Link {
 func (l *Link) AddPeer(addr netip.AddrPort) (*Peer, error) { return l.AddPeerLanes(addr, 1) }
 
 // AddPeerLanes adds a remote agent at addr that sends on lanes SAs, each lane
-// from its own UDP port: use more than one only with no NAT.
+// from its own UDP port: use more than one only with no NAT. The peer is up.
 func (l *Link) AddPeerLanes(addr netip.AddrPort, lanes int) (*Peer, error) {
+	return l.addPeer(addr, lanes, false)
+}
+
+// AddRelay adds the relay of the link at addr. Its routes are the routes of the
+// prefixes that no up agent peer has, for example a default route. It sends each
+// source that the link routes: the relay checks the sources.
+func (l *Link) AddRelay(addr netip.AddrPort) (*Peer, error) {
+	return l.addPeer(addr, 1, true)
+}
+
+func (l *Link) addPeer(addr netip.AddrPort, lanes int, relay bool) (*Peer, error) {
 	b := l.b
 	if !addr.IsValid() {
 		return nil, fmt.Errorf("psp: invalid peer address %v", addr)
 	}
-	p := &Peer{b: b, l: l, tx: b.send.NewPeer(), rxSPIs: map[uint32]struct{}{}}
+	p := &Peer{b: b, l: l, tx: b.send.NewPeer(), rxSPIs: map[uint32]struct{}{}, relay: relay, up: true}
 	p.sockets.Store(keys.MaxLanes)
-	rx, err := b.recv.NewPeer(keys.PeerConfig{VNI: b.vni, MTU: b.mtu, Lanes: lanes, Sources: l.routes.Sources(p)})
+	sources := l.peers.Sources(p)
+	if relay {
+		sources = l.routed
+	}
+	rx, err := b.recv.NewPeer(keys.PeerConfig{VNI: b.vni, MTU: b.mtu, Lanes: lanes, Sources: sources})
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +175,64 @@ func (l *Link) AddPeerLanes(addr netip.AddrPort, lanes int) (*Peer, error) {
 	}
 	b.peers[rx] = p
 	return p, nil
+}
+
+// addRoute adds pfx to the routes of p. A prefix has one agent peer and one
+// relay. b.mu must be held.
+func (l *Link) addRoute(pfx netip.Prefix, p *Peer) error {
+	if p.relay {
+		if r := l.relays[pfx]; r != nil && r != p {
+			return engine.ErrRouteTaken
+		}
+		l.relays[pfx] = p
+	} else if err := l.peers.Add(pfx, p); err != nil {
+		return err
+	}
+	if p.up {
+		return l.show(pfx, p)
+	}
+	return nil
+}
+
+// removeRoute removes pfx from the routes of p. b.mu must be held.
+func (l *Link) removeRoute(pfx netip.Prefix, p *Peer) {
+	l.hide(pfx, p)
+	if !p.relay {
+		l.peers.Remove(pfx, p)
+	} else if l.relays[pfx] == p {
+		delete(l.relays, pfx)
+	}
+}
+
+// show puts the route of pfx to p in the send routes. The route of an up agent
+// peer takes the place of the relay route. b.mu must be held.
+func (l *Link) show(pfx netip.Prefix, p *Peer) error {
+	if r := l.relays[pfx]; !p.relay && r != nil {
+		l.routes.Remove(pfx, r)
+	}
+	err := l.routes.Add(pfx, p)
+	if p.relay && errors.Is(err, engine.ErrRouteTaken) {
+		// An up agent peer has pfx.
+		return nil
+	}
+	return err
+}
+
+// hide takes the route of pfx to p out of the send routes, and puts the relay
+// route of pfx back. b.mu must be held.
+func (l *Link) hide(pfx netip.Prefix, p *Peer) {
+	if !l.routes.Remove(pfx, p) || p.relay {
+		return
+	}
+	if r := l.relays[pfx]; r != nil {
+		_ = l.routes.Add(pfx, r)
+	}
+}
+
+// noPeer reports whether no agent peer of l has the address a, up or not.
+func (l *Link) noPeer(a netip.Addr) bool {
+	_, ok := l.peers.Lookup(a)
+	return !ok
 }
 
 // HandleData opens a data frame of the relay session of l and gives it to the driver.

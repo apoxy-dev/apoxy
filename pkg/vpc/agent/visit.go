@@ -42,9 +42,8 @@ const (
 )
 
 var (
-	errVisitLimit  = errors.New("agent has the most visitor sessions")
-	errVisitNoData = errors.New("path to the visited relay carries no data")
-	errPeerVisits  = errors.New("peer has the lower address and did not visit this relay yet")
+	errVisitLimit = errors.New("agent has the most visitor sessions")
+	errPeerVisits = errors.New("peer has the lower address and did not visit this relay yet")
 )
 
 // visit is one visitor session: a session on the relay of peers that the relay
@@ -59,6 +58,9 @@ type visit struct {
 	// users counts the callers that open a peer session on the visit now.
 	// Guarded by Agent.mu.
 	users int
+	// routes are the prefixes that route to the relay of the visit, on the
+	// link of home. Guarded by Agent.mu.
+	routes []netip.Prefix
 }
 
 // session returns the visitor session after its setup, or nil.
@@ -90,7 +92,8 @@ func reachable(res *dp.ResolvePeerResponse) bool {
 }
 
 // noRoute applies a NoRoute of rc. With a home relay, the peer sessions stay
-// with the path down, and a visit starts. With none, the sessions close.
+// with the path down, and a visit starts. With none, the sessions close, and
+// the sender of a packet to the address gets an ICMP error.
 func (a *Agent) noRoute(rc *relayConn, m *dp.NoRoute) {
 	dst, err := netip.ParseAddr(m.GetAddress())
 	if err != nil {
@@ -98,6 +101,7 @@ func (a *Agent) noRoute(rc *relayConn, m *dp.NoRoute) {
 	}
 	if m.GetHomeRelay() == nil {
 		a.closePeers(func(p *peer) bool { return p.rc == rc && p.routes(dst) }, "relay has no route to the peer")
+		go a.unreachable(rc, dst.Unmap())
 		return
 	}
 	a.setDown(rc, dst.Unmap(), true)
@@ -114,14 +118,6 @@ func (a *Agent) setDown(rc *relayConn, dst netip.Addr, down bool) {
 			p.down = down
 		}
 	}
-}
-
-// noDataPath sets the path of p to down: the peer has no data path to this agent.
-func (a *Agent) noDataPath(p *peer) {
-	a.mu.Lock()
-	p.down = true
-	a.mu.Unlock()
-	close(p.noData)
 }
 
 // cutFrom asks the relay of p how it reaches the open sessions of the subject of
@@ -155,13 +151,13 @@ func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 		return
 	}
 	addr, ok := a.peerAddr(rc, dst)
-	key := holdKey{rc.link, addr}
-	if !ok || a.holds.failing(key, time.Now()) {
+	key := startKey{rc.link, addr}
+	if !ok || !a.starts.begin(key, nil, time.Now()) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(rc.ctx, holdTime)
+	ctx, cancel := context.WithTimeout(rc.ctx, keysTimeout)
 	defer cancel()
-	err := a.holds.once(key, func() error {
+	err := a.starts.once(key, func() error {
 		res, err := rc.resolve(ctx, addr)
 		if err != nil {
 			return err
@@ -174,10 +170,8 @@ func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 		}
 		return a.connectVisit(ctx, rc, addr, res.GetHomeRelay())
 	})
+	a.starts.end(key, err, time.Now(), a.retryMin, a.retryMax)
 	if err != nil {
-		a.holds.mu.Lock()
-		a.holds.fail(key, err, time.Now())
-		a.holds.mu.Unlock()
 		slog.Warn("Failed to visit the relay of a peer", "peer", addr, "error", err)
 	}
 }
@@ -202,6 +196,7 @@ func (a *Agent) connectVisit(ctx context.Context, home *relayConn, dst netip.Add
 		return fmt.Errorf("visit relay %s for peer %s: %w", ref.GetId(), dst, err)
 	}
 	defer a.release(v)
+	a.routeVisit(v, dst)
 	// The peer opened a session as a visitor while this visit started. It stays.
 	if ok, err := a.usePeer(ctx, home, dst); ok {
 		return err
@@ -226,8 +221,8 @@ func (a *Agent) visiting(home *relayConn, dst netip.Addr) bool {
 	return false
 }
 
-// usePeer waits for the SAs of the peer session on rc to dst whose path is not
-// down. It reports false when the caller must visit: no session, or no data path.
+// usePeer waits for the data path of the peer session on rc to dst whose path
+// is not down. It reports false when the caller must visit: no such session.
 func (a *Agent) usePeer(ctx context.Context, rc *relayConn, dst netip.Addr) (bool, error) {
 	a.mu.Lock()
 	p := a.livePeerTo(rc, dst)
@@ -235,8 +230,7 @@ func (a *Agent) usePeer(ctx context.Context, rc *relayConn, dst netip.Addr) (boo
 	if p == nil {
 		return false, nil
 	}
-	err := a.waitKeys(ctx, p, dst)
-	return !errors.Is(err, errVisitNoData), err
+	return true, a.waitPath(ctx, p, dst)
 }
 
 // awaitVisit is usePeer with a wait of visitWait for the session that the agent
@@ -251,8 +245,7 @@ func (a *Agent) awaitVisit(ctx context.Context, rc *relayConn, dst netip.Addr) (
 		p, admitted := a.livePeerTo(rc, dst), a.admitted
 		a.mu.Unlock()
 		if p != nil {
-			err := a.waitKeys(ctx, p, dst)
-			return !errors.Is(err, errVisitNoData), err
+			return true, a.waitPath(ctx, p, dst)
 		}
 		select {
 		case <-admitted:
@@ -327,15 +320,6 @@ func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*
 	}
 	v.err = err
 	a.mu.Unlock()
-	var retry *pspRetry
-	if err == nil {
-		// The change to PSP mode closes the peer sessions of QUIC mode, so the
-		// first probe ends before a user of the visit opens one.
-		retry = newPSPRetry(rc)
-		if retry.probed != nil {
-			retry.result(<-retry.probed)
-		}
-	}
 	close(v.done)
 	if err != nil {
 		if rc != nil {
@@ -344,7 +328,7 @@ func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*
 		return nil, err
 	}
 	slog.Info("Started a visit", "relay", rc.addr, "address", rc.self, "transport", transportName(rc.dataMode()))
-	go a.keepVisit(v, retry)
+	go a.keepVisit(v, newPSPRetry(rc))
 	return v, nil
 }
 
@@ -400,7 +384,7 @@ func (rc *relayConn) startVisit(ctx context.Context) error {
 		// The peer sessions open after this, so each Open has the grants.
 		a.joinExtras(ctx, home, rc)
 	}
-	p, err := l.AddPeer(rc.relayAddr)
+	p, err := l.AddRelay(rc.relayAddr)
 	if err != nil {
 		return err
 	}
@@ -562,10 +546,13 @@ func (a *Agent) checkVisit(v *visit) bool {
 		}
 		a.endVisit(v, reason)
 	} else {
+		a.unrouteVisit(v, func(pfx netip.Prefix) bool {
+			return slices.ContainsFunc(peers, func(p *peer) bool { return back[p] != nil && p.routes(pfx.Addr()) })
+		})
 		a.closePeers(func(p *peer) bool { return back[p] != nil }, "home relay reaches the peer again")
 	}
 	for p, res := range back {
-		err := a.holds.once(holdKey{v.home.link, p.addr}, func() error { return a.connect(ctx, v.home, p.addr, res) })
+		err := a.starts.once(startKey{v.home.link, p.addr}, func() error { return a.connect(ctx, v.home, p.addr, res) })
 		if err != nil {
 			slog.Warn("Failed to move a peer session back from a visit", "peer", p.addr, "error", err)
 			continue
@@ -614,4 +601,33 @@ func (a *Agent) endVisits(home *relayConn, reason string) {
 	for _, v := range vs {
 		a.endVisit(v, reason)
 	}
+}
+
+// routeVisit routes the prefix of dst to the relay of the visit v, so that the
+// packets to dst go through the visit until the route of a peer is up.
+func (a *Agent) routeVisit(v *visit, dst netip.Addr) {
+	pfx := a.routeOf(v.home, dst)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.visits[v.key] != v || slices.Contains(v.routes, pfx) {
+		return
+	}
+	if err := a.bind.AddRoute(pfx, v.rc.relay); err != nil {
+		slog.Warn("Failed to route an address through a visit", "relay", v.rc.addr, "prefix", pfx, "error", err)
+		return
+	}
+	v.routes = append(v.routes, pfx)
+}
+
+// unrouteVisit removes the routes of the visit v whose prefix match reports.
+func (a *Agent) unrouteVisit(v *visit, match func(netip.Prefix) bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	v.routes = slices.DeleteFunc(v.routes, func(pfx netip.Prefix) bool {
+		if !match(pfx) {
+			return false
+		}
+		a.bind.RemoveRoute(pfx, v.rc.relay)
+		return true
+	})
 }

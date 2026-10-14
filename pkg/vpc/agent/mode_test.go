@@ -110,11 +110,15 @@ func TestPSPRetry(t *testing.T) {
 				return a.a.Status().Reason == dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
 			}, 5*time.Second, 5*time.Millisecond, "the first probe did not fail")
 			serveTCP(t, b.stack, eb.addr, 9000)
+			// a opens the peer session first, so the packets start no second one.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			require.NoError(t, a.a.Connect(ctx, eb.addr))
 			c := dialTCP(t, a, eb.addr, 9000)
 			roundTrip(t, c, "in QUIC mode")
 
 			rc, bind, inQUIC := a.current(), a.binding(), onlyPeer(t, a.a)
-			require.True(t, inQUIC.quic)
+			require.Equal(t, "down", routeTo(a.a, eb.addr).State)
 			rk := &rekeyClient{RelayClient: rc.c}
 			rk.fault.Store(tc.fault)
 			a.a.mu.Lock()
@@ -160,25 +164,17 @@ func TestPSPRetry(t *testing.T) {
 
 			require.Eventually(t, func() bool { return mode() == dp.Mode_MODE_PSP }, 15*time.Second, 5*time.Millisecond)
 			assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED, a.a.Status().Reason)
-			require.Eventually(t, func() bool { return inQUIC.qc.Context().Err() != nil }, 5*time.Second, 5*time.Millisecond,
-				"the peer session of QUIC mode stays open")
 			same("after the change")
 			assert.Same(t, bind, a.binding())
 			if tc.path != 0 {
 				assert.Equal(t, tc.path, bind.ClampMTU(), "TCP MSS clamp for the packets that the path carries")
 			}
 			assert.Positive(t, pspPackets(bind.LanePackets())-psp, "PSP packets after the change")
-			// The packets of the TCP connection opened the peer session again, in PSP mode.
-			for _, ta := range []*testAgent{a, b} {
-				require.Eventually(t, func() bool {
-					ta.a.mu.Lock()
-					defer ta.a.mu.Unlock()
-					for _, p := range ta.a.peers {
-						return len(ta.a.peers) == 1 && p != inQUIC && p.bp != nil && !p.quic
-					}
-					return false
-				}, 10*time.Second, 10*time.Millisecond, "one peer session in PSP mode")
-			}
+			// The peer session of QUIC mode stays, and its route is up after BFD Up.
+			routeUp(t, a, b, ea, eb)
+			assert.Same(t, inQUIC, onlyPeer(t, a.a), "the mode change kept the peer session")
+			assert.NoError(t, inQUIC.qc.Context().Err())
+			assert.Equal(t, 1, peerCount(b.a))
 			require.Eventually(t, func() bool { return rc.pc.Shards() == 1 }, 5*time.Second, 10*time.Millisecond, "the QUIC shards stay open")
 			same("on the peer session of PSP mode")
 		})

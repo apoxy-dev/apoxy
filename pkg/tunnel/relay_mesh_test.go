@@ -1556,14 +1556,15 @@ func TestRelay_MeshAgents(t *testing.T) {
 			require.Eventually(t, func() bool { return laptop.hasRoute(server.prefix) && server.hasRoute(laptop.prefix) },
 				10*time.Second, 10*time.Millisecond, "each agent has the route of the other")
 
-			// The first packet opens the peer session through the two relays.
+			// The first packet goes on the default route at once and opens the peer
+			// session through the two relays.
 			for _, size := range []int{5, 1200} {
 				msg := bytes.Repeat([]byte{byte(size)}, size)
 				laptop.ping(t, server, 9000, msg)
 				server.ping(t, laptop, 9000, msg)
 			}
-			assert.Equal(t, 1, laptop.a.Status().Peers, "peer sessions of laptop")
-			assert.Equal(t, 1, server.a.Status().Peers, "peer sessions of server")
+			require.Eventually(t, func() bool { return laptop.a.Status().Peers == 1 && server.a.Status().Peers == 1 },
+				5*time.Second, 10*time.Millisecond, "one peer session of laptop and of server")
 			assert.Empty(t, pathDrops(t, a, b), "drops between the relays")
 
 			// When server stops, laptop loses its route and closes the session.

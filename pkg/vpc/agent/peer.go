@@ -60,12 +60,12 @@ type peer struct {
 	dst     netip.Addr // Address that this agent dialed. Invalid when the peer dialed.
 	subject string     // SPIFFE ID in the peer cert.
 
-	ready     chan struct{} // Closed when Open passes.
-	granted   chan struct{} // Closed when the grants of Open apply.
-	keyed     chan struct{} // Closed when SAs from the peer first apply.
-	keyedOnce sync.Once
-	offered   chan struct{} // Closed when the peer takes the first offer.
-	noData    chan struct{} // Closed when the peer refuses the first offer: it takes no SAs.
+	ready   chan struct{} // Closed when Open passes.
+	granted chan struct{} // Closed when the grants of Open apply.
+	// settled is closed when the data path is first set: the route is up, or the
+	// packets use the default route. See wait.
+	settled    chan struct{}
+	settleOnce sync.Once
 
 	// Set before ready closes, under Agent.mu.
 	instance uint64
@@ -74,9 +74,20 @@ type peer struct {
 	prefixes []netip.Prefix
 	addr     netip.Addr // Overlay address of the peer.
 	bp       *psp.Peer
-	// quic is true when one of the agents sends QUIC data frames. Then the
-	// data goes through the relay, and bp is the relay peer.
+	// quic is true when the peer told this agent that it is in QUIC mode, with
+	// its Open or a refused key change. A key change of the peer clears it.
+	// Guarded by Agent.mu.
 	quic bool
+	// taken is true when the peer took the last SAs that this agent offered.
+	// offering is true while an offer runs. Guarded by Agent.mu.
+	taken, offering bool
+	// up is true while the route of bp is up: the BFD check passed. check is the
+	// last try of the check, and retry starts the next one after retryWait.
+	// Guarded by Agent.mu.
+	up        bool
+	check     *peerCheck
+	retry     *time.Timer
+	retryWait time.Duration
 	// down is true when the relay has no path to the peer, or when the peer has
 	// no data path. A new session of the peer replaces it. Guarded by Agent.mu.
 	down bool
@@ -193,9 +204,7 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dst netip.Addr) (*pee
 		subject: id.String(),
 		ready:   make(chan struct{}),
 		granted: make(chan struct{}),
-		keyed:   make(chan struct{}),
-		offered: make(chan struct{}),
-		noData:  make(chan struct{}),
+		settled: make(chan struct{}),
 		spis:    map[uint32]spiRow{},
 	}
 	p.conn = rpc.NewConn(qc, a.mux)
@@ -209,7 +218,8 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dst netip.Addr) (*pee
 }
 
 // Connect opens a peer session to the agent at dst on the relay session with
-// the lowest rank. It returns when PSP works in both directions.
+// the lowest rank. It returns when the data path is set: the route to the peer
+// is up, or the packets go on the default route through the relay.
 func (a *Agent) Connect(ctx context.Context, dst netip.Addr) error {
 	rc := a.primary()
 	if rc == nil {
@@ -219,40 +229,48 @@ func (a *Agent) Connect(ctx context.Context, dst netip.Addr) error {
 }
 
 // connect opens a peer session on rc to the agent at dst if none covers dst,
-// and waits for its SAs. res is the ResolvePeer answer for dst, or nil.
+// and waits until its data path is set. res is the ResolvePeer answer for dst, or nil.
 func (a *Agent) connect(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp.ResolvePeerResponse) error {
+	p, err := a.openPeer(ctx, rc, dst, res)
+	if err != nil || p == nil {
+		return err
+	}
+	return a.waitPath(ctx, p, dst)
+}
+
+// openPeer opens a peer session on rc to the agent at dst if none covers dst,
+// and returns it. It returns no session after a visit, which waits itself.
+func (a *Agent) openPeer(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp.ResolvePeerResponse) (*peer, error) {
 	a.mu.Lock()
 	p := a.livePeerTo(rc, dst)
 	a.mu.Unlock()
-	if p == nil {
-		var err error
-		if res == nil {
-			if res, err = rc.resolve(ctx, dst); err != nil {
-				return err
-			}
-		}
-		if res.GetReach() == dp.Reach_REACH_VISIT {
-			// The relay cannot reach the relay of the peer, so the agents visit.
-			return a.connectVisit(ctx, rc, dst, res.GetHomeRelay())
-		}
-		if p = a.waitGrant(ctx, rc, dst, res); p != nil {
-			return a.waitKeys(ctx, p, dst)
-		}
-		p, err = a.dial(ctx, rc, dst, res)
-		if errors.Is(err, errDuplicate) {
-			// Both agents dialed. Use the session that the peer dialed.
-			p, err = a.waitPeer(ctx, rc, dst)
-		}
-		if err != nil {
-			return err
+	if p != nil {
+		return p, nil
+	}
+	var err error
+	if res == nil {
+		if res, err = rc.resolve(ctx, dst); err != nil {
+			return nil, err
 		}
 	}
-	return a.waitKeys(ctx, p, dst)
+	if res.GetReach() == dp.Reach_REACH_VISIT {
+		// The relay cannot reach the relay of the peer, so the agents visit.
+		return nil, a.connectVisit(ctx, rc, dst, res.GetHomeRelay())
+	}
+	if p = a.waitGrant(ctx, rc, dst, res); p != nil {
+		return p, nil
+	}
+	p, err = a.dial(ctx, rc, dst, res)
+	if errors.Is(err, errDuplicate) {
+		// Both agents dialed. Use the session that the peer dialed.
+		p, err = a.waitPeer(ctx, rc, dst)
+	}
+	return p, err
 }
 
-// waitKeys waits until both sides of p have SAs. If the other session of a
+// waitPath waits until the data path of p is set. If the other session of a
 // crossed dial replaces p, it waits for that session.
-func (a *Agent) waitKeys(ctx context.Context, p *peer, dst netip.Addr) error {
+func (a *Agent) waitPath(ctx context.Context, p *peer, dst netip.Addr) error {
 	for {
 		err := p.wait(ctx)
 		if err == nil || !replaced(p.qc) {
@@ -264,30 +282,22 @@ func (a *Agent) waitKeys(ctx context.Context, p *peer, dst netip.Addr) error {
 	}
 }
 
-// wait waits until both sides of p have SAs.
+// wait waits until the data path of p is set: the route to the peer is up, or
+// the packets use the default route because an agent of the pair is in QUIC
+// mode or the first BFD try failed.
 func (p *peer) wait(ctx context.Context) error {
-	chans := []chan struct{}{p.keyed, p.offered}
-	if p.quic {
-		// Data frames need no SAs. A session in PSP mode needs the relay SAs.
-		chans = nil
-		if p.rc.dataMode() == dp.Mode_MODE_PSP {
-			tx, rx := p.rc.bridge()
-			chans = []chan struct{}{tx, rx}
-		}
+	select {
+	case <-p.settled:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-p.qc.Context().Done():
+		return fmt.Errorf("peer session closed: %w", context.Cause(p.qc.Context()))
 	}
-	for _, ch := range chans {
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-p.noData:
-			return fmt.Errorf("peer %s: %w", p.addr, errVisitNoData)
-		case <-p.qc.Context().Done():
-			return fmt.Errorf("peer session closed: %w", context.Cause(p.qc.Context()))
-		}
-	}
-	return nil
 }
+
+// settle marks the data path of p as set.
+func (p *peer) settle() { p.settleOnce.Do(func() { close(p.settled) }) }
 
 // replaced reports whether another session with the same peer replaced qc.
 func replaced(qc quic.Connection) bool {
@@ -428,7 +438,8 @@ func (a *Agent) dial(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp
 }
 
 // admit checks the Open data of the peer, then adds it to the binding with
-// the prefixes of its grant. The peer gets SAs for its send lanes.
+// the prefixes of its grant. The peer gets SAs for its send lanes. Its route
+// stays down until its BFD check passes, so its packets use the default route.
 func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance uint64, mode dp.Mode, lanes uint32) error {
 	a.admitMu.Lock()
 	defer a.admitMu.Unlock()
@@ -446,9 +457,6 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	}
 	if mode != dp.Mode_MODE_PSP && mode != dp.Mode_MODE_QUIC {
 		return fmt.Errorf("peer mode %v is not supported", mode)
-	}
-	if mode == dp.Mode_MODE_QUIC || p.rc.dataMode() == dp.Mode_MODE_QUIC {
-		return a.admitQUIC(p, v, g, instance)
 	}
 	claims, prefixes, err := a.checkGrant(p, g)
 	if err != nil {
@@ -493,6 +501,10 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	if err != nil {
 		return err
 	}
+	if err := bp.SetUp(false); err != nil {
+		a.bind.RemovePeer(bp)
+		return err
+	}
 	for _, pfx := range prefixes {
 		if err := a.bind.AddRoute(pfx, bp); err != nil {
 			a.bind.RemovePeer(bp)
@@ -507,14 +519,23 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 		return p.closedError()
 	}
 	p.instance, p.version, p.claims, p.prefixes, p.addr, p.bp = instance, v, claims, prefixes, overlayAddr(prefixes), bp
+	p.quic = mode == dp.Mode_MODE_QUIC
 	// Under a.mu, so that a move of the agent also sees bp.
 	bp.SetLaneSockets(int(p.rc.sendLanes()))
 	close(a.admitted)
 	a.admitted = make(chan struct{})
+	pair := mode
+	if p.rc.dataMode() == dp.Mode_MODE_QUIC {
+		pair = dp.Mode_MODE_QUIC
+	}
 	a.mu.Unlock()
 	a.routeAdvertised(p)
+	if pair == dp.Mode_MODE_QUIC {
+		// The pair trades no SAs, so the default route carries its data.
+		p.settle()
+	}
 	close(p.ready)
-	slog.Info("Opened peer session", "peer", p.subject, "address", p.addr, "dialer", p.dialer)
+	slog.Info("Opened peer session", "peer", p.subject, "address", p.addr, "dialer", p.dialer, "transport", transportName(pair))
 	return nil
 }
 
@@ -551,84 +572,6 @@ func (a *Agent) checkGrant(p *peer, g *dp.AttachmentGrant) (*dp.GrantClaims, []n
 	return claims, prefixes, nil
 }
 
-// admitQUIC adds a peer session that sends data through the relay. It routes
-// the peer prefixes to the relay peer, which other QUIC pairs share.
-func (a *Agent) admitQUIC(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance uint64) error {
-	claims, prefixes, err := a.checkGrant(p, g)
-	if err != nil {
-		return err
-	}
-	// A PSP pair of this attachment is older than its mode change. An older
-	// QUIC pair of the same dialer is lost or moved; a crossed dial stays.
-	a.mu.Lock()
-	var old []*peer
-	var away *peer
-	for _, q := range a.peers {
-		if q == p || q.bp == nil || !q.sameAttachment(p.subject, claims.GetAttachmentId(), prefixes) {
-			continue
-		}
-		switch {
-		case q.rc == p.rc:
-			if !q.quic || (q.dialer == p.dialer && q.instance == instance) {
-				old = append(old, q)
-			}
-		case q.rc.link == p.rc.link && q.rc.visitor() != p.rc.visitor() && (away == nil || away.down):
-			away = q
-		}
-	}
-	// When both agents visit, the session on the relay of the higher address stays.
-	if away != nil && !away.down && !keeps(p.rc, overlayAddr(prefixes)) {
-		a.mu.Unlock()
-		return errDuplicate
-	}
-	a.mu.Unlock()
-	if away != nil {
-		old = append(old, away)
-	}
-	for _, q := range old {
-		_ = q.qc.CloseWithError(quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE), "new session")
-		a.dropPeer(q)
-	}
-
-	a.mu.Lock()
-	if a.peers[p.conn] != p || p.bp != nil {
-		a.mu.Unlock()
-		return errors.New("peer session is closed or already open")
-	}
-	for i, pfx := range prefixes {
-		if err := a.bind.AddRoute(pfx, p.rc.relay); err != nil {
-			a.unrouteQUIC(p, prefixes[:i])
-			a.mu.Unlock()
-			return fmt.Errorf("route %s: %w", pfx, err)
-		}
-	}
-	p.instance, p.version, p.claims, p.prefixes, p.addr, p.bp, p.quic = instance, v, claims, prefixes, overlayAddr(prefixes), p.rc.relay, true
-	close(a.admitted)
-	a.admitted = make(chan struct{})
-	a.mu.Unlock()
-	a.routeAdvertised(p)
-	close(p.ready)
-	slog.Info("Opened peer session", "peer", p.subject, "address", p.addr, "dialer", p.dialer, "transport", "quic")
-	return nil
-}
-
-// unrouteQUIC removes the routes of prefixes to the relay peer that no other
-// QUIC pair of p.rc has. a.mu must be held.
-func (a *Agent) unrouteQUIC(p *peer, prefixes []netip.Prefix) {
-	for _, pfx := range prefixes {
-		shared := false
-		for _, q := range a.peers {
-			if q != p && q.quic && q.rc == p.rc && q.has(pfx) {
-				shared = true
-				break
-			}
-		}
-		if !shared {
-			a.bind.RemoveRoute(pfx, p.rc.relay)
-		}
-	}
-}
-
 // closeCode is the peer session close code for an error from admit.
 func closeCode(err error) quic.ApplicationErrorCode {
 	switch {
@@ -650,15 +593,12 @@ func (a *Agent) dropPeer(p *peer) {
 	}
 	delete(a.peers, p.conn)
 	bp := p.bp
-	if p.quic {
-		a.unrouteQUIC(p, p.prefixes)
-		a.unrouteQUIC(p, p.advertised)
-		for _, ps := range p.extra {
-			a.unrouteQUIC(p, ps)
-		}
-	} else if bp != nil {
+	if bp != nil {
 		// Remove the routes before a new session of the peer can add them.
 		a.bind.RemovePeer(bp)
+	}
+	if p.retry != nil {
+		p.retry.Stop()
 	}
 	a.mu.Unlock()
 	if bp == nil {
@@ -715,29 +655,55 @@ func (a *Agent) peerOfBinding(bp *psp.Peer) *peer {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, p := range a.peers {
-		if p.bp == bp && !p.quic {
+		if p.bp == bp {
 			return p
 		}
 	}
 	return nil
 }
 
-// offer gives the peer new SAs for traffic to this agent.
+// offer gives the peer new SAs for traffic to this agent while this agent is in
+// PSP mode. When the peer takes them, the BFD check of the path starts.
 func (p *peer) offer() {
-	if p.quic {
+	a := p.rc.a
+	a.mu.Lock()
+	skip := p.offering || a.gone(p) || p.rc.dataMode() != dp.Mode_MODE_PSP
+	if !skip {
+		p.offering = true
+	}
+	a.mu.Unlock()
+	if skip {
 		return
 	}
 	req, err := p.bp.Offer(time.Now())
-	if err != nil {
+	if err == nil {
+		err = p.sendKeys(req)
+	} else {
 		slog.Warn("Failed to create receive SAs", "peer", p.subject, "error", err)
-		return
 	}
-	switch err := p.sendKeys(req); {
+	a.mu.Lock()
+	p.offering = false
+	p.taken = err == nil
+	refused := rpc.CodeOf(err) == rpc.FailedPrecondition
+	p.quic = p.quic || refused
+	a.mu.Unlock()
+	switch {
 	case err == nil:
-		close(p.offered)
-	case rpc.CodeOf(err) == rpc.FailedPrecondition:
-		// The peer sends its data through the relay, so it takes no SAs.
-		p.rc.a.noDataPath(p)
+		a.tryCheck(p)
+	case refused:
+		// The peer is in QUIC mode, so the default route carries the data.
+		p.settle()
+	}
+}
+
+// rekey sends a key change of the receive SAs to the peer. A peer in QUIC mode
+// refuses it, so the next offer gives it new SAs.
+func (p *peer) rekey(req keys.Request) {
+	if err := p.sendKeys(req); rpc.CodeOf(err) == rpc.FailedPrecondition {
+		a := p.rc.a
+		a.mu.Lock()
+		p.taken, p.quic = false, true
+		a.mu.Unlock()
 	}
 }
 
@@ -746,7 +712,8 @@ func (p *peer) sendKeys(req keys.Request) error {
 	ctx, cancel := context.WithTimeout(p.rc.ctx, keysTimeout)
 	defer cancel()
 	err := giveKeys(ctx, p.bp, req, p.client.Keys)
-	if err != nil && p.qc.Context().Err() == nil {
+	// A peer in QUIC mode refuses keys, and the pair uses the default route.
+	if err != nil && p.qc.Context().Err() == nil && rpc.CodeOf(err) != rpc.FailedPrecondition {
 		slog.Warn("Failed to send keys to a peer", "peer", p.subject, "error", err)
 	}
 	return err
@@ -934,14 +901,25 @@ func (s *peerService) Keys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysRes
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	if p.quic {
-		return nil, rpc.Errorf(rpc.FailedPrecondition, "data to this peer goes through the relay")
+	if p.rc.dataMode() != dp.Mode_MODE_PSP {
+		return nil, rpc.Errorf(rpc.FailedPrecondition, "this agent sends its data through the relay")
 	}
 	req, err := keyproto.FromProto(in)
 	if err != nil {
 		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
-	return p.applyKeys(ctx, req)
+	res, err := p.applyKeys(ctx, req)
+	if err == nil && req.Op != keys.OpRevoke {
+		s.a.mu.Lock()
+		p.quic = false
+		offer := !p.taken
+		s.a.mu.Unlock()
+		if offer {
+			// The peer is in PSP mode now, and has no SAs of this agent.
+			go p.offer()
+		}
+	}
+	return res, err
 }
 
 // applyKeys applies a key change from the peer to the transmit SAs. The relay
@@ -973,9 +951,6 @@ func (p *peer) applyKeys(ctx context.Context, req keys.Request) (*dp.KeysRespons
 	}
 	if err != nil {
 		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
-	}
-	if len(refused) < len(req.SAs) {
-		p.keyedOnce.Do(func() { close(p.keyed) })
 	}
 	return &dp.KeysResponse{RefusedSpis: refused}, nil
 }

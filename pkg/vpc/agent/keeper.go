@@ -66,6 +66,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.watchers.Wait()
 	}()
 	wg.Go(func() { a.tick(ctx) })
+	wg.Go(func() { a.readBFD(ctx) })
 	wg.Go(func() { a.followCert(ctx) })
 	wg.Go(func() { a.keepAttachments(ctx) })
 	wg.Go(func() {

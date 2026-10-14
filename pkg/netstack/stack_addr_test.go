@@ -19,12 +19,15 @@ func TestDeprecateAddr(t *testing.T) {
 	cases := []struct {
 		name      string
 		deprecate []netip.Addr
+		prefer    []netip.Addr
 		remove    []netip.Addr
 		want      netip.Addr
 	}{
 		{name: "first deprecated", deprecate: []netip.Addr{first}, want: second},
 		{name: "second deprecated", deprecate: []netip.Addr{second}, want: first},
 		{name: "both deprecated, first removed", deprecate: []netip.Addr{first, second}, remove: []netip.Addr{first}, want: second},
+		{name: "both deprecated, second preferred again", deprecate: []netip.Addr{first, second}, prefer: []netip.Addr{second}, want: second},
+		{name: "both deprecated, first preferred again", deprecate: []netip.Addr{first, second}, prefer: []netip.Addr{first}, want: first},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -36,6 +39,9 @@ func TestDeprecateAddr(t *testing.T) {
 			}
 			for _, a := range tc.deprecate {
 				require.NoError(t, ns.DeprecateAddr(netip.PrefixFrom(a, 128)))
+			}
+			for _, a := range tc.prefer {
+				require.NoError(t, ns.PreferAddr(netip.PrefixFrom(a, 128)))
 			}
 			for _, a := range tc.remove {
 				require.NoError(t, ns.DelAddr(netip.PrefixFrom(a, 128)))

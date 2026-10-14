@@ -134,6 +134,9 @@ type relayConn struct {
 	// drained gets the alternates of the Drain of the relay. The watcher of the
 	// session reads it.
 	drained chan []*dp.RelayRef
+	// deprecated is true after OnDeprecated for the addresses of rc, until
+	// OnPreferred. Guarded by Agent.attMu.
+	deprecated bool
 }
 
 // visitor reports whether rc is a visitor session.
@@ -259,7 +262,41 @@ func (a *Agent) setAttached(rc *relayConn) bool {
 		addr, prefixes := rc.self, rc.prefixes
 		a.events = append(a.events, func() { f(b, addr, prefixes) })
 	}
+	a.prefer()
 	return true
+}
+
+// prefer queues OnDeprecated for the addresses of each session that is not the
+// attached session with the lowest rank, and OnPreferred for that session when
+// its addresses were deprecated. A new connection then takes its source address
+// from the relay with the lowest rank that is up. attMu must be held.
+func (a *Agent) prefer() {
+	a.mu.Lock()
+	live := a.sessionsLocked(connAttached, connDraining)
+	var best *relayConn
+	for _, rc := range live {
+		if rc.state == connAttached {
+			best = rc
+			break
+		}
+	}
+	a.mu.Unlock()
+	for _, rc := range live {
+		if rc.deprecated == (rc != best) {
+			continue
+		}
+		rc.deprecated = rc != best
+		f := a.cfg.OnPreferred
+		if rc.deprecated {
+			f = a.cfg.OnDeprecated
+		}
+		if f == nil {
+			continue
+		}
+		for _, at := range rc.attachments() {
+			a.events = append(a.events, func() { f(at) })
+		}
+	}
 }
 
 // drain moves rc to draining when its relay starts to drain, and queues
@@ -272,10 +309,8 @@ func (a *Agent) drain(rc *relayConn, alts []*dp.RelayRef) {
 		rc.state, rc.alternates = connDraining, refEndpoints(alts)
 	}
 	a.mu.Unlock()
-	if f := a.cfg.OnDeprecated; ok && f != nil {
-		for _, at := range rc.attachments() {
-			a.events = append(a.events, func() { f(at) })
-		}
+	if ok {
+		a.prefer()
 	}
 	a.attMu.Unlock()
 	if !ok {
@@ -301,6 +336,9 @@ func (a *Agent) end(rc *relayConn) {
 		for _, at := range slices.Backward(rc.attachments()) {
 			a.events = append(a.events, func() { f(at) })
 		}
+	}
+	if shown {
+		a.prefer()
 	}
 	a.attMu.Unlock()
 	if was == connEnded {
@@ -461,9 +499,8 @@ func (a *Agent) usePSP(rc *relayConn) error {
 	if !rc.visitor() {
 		rc.stopShards()
 	}
-	// The peer sessions of QUIC mode send through the relay. The next packet to
-	// a peer opens a session of PSP mode.
-	a.closePeers(func(p *peer) bool { return p.rc == rc }, "relay session changed to PSP mode")
+	// The peer sessions stay. Their routes come at BFD Up.
+	a.offerAll(rc)
 	slog.Info("Changed the relay session from QUIC mode to PSP mode", "relay", rc.addr, "address", rc.self)
 	return nil
 }

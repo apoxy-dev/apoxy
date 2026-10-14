@@ -244,6 +244,7 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	cfg.OnRoutes = h.route
 	cfg.OnAttachment = h.attachment
 	cfg.OnDeprecated = h.deprecated
+	cfg.OnPreferred = h.preferred
 	cfg.OnDetach = h.detach
 	h.agent = agent.New(cfg)
 	fmt.Fprintf(out, "Connecting to %s as %q.\n", target, cfg.Name)
@@ -333,6 +334,8 @@ type overlay interface {
 	// deprecate makes an overlay address not preferred: a new connection uses
 	// another address, and open connections keep it.
 	deprecate(addr netip.Addr) error
+	// prefer ends deprecate for an overlay address.
+	prefer(addr netip.Addr) error
 	// delAddr removes an overlay address from the device.
 	delAddr(addr netip.Addr) error
 	// route changes the routes of the prefixes of the other attachments.
@@ -423,13 +426,24 @@ func (h *hostDevice) attachment(at agent.Attachment) {
 }
 
 // deprecated makes the address of an attachment not preferred, because its
-// relay drains.
+// relay drains or it is on a backup relay session.
 func (h *hostDevice) deprecated(at agent.Attachment) {
 	if !h.addrs[at.Address] {
 		return
 	}
 	if err := h.dev.deprecate(at.Address); err != nil {
 		slog.Warn("Failed to make an overlay address not preferred", "address", at.Address, "error", err)
+	}
+}
+
+// preferred makes the address of an attachment preferred again, because its
+// relay session became the attached session with the lowest rank.
+func (h *hostDevice) preferred(at agent.Attachment) {
+	if !h.addrs[at.Address] {
+		return
+	}
+	if err := h.dev.prefer(at.Address); err != nil {
+		slog.Warn("Failed to make an overlay address preferred", "address", at.Address, "error", err)
 	}
 }
 
@@ -584,6 +598,10 @@ func (n *netstackDev) addAddr(addr netip.Addr) error {
 
 func (n *netstackDev) deprecate(addr netip.Addr) error {
 	return n.ns.DeprecateAddr(netip.PrefixFrom(addr, addr.BitLen()))
+}
+
+func (n *netstackDev) prefer(addr netip.Addr) error {
+	return n.ns.PreferAddr(netip.PrefixFrom(addr, addr.BitLen()))
 }
 
 func (n *netstackDev) delAddr(addr netip.Addr) error {

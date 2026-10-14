@@ -67,17 +67,8 @@ func pathDown(a *Agent, p *peer) bool {
 	return p.down
 }
 
-// keyed reports whether the two sides of p have SAs.
-func keyed(p *peer) bool {
-	for _, ch := range []chan struct{}{p.keyed, p.offered} {
-		select {
-		case <-ch:
-		default:
-			return false
-		}
-	}
-	return true
-}
+// settled reports whether the data path of p is set.
+func settled(p *peer) bool { return closed(p.settled) }
 
 // dialOnVisit opens the visit of ta to r and dials dst on it. It does not wait
 // for the visit of the peer, and it keeps the other sessions of ta.
@@ -102,7 +93,7 @@ func oneVisit(t *testing.T, a, b *testAgent, old *peer, ea, eb attachEvent, heal
 			return false
 		}
 		// A session with the path down gives its place to the session of a new visit.
-		return pa.rc.visitor() != pb.rc.visitor() && keyed(pa) && keyed(pb) && !pathDown(a.a, pa) && !pathDown(b.a, pb)
+		return pa.rc.visitor() != pb.rc.visitor() && settled(pa) && settled(pb) && !pathDown(a.a, pa) && !pathDown(b.a, pb)
 	}, 20*time.Second, 20*time.Millisecond, "one peer session on one visit")
 	assert.Error(t, old.qc.Context().Err(), "the session over the trunk closed")
 	// With a visit of a, the session on that visit stays. Else it is on the visit of b.
@@ -204,28 +195,6 @@ func TestVisitRules(t *testing.T) {
 			assert.Equal(t, tc.want, reachable(&dp.ResolvePeerResponse{Reach: tc.reach}))
 		})
 	}
-
-	// A destination fails until the wait of its failure ends.
-	var h holds
-	now := time.Now()
-	h.mu.Lock()
-	h.fail(holdKey{dst: low}, errVisitLimit, now)
-	h.mu.Unlock()
-	fails := []struct {
-		name string
-		dst  netip.Addr
-		at   time.Time
-		want bool
-	}{
-		{"in the wait", low, now.Add(minRetry / 2), true},
-		{"after the wait", low, now.Add(minRetry), false},
-		{"other destination", high, now, false},
-	}
-	for _, tc := range fails {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, h.failing(holdKey{dst: tc.dst}, tc.at))
-		})
-	}
 }
 
 // TestVisit gives agent a the answer REACH_VISIT for b. The visitor session
@@ -324,7 +293,11 @@ func TestVisit(t *testing.T) {
 			a.a.mu.Unlock()
 			assert.Equal(t, []netip.Prefix{route}, advertised)
 			assert.Equal(t, unmap(v.rc.relayAddr), unmap(p.bp.Addr()), "data of a goes to the relay of b")
-			assert.Equal(t, tc.want == dp.Mode_MODE_QUIC, p.quic)
+			if tc.want == dp.Mode_MODE_PSP {
+				require.Eventually(t, func() bool { return routeTo(a.a, eb.addr).State == "up" }, 10*time.Second, time.Millisecond, "route to b")
+			} else {
+				assert.Equal(t, "down", routeTo(a.a, eb.addr).State, "route to b")
+			}
 			if tc.mode == TransportQUIC {
 				// The data of a goes as data frames, so a seals and opens no PSP packet.
 				assert.Zero(t, pspPackets(a.a.bind.LanePackets())+pspPackets(a.a.bind.RxLanePackets()), "PSP packets of a")
@@ -387,7 +360,11 @@ func TestVisitData(t *testing.T) {
 			assert.Equal(t, quicA, v.rc.dataMode() == dp.Mode_MODE_QUIC, "mode of the visitor session")
 			p := peerOn(a.a, v.rc, eb.addr)
 			require.NotNil(t, p, "peer session of a on the visit")
-			assert.Equal(t, quicA || quicB, p.quic, "the relay of b opens the packets")
+			if !quicA && !quicB {
+				require.Eventually(t, func() bool { return routeTo(a.a, eb.addr).State == "up" }, 10*time.Second, time.Millisecond, "route to b")
+			} else {
+				assert.Equal(t, "down", routeTo(a.a, eb.addr).State, "the relay of b opens the packets")
+			}
 			require.Eventually(t, func() bool { return peerOn(b.a, b.current(), ea.addr) != nil }, 5*time.Second, 10*time.Millisecond)
 
 			// The trunk is cut, so the two pings go on the visitor session.
@@ -471,7 +448,7 @@ func TestVisitAttachments(t *testing.T) {
 			ping(t, a.stack, y.Address, eb.addr, 9000, "from a-3 on the visit")
 			// A late echo of a ping gives an ICMP error of the netstack, so the test
 			// counts the packets that an agent did not send.
-			assert.Zero(t, a.a.Stats().HoldDrops+b.a.Stats().HoldDrops, "packets with no peer session")
+			assert.Zero(t, a.binding().Stats().TxNoRoute+b.binding().Stats().TxNoRoute, "packets with no route")
 			assert.Equal(t, 1, visitCount(a.a), "one visitor session has all attachments")
 			assert.Zero(t, visitCount(b.a), "b does not visit")
 
@@ -520,6 +497,11 @@ func TestVisitAttachmentsRelayRevision(t *testing.T) {
 			rc.version = &dp.Version{Revision: tc.revision}
 			require.NoError(t, rc.startVisit(ctx))
 			require.NoError(t, a.a.connect(ctx, rc, eb.addr, nil))
+			// The test made rc, so no visit of the agent routes b to it. Else the answer
+			// goes on the default route, and the NoRoute of relay-1 starts a visit.
+			a.a.mu.Lock()
+			require.NoError(t, a.a.bind.AddRoute(eb.prefixes[0], rc.relay))
+			a.a.mu.Unlock()
 			require.Eventually(t, func() bool { return liveOn(b.a, b.current(), ea.addr) }, 5*time.Second, 10*time.Millisecond)
 			ping(t, b.stack, eb.addr, ea.addr, 9000, "to the first attachment on the visit")
 
@@ -740,7 +722,10 @@ func TestNoRoute(t *testing.T) {
 			require.Never(t, func() bool { return visitCount(a.a) != 0 || p.qc.Context().Err() != nil },
 				300*time.Millisecond, 10*time.Millisecond, "the peer session stays, and no visit starts")
 			assert.Same(t, p, onlyPeer(t, a.a))
-			assert.False(t, a.a.holds.failing(holdKey{a.current().link, eb.addr}, time.Now()), "the answer REACH_TRUNK is no failure")
+			a.a.starts.mu.Lock()
+			st := a.a.starts.addrs[startKey{a.current().link, eb.addr}]
+			assert.True(t, st == nil || st.until.IsZero(), "the answer REACH_TRUNK is no failure")
+			a.a.starts.mu.Unlock()
 			// The answer REACH_TRUNK sets the path of the session to up again.
 			a.a.setDown(a.current(), eb.addr, true)
 			require.True(t, pathDown(a.a, p))
@@ -802,9 +787,9 @@ func TestVisitAfterCut(t *testing.T) {
 			run: func(t *testing.T, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
 				cutMesh(r1, r2)
 				waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
-				// The packets wait while the visit starts, and then go on it.
-				require.NoError(t, sendOnce(a.stack, ea.addr, eb.addr, 9000, "first"))
-				assert.Zero(t, a.a.Stats().HoldDrops)
+				// relay-1 drops the first packets with a NoRoute, and the visit starts.
+				// Then the packets go on the visit.
+				ping(t, a.stack, ea.addr, eb.addr, 9000, "first")
 				assert.Zero(t, unreachableIn(a), "ICMP errors")
 				v := visitOf(a.a, r2)
 				require.NotNil(t, v)
@@ -825,17 +810,16 @@ func TestVisitAfterCut(t *testing.T) {
 				require.Equal(t, dp.Mode_MODE_QUIC, v.rc.dataMode())
 				inQUIC := peerOn(a.a, v.rc, eb.addr)
 				require.NotNil(t, inQUIC)
-				assert.True(t, inQUIC.quic)
+				assert.Equal(t, "down", routeTo(a.a, eb.addr).State)
 
 				// The probes after the backoff pass, and the session changes to PSP mode.
 				conn.limitProbes.Store(false)
 				require.Eventually(t, func() bool { return v.rc.dataMode() == dp.Mode_MODE_PSP }, 10*time.Second, 5*time.Millisecond)
 				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit in PSP mode")
 				assert.Same(t, v, visitOf(a.a, r2), "the visit stays")
-				assert.Error(t, inQUIC.qc.Context().Err(), "the session of QUIC mode closed")
-				p := peerOn(a.a, v.rc, eb.addr)
-				require.NotNil(t, p)
-				assert.False(t, p.quic)
+				assert.NoError(t, inQUIC.qc.Context().Err(), "the mode change kept the peer session")
+				assert.Same(t, inQUIC, peerOn(a.a, v.rc, eb.addr))
+				require.Eventually(t, func() bool { return routeTo(a.a, eb.addr).State == "up" }, 10*time.Second, time.Millisecond, "route to b")
 			},
 		},
 		{
@@ -844,8 +828,7 @@ func TestVisitAfterCut(t *testing.T) {
 			run: func(t *testing.T, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, _ *lossyConn) {
 				heal := cutMesh(r1, r2)
 				waitReach(t, b, ea.addr, dp.Reach_REACH_VISIT)
-				require.NoError(t, sendOnce(b.stack, eb.addr, ea.addr, 9000, "first"))
-				assert.Zero(t, b.a.Stats().HoldDrops)
+				ping(t, b.stack, eb.addr, ea.addr, 9000, "first")
 				v := visitOf(b.a, r1)
 				require.NotNil(t, v)
 				assert.Same(t, v.rc, onlyPeer(t, b.a).rc)

@@ -72,6 +72,15 @@ func (c *Check) Append(b []byte, p Probe, key *[32]byte) []byte {
 	return AppendProbe(b, p, 0, key)
 }
 
+// Packet returns the next BFD packet with no probe, for a path that carries
+// BFD in its own packets.
+func (c *Check) Packet() []byte {
+	var pkt bfdl.Packet
+	c.s.BuildTx(&pkt)
+	bfdl.BFDPacketsTx.WithLabelValues(c.role).Inc()
+	return bfdl.Marshal(&pkt)
+}
+
 // Receive takes the BFD packet of the open probe p. It reports a state change:
 // the caller then sends a packet at once, so that the other end sees the state.
 func (c *Check) Receive(p Probe) bool {

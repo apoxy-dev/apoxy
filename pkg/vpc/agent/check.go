@@ -169,8 +169,7 @@ func (a *Agent) useQUIC(rc *relayConn) {
 		shards, rc.stopShards = context.WithCancel(rc.ctx)
 		go rc.keepShards(shards, quicShards)
 	}
-	// The peer sessions of PSP mode send on the PSP path. The next packet
-	// to a peer opens a session through the relay.
-	a.closePeers(func(p *peer) bool { return p.rc == rc }, "relay session changed to QUIC mode")
+	// The peer sessions stay, and their packets take the default route.
+	a.pathsDown(rc)
 	slog.Warn("PSP path to the relay stopped; changed the relay session from PSP mode to QUIC mode", "relay", rc.addr, "address", rc.self)
 }

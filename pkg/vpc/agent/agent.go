@@ -59,6 +59,9 @@ var (
 	txLanes = psp.TxLanes
 )
 
+// defaultRoutes are the routes of each relay session to its relay.
+var defaultRoutes = []netip.Prefix{netip.MustParsePrefix("::/0"), netip.MustParsePrefix("0.0.0.0/0")}
+
 // relayQUIC is the QUIC config of relay sessions. Data is Not-ECT: the breaker
 // reacts to congestion. The keep-alive opens a lost NAT entry again. The timers
 // are those of BFD, so a session on a relay that stops ends after 6 s.
@@ -111,9 +114,13 @@ type Config struct {
 	// OnAttachment gets an extra attachment after it attaches on a relay
 	// session: one call for each session.
 	OnAttachment func(at Attachment)
-	// OnDeprecated gets each attachment of a relay session whose relay drains,
+	// OnDeprecated gets each attachment of a relay session that is not the
+	// attached session with the lowest rank, for example one whose relay drains,
 	// the attachment of Config too. New connections must not use its address.
 	OnDeprecated func(at Attachment)
+	// OnPreferred gets each attachment of OnDeprecated whose session became the
+	// attached session with the lowest rank. New connections use its address again.
+	OnPreferred func(at Attachment)
 	// OnDetach gets each attachment whose address the agent lost, before a next OnAttach of that
 	// address. The callbacks run in order, one at a time, and must not call Attach, Detach or Attachments.
 	OnDetach func(at Attachment)
@@ -134,7 +141,8 @@ type Agent struct {
 	seed     maphash.Seed // Orders the relays of this agent.
 	mux      *rpc.Mux     // Peer service.
 	demux    psp.Demux
-	holds    holds
+	starts   starts
+	bfd      chan bfdIn    // BFD packets of the peer paths. readBFD reads them.
 	quicCfg  *quic.Config  // relayQUIC with the loss tracer.
 	quicLost atomic.Uint64 // 1-RTT packets that relay connections lost.
 	// wake gets a value when a relay session ends or starts to drain. Run reads it.
@@ -161,7 +169,7 @@ type Agent struct {
 	attachWake chan struct{}
 
 	// Lock order: cbMu, then attMu or admitMu, then routeMu, then mu.
-	// holds.mu is never held with another lock.
+	// starts.mu is never held with another lock.
 	mu sync.Mutex
 	// conns has each relay session from its dial until it ends, in dial order:
 	// the sessions with the attachments, and the visitor sessions.
@@ -193,6 +201,7 @@ func New(cfg Config) *Agent {
 		instance: rand.Uint64(),
 		seed:     maphash.MakeSeed(),
 		wake:     make(chan struct{}, 1),
+		bfd:      make(chan bfdIn, bfdQueue),
 		probes:   map[[8]byte]probeTaker{},
 		peers:    map[*rpc.Conn]*peer{},
 		visits:   map[string]*visit{},
@@ -462,14 +471,20 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 			return fmt.Errorf("source %s: %w", pfx, err)
 		}
 	}
-	p, err := l.AddPeer(rc.relayAddr)
+	p, err := l.AddRelay(rc.relayAddr)
 	if err != nil {
 		return err
 	}
 	rc.setRelayPeer(p)
+	// The packets with no route to a peer that is up go to the relay.
+	for _, pfx := range defaultRoutes {
+		if err := b.AddRoute(pfx, p); err != nil {
+			return fmt.Errorf("default route %s: %w", pfx, err)
+		}
+	}
 	rc.pc = peerconn.New(rc.qc, rc.self)
 	rc.pc.HandleData(l.HandleData)
-	// The routes of a session in QUIC mode go to its relay peer.
+	// A session in QUIC mode sends to its relay in data frames.
 	if err := p.UseQUIC(rc.pc); err != nil {
 		return err
 	}
@@ -537,7 +552,7 @@ func (a *Agent) stopLanes(rc *relayConn) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, p := range a.peers {
-		if p.rc == rc && p.bp != nil && !p.quic {
+		if p.rc == rc && p.bp != nil {
 			p.bp.SetLaneSockets(1)
 		}
 	}
@@ -615,8 +630,9 @@ func (a *Agent) binding(cfg *dp.Config) (*psp.Binding, error) {
 	dev := a.deviceMTU(mtu)
 	b, err := psp.New(psp.Config{
 		Transport: a.cfg.Transport, Demux: &a.demux, VNI: cfg.GetVpc().GetNetworkId(), MTU: mtu, DeviceMTU: dev,
-		NoRoute: a.onNoRoute,
-		OnTrip:  a.onTrip,
+		NoPeer: a.onNoPeer,
+		OnBFD:  a.onBFD,
+		OnTrip: a.onTrip,
 	})
 	if err != nil {
 		return nil, err
@@ -863,7 +879,7 @@ func (a *Agent) close() {
 	}
 }
 
-// tick runs the timers of the binding and the holds, checks the local address,
+// tick runs the timers of the binding and the starts, checks the local address,
 // refreshes SPI rows and gives the QUIC loss to the breaker.
 func (a *Agent) tick(ctx context.Context) {
 	t := time.NewTicker(tickInterval)
@@ -884,7 +900,7 @@ func (a *Agent) tick(ctx context.Context) {
 				b.ReportQUIC(now, a.quicLost.Load())
 			}
 		case now := <-t.C:
-			a.holds.sweep(now)
+			a.starts.sweep(now)
 			a.mu.Lock()
 			b := a.bind
 			a.mu.Unlock()
@@ -897,7 +913,7 @@ func (a *Agent) tick(ctx context.Context) {
 			}
 			for _, u := range ups {
 				if p := a.peerOfBinding(u.Peer); p != nil {
-					go p.sendKeys(u.Request)
+					go p.rekey(u.Request)
 				} else if rc := a.relayOfBinding(u.Peer); rc != nil && rc.dataMode() == dp.Mode_MODE_PSP {
 					// A Rekey call changes a session in QUIC mode, so only usePSP makes it there.
 					go rc.sendRelayKeys(u.Request)

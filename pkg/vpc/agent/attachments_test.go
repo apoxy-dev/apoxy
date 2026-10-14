@@ -200,6 +200,7 @@ func TestDetachDialedAttachment(t *testing.T) {
 			x1, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-1"})
 			require.NoError(t, err)
 			echo(t, a.stack, x1.Address, 9002)
+			require.NoError(t, b.a.Connect(ctx, x1.Address))
 			ping(t, b.stack, eb.addr, x1.Address, 9002, "to x-1")
 			require.Equal(t, x1.Address, onlyPeer(t, b.a).dst, "b dialed its peer session to x-1")
 

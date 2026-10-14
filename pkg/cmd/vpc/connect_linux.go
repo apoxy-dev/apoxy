@@ -94,6 +94,12 @@ func (t *tunDev) deprecate(addr netip.Addr) error {
 	return netlink.AddrReplace(t.link, a)
 }
 
+// prefer makes addr preferred again with no end: with no lifetimes in the
+// request, the kernel keeps the address forever.
+func (t *tunDev) prefer(addr netip.Addr) error {
+	return netlink.AddrReplace(t.link, hostAddr(addr))
+}
+
 func (t *tunDev) delAddr(addr netip.Addr) error {
 	return netlink.AddrDel(t.link, hostAddr(addr))
 }

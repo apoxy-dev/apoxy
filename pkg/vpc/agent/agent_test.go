@@ -156,8 +156,12 @@ func TestSharedIdentity(t *testing.T) {
 
 			// a1 dials c, then a2 dials c. The session of a2 does not replace
 			// the session of a1.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			require.NoError(t, a1.a.Connect(ctx, ec.addr))
 			ping(t, a1.stack, e1.addr, ec.addr, 9000, "a1 to c")
 			p1 := onlyPeer(t, a1.a)
+			require.NoError(t, a2.a.Connect(ctx, ec.addr))
 			ping(t, a2.stack, e2.addr, ec.addr, 9000, "a2 to c")
 			for range 2 {
 				ping(t, c.stack, ec.addr, e1.addr, 9001, "c to a1")
@@ -169,8 +173,6 @@ func TestSharedIdentity(t *testing.T) {
 
 			// d dials a1, then a2. The address of a2 is not a second attachment
 			// of a1, so d does not wait for a grant from a1.
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			d := w.agent(t, "d", r, agentOptions{})
 			d.attached(t)
 			require.NoError(t, d.a.Connect(ctx, e1.addr))

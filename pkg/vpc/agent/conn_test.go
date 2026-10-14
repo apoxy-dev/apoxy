@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,13 +162,24 @@ func TestSessions(t *testing.T) {
 				addrs = append(addrs, c.Address)
 			}
 			assert.Same(t, rcs[0], a.current(), "the session with rank 0 has the default address")
+			for i, c := range conns {
+				deprecated := func() bool { return slices.Contains(a.events("a"), "deprecate a "+c.Address.String()) }
+				if i == 0 {
+					assert.False(t, deprecated(), "address of rank 0 is deprecated")
+				} else {
+					require.Eventually(t, deprecated, 5*time.Second, 10*time.Millisecond, "address of rank %d is deprecated", i)
+				}
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			x, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-1"})
 			require.NoError(t, err)
 			assert.Equal(t, relays[0].addr, x.Relay, "Attach returns the attachment on the session with the lowest rank")
-			require.Eventually(t, func() bool { return len(a.events("x-1")) == tc.want }, 5*time.Second, 10*time.Millisecond)
+			lives := func() []string {
+				return slices.DeleteFunc(a.events("x-1"), func(e string) bool { return !strings.HasPrefix(e, "attach ") && !strings.HasPrefix(e, "detach ") })
+			}
+			require.Eventually(t, func() bool { return len(lives()) == tc.want }, 5*time.Second, 10*time.Millisecond)
 			var base, extra []string
 			for _, at := range a.a.Attachments() {
 				if at.Base {
@@ -184,7 +196,7 @@ func TestSessions(t *testing.T) {
 			assert.Equal(t, want, base, "the attachment of Config is on each session")
 			assert.Equal(t, want, extra, "the extra attachment is on each session")
 			require.NoError(t, a.a.Detach(ctx, "x-1"))
-			assert.Len(t, a.events("x-1"), 2*tc.want, "OnDetach runs for each session")
+			assert.Len(t, lives(), 2*tc.want, "OnDetach runs for each session")
 		})
 	}
 }
@@ -218,7 +230,9 @@ func TestSendRule(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ping(t, a.stack, tc.src, eb.addr, 9000, tc.name)
-			assert.Equal(t, tc.want, []int{peersOn(a, rcs[0]), peersOn(a, rcs[1])})
+			// The packet starts the peer session after it went on the default route.
+			require.Eventually(t, func() bool { return slices.Equal(tc.want, []int{peersOn(a, rcs[0]), peersOn(a, rcs[1])}) },
+				5*time.Second, 10*time.Millisecond, "peer sessions of a on each relay session")
 		})
 	}
 
@@ -235,6 +249,8 @@ func TestSendRule(t *testing.T) {
 	}
 	a.a.mu.Unlock()
 	require.NotNil(t, second)
+	require.Eventually(t, func() bool { return routeTo(b.a, rcs[1].self).State == "up" }, 10*time.Second, 10*time.Millisecond,
+		"route of b to the second session after BFD Up")
 	before := rxCountOf(second.bp).packets
 	ping(t, a.stack, far, eb.addr, 9000, "after the drain")
 	assert.Greater(t, rxCountOf(second.bp).packets, before, "the answer comes on the second session")
@@ -262,7 +278,8 @@ func TestPeersOfEachSession(t *testing.T) {
 	open := func() bool {
 		return peersOn(a, ra[0]) == 2 && peersOn(a, ra[1]) == 2 && peersOn(b, rb[0]) == 2 && peersOn(b, rb[1]) == 2
 	}
-	require.True(t, open(), "each relay session has a peer session to each address of the peer")
+	// The packets start the peer sessions after they went on the default route.
+	require.Eventually(t, open, 5*time.Second, 10*time.Millisecond, "each relay session has a peer session to each address of the peer")
 	require.Never(t, func() bool { return !open() }, 500*time.Millisecond, 20*time.Millisecond, "the peer sessions of one agent stay open together")
 	for _, from := range ra {
 		for i, to := range rb {
@@ -334,7 +351,7 @@ func TestNextRank(t *testing.T) {
 			eb := b.attached(t)
 			echo(t, b.stack, eb.addr, 9000)
 			ping(t, a.stack, rcs[0].self, eb.addr, 9000, "before")
-			require.Equal(t, 1, peersOn(a, rcs[0]))
+			require.Eventually(t, func() bool { return peersOn(a, rcs[0]) == 1 }, 5*time.Second, 10*time.Millisecond, "peer session before")
 
 			if tc.drain {
 				drain(t, r1, nil)

@@ -225,11 +225,7 @@ func (a *Agent) removeAdvertised(p *peer, pfx netip.Prefix) {
 		return
 	}
 	p.advertised = slices.Delete(p.advertised, i, i+1)
-	if p.quic {
-		a.unrouteQUIC(p, []netip.Prefix{pfx})
-	} else {
-		a.bind.RemoveRoute(pfx, p.bp)
-	}
+	a.bind.RemoveRoute(pfx, p.bp)
 }
 
 // peerAddr returns the overlay address that gets the packets to dst on rc: the
@@ -238,13 +234,7 @@ func (a *Agent) peerAddr(rc *relayConn, dst netip.Addr) (netip.Addr, bool) {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
 	vpc := tunnet.NetworkPrefixOf(rc.self)
-	best := netip.Prefix{}
-	for p := range rc.routes.origins {
-		if p.Contains(dst) && p.Bits() > best.Bits() && (Routable(p, vpc) || inNetwork(p, vpc)) {
-			best = p
-		}
-	}
-	if best.IsValid() {
+	if best := rc.bestRoute(dst, vpc); best.IsValid() {
 		// The lowest prefix of the origin in the VPC network gives its address.
 		origin, own := rc.routes.origins[best], netip.Prefix{}
 		for p, o := range rc.routes.origins {
@@ -257,6 +247,29 @@ func (a *Agent) peerAddr(rc *relayConn, dst netip.Addr) (netip.Addr, bool) {
 		}
 	}
 	return dst, vpc.Contains(dst)
+}
+
+// bestRoute returns the longest prefix of the route table of rc that covers
+// dst, or none. Agent.routeMu must be held.
+func (rc *relayConn) bestRoute(dst netip.Addr, vpc netip.Prefix) netip.Prefix {
+	best := netip.Prefix{}
+	for p := range rc.routes.origins {
+		if p.Contains(dst) && p.Bits() > best.Bits() && (Routable(p, vpc) || inNetwork(p, vpc)) {
+			best = p
+		}
+	}
+	return best
+}
+
+// routeOf returns the prefix of the route of rc that covers dst, or else the
+// prefix of dst alone.
+func (a *Agent) routeOf(rc *relayConn, dst netip.Addr) netip.Prefix {
+	a.routeMu.Lock()
+	defer a.routeMu.Unlock()
+	if best := rc.bestRoute(dst, tunnet.NetworkPrefixOf(rc.self)); best.IsValid() {
+		return best
+	}
+	return netip.PrefixFrom(dst, dst.BitLen())
 }
 
 // inNetwork reports whether p is a part of the VPC network vpc, such as the
