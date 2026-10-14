@@ -843,9 +843,8 @@ func TestRelayVPCPacketSize(t *testing.T) {
 	}
 }
 
-// TestListenConfigKeepAlive checks the QUIC timers of the VPC listener. With a
-// VPC relay, the keep-alive is the probe of the liveness check of agent
-// sessions, and the idle timeout stays.
+// TestListenConfigKeepAlive checks that the VPC listener keep-alive is the
+// liveness probe of agent sessions, and that the idle timeout stays.
 func TestListenConfigKeepAlive(t *testing.T) {
 	cases := []struct {
 		name string

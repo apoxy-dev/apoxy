@@ -89,10 +89,8 @@ func newTwoSocketNode(t *testing.T, ca *testCA, name string) *trunkNode {
 	return n
 }
 
-// TestTrunkTwoSockets starts two relays at one IP address that each have a QUIC
-// socket and a PSP socket, with a different PSP port on each relay. The mesh
-// session uses the QUIC sockets. Each relay sends its trunk packets to the PSP
-// port that the other relay gave in Open, and a trunk packet to a QUIC socket drops.
+// TestTrunkTwoSockets starts two relays at one IP address with different PSP ports. Each one sends
+// trunk packets to the PSP port that the other gave in Open, and a trunk packet to a QUIC socket drops.
 func TestTrunkTwoSockets(t *testing.T) {
 	ca := newCA(t)
 	a, b := newTwoSocketNode(t, ca, "relay-a"), newTwoSocketNode(t, ca, "relay-b")

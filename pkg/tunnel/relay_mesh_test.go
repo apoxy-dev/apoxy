@@ -320,9 +320,8 @@ func TestRelay_MeshALPN(t *testing.T) {
 	}
 }
 
-// TestRelay_MeshKeepAlive dials a relay as another relay does. Only a dialer at
-// the address of a member gets a keep-alive each second from the relay. Each
-// other dialer gets the keep-alive of an agent session, which is each 2 s.
+// TestRelay_MeshKeepAlive checks that only a dialer at the address of a member
+// gets the mesh keep-alive. Each other dialer gets that of an agent.
 func TestRelay_MeshKeepAlive(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -529,9 +528,8 @@ type routeAgent struct {
 	noRoutes chan *dp.NoRoute
 }
 
-// openRouteAgent dials v as agent name and sends hello, in QUIC mode if hello
-// gives no mode. It returns after Welcome, Config and the reply to a path
-// probe, so the relay has the socket of the agent as its PSP address.
+// openRouteAgent dials v as agent name, in QUIC mode if hello gives no mode. It
+// returns when the relay has the agent socket as its PSP address.
 func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string, hello *dp.Hello) *routeAgent {
 	t.Helper()
 	tr, qc, err := v.dial(t, v.agentTLS(t, name))

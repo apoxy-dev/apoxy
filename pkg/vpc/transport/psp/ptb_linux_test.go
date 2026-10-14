@@ -18,10 +18,8 @@ import (
 	wgtun "golang.zx2c4.com/wireguard/tun"
 )
 
-// TestTooBigTun sends UDP from the kernel into a TUN device of 1400 B, on a path
-// of 1300 B. After the error of the binding, the kernel has the path MTU for the
-// destination: it refuses a larger packet that it must not fragment, and it
-// fragments a larger packet of a socket that permits it.
+// TestTooBigTun checks on a TUN device that the kernel learns the path MTU from
+// the error of the binding: it refuses or fragments a larger packet.
 func TestTooBigTun(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to make a TUN device")

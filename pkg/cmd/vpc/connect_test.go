@@ -251,9 +251,8 @@ func TestAgentConfig(t *testing.T) {
 	}
 }
 
-// TestConnectIdentity checks that the command makes an API client only when
-// it has no identity file. With an identity file it loads the CLI config, so
-// that the log of the CLI is set up as in the other path.
+// TestConnectIdentity checks that the command makes an API client only with no
+// identity file, and loads the CLI config in the two paths.
 func TestConnectIdentity(t *testing.T) {
 	cases := []struct {
 		name     string

@@ -15,23 +15,14 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-// QUICSocketHandler returns the NonQUICPacketHandler of the transport of a
-// QUIC socket. That socket carries only QUIC, so the handler drops and counts
-// each packet.
+// QUICSocketHandler returns the NonQUICPacketHandler of a QUIC socket. The
+// socket carries only QUIC, so it drops and counts each packet.
 func (r *Router) QUICSocketHandler() func(b []byte, from net.Addr) {
 	return func([]byte, net.Addr) { r.drops[dropNotQUIC].Add(1) }
 }
 
-// PacketHandler returns the NonQUICPacketHandler and the NonQUICBatchEnd of
-// tr, the transport of a PSP socket. The handler forwards PSP packets by SPI
-// rows with no change, also to and from the relay of another mesh member. It
-// opens the PSP packets to the relay and the trunk packets of the mesh
-// members, and answers path probes. The batch end sends the packets that the
-// handler forwarded in one read. tr needs a call of Start, because it has no listener.
-//
-// With more than one CPU, sender goroutines send the forwarded packets, so the
-// read loop does not wait for the sends. A packet for a sender that is too slow
-// drops. The senders stop when ctx ends, and then the forwarded packets drop.
+// PacketHandler returns the handler and batch end of the PSP socket tr, which
+// needs Start. Forwarded packets drop at a slow sender or after ctx.
 func (r *Router) PacketHandler(ctx context.Context, tr *quic.Transport) (handle func(b []byte, from net.Addr), batchEnd func()) {
 	br := r.startBridge(tr)
 	var fwd forwarder

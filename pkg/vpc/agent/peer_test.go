@@ -370,9 +370,8 @@ func TestAdmitCrossed(t *testing.T) {
 	}
 }
 
-// TestRestartedPeer admits the session of a peer that started again, with a
-// new instance and a new address, while its old session is open. The new
-// address and the advertised route go to the new session.
+// TestRestartedPeer admits a peer that started again with a new instance and
+// address while its old session is open. The route moves to the new one.
 func TestRestartedPeer(t *testing.T) {
 	w := newWorld(t)
 	cert := w.relayCA.relayCert(t, "relay-1")

@@ -277,9 +277,8 @@ func TestSelectOrder(t *testing.T) {
 	}
 }
 
-// TestSelectOrderByHash checks the order of two agents: the hash of the agent
-// and the prefix decides, and the connections of one agent stay together.
-// Each prefix has its own order, so one agent does not get them all.
+// TestSelectOrderByHash checks that the hash of agent and prefix orders two
+// agents, and that the connections of one agent stay together.
 func TestSelectOrderByHash(t *testing.T) {
 	first := map[string]int{}
 	for n := range 64 {
@@ -368,9 +367,8 @@ func TestAnnouncerFromPresence(t *testing.T) {
 	}
 }
 
-// TestReconnectThenStateChange checks a reconnect to one relay when the entry
-// of the old attachment gets a new state after it: the higher generation of
-// that entry does not bring the old attachment back in the selection.
+// TestReconnectThenStateChange checks that a later state change of the old
+// attachment does not bring it back in the selection after a reconnect.
 func TestReconnectThenStateChange(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		w := newRouteWorld(t, NewRouter(nil, Config{}))
@@ -396,9 +394,8 @@ func TestReconnectThenStateChange(t *testing.T) {
 	})
 }
 
-// TestTwoAttachmentsOnePrefix checks two attachments of one session with the
-// same advertised route. Only the newer one is in the selection. The older one
-// stays in the set, and it comes back when the newer one detaches.
+// TestTwoAttachmentsOnePrefix checks that only the newer of two attachments of
+// one session is selected, and the older returns at its detach.
 func TestTwoAttachmentsOnePrefix(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		w := newRouteWorld(t, NewRouter(nil, Config{}))
@@ -437,10 +434,8 @@ func TestStandbySource(t *testing.T) {
 	})
 }
 
-// TestAnnouncersBetweenRelays runs two relays. An agent of each relay attaches
-// with the same advertised route before the mesh sessions open. After the
-// entries cross, the two relays select the same announcer. At the detach of
-// the active announcer, the standby one gets the prefix on both relays.
+// TestAnnouncersBetweenRelays checks that two relays select the same announcer
+// of one route after their entries cross, and the same standby next.
 func TestAnnouncersBetweenRelays(t *testing.T) {
 	t.Parallel()
 	ca := newCA(t)
@@ -522,11 +517,8 @@ func suspect(e *dp.Presence) *dp.Presence {
 	return e
 }
 
-// TestSetState checks a state change of the session of an agent on its own
-// relay. The entries change in place: the rows to a sole announcer stay, and
-// the watcher gets a RouteDelta only when the order of the announcers changes.
-// The agent laptop has the attachment y on this relay, and in some cases the
-// attachment x on relay-a.
+// TestSetState checks that a state change keeps the rows to a sole announcer,
+// and sends a RouteDelta only when the order changes.
 func TestSetState(t *testing.T) {
 	const rowDst = "fd00:a::1"
 	cases := []struct {
@@ -628,10 +620,8 @@ func TestSetState(t *testing.T) {
 	}
 }
 
-// TestSetStatePresence checks the entries that a relay sends for a state
-// change of a session: one for each attachment, with a higher generation, the
-// generation of the attach as it was, and a new hold time only at a return to
-// the normal state.
+// TestSetStatePresence checks the entries that a state change sends: a higher
+// generation, and a new hold time only at a return to normal.
 func TestSetStatePresence(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		w := newRouteWorld(t, NewRouter(nil, Config{}))
@@ -695,8 +685,7 @@ func TestSetStatePresence(t *testing.T) {
 }
 
 // TestHoldTime checks the hold time of an announcer that comes or returns. The
-// agent laptop has the attachment x on relay-a, with the lower rank, and the
-// attachment y on relay-b.
+// agent has x on relay-a, with the lower rank, and y on relay-b.
 func TestHoldTime(t *testing.T) {
 	x := func() *dp.Presence { return remoteEntry("x", 10, prefixR) }
 	y := func() *dp.Presence { return ranked(remoteEntry("y", 10, prefixR), 1) }
@@ -880,9 +869,8 @@ func TestAnnouncerHash(t *testing.T) {
 	}
 }
 
-// TestAttachmentRecord checks that the entries of an attachment for each of
-// its prefixes read one record, that of the attachment, so one write of a new
-// state reaches each prefix.
+// TestAttachmentRecord checks that the entries of each prefix of an attachment
+// read one record, so one write of a state reaches each prefix.
 func TestAttachmentRecord(t *testing.T) {
 	cases := []struct {
 		name string
@@ -935,10 +923,8 @@ func TestAttachmentRecord(t *testing.T) {
 	}
 }
 
-// TestStateChangeWork checks the work of a state change of a session. Each
-// entry gets the state, but the rows of the mesh members get their checks
-// again only when the order of the selection is new. The agent laptop has the
-// attachment y on this relay with rank 2, and in some cases x on relay-a.
+// TestStateChangeWork checks that each entry gets a new state, but the rows of
+// mesh members get checks again only when the order is new.
 func TestStateChangeWork(t *testing.T) {
 	cases := []struct {
 		name  string

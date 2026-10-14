@@ -142,9 +142,8 @@ func (r *Router) total(w *row) (tally, uint64) {
 	return tally{w.packets.Load() + x.packets, w.bytes.Load() + x.bytes}, x.drops
 }
 
-// rxOf returns the RX counters of s: its rows, its data frames and its drops.
-// It adds the counts of each live row to its attachment in tx, if tx is not
-// nil. Router.mu must be held.
+// rxOf returns the RX counters of s. If tx is not nil, it adds the counts of
+// each live row to its attachment in tx. Router.mu must be held.
 func (r *Router) rxOf(s *Session, tx map[*Attachment]tally) counts {
 	rows := s.rxRows
 	drops := s.dropUnknownSPI.Load() + s.dropMeter.Load() + s.dropTunnel.Load() + s.dropTrunk.Load() + s.dataDrops.Load() + r.xdpTunnelDrops(s)
@@ -166,9 +165,8 @@ func (r *Router) rxOf(s *Session, tx map[*Attachment]tally) counts {
 	}
 }
 
-// statsOf returns the stats of attachment a of s. rx is the RX of s, which a
-// gets if it is the oldest attachment of s. live has the counts of the live
-// rows to a. Router.mu must be held.
+// statsOf returns the stats of a: the RX of s if a is its oldest attachment,
+// and the counts of live for its rows. Router.mu must be held.
 func (r *Router) statsOf(s *Session, a *Attachment, oldest bool, rx counts, live tally) AttachmentStats {
 	t := a.count.rows
 	t.add(live)
@@ -194,8 +192,7 @@ func (r *Router) statsOf(s *Session, a *Attachment, oldest bool, rx counts, live
 	return st
 }
 
-// last returns the last counters of attachment a of s, which ends. oldest
-// tells that a had the RX of s: the next attachment then starts at zero.
+// last returns the final counters of a. With oldest, a had the RX of s.
 // Router.mu must be held for writing, after an XDP sync.
 func (r *Router) last(s *Session, a *Attachment, oldest bool) AttachmentStats {
 	rx := r.rxOf(s, nil)
@@ -246,9 +243,8 @@ func (r *Router) fold(w *row) {
 	w.done = tally{max(t.packets, w.done.packets), max(t.bytes, w.done.bytes)}
 }
 
-// retarget sends the packets of w to the session and the attachment of o. The
-// attachment before keeps the counts up to now. Router.mu must be held for
-// writing.
+// retarget sends the packets of w to o. The attachment before keeps the counts
+// up to now. Router.mu must be held for writing.
 func (r *Router) retarget(w *row, o target) {
 	r.fold(w)
 	if w.receiver != o.s {
@@ -277,9 +273,8 @@ func TraceContext(ctx context.Context, _ *quic.ClientInfo) (context.Context, err
 	return context.WithValue(ctx, traceKey{}, new(connTrace)), nil
 }
 
-// TraceRTT keeps the smoothed RTT of a connection for AttachmentStats, and
-// marks each packet of an agent session for the liveness check. It is the
-// Tracer of the QUIC config of a relay with TraceContext.
+// TraceRTT is the Tracer of a relay with TraceContext. It keeps the smoothed
+// RTT for AttachmentStats and marks agent packets for liveness.
 func TraceRTT(ctx context.Context, _ logging.Perspective, _ quic.ConnectionID) *logging.ConnectionTracer {
 	tr := traceOf(ctx)
 	if tr == nil {
@@ -290,9 +285,8 @@ func TraceRTT(ctx context.Context, _ logging.Perspective, _ quic.ConnectionID) *
 			tr.rtt.Store(int64(s.SmoothedRTT()))
 		},
 	}
-	// QUIC makes a frame list for each packet of a connection with the hook of
-	// received packets, so only an agent session gets it. The hooks of one
-	// connection run one after the other.
+	// The received-packet hook costs a frame list for each packet, so only an
+	// agent session gets it. Hooks of one connection run in turn.
 	t.ChoseALPN = func(alpn string) {
 		if alpn == dp.ALPNRelay {
 			t.ReceivedShortHeaderPacket = func(*logging.ShortHeader, logging.ByteCount, logging.ECN, []logging.Frame) {

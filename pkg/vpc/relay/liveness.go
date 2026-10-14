@@ -43,9 +43,8 @@ const (
 	numAnnouncerStates = 3
 )
 
-// liveness is what the relay knows of the packets of the agent of one session.
-// Only checkLiveness writes the fields below heard. Each other reader holds
-// Router.mu for writing.
+// liveness is the packet record of one agent session. Only checkLiveness writes
+// the fields below heard; a reader holds Router.mu for writing.
 type liveness struct {
 	// heard is the mark that the tracer sets for each packet of the agent. It
 	// is nil for a session with no trace, which is never suspect.
@@ -90,9 +89,8 @@ func (r *Router) entryState(s *Session) dp.AnnouncerState {
 	return stateNormal
 }
 
-// checkLiveness gives the entries of each session of this relay the suspect
-// state when its agent is silent for suspectAfter, and takes the state away
-// when the agent answers again for normalAfter. One goroutine calls it: Run.
+// checkLiveness makes a session suspect after suspectAfter of silence, and
+// normal after normalAfter of answers. Only Run calls it.
 func (r *Router) checkLiveness(now time.Time) {
 	var changed []*Session
 	r.mu.RLock()
@@ -125,9 +123,8 @@ func (r *Router) startDrain(now time.Time) {
 	}
 }
 
-// setState gives the record of each attachment of s the state, sends the
-// attachments to the mesh, and selects again for each prefix of s. A return to
-// the normal state starts a new hold time. Router.mu must be held for writing.
+// setState gives the attachments of s the state and selects again; normal
+// starts a new hold time. Router.mu must be held for writing.
 func (r *Router) setState(s *Session, state dp.AnnouncerState, reason string, now time.Time) {
 	if s.closed || s.state == state {
 		return

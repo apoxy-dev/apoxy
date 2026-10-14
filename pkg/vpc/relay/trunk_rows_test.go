@@ -1882,9 +1882,8 @@ func TestTrunkRowBetweenRelays(t *testing.T) {
 	}
 }
 
-// TestTrunkRowStateChange checks the row to an attachment of another relay
-// when its entry gets a new state. The attachment is the one announcer of its
-// address, so a remove of the route would end the row.
+// TestTrunkRowStateChange checks that a new state of the sole announcer of an
+// address on another relay keeps the row to it.
 func TestTrunkRowStateChange(t *testing.T) {
 	cases := []struct {
 		name  string

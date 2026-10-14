@@ -255,9 +255,8 @@ func TestSourceAfterClose(t *testing.T) {
 	}
 }
 
-// TestTwinRows opens a second session with a Session call from an agent socket.
-// The older session keeps its rows until it closes, and an SPI that one of them
-// holds is refused to the other.
+// TestTwinRows checks that an older session of an agent socket keeps its rows
+// until it closes, and that the twins cannot share an SPI.
 func TestTwinRows(t *testing.T) {
 	const addr = "192.0.2.1:1000"
 	cases := []struct {
@@ -476,9 +475,8 @@ func TestResolvePeer(t *testing.T) {
 	}
 }
 
-// TestProjectIsolation puts two projects with a VPC of the same name on one
-// relay. The VPCs also have the same UID, the same network ID and the same
-// addresses: only the project differs. No routes, SPI rows or packets cross.
+// TestProjectIsolation checks that no routes, SPI rows or packets cross between
+// two projects whose VPCs differ only in the project.
 func TestProjectIsolation(t *testing.T) {
 	r := NewRouter(nil, Config{})
 	type side struct{ snd, recv testSession }
@@ -539,9 +537,8 @@ func TestProjectIsolation(t *testing.T) {
 	assert.Equal(t, sides[vpcB].recv.addr.get(), dst)
 }
 
-// TestLiveness runs the liveness check each livenessInterval on the fake clock
-// for a session whose agent answers the keep-alive of the relay in some spans
-// and is silent in the others. It checks the time of each state change.
+// TestLiveness checks the time of each state change of a session whose agent
+// answers the keep-alive in some spans, on the fake clock.
 func TestLiveness(t *testing.T) {
 	type span struct {
 		d       time.Duration

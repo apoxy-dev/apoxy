@@ -22,10 +22,8 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// moveConn sends from the next socket after move, as after a NAT rebinding
-// or a roam. With dataOnly, only PSP packets move, as forged packets do. With
-// pspOnly, the PSP packets and the path probes move, as with a new NAT mapping
-// for the PSP port of the relay only.
+// moveConn sends from the next socket after move, as after a NAT rebinding.
+// dataOnly moves only PSP packets; pspOnly moves also the path probes.
 type moveConn struct {
 	net.PacketConn // Socket before the move.
 	next           net.PacketConn

@@ -39,18 +39,14 @@ var (
 	// shuffleRelays orders the relays with a random seed for each agent, so
 	// agents do not all dial the first relay.
 	shuffleRelays = true
-	// After all relays fail, the agent enrolls again for a new relay list, at
-	// most once in relistMin. After a failed enroll, the wait doubles up to
-	// relistMax.
+	// After all relays fail, the agent enrolls again for a new relay list each
+	// relistMin. A failed enroll doubles the wait up to relistMax.
 	relistMin = time.Minute
 	relistMax = 10 * time.Minute
 )
 
-// Run keeps Config.Sessions attached relay sessions, each on its own relay,
-// until ctx ends: it opens one each time a session ends or its relay drains.
-// It returns an ErrUpgrade when a relay refuses the agent as too old and no
-// relay takes it. With an identity file, it returns an identity.ExpiredError
-// when the cert of the file expired and the agent has no relay session.
+// Run keeps Config.Sessions relay sessions, each on its own relay, until ctx
+// ends. It returns ErrUpgrade or identity.ExpiredError with no session.
 func (a *Agent) Run(ctx context.Context) error {
 	if m := a.cfg.MTU; m != 0 && (m < psp.DefaultMTU || m > psp.MaxMTU) {
 		return fmt.Errorf("MTU must be %d to %d, got %d", psp.DefaultMTU, psp.MaxMTU, m)
@@ -127,11 +123,8 @@ func (a *Agent) waitWake(ctx context.Context) {
 	}
 }
 
-// missing returns the number of sessions that Run must open, and the relays for
-// them: the relays on which the agent has no session. A draining session does
-// not count as a session of the agent, and the alternates of its relay are
-// first. An alternate is another relay than the draining one, also when the
-// two have one ID.
+// missing returns the count of sessions to open and the relays with no session.
+// A draining session does not count, and its alternates are first.
 func (a *Agent) missing() (int, []endpoint) {
 	eps := a.endpoints()
 	a.mu.Lock()
@@ -199,10 +192,8 @@ func (k *keeper) fill(ctx context.Context, n int, eps []endpoint) error {
 	return k.retry(ctx, tried, err)
 }
 
-// retry waits with backoff after tried relays failed with err. When the agent
-// has no session and each relay of the list failed, it gets a new relay list.
-// It returns an error when Run must stop: the agent has no session, no relay
-// takes it, and one needs a newer agent.
+// retry waits with backoff, and gets a new relay list when the agent has no
+// session and each relay failed. It returns an error when Run must stop.
 func (k *keeper) retry(ctx context.Context, tried int, err error) error {
 	a := k.a
 	slog.Warn("Failed to open relay session", "error", err)
@@ -234,10 +225,8 @@ func (k *keeper) retry(ctx context.Context, tried int, err error) error {
 	return nil
 }
 
-// open dials each relay of eps and attaches on the n relays with the lowest
-// round-trip times that take the attachment. The other sessions end. A relay
-// that fails closes only its session. It returns the number of sessions that
-// attached and the number of relays that failed.
+// open dials eps and attaches on the n relays with the lowest round-trip times;
+// the other sessions end. It returns the attached and failed counts.
 func (k *keeper) open(ctx context.Context, n int, eps []endpoint) (opened, failed int, err error) {
 	a := k.a
 	begin := time.Now()
@@ -262,9 +251,8 @@ func (k *keeper) open(ctx context.Context, n int, eps []endpoint) (opened, faile
 	return opened, failed, err
 }
 
-// choose dials each relay of eps at the same time, and returns the sessions in
-// the order of the choice: lowest round-trip time first. It waits for the other
-// relays only a short time after the first answer, and stops the late dials.
+// choose dials each relay of eps at the same time and returns the sessions,
+// lowest round-trip time first. It stops the dials that answer late.
 func (a *Agent) choose(ctx context.Context, eps []endpoint, dial func(context.Context, endpoint) (*relayConn, error)) ([]*relayConn, int, error) {
 	type result struct {
 		i   int
@@ -339,9 +327,8 @@ func (rc *relayConn) choiceRTT() time.Duration {
 	return low
 }
 
-// rank returns the sessions in conns that are not nil, in the order of the
-// choice. The first session in conns within rttBand of the lowest time is next
-// each time, so the order of the relays of this agent breaks a tie.
+// rank returns the sessions of conns in the order of the choice. Within rttBand
+// of the lowest time, the relay order of the agent decides.
 func (a *Agent) rank(conns []*relayConn) []*relayConn {
 	left := slices.DeleteFunc(slices.Clone(conns), func(rc *relayConn) bool { return rc == nil })
 	// A session with no time is after each session with a time.

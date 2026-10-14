@@ -245,9 +245,8 @@ func (d *driver) VirtToPhy(virt, phy []byte) (int, bool) {
 // Overhead returns the bytes that a send frame adds to the inner packet.
 func (d *driver) Overhead() int { return addrLen + pspwire.Overhead }
 
-// Prepare reserves the send frame of an inner packet: the transmit SA and its next sequence
-// number, and the address of the peer that routes the destination. The send pump calls it in
-// send order, so that the peer gets the sequence numbers in order.
+// Prepare reserves the transmit SA, the sequence number and the peer address of
+// an inner packet. The send pump calls it in send order.
 func (d *driver) Prepare(virt []byte, f *netstack.TxFrame) bool {
 	err := d.b.prepare(virt, f)
 	if err != nil {
@@ -343,9 +342,8 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	return nil
 }
 
-// prepareSegs is prepare for n packets with the headers hdr. It refuses the packets that prepare
-// can drop: no route, no SA, a breaker limit, too few sequence numbers, or a size above the
-// path MTU.
+// prepareSegs is prepare for n packets with the headers hdr. It refuses for no
+// route, no SA, a breaker limit, sequence numbers or path MTU.
 func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFrame) bool {
 	dst, ok := innerDst(hdr)
 	if !ok || size > b.mtu {
@@ -495,10 +493,8 @@ func (d *driver) WriteKept(frames [][]byte, k *netstack.Kept) (int, error) {
 	return len(frames), nil
 }
 
-// send sends at most maxBatch frames. While no lane has a sender, the caller
-// sends the PSP packets in one batch. After that, send adds each PSP packet to
-// the queue of its lane, and the lane senders send them in parallel. The queue
-// gets the packet itself when k keeps it, or a copy.
+// send sends at most maxBatch frames: in one batch while no lane has a sender,
+// else by the queue of each lane, with a copy unless k keeps it.
 func (d *driver) send(frames [][]byte, k *netstack.Kept) error {
 	st := &d.b.stats
 	for _, f := range frames {
@@ -528,9 +524,8 @@ func (d *driver) send(frames [][]byte, k *netstack.Kept) error {
 	return nil
 }
 
-// queue adds the frame f to the queue of a lane: f itself when k keeps it, or
-// a copy. It waits while the queue is full, and returns net.ErrClosed when the
-// sender stopped.
+// queue adds f, or a copy if k does not keep it, to the queue of a lane. It
+// waits while the queue is full, and returns net.ErrClosed at a stop.
 func (d *driver) queue(l *laneSender, f []byte, k *netstack.Kept) error {
 	if len(f) > l.slot {
 		d.b.stats.txDrops.Add(1)
@@ -663,10 +658,8 @@ func (d *driver) newLane(lane int, tx *udpbatch.Batch) *laneSender {
 	return l
 }
 
-// laneSender sends the frames of one send lane on its own goroutine, so that
-// the kernel send work of each lane runs on its own CPU. Its queue has
-// laneBatches batches: each one is in free, in cur, in work or with run. A
-// batch in free keeps no frames.
+// laneSender sends one lane on its own goroutine, so its kernel work has its
+// own CPU. A batch is in free, in cur, in work or with run.
 type laneSender struct {
 	b      *Binding
 	lane   int
@@ -724,9 +717,8 @@ func (l *laneSender) drain() {
 	}
 }
 
-// run sends the batches of the lane in order until the driver or the binding
-// closes, or the socket closes. Batches that wait go in one send of at most
-// maxBatch frames. It counts the frames that it did not send as drops.
+// run sends the batches of the lane in order until the driver, the binding or
+// the socket closes, and counts the frames not sent as drops.
 func (l *laneSender) run(stop <-chan struct{}) {
 	var next *laneBatch // A batch that did not fit in the last send.
 	defer func() {
@@ -798,9 +790,8 @@ func (b *Binding) flush(tx *udpbatch.Batch, lane int) error {
 	return err
 }
 
-// write sends one send frame: a data frame on the relay session shard of its flow, or a
-// PSP packet to the address in the frame from the socket of its lane. ua must have a
-// 16-byte IP.
+// write sends one frame: a data frame on the relay session shard of its flow,
+// or a PSP packet from the socket of its lane. ua needs a 16-byte IP.
 func (b *Binding) write(f []byte, ua *net.UDPAddr) error {
 	port := binary.BigEndian.Uint16(f[16:laneOff])
 	if port == 0 {

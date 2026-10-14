@@ -16,18 +16,16 @@ type XDPConfig struct {
 	Port uint16
 	// Iface is the link that gets the PSP packets.
 	Iface string
-	// Chain, if set, runs a program on the packets that the XDP program of
-	// Iface passes, and a nil program stops it. Else the relay program
-	// attaches to Iface itself, in driver mode if the driver allows it.
+	// Chain, if set, runs a program after the XDP program of Iface; nil stops
+	// it. Else the relay attaches to Iface, in driver mode if it can.
 	Chain func(*ebpf.Program) error
 	// Generic attaches in generic mode only.
 	Generic bool
 	// Addrs are the addresses of the relay on Iface. The program forwards
 	// only packets to one of them. Empty means all addresses of Iface.
 	Addrs []netip.Addr
-	// NextHopCache is the time that the program keeps the next hop of a row
-	// after a route lookup. A change of a route or of a neighbor takes effect
-	// after this time at most. Zero does a lookup for each packet.
+	// NextHopCache is how long the program keeps the next hop of a row, so a
+	// route or neighbor change waits that long. Zero is no cache.
 	NextHopCache time.Duration
 }
 
@@ -353,10 +351,8 @@ func (r *Router) wantIn(p *trunkPair, now time.Time) map[uint32]xdpEntry {
 	return want
 }
 
-// wantXDP returns the rows that Forward uses for packets from a, by SPI. A row
-// with no next hop, which goes to the relay or to a relay that memberHop refuses,
-// or with a next hop of the other family stays on the socket path. The tunnel is
-// not set. Router.mu must be held.
+// wantXDP returns the rows of Forward for packets from a, by SPI. A row with no
+// usable next hop stays on the socket path. Router.mu must be held.
 func (r *Router) wantXDP(a netip.AddrPort, now time.Time) map[uint32]xdpEntry {
 	s := r.bySource[a]
 	if s == nil || s.closed {
@@ -395,9 +391,8 @@ func sourceEnd(s *Session, a netip.AddrPort, now time.Time) (time.Time, int, boo
 	return time.Time{}, lane, ok
 }
 
-// addWant adds the live rows of s on lane to want for the SPIs that want does
-// not have. A row of a lane with no port is on lane 0. A row that stays on the
-// socket path gets no next hop. Router.mu must be held.
+// addWant adds the live rows of s on lane to want for new SPIs. A row of a lane
+// with no port is on lane 0. Router.mu must be held.
 func (r *Router) addWant(want map[uint32]xdpEntry, a netip.AddrPort, s *Session, lane int, until, now time.Time) {
 	for spi, w := range s.rows {
 		l := w.lane

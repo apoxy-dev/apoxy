@@ -18,9 +18,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-// TestIPv4Sources checks that a peer takes an IPv4 packet only from a source in
-// a route of the sender, and that a sender with no IPv4 route reaches an IPv4
-// address of a peer in the /96 of that peer.
+// TestIPv4Sources checks that a peer takes IPv4 only from a source in a route
+// of the sender, and that a sender with no IPv4 route uses the /96.
 func TestIPv4Sources(t *testing.T) {
 	lan, far := netip.MustParsePrefix("10.1.0.0/24"), netip.MustParseAddr("10.1.0.5")
 	src := netip.MustParseAddr("192.0.2.10")

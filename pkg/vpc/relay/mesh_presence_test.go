@@ -771,9 +771,8 @@ func TestTrunkTag(t *testing.T) {
 	}
 }
 
-// presenceEntries returns the attachments that m has of member name, by ID
-// with no session and no record for the route entries, and whether the full
-// set of its last call is complete.
+// presenceEntries returns the attachments that m has of member name by ID, and
+// whether the full set of its last call is complete.
 func presenceEntries(m *Mesh, name string) (map[string]presenceEntry, bool) {
 	m.pres.mu.Lock()
 	defer m.pres.mu.Unlock()

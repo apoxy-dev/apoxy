@@ -104,10 +104,8 @@ func hostAddr(addr netip.Addr) *netlink.Addr {
 	return &netlink.Addr{IPNet: ipNet(netip.PrefixFrom(addr, addr.BitLen())), Flags: unix.IFA_F_NODAD}
 }
 
-// route adds and removes the kernel routes of the prefixes of the other
-// attachments. It skips the prefixes that are not agent.Routable. It keeps the
-// IPv4 prefixes until this host advertises an IPv4 route: with no such route,
-// the source check of the peers drops all IPv4 packets of this host.
+// route adds and removes the kernel routes of the other attachments. With no
+// own IPv4 route it skips IPv4 prefixes: the peers drop such packets.
 func (t *tunDev) route(add, remove []netip.Prefix) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -128,9 +126,8 @@ func (t *tunDev) route(add, remove []netip.Prefix) {
 	}
 }
 
-// own sets the routes that this host advertises. The first IPv4 route adds the
-// skipped IPv4 prefixes. When the last one goes, the IPv4 prefixes go back to
-// the skipped prefixes.
+// own sets the routes that this host advertises. The skipped IPv4 prefixes get
+// routes only while one of them is an IPv4 route.
 func (t *tunDev) own(routes []netip.Prefix) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -179,9 +176,8 @@ func (t *tunDev) skip(p netip.Prefix) {
 	slog.Warn("Skipped an IPv4 VPC route because this host advertises no IPv4 route", "prefix", p)
 }
 
-// foreignSource returns the host source address of the packets to the IPv4
-// prefix p on the device when that address is not in an own IPv4 route. t.mu
-// must be held.
+// foreignSource returns the host source address for packets to p when no own
+// IPv4 route has that address. t.mu must be held.
 func (t *tunDev) foreignSource(p netip.Prefix) (netip.Addr, bool) {
 	if !p.Addr().Is4() {
 		return netip.Addr{}, false

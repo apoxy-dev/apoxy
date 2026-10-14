@@ -20,9 +20,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 )
 
-// ecnProxy forwards UDP between agents and a relay, with one socket to the
-// relay for each agent. Its two front sockets stand for the QUIC socket and the
-// PSP socket of the relay. It reads the ECN bits of each packet that it gets.
+// ecnProxy forwards UDP between agents and the QUIC and PSP sockets of a relay, with one
+// relay socket for each agent, and reads the ECN bits of each packet that it gets.
 type ecnProxy struct {
 	t        *testing.T
 	front    *net.UDPConn // For the QUIC socket of the relay.
@@ -195,9 +194,8 @@ func tosOf(oob []byte) (byte, bool) {
 	return 0, false
 }
 
-// TestNotECT sends traffic through a proxy in front of the relay: PSP between
-// two PSP agents, and a PSP agent to a QUIC agent through the bridge. The
-// agents and the relay must send all packets as Not-ECT.
+// TestNotECT checks that the agents and the relay send all packets as Not-ECT:
+// PSP between PSP agents, and PSP to a QUIC agent through the bridge.
 func TestNotECT(t *testing.T) {
 	w := newWorld(t)
 	quicSock, pspSock, pspFront := relaySockets(t)

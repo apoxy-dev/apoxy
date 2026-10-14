@@ -255,8 +255,7 @@ func TestShardSource(t *testing.T) {
 }
 
 // TestShardFromOwnerSocket checks that PSP packets from the socket of a live
-// session pass while a shard from that socket connects, joins or fails, and
-// after it ends.
+// session pass while a shard from it connects, joins, fails or ends.
 func TestShardFromOwnerSocket(t *testing.T) {
 	const addr = "192.0.2.1:1000"
 	cases := []struct {

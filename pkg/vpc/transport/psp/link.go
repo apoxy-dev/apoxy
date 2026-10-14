@@ -13,9 +13,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
-// Link is the routes of one relay connection of the agent. An inner packet uses the
-// link of its source address, and goes to the peer that this link routes its
-// destination to. Thus a prefix has one peer on each link.
+// Link is the routes of one relay connection. An inner packet uses the link of
+// its source address, so a prefix has one peer on each link.
 type Link struct {
 	b      *Binding
 	routes engine.Routes[*Peer]
@@ -126,10 +125,8 @@ func (b *Binding) sourceLink(pkt []byte) *Link {
 // AddPeer adds a remote agent at addr, for example its relay on port 443.
 func (l *Link) AddPeer(addr netip.AddrPort) (*Peer, error) { return l.AddPeerLanes(addr, 1) }
 
-// AddPeerLanes adds a remote agent at addr that sends to this agent on lanes
-// SAs. The peer sends each lane from its own UDP port, so use more than one
-// lane only on a direct path with no NAT. Its receive SAs accept only the
-// sources that l routes to it.
+// AddPeerLanes adds a remote agent at addr that sends on lanes SAs, each lane
+// from its own UDP port: use more than one only with no NAT.
 func (l *Link) AddPeerLanes(addr netip.AddrPort, lanes int) (*Peer, error) {
 	b := l.b
 	if !addr.IsValid() {

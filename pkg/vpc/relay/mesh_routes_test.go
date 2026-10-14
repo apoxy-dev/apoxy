@@ -210,8 +210,7 @@ func (w *routeWorld) detach(name, id string) {
 }
 
 // routeChanges returns the route changes that wait for s, as "-origin prefix"
-// and "+origin prefix", with " standby=a,b" after a route that has standby
-// announcers.
+// and "+origin prefix", with " standby=a,b" for standby announcers.
 func routeChanges(r *Router, s *Session) []string {
 	var out []string
 	for _, m := range r.takeSync(s) {
@@ -1717,12 +1716,8 @@ func entryState(r *Router, prefix, origin string) (state dp.AnnouncerState, ok b
 	return 0, false
 }
 
-// TestMemberLost checks the entries of a member that is lost: they are suspect
-// on this relay from the down change, normal again when a new session of the
-// member sends them, and gone when the member is still down after
-// memberLostTime or leaves the member set. The agent laptop has the attachment
-// x on relay-a, with the lower rank, and the attachment y on relay-b. lose
-// gives the relay the down change one minute after the session ended.
+// TestMemberLost checks the entries of a lost member: suspect from the down
+// change, normal with a new session, gone after memberLostTime.
 func TestMemberLost(t *testing.T) {
 	x := func(gen uint64) *dp.Presence { return remoteEntry("x", gen, prefixA, prefixR) }
 	lostOrder, normalOrder := []string{"y@relay-b", "x@relay-a"}, []string{"x@relay-a", "y@relay-b"}
@@ -1935,9 +1930,8 @@ func TestMemberLostTimer(t *testing.T) {
 	}
 }
 
-// TestPresenceStateChange checks an entry of a member that comes again with a
-// higher generation. With only a new state it changes in place: the relay
-// keeps the entry and its routes. With other new data it is a new entry.
+// TestPresenceStateChange checks that an entry with a higher generation and
+// only a new state changes in place, and other new data replaces it.
 func TestPresenceStateChange(t *testing.T) {
 	next := func(gen uint64, change func(e *dp.Presence)) *dp.Presence {
 		e := remoteEntry("x", gen, prefixA, prefixR)

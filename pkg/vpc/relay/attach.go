@@ -56,18 +56,16 @@ type Attachment struct {
 	// gen is the last presence generation: that of the attach, then that of
 	// each state change. Zero after the end.
 	gen uint64
-	// cand is the record that the route entries of the attachment read. The
-	// attach sets it, and a state change of the session writes its state and
-	// its hold time: holdTime after the attach or the last return to normal.
+	// cand is the record that the route entries of the attachment read. A state
+	// change of the session writes its state and its hold time.
 	cand candidate
 }
 
 // Addresses assigns overlay addresses to attachments. The relay host
 // implements it.
 type Addresses interface {
-	// Assign returns the prefixes of a new attachment. It calls onLost when
-	// the lease of the prefixes ends, also before Assign returns. At this call
-	// a has no Routes.
+	// Assign returns the prefixes of a new attachment, which has no Routes yet.
+	// It calls onLost when their lease ends, also before it returns.
 	Assign(ctx context.Context, a *Attachment, onLost func()) ([]netip.Prefix, error)
 	// Attached tells the host that the attach of a is complete. It must not
 	// block. Release can come first when the session ends during the attach.
@@ -284,9 +282,8 @@ func newAttachment(vpc VPCKey, subject string, in *dp.AttachRequest) (*Attachmen
 	return a, routes, nil
 }
 
-// attach adds a to s, and an entry to the route table for each address and each
-// advertised route of a. An advertised route that another attachment
-// announces is no error: a gets one more entry in the set of its prefix.
+// attach adds a to s, with a route entry for each address and advertised route.
+// A route that another attachment announces is no error.
 func (r *Router) attach(s *Session, a *Attachment) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

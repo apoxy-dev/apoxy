@@ -260,10 +260,8 @@ func (r *Relay) SetMesh(cfg vpcrelay.MeshConfig) (*vpcrelay.Mesh, error) {
 	return m, nil
 }
 
-// SetVPCSockets gives the relay the sockets of the VPC relay. The QUIC sockets
-// carry the sessions of agents and of other relays, and only QUIC. More than one
-// is a steer group, in the order that steer.Listen gives them. The PSP sockets
-// share one port and carry all other VPC packets. Call it before Start.
+// SetVPCSockets gives the relay the VPC sockets before Start: QUIC sockets in
+// steer.Listen order, and PSP sockets that share one port.
 func (r *Relay) SetVPCSockets(quicConns, pspConns []net.PacketConn) error {
 	if len(quicConns) == 0 || len(quicConns) > steer.MaxSockets {
 		return fmt.Errorf("VPC relay has %d QUIC sockets", len(quicConns))
@@ -290,10 +288,8 @@ func (r *Relay) SetSteerGroup(conns []*net.UDPConn) error {
 	return nil
 }
 
-// relayQUICConfig is quicConfig with Not-ECT packets. The relay sends tunnel
-// data with no congestion control, so it must not ask the network for ECN marks.
-// VPC agents run up to 128 Attach calls at a time on one session, so the stream
-// limit of each connection, HTTP/3 and VPC, is 512.
+// relayQUICConfig is quicConfig with Not-ECT: tunnel data has no congestion
+// control. 512 streams cover the 128 Attach calls of a VPC agent.
 var relayQUICConfig = func() *quic.Config {
 	c := quicConfig.Clone()
 	c.DisableECN = true
@@ -346,9 +342,8 @@ func (r *Relay) vpcTransports() (quicTrs, pspTrs []*quic.Transport, err error) {
 	return quicTrs, pspTrs, nil
 }
 
-// vpcListenConfig returns the QUIC config of the VPC listeners. For VPC relay
-// sessions it keeps the RTT and sends the keep-alive that the liveness check of
-// the VPC relay needs. A mesh member gets the timers of a mesh session.
+// vpcListenConfig returns the QUIC config of the VPC listeners: RTT trace and
+// the liveness keep-alive for agents, mesh timers for a member.
 func (r *Relay) vpcListenConfig() *quic.Config {
 	c := relayQUICConfig
 	if r.vpc != nil {

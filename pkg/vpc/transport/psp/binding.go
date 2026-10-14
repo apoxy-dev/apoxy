@@ -102,9 +102,8 @@ type Config struct {
 	MTU int
 	// DeviceMTU is the MTU of the device on the binding, at most MTU. Zero means MTU.
 	DeviceMTU int
-	// NoRoute gets the inner packets that VirtToPhy cannot send for ErrNoRoute, with
-	// the link of the packet, or nil when no link sends it. It runs on the send path
-	// of the driver, so it must not block or keep pkt.
+	// NoRoute gets the inner packets that fail with ErrNoRoute and their link,
+	// or nil. It runs on the send path, so it must not block or keep pkt.
 	NoRoute func(l *Link, pkt []byte)
 	// OnTrip gets each change of a breaker limit. The peer is nil for the QUIC
 	// data path. It must not block.
@@ -270,9 +269,8 @@ func (b *Binding) Close() error {
 // DeviceMTU returns the MTU for the device on the binding.
 func (b *Binding) DeviceMTU() int { return b.devMTU }
 
-// SetClampMTU lowers the MSS of TCP SYN packets in both directions to fit mtu, and a larger
-// packet for a PSP peer gets a packet too big error. Zero, or DeviceMTU or more, turns it
-// off. It returns the previous MTU.
+// SetClampMTU clamps the TCP MSS to mtu and answers a larger packet with packet
+// too big. Zero, or DeviceMTU or more, is off. It returns the old MTU.
 func (b *Binding) SetClampMTU(mtu int) (old int) {
 	if mtu >= b.devMTU {
 		mtu = 0
@@ -315,9 +313,8 @@ type Update struct {
 	keys.Request
 }
 
-// Tick rekeys the due receive SAs, removes expired SAs and the breaker limits whose
-// time ended, and moves the clock of the send lanes. Call it each second, and send each
-// Update to its peer. Failed lanes are due again.
+// Tick rekeys the due receive SAs and removes expired SAs and breaker limits.
+// Call it each second, and send each Update to its peer.
 func (b *Binding) Tick(now time.Time) ([]Update, error) {
 	ups, err := b.recv.Tick(now)
 	b.send.Expire(now)
@@ -689,9 +686,8 @@ func (b *Binding) ReportQUIC(now time.Time, lost uint64) {
 // when there is none.
 func (b *Binding) QUICLimit() int64 { return b.quic.limit() }
 
-// receive gives a PSP packet from the socket of lane to the driver. It runs on the read
-// loop of that socket. With a receive pipe, it copies the packet into the pipe, else it
-// opens the packet.
+// receive gives a PSP packet from the socket of lane to the driver, on the read
+// loop of that socket: a copy into the receive pipe, or an open.
 func (b *Binding) receive(lane int, pkt []byte) {
 	if len(pkt) == 0 || (pkt[0] != pspwire.NextHdrV4 && pkt[0] != pspwire.NextHdrV6) {
 		b.stats.rxOther.Add(1)

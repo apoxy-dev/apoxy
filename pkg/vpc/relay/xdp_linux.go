@@ -38,20 +38,14 @@ type XDP struct {
 	chain func(*ebpf.Program) error
 	iface string
 	// joins returns the link feature that joins received UDP packets, or "".
-	// It is set in generic mode, where the program would forward a joined
-	// datagram as one packet.
+	// Generic mode sets it: the program would forward a joined datagram.
 	joins      func() (string, error)
 	off        bool // The rows are out: the link joins UDP packets.
 	stop, done chan struct{}
 }
 
-// StartXDP loads the XDP program of the relay and keeps its rows the same as
-// the rows of r. The program forwards the PSP packets to an address of the
-// link that match a row, and gives all other packets to the socket. It
-// returns the attach mode: "chain", "driver" or "generic". In generic mode
-// the kernel can join UDP packets before the program runs, so StartXDP fails
-// when the link joins them (rx-udp-gro-forwarding or rx-gro-list is on), and
-// the rows go out while the link joins them later.
+// StartXDP loads the XDP program, keeps its rows as in r and returns the mode:
+// "chain", "driver" or "generic". Generic fails if the link joins UDP.
 func (r *Router) StartXDP(cfg XDPConfig) (*XDP, string, error) {
 	ifc, err := net.InterfaceByName(cfg.Iface)
 	if err != nil {
@@ -164,8 +158,7 @@ func (x *XDP) recheck(now time.Time) {
 }
 
 // newXDPProgram loads the XDP program with the meters of r. maxLen is the
-// largest IP length of a PSP datagram. redirect makes the program send with a
-// redirect to the link.
+// largest IP length of a PSP datagram. redirect sends with a redirect.
 func (r *Router) newXDPProgram(cfg XDPConfig, maxLen uint32, redirect bool) (*filter.Relay, error) {
 	rc := filter.RelayConfig{Port: cfg.Port, MaxLen: maxLen, NextHopCache: cfg.NextHopCache, Redirect: redirect}
 	if r.cfg.LaneRate > 0 {
@@ -178,8 +171,7 @@ func (r *Router) newXDPProgram(cfg XDPConfig, maxLen uint32, redirect bool) (*fi
 }
 
 // flushesEachTX reports whether the driver tells its device of each XDP_TX
-// packet. It tells the device of a group of redirected packets at one time,
-// so the program sends with a redirect on such a link.
+// packet. A redirect goes in groups, so the program uses it there.
 func flushesEachTX(driver string) bool { return driver == "ena" }
 
 // linkDriver returns the name of the driver of the link, or "".
@@ -196,10 +188,8 @@ func linkDriver(name string) string {
 	return d
 }
 
-// linkAddrs returns the unicast addresses of the link, without the IPv6
-// link-local address. The program gets them once: the relay listens on a
-// fixed address, and packets to a later address of the link take the socket
-// path.
+// linkAddrs returns the unicast addresses of the link, without IPv6 link-local.
+// The program gets them once: a later address takes the socket path.
 func linkAddrs(ifc *net.Interface) ([]netip.Addr, error) {
 	as, err := ifc.Addrs()
 	if err != nil {

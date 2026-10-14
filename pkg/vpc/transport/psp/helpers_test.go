@@ -260,8 +260,7 @@ func packet(src, dst netip.Addr, proto byte, sport, dport uint16, size int) []by
 }
 
 // fakeRelay is a relay on loopback: relay.Router for sessions, SPI rows and
-// path probes, and a loop that forwards PSP packets by SPI. One socket has
-// QUIC and PSP.
+// path probes, and a forward loop. One socket has QUIC and PSP.
 type fakeRelay struct {
 	r        *relay.Router
 	probe    func([]byte, net.Addr) // Packet handler of the router. It answers the path probes.
@@ -424,18 +423,15 @@ func newRelayPair(t testing.TB) (*node, *node, *fakeRelay) {
 	return newRelayPairLanes(t, 1, 0)
 }
 
-// newRelayPairLanes returns two nodes whose peers are at a relay that takes
-// up to relayLanes lane ports. Each node receives on lanes SAs. As the agent
-// does, a node sends from its lane sockets only when the relay takes their
-// ports.
+// newRelayPairLanes returns two nodes at a relay that takes up to relayLanes
+// lane ports. Each node receives on lanes SAs.
 func newRelayPairLanes(t testing.TB, lanes, relayLanes int) (*node, *node, *fakeRelay) {
 	t.Helper()
 	return newRelayPairRecv(t, lanes, relayLanes, lanes-1, false)
 }
 
 // newRelayPairRecv is newRelayPairLanes with nports lane ports on each node.
-// With receive, each node also reads its lane sockets, and sends keepalives
-// from them to the relay.
+// With receive, each node reads them and sends keepalives.
 func newRelayPairRecv(t testing.TB, lanes, relayLanes, nports int, receive bool) (*node, *node, *fakeRelay) {
 	t.Helper()
 	fr := newFakeRelayLanes(t, relayLanes)

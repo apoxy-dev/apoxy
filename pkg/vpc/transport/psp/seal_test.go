@@ -15,9 +15,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
-// TestPrepareSeal reserves the send frames of packets in order and seals them in another
-// order, as the send pipe does. The frames must carry the sequence numbers of Prepare, and
-// the peer must accept all of them in send order.
+// TestPrepareSeal seals frames in another order than Prepare reserved them, as
+// the send pipe does. The peer must accept all in send order.
 func TestPrepareSeal(t *testing.T) {
 	a, b := newPair(t)
 	offer(t, time.Now(), a, b)

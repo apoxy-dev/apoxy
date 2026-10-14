@@ -59,9 +59,8 @@ var (
 	txLanes = psp.TxLanes
 )
 
-// relayQUIC is the QUIC config of relay sessions. See relay.MinPacketSize.
-// Data frames are Not-ECT: the breaker, not ECN, reacts to congestion. The
-// keep-alive opens a lost NAT entry again before the relay calls the agent silent.
+// relayQUIC is the QUIC config of relay sessions. Data is Not-ECT: the breaker
+// reacts to congestion. The keep-alive opens a lost NAT entry again.
 var relayQUIC = &quic.Config{
 	EnableDatagrams:   true,
 	KeepAlivePeriod:   3 * time.Second,
@@ -93,9 +92,8 @@ type Config struct {
 	// Sessions is the number of attached relay sessions to keep, 1 to 3, each on
 	// its own relay. Each session has its own overlay address. Zero means 2.
 	Sessions int
-	// Transport is the agent socket for the relay sessions and PSP. New sets its
-	// NonQUICPacketHandler, NonQUICBatchEnd and EnableGRO, so it must not be in use
-	// yet. The socket must not share its port with an XDP program.
+	// Transport is the agent socket. New sets its packet handlers, so it must
+	// not be in use yet, and its port must not have an XDP program.
 	Transport *quic.Transport
 	// TransportMode picks how data goes to peers. The zero value is auto.
 	TransportMode TransportMode
@@ -115,12 +113,8 @@ type Config struct {
 	// OnDeprecated gets each attachment of a relay session whose relay drains,
 	// the attachment of Config too. New connections must not use its address.
 	OnDeprecated func(at Attachment)
-	// OnDetach gets an extra attachment after Detach, and each attachment of a
-	// relay session that ended, the attachment of Config too: the agent lost
-	// the address. The agent calls OnAttach, OnAttachment, OnDeprecated and
-	// OnDetach in order, one at a time. An address gets OnDetach before its next
-	// OnAttach or OnAttachment. The callbacks must not call Attach, Detach or
-	// Attachments.
+	// OnDetach gets each attachment whose address the agent lost, before a next OnAttach of that
+	// address. The callbacks run in order, one at a time, and must not call Attach, Detach or Attachments.
 	OnDetach func(at Attachment)
 	// MTU sets the device MTU, from 1280 to the VPC MTU, with no path probe.
 	// Zero means the VPC MTU. A PSP path that does not carry it gets a TCP MSS clamp.
@@ -492,11 +486,8 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	return nil
 }
 
-// registerLanes opens the lane sockets of b and registers their ports at the
-// relay, so that peers send each lane from its own port, and the relay sends
-// the SA lanes of this agent to these ports. It does nothing when the relay
-// takes no lane ports, or when its PSP socket sees another port than the local
-// port of the agent socket.
+// registerLanes registers the lane ports of b at the relay. It does nothing
+// when the relay takes none or sees another port than the local one.
 func (rc *relayConn) registerLanes(ctx context.Context, b *psp.Binding) {
 	n := min(int(rc.maxLanes)+1, txLanes(rc.relayAddr.Addr().Unmap()))
 	seen := rc.seen.Load()
@@ -788,9 +779,8 @@ func (rc *relayConn) ended() bool {
 	return rc.ctx.Err() != nil || rc.qc.Context().Err() != nil
 }
 
-// removeRoutes closes the peer sessions of attachments that left the VPC, and
-// the sessions that this agent dialed to an address that left. When another
-// attachment of a peer leaves, only its grant goes.
+// removeRoutes closes the peer sessions of attachments that left the VPC. When
+// another attachment of a peer leaves, only its grant goes.
 func (a *Agent) removeRoutes(rc *relayConn, removed []*dp.Route) {
 	gone := map[string]bool{}
 	var prefixes []netip.Prefix
@@ -872,9 +862,8 @@ func (a *Agent) close() {
 	}
 }
 
-// tick runs the key timers of the binding and the holds, checks the local
-// address, refreshes SPI rows and gives the QUIC loss to the breaker of the data
-// frames.
+// tick runs the timers of the binding and the holds, checks the local address,
+// refreshes SPI rows and gives the QUIC loss to the breaker.
 func (a *Agent) tick(ctx context.Context) {
 	t := time.NewTicker(tickInterval)
 	defer t.Stop()

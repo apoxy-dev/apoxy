@@ -629,9 +629,8 @@ func BenchmarkForwardData(b *testing.B) {
 	}
 }
 
-// BenchmarkReceivePSP measures one PSP packet to the relay from a PSP-mode
-// session, from the packet handler to the send to a QUIC-mode session. It
-// includes the seal of the packet by the agent.
+// BenchmarkReceivePSP measures one PSP packet from the packet handler to the
+// send to a QUIC-mode session. It includes the seal by the agent.
 func BenchmarkReceivePSP(b *testing.B) {
 	r, handle := localRouter(b)
 	p := localSession(b, r, "p", "192.0.2.1:1", "fd00:1::/96", dp.Mode_MODE_PSP)

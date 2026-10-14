@@ -89,10 +89,8 @@ func dialOnVisit(t *testing.T, ctx context.Context, ta *testAgent, r *testRelay,
 	return v, ta.a.connect(ctx, v.rc, dst, nil)
 }
 
-// oneVisit waits until a and b have one peer session on one visit after a cut.
-// Then it opens the path with heal, and waits for a session over the trunk.
-// old is the peer session of a from before the cut: a NoRoute can close it at
-// once, so the caller reads it before the NoRoute.
+// oneVisit waits for one peer session on one visit after a cut, then heals the
+// path and waits for a trunk session. Read old before the NoRoute.
 func oneVisit(t *testing.T, a, b *testAgent, old *peer, ea, eb attachEvent, heal func()) {
 	t.Helper()
 	// The visit with no peer ends at its check.
@@ -230,10 +228,8 @@ func TestVisitRules(t *testing.T) {
 	}
 }
 
-// TestVisit gives agent a the answer REACH_VISIT for agent b on another relay.
-// The mesh path is up, so the relay of b takes the visit as with a cut path.
-// The visitor session carries data in QUIC mode at once, and changes to PSP
-// mode when its probe passes.
+// TestVisit gives agent a the answer REACH_VISIT for b. The visitor session
+// carries data in QUIC mode at once, then in PSP mode after its probe.
 func TestVisit(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -432,8 +428,7 @@ func liveOn(a *Agent, rc *relayConn, dst netip.Addr) bool {
 }
 
 // TestVisitAttachments checks that the peer of a visit reaches each attachment
-// of the visitor: one from before the visit, and one that attaches in the visit.
-// An attachment that detaches in the visit leaves it.
+// of the visitor, old and new, but not one that detached.
 func TestVisitAttachments(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -660,8 +655,7 @@ func TestVisitReturn(t *testing.T) {
 }
 
 // TestVisitTurn checks that the agent with the higher address opens no visit in
-// its wait: it waits for the peer session of the other agent, or dials when its
-// relay reaches the peer.
+// its wait, and dials when its relay reaches the peer.
 func TestVisitTurn(t *testing.T) {
 	cases := []struct {
 		name string
@@ -716,8 +710,7 @@ func TestVisitTurn(t *testing.T) {
 }
 
 // TestNoRoute checks that a NoRoute with no home relay closes the peer sessions
-// to the address, and that one with a home relay keeps them. The mesh path is
-// up, so the relay answers REACH_TRUNK and no visit starts.
+// to the address, and that one with a home relay keeps them.
 func TestNoRoute(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -958,8 +951,7 @@ func TestVisitAfterCut(t *testing.T) {
 }
 
 // TestVisitBoth checks the visit of the agent with the higher address, and that
-// one peer session stays when each agent visits the relay of the other. The
-// mesh path is up, so the relays take the visits as with a cut path.
+// one peer session stays when each agent visits the other relay.
 func TestVisitBoth(t *testing.T) {
 	type step func(t *testing.T, ctx context.Context, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, conn *lossyConn)
 	cases := []struct {

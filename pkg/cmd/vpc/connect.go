@@ -268,9 +268,8 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	return nil
 }
 
-// connectError returns the error of the agent for the user. When the relays
-// need a newer agent, it tells the user how to upgrade. When the cert of the
-// identity file expired, it tells the user how to get a new file.
+// connectError returns the error of the agent for the user, with how to upgrade
+// the agent or how to get a new identity file.
 func connectError(err error) error {
 	if errors.Is(err, agent.ErrUpgrade) {
 		return fmt.Errorf("this version of the Apoxy CLI (%s) is too old for the VPC: %w; run \"apoxy upgrade\" and connect again", build.BuildVersion, err)
@@ -343,8 +342,7 @@ type overlay interface {
 }
 
 // hostDevice starts the driver at the first attach and keeps the overlay
-// addresses of all relay sessions on the device. The agent calls attach,
-// attachment, deprecated and detach one at a time.
+// addresses of all relay sessions on the device.
 type hostDevice struct {
 	ctx       context.Context
 	fail      context.CancelCauseFunc
@@ -541,9 +539,8 @@ func (h *hostDevice) startNetstack(b *psp.Binding, addr netip.Addr, dns *network
 	return n, nil
 }
 
-// forwardNetwork dials the connections from the VPC. Connections to the
-// routes that this host advertises go to the host network. Others go to the
-// same port on localhost.
+// forwardNetwork dials connections from the VPC: to the host network for a
+// route that this host advertises, else to the same port on localhost.
 type forwardNetwork struct {
 	network.Network // Loopback.
 	host            network.Network

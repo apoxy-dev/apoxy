@@ -22,9 +22,8 @@ func (b *Binding) tooBig(virt []byte, mtu int) {
 	}
 }
 
-// packetTooBig returns the ICMP error that tells the sender of pkt that the path carries
-// at most mtu bytes, or nil when pkt must get no error. The error comes from the
-// destination of pkt: the host has a route to it on the device, so it accepts the source.
+// packetTooBig returns the ICMP error for pkt on a path of mtu bytes, or nil.
+// It comes from the destination of pkt, a source the host accepts.
 func packetTooBig(pkt []byte, mtu int) []byte {
 	switch {
 	case len(pkt) >= header.IPv4MinimumSize && pkt[0]>>4 == header.IPv4Version:

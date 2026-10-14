@@ -35,9 +35,8 @@ const (
 	minBurst      = 64 << 10
 	// MaxLaneSources is the most lane ports of a session: lanes 1 and up.
 	MaxLaneSources = keys.MaxLanes - 1
-	// GrantLife is the time from the signing of a grant to its end. An agent
-	// sends a grant in the first third of its life, so a reader with a clock up
-	// to two thirds of it ahead of the relay accepts the grant.
+	// GrantLife is the life of a grant. An agent sends a grant in the first
+	// third of it, so a reader clock can be two thirds of it ahead.
 	GrantLife = 15 * time.Minute
 )
 
@@ -83,9 +82,8 @@ type Config struct {
 	// TunnelBurst is the burst of the tunnel limit in bytes. Zero means 100 ms
 	// of TunnelRate. It is at least 64 KiB.
 	TunnelBurst int
-	// LaneSources is the most lane ports that a session can register, at most
-	// MaxLaneSources. Zero turns lane ports off. Set it only when all flows
-	// from an agent address come to this relay.
+	// LaneSources limits the lane ports of a session, 0 to MaxLaneSources. Set
+	// it only when all flows of an agent address come to this relay.
 	LaneSources int
 }
 
@@ -479,10 +477,8 @@ func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
 	r.takeSource(s)
 }
 
-// takeSource gives the source address of s to s. A session with a Session
-// call takes it from other sessions. Before its Hello, a session takes only a
-// free address, because a shard from the same socket must not take it. An
-// older session of the same agent with a Session call becomes the twin of s.
+// takeSource gives s its source address: from another session only after its
+// Session call. An older session of the same agent becomes its twin.
 func (r *Router) takeSource(s *Session) {
 	if !s.addr.IsValid() || s.shardOf != nil {
 		return
@@ -513,9 +509,8 @@ func (r *Router) twinOf(c *Session) *Session {
 	return o
 }
 
-// passSource gives source address a of the closed session s to another
-// session of the VPC at a with a Session call, as takeSource does. A shard
-// dial does not get it. Router.mu must be held.
+// passSource gives source a of the closed session s to another session of the
+// VPC at a with a Session call. Router.mu must be held.
 func (r *Router) passSource(s *Session, a netip.AddrPort) {
 	d := r.domains[s.id.VPC]
 	if d == nil || !a.IsValid() {
@@ -546,10 +541,8 @@ func (r *Router) activeOf(vpc VPCKey, a netip.Addr) target {
 	return target{}
 }
 
-// localOf returns the first announcer of the longest route to a, in the order
-// of selection, that has a session of this relay. It is for the packets from
-// another relay, which go to no other relay: the two relays can select
-// different announcers for a short time. Router.mu must be held.
+// localOf returns the first announcer of the longest route to a with a session
+// here, for packets from another relay. Router.mu must be held.
 func (r *Router) localOf(vpc VPCKey, a netip.Addr) target {
 	if d := r.domains[vpc]; d != nil {
 		if set := d.setOf(a); set != nil && set.local != nil {
@@ -616,10 +609,8 @@ func (r *Router) SetPermit(p Permit) {
 	}
 }
 
-// Forward finds where to send a PSP packet with outer source src and SPI
-// spi. It returns Pass and the address of the receiver, or a drop verdict. For
-// a receiver on another relay, the address is the relay socket of that relay,
-// which gets the packet with no change.
+// Forward returns Pass and where to send a PSP packet from src with spi, or a
+// drop verdict. A receiver on another relay gives that relay socket.
 func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time) (netip.AddrPort, Verdict) {
 	to, v, lost, home := r.forward(src, spi, size, now)
 	if lost != nil {
@@ -821,9 +812,8 @@ func (r *Router) SenderStats(s *Session) SenderStats {
 // UnknownSourceDrops returns the number of packets from addresses of no sender.
 func (r *Router) UnknownSourceDrops() uint64 { return r.drops[dropUnknownSource].Load() }
 
-// MalformedDrops returns the number of non-QUIC packets that are not PSP and get no
-// probe reply, except the probes of a refused connection. Geneve packets that the
-// kernel did not take and mesh member packets that the trunk refuses also count here.
+// MalformedDrops counts the non-QUIC packets that are not PSP and get no probe
+// reply, also Geneve packets and refused trunk packets.
 func (r *Router) MalformedDrops() uint64 { return r.drops[dropMalformed].Load() }
 
 // ForwardStats are the sendmmsg calls of the socket path, their messages, and

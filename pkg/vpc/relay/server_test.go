@@ -404,11 +404,8 @@ func TestAttach(t *testing.T) {
 	}
 }
 
-// TestAttachRoutes checks the answer of the relay for each advertised route.
-// A refused route does not fail the Attach, and it is not in the route table,
-// not in the entry for the other relays and not in the routes that the host
-// gets. The fake host gives the attachment fd00:1::/96, in the VPC network
-// fd00:1::/72.
+// TestAttachRoutes checks that a refused advertised route does not fail the
+// Attach, and is in no route table, mesh entry or host route.
 func TestAttachRoutes(t *testing.T) {
 	const (
 		accepted   = dp.RouteResult_ROUTE_RESULT_ACCEPTED
@@ -945,9 +942,8 @@ func TestAttachmentAddressLoss(t *testing.T) {
 	}
 }
 
-// TestDrainState checks the start of a drain. Each entry of the relay gets the
-// draining state before its session gets Drain, and another relay that has the
-// entries then selects its own standby announcer.
+// TestDrainState checks that each entry gets the draining state before its
+// session gets Drain, so another relay selects its own standby.
 func TestDrainState(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// The agent laptop has the attachment x on the relay that drains, and
@@ -1007,10 +1003,8 @@ func TestDrainState(t *testing.T) {
 	})
 }
 
-// TestSessionLiveness runs a relay and an agent on real QUIC connections. The
-// agent sends no keep-alive, so only its answers to the keep-alive of the relay
-// keep its session normal. When the agent stops with no close, its session is
-// suspect after suspectAfter, before the idle timeout removes it.
+// TestSessionLiveness checks on real QUIC that an agent that stops with no
+// close is suspect after suspectAfter, before the idle timeout.
 func TestSessionLiveness(t *testing.T) {
 	t.Parallel()
 	ca := newCA(t)

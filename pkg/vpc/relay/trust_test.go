@@ -120,9 +120,8 @@ func TestHandshake(t *testing.T) {
 	}
 }
 
-// TestRecheck checks that a trust change closes the sessions whose cert now
-// fails, and keeps the others. A cert that is past its NotAfter after the
-// handshake fails for no other cause than a cert that is not.
+// TestRecheck checks that a trust change closes only the sessions whose cert
+// now fails, and that an expiry after the handshake is no failure.
 func TestRecheck(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -168,9 +167,8 @@ func TestRecheck(t *testing.T) {
 	}
 }
 
-// TestSessionPastNotAfter checks that a session stays open after the NotAfter
-// of its cert, takes calls and forwards, and that the same cert starts no new
-// session then.
+// TestSessionPastNotAfter checks that a session works after the NotAfter of its
+// cert, and that the same cert starts no new session then.
 func TestSessionPastNotAfter(t *testing.T) {
 	ca := newCA(t)
 	h := newHarness(t, ca)

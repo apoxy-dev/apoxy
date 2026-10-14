@@ -98,9 +98,8 @@ func TestAttachInFlight(t *testing.T) {
 	assert.Len(t, a.a.Attachments(), n+1)
 }
 
-// TestAttachmentsOnNewSession checks that the agent attaches the extra
-// attachments on each new relay session, and that the callbacks give the
-// addresses of the old and the new session in order.
+// TestAttachmentsOnNewSession checks that the agent attaches the extras on each
+// new relay session, and the order of the callbacks.
 func TestAttachmentsOnNewSession(t *testing.T) {
 	// A relay that drains keeps its session until the drain ends.
 	drained := []string{"attach OLD", "deprecate OLD", "attach NEW", "detach OLD"}

@@ -102,9 +102,8 @@ func localOf(c net.Conn) netip.Addr {
 	return c.LocalAddr().(*net.TCPAddr).AddrPort().Addr()
 }
 
-// TestRoutesAfterAttach checks that the routes that come from the relay before
-// the Attach call ends reach OnRoutes, and only after OnAttach of the session.
-// The OnRoutes of the test agent fails the test for a call before OnAttach.
+// TestRoutesAfterAttach checks that routes from the relay before the end of the
+// Attach call reach OnRoutes only after OnAttach of the session.
 func TestRoutesAfterAttach(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -272,9 +271,8 @@ func TestPeersOfEachSession(t *testing.T) {
 	}
 }
 
-// TestDrainKeepsStream drains the relay of an agent with an open TCP stream.
-// The stream carries data until the relay closes the session, and a new
-// connection uses the address of the new session.
+// TestDrainKeepsStream checks that a TCP stream carries data until its draining
+// relay closes the session, and a new one uses the new address.
 func TestDrainKeepsStream(t *testing.T) {
 	w, r1, r2 := meshRelays(t)
 	a := w.agent(t, "a", r1, agentOptions{tcp: true, relays: []identity.Relay{r1.ref(), r2.ref()}})
@@ -360,9 +358,8 @@ func TestNextRank(t *testing.T) {
 	}
 }
 
-// TestAttachFails checks that a relay that does not answer the Attach call
-// closes only its own session: the agent keeps the other session, and attaches
-// with backoff when the relay answers.
+// TestAttachFails checks that a relay with no answer to Attach closes only its
+// own session, and that the agent attaches again with backoff.
 func TestAttachFails(t *testing.T) {
 	w := newWorld(t)
 	r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")

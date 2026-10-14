@@ -318,9 +318,8 @@ func TestPeerAfterMoveToOtherRelay(t *testing.T) {
 	}
 }
 
-// TestPeerAfterDrain drains the relay of agent a, which attaches to the first of
-// the other relays. Agent b is on that relay or on a third relay. After the
-// drain ends, a and b have one peer session, on the new relay session of a.
+// TestPeerAfterDrain drains the relay of a, with b on the next relay or on a
+// third one. After the drain, a and b have one peer session.
 func TestPeerAfterDrain(t *testing.T) {
 	cases := []struct {
 		name  string

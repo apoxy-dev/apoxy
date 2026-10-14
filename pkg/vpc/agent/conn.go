@@ -35,9 +35,8 @@ const (
 	// connAttached is the state of the session that has the attachment of the
 	// agent. A visitor session is attached after its Visit call.
 	connAttached
-	// connDraining is the state of an attached session whose relay drains. It
-	// keeps its traffic until the relay closes it, and its addresses are not
-	// preferred.
+	// connDraining keeps the traffic of a session whose relay drains until the
+	// relay closes it. Its addresses are not preferred.
 	connDraining
 	// connEnded is the state of a closed session. The agent forgets it.
 	connEnded
@@ -73,9 +72,8 @@ type relayConn struct {
 	addr   string         // Relay address as dialed.
 	name   string         // TLS name of the relay.
 	roots  *x509.CertPool // Check relay certs and grants. Nil means the system roots.
-	// home is the attached session of a visitor session, and nil for the other
-	// sessions. A visitor session has no attachment: its grant, prefixes and
-	// address are those of home.
+	// home is the attached session of a visitor session, or nil. A visitor
+	// session uses the grant, the prefixes and the address of home.
 	home *relayConn
 	// extrasOf is home after the relay took the extra attachments of home in the
 	// visit. An older relay takes none. Guarded by Agent.attMu.
@@ -111,9 +109,8 @@ type relayConn struct {
 	// sets prefixes and self under it, because the sync reads self.
 	routes       routeTable
 	attachmentID string
-	// extras are the other attachments of this agent on rc, by attachment ID.
-	// Writers hold Agent.attMu, Agent.routeMu and Agent.mu, so readers hold one
-	// of them.
+	// extras are the other attachments of this agent on rc, by ID. Writers hold
+	// Agent.attMu, routeMu and mu, so readers hold one of them.
 	extras map[string]*extra
 	// sem limits the Attach calls of extras that run at once. attaching is the
 	// specs that they run for, guarded by Agent.mu.
@@ -122,9 +119,8 @@ type relayConn struct {
 
 	dnsServers, dnsSearch []string
 
-	// relay is the relay as a peer of the binding. Packets for QUIC-mode peers
-	// go to it, sealed with the SAs that the relay gives in PSP mode. The
-	// attach sets it.
+	// relay is the relay as a peer of the binding, set at the attach. Packets
+	// for QUIC-mode peers go to it with the SAs of the relay.
 	keyMu sync.Mutex
 	relay *psp.Peer
 	// bridgeTx closes when the relay SAs first apply, bridgeRx when the
@@ -185,9 +181,8 @@ func pspAddr(w *dp.Welcome, dialed netip.Addr) (netip.AddrPort, error) {
 	return netip.AddrPortFrom(host.Unmap(), uint16(port)), nil
 }
 
-// dialRelay adds a session to the relay at e in the state dialing, and runs it up to
-// the first Config. The caller attaches on the session or ends it. home is the
-// attached session of a visitor session, or nil.
+// dialRelay adds a session to the relay at e, with home for a visitor session,
+// up to the first Config. The caller attaches on it or ends it.
 func (a *Agent) dialRelay(ctx context.Context, e endpoint, home *relayConn) (*relayConn, error) {
 	host, _, err := net.SplitHostPort(e.addr)
 	if err != nil {
@@ -293,8 +288,7 @@ func (a *Agent) drain(rc *relayConn, alts []*dp.RelayRef) {
 }
 
 // end closes rc with its peer sessions and its visits, and queues OnDetach for
-// its addresses. It runs when the session is lost, when a dial fails, and when
-// the agent stops.
+// its addresses.
 func (a *Agent) end(rc *relayConn) {
 	a.attMu.Lock()
 	a.mu.Lock()
@@ -329,9 +323,8 @@ func (a *Agent) wakeRun() {
 	}
 }
 
-// primary returns the session with the default address of the agent: the
-// attached session with the lowest rank, or else the draining one with the
-// lowest rank. It returns nil when the agent has none.
+// primary returns the session with the default address: the attached one with
+// the lowest rank, else the draining one with the lowest rank, or nil.
 func (a *Agent) primary() *relayConn {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -378,11 +371,8 @@ func (rc *relayConn) live() bool {
 	return rc.state == connAttached || rc.state == connDraining
 }
 
-// usePrimary gives the primary session the packets with a source that no
-// session has, and makes OnRoutes follow its routes. It runs after each change
-// of the attached sessions, after the callbacks of the change: OnAttach of a
-// session comes before OnRoutes gives its routes. Until the first RouteDelta of the new primary
-// session, OnRoutes keeps the routes of the session before.
+// usePrimary gives the primary session the packets with no session source, and
+// OnRoutes its routes. Run it after the callbacks of the change.
 func (a *Agent) usePrimary() {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()

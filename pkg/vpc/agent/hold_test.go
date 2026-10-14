@@ -246,9 +246,8 @@ func TestFirstPacket(t *testing.T) {
 	}
 }
 
-// TestNoPeer checks that packets to a destination that no peer session can
-// get drop, and that the sender gets an ICMP error. A TCP dial stops at the
-// ICMPv6 error: code 3 gives no route to host, and code 1 permission denied.
+// TestNoPeer checks that packets to a destination with no peer session drop
+// with an ICMP error: code 3 is no route, code 1 permission denied.
 func TestNoPeer(t *testing.T) {
 	absent := func(attachEvent) netip.Addr { return netip.MustParseAddr("fd61:706f:7879:12:3400:99::1") }
 	peer := func(eb attachEvent) netip.Addr { return eb.addr }

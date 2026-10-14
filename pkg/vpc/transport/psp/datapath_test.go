@@ -75,9 +75,8 @@ func allReleased(t testing.TB, writes ...*keptWrite) {
 	}
 }
 
-// TestWriteFrames sends frames to a UDP socket in batches, and with one write
-// for each packet. The socket gets the PSP packets in order. No lane has a
-// sender, so the driver keeps no frame after a write.
+// TestWriteFrames checks that a UDP socket gets the PSP packets in order, in
+// batches and one by one, and that no frame is kept with no sender.
 func TestWriteFrames(t *testing.T) {
 	a, b := newPair(t)
 	offer(t, time.Now(), a, b)
@@ -144,9 +143,8 @@ func TestWriteFrames(t *testing.T) {
 	}
 }
 
-// TestSendLanes sends 64 flows to a peer that receives on some lanes. Each
-// lane sends from its own UDP port, and the peer opens the packets of all
-// lanes.
+// TestSendLanes sends 64 flows to a peer that receives on some lanes. Each lane
+// sends from its own UDP port, and the peer opens all packets.
 func TestSendLanes(t *testing.T) {
 	const flows = 64
 	cases := []struct {
@@ -270,9 +268,8 @@ func exits(t *testing.T, d *driver) {
 	}
 }
 
-// TestLaneOrder sends the frames of 4 flows on 4 lanes at the same time, in
-// many small calls. Each lane socket sends its frames in the order of the
-// calls, with frames that the driver copies and with frames that it keeps.
+// TestLaneOrder checks that each of 4 lane sockets sends its frames in the
+// order of many small calls, for copied and for kept frames.
 func TestLaneOrder(t *testing.T) {
 	const (
 		lanes   = 4

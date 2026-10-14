@@ -379,9 +379,8 @@ func (g *ownGrant) age(d time.Duration) {
 	g.got = time.Now().Add(-d)
 }
 
-// TestOwnGrant checks that the agent asks its relay for a new grant only when
-// its stored grant has the refresh age, by its own elapsed time, and that it
-// stores the new one.
+// TestOwnGrant checks that the agent asks its relay for a new grant only at the
+// refresh age, by its own elapsed time, and stores it.
 func TestOwnGrant(t *testing.T) {
 	cases := []struct {
 		name    string

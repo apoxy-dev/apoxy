@@ -146,9 +146,8 @@ func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
 	}
 }
 
-// Drain refuses new sessions, gives each entry of the relay the draining state,
-// and then tells each session to move, to alternates if it gets routes of other
-// relays. It returns when all end, or closes them at ctx end.
+// Drain refuses new sessions, makes each entry draining, then tells each
+// session to move. It returns when all end, or closes them at ctx end.
 func (srv *Server) Drain(ctx context.Context, alternates []*dp.RelayRef) {
 	srv.mu.Lock()
 	srv.draining = true

@@ -207,11 +207,8 @@ type benchSet struct {
 	k      *netstack.Kept
 }
 
-// BenchmarkLaneQueue gives the 1280 B packets of one set to the queue of a
-// lane, as the sender of a send pipe does: the driver copies them, or keeps
-// them. The lane sender only frees the batches. With cold, another goroutine
-// writes each packet before the write, as a seal worker does. ns/packet is
-// the time in the write.
+// BenchmarkLaneQueue measures the write of 1280 B packets to a lane queue,
+// copied or kept. With cold, another goroutine writes each one first.
 func BenchmarkLaneQueue(b *testing.B) {
 	for _, bc := range []struct{ kept, cold bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		b.Run(fmt.Sprintf("kept=%t/cold=%t", bc.kept, bc.cold), func(b *testing.B) {

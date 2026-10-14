@@ -53,9 +53,8 @@ func newOwnGrant(rc *relayConn, g *dp.AttachmentGrant, id string) *ownGrant {
 	return &ownGrant{rc: rc, id: id, cur: g, got: time.Now()}
 }
 
-// get returns the grant to send: the stored one while its age is below
-// grantRefreshAge, else a new one from the relay, which get stores. The age
-// is the time of this host since it got the grant, so its clock has no effect.
+// get returns the stored grant while its age is below grantRefreshAge, else a
+// new one. The age is elapsed time of this host, so no clock matters.
 func (g *ownGrant) get(ctx context.Context) (*dp.AttachmentGrant, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -73,9 +72,8 @@ func (g *ownGrant) get(ctx context.Context) (*dp.AttachmentGrant, error) {
 	return g.cur, nil
 }
 
-// verifyOwn checks a grant that the relay of rc signed for this agent in this
-// moment. Such a grant has ended only if the clock of this host or of the
-// relay is wrong.
+// verifyOwn checks a grant that the relay of rc signed for this agent now. It
+// has ended only if the clock of this host or of the relay is wrong.
 func (rc *relayConn) verifyOwn(g *dp.AttachmentGrant) (*dp.GrantClaims, error) {
 	now := time.Now()
 	claims, err := relay.VerifyGrant(g, rc.roots, now)
@@ -129,8 +127,7 @@ func (rc *relayConn) attachExtra(ctx context.Context, s *AttachmentSpec) (*extra
 }
 
 // addExtra adds x to rc and queues its grant for the peers on rc. Routes of x
-// that came before leave the route table of rc. The packets from the addresses
-// of x go on rc. a.attMu must be held.
+// that came before leave the route table. a.attMu must be held.
 func (a *Agent) addExtra(rc *relayConn, x *extra) {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
@@ -261,8 +258,7 @@ func (p *peer) queueGrants(add *extra, remove string) {
 }
 
 // sendGrants sends the queued grant changes to the peer, one call at a time,
-// until the queue is empty. On an error it closes the peer session. A peer
-// that does not serve Grants keeps its session and gets no more changes.
+// until the queue is empty. An error closes the peer session.
 func (p *peer) sendGrants() {
 	select {
 	case <-p.ready:
@@ -364,10 +360,8 @@ func (a *Agent) addGrants(p *peer, gs []*dp.AttachmentGrant) error {
 	return errors.Join(errs...)
 }
 
-// waitGrant returns the peer session on rc that covers dst. res is the
-// ResolvePeer answer for dst. When dst is another attachment of an open peer,
-// its grant can come after its route, so waitGrant waits for it up to
-// duplicateWait. Else it returns nil.
+// waitGrant returns the peer session on rc that covers dst, or nil. It waits up
+// to duplicateWait for the grant of another attachment of a peer.
 func (a *Agent) waitGrant(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp.ResolvePeerResponse) *peer {
 	if res.GetSubject() == "" {
 		return nil

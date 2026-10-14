@@ -44,9 +44,8 @@ func geneve(optWords, n int) []byte {
 	return b
 }
 
-// TestPacketHandler sends packets to the PSP socket, and checks that the
-// relay forwards PSP packets by the SPI rows of the sender and drops the
-// others. Only the read loop of the relay transport calls the handler.
+// TestPacketHandler checks that the relay forwards PSP packets by the SPI rows
+// of the sender and drops the others. Only the read loop calls it.
 func TestPacketHandler(t *testing.T) {
 	ca := newCA(t)
 	h := newHarness(t, ca)

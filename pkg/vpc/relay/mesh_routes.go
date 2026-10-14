@@ -70,9 +70,8 @@ func (e *presenceEntry) routeState() dp.AnnouncerState {
 	return e.state
 }
 
-// restateClaim gives the record of the attachment e of another relay the state
-// and the hold time of e, and selects again for each prefix with an entry of
-// e. Router.mu must be held.
+// restateClaim gives the record of e, an attachment of another relay, its new
+// state and hold time, and selects again. Router.mu must be held.
 func (r *Router) restateClaim(e *presenceEntry) {
 	state, from := e.routeState(), e.activeFrom
 	if e.cand.state == state && e.cand.activeFrom.Equal(from) {
@@ -90,9 +89,8 @@ func (r *Router) restateClaim(e *presenceEntry) {
 	}
 }
 
-// claim adds the attachment e of another relay to the domain of its VPC, with
-// an entry in the route table for each of its prefixes. A wrong network ID
-// gives an error. Router.mu must be held.
+// claim adds e, an attachment of another relay, to the domain of its VPC. A
+// wrong network ID gives an error. Router.mu must be held.
 func (r *Router) claim(e *presenceEntry) error {
 	e.cand = candidate{
 		agent: agentKey{id: e.subject, name: e.agent, instance: e.instance},
@@ -132,9 +130,8 @@ func (r *Router) unclaim(e *presenceEntry) {
 	r.dropDomain(e.vpc, d)
 }
 
-// routeClaim makes the attachment e of another relay an announcer of p in d,
-// or removes its entry: an attachment is an announcer only in a VPC that this
-// relay knows with the network ID of e. Router.mu must be held.
+// routeClaim makes e an announcer of p in d only if this relay knows the VPC
+// with the network ID of e, else removes it. Router.mu must be held.
 func (r *Router) routeClaim(d *domain, p netip.Prefix, e *presenceEntry) {
 	if d.known && e.networkID == d.networkID {
 		r.addAnnouncer(d, p, target{s: r.record(e), origin: e.id}, &e.cand)
@@ -143,9 +140,8 @@ func (r *Router) routeClaim(d *domain, p netip.Prefix, e *presenceEntry) {
 	}
 }
 
-// know sets the network ID of d from a Session call, and makes the entries
-// with that ID announcers. It returns the number of the others. Router.mu
-// must be held.
+// know sets the network ID of d and makes the entries with that ID announcers.
+// It returns the count of the others. Router.mu must be held.
 func (r *Router) know(d *domain, id uint32) int {
 	if d.known && d.networkID == id {
 		return 0

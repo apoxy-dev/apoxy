@@ -14,10 +14,8 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// caller returns the session of the call. A call with no session, for
-// example from the JSON debug handler or from a connection whose agent cert
-// failed the check, gets Unauthenticated. A shard connection carries only
-// data, so its calls get FailedPrecondition.
+// caller returns the session of the call. No session gets Unauthenticated, and
+// a shard connection, which carries only data, FailedPrecondition.
 func (r *Router) caller(ctx context.Context) (*Session, error) {
 	if conn := rpc.ConnFromContext(ctx); conn != nil {
 		r.mu.RLock()
@@ -147,14 +145,8 @@ func (r *Router) visitRef(c *Session, key VPCKey, dst netip.Addr, home string) *
 	return m.awayRef(home)
 }
 
-// RegisterSPI adds rows from the caller to the receiver of the destination.
-// It installs all SPIs or none. An SPI that the caller holds for another
-// destination gets AlreadyExists. The lane of an SPI sets only the source of
-// its XDP row: Forward takes the SPI from all sources of the caller. The SA
-// lane sets the lane port of the receiver.
-//
-// A receiver on another relay gets rows to that relay, which knows a row only by
-// its SPI: an SPI that another row to it or one of its trunk SAs has gets AlreadyExists.
+// RegisterSPI adds rows from the caller to the receiver of the destination, all
+// or none. An SPI in use for another target gets AlreadyExists.
 func (srv *Server) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*emptypb.Empty, error) {
 	c, err := srv.R.caller(ctx)
 	if err != nil {

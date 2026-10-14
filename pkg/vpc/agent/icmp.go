@@ -26,9 +26,8 @@ func unicastDst(pkt []byte) (netip.Addr, bool) {
 	return dst, dst.IsGlobalUnicast()
 }
 
-// unreachable returns an ICMP destination unreachable error for pkt, or nil
-// when pkt must get no error. An ICMPv6 error comes from the address from, and
-// an ICMPv4 error comes from the destination of pkt.
+// unreachable returns an ICMP unreachable error for pkt, or nil for none.
+// ICMPv6 comes from the address from, ICMPv4 from the destination of pkt.
 func unreachable(pkt []byte, from netip.Addr, denied bool) []byte {
 	switch {
 	case len(pkt) >= header.IPv4MinimumSize && pkt[0]>>4 == 4:

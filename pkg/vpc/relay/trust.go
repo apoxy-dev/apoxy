@@ -30,8 +30,7 @@ type Trust interface {
 }
 
 // checkCert checks the agent cert chain (leaf first) of a new session: the
-// chain goes to the agent CA of the project in the SAN, the SAN is an agent
-// ID, and the agent is not revoked in the VPC of the SAN.
+// agent CA of the SAN project, an agent ID SAN, and no revocation.
 func (r *Router) checkCert(chain []*x509.Certificate, now time.Time) (identity.ID, error) {
 	if r.trust == nil {
 		return identity.ID{}, errors.New("relay has no trust data")
@@ -81,9 +80,8 @@ func (r *Router) verifyConnection(cs tls.ConnectionState) error {
 	return err
 }
 
-// Recheck closes the sessions whose agent cert now fails the check. Call it
-// when the agent CA or a revocation list changes. The check is at the time of
-// the handshake, because a session does not end with its cert.
+// Recheck closes the sessions whose agent cert now fails. The check uses the
+// handshake time, because a session does not end with its cert.
 func (r *Router) Recheck() {
 	r.mu.RLock()
 	sessions := make([]*Session, 0, len(r.sessions))

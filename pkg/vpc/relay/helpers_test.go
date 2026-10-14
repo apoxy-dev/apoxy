@@ -562,9 +562,8 @@ func open(t *testing.T, a agent) (syncStream, *dp.Welcome, *dp.Config) {
 	return st, w, c
 }
 
-// openMode starts the Session call of a. For PSP mode it sends a path probe
-// and changes the session with a Rekey call, and it returns the relay SAs. The
-// relay then has no SAs of the agent: the test gives its own.
+// openMode starts the Session call of a, for PSP mode with a probe and a Rekey
+// call. It returns the relay SAs; the test gives the agent SAs.
 func openMode(t *testing.T, a agent, mode dp.Mode) (syncStream, *dp.Welcome, *dp.Config, *dp.KeysRequest) {
 	t.Helper()
 	st, err := a.c.Session(context.Background())

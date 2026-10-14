@@ -427,8 +427,7 @@ func (ta *testAgent) newCert(t *testing.T, old *identity.Credential) {
 }
 
 // TestRenew checks that a new agent cert changes nothing on an open relay
-// session: the connection, the address and a TCP stream stay, and the agent
-// runs no callback. An agent with an identity file does not enroll.
+// session and runs no callback. An identity file agent does not enroll.
 func TestRenew(t *testing.T) {
 	cases := []struct {
 		name string
@@ -474,9 +473,8 @@ func TestRenew(t *testing.T) {
 	}
 }
 
-// TestSessionAfterCertExpiry checks a relay session after the cert of its
-// handshake expired: it carries data, and the agent opens a peer session and
-// starts a visit on it.
+// TestSessionAfterCertExpiry checks that a relay session carries data, opens a
+// peer session and starts a visit after its cert expired.
 func TestSessionAfterCertExpiry(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -517,9 +515,8 @@ func TestSessionAfterCertExpiry(t *testing.T) {
 	}
 }
 
-// TestSharedIdentityFile runs two agents with one identity file: one cert and
-// one key, and a name for each agent. A new file gives the two agents the new
-// cert, and their relay sessions stay.
+// TestSharedIdentityFile runs two agents with one identity file. A new file
+// gives the two agents the new cert, and their relay sessions stay.
 func TestSharedIdentityFile(t *testing.T) {
 	w := newWorld(t)
 	r := w.relay(t, "relay-1")
@@ -556,9 +553,8 @@ func TestSharedIdentityFile(t *testing.T) {
 	assert.Zero(t, a1.enrolls.Load()+a2.enrolls.Load(), "an agent with an identity file does not enroll")
 }
 
-// TestIdentityFileExpires checks that an agent with an identity file keeps
-// its relay session after the cert of the file expired, and that Run returns
-// an error when the agent then has no session.
+// TestIdentityFileExpires checks that the agent keeps its relay session after
+// the cert of the file expired, and that Run fails with no session.
 func TestIdentityFileExpires(t *testing.T) {
 	cases := []struct {
 		name string
@@ -731,9 +727,8 @@ func TestDrain(t *testing.T) {
 	}
 }
 
-// TestDrainNoAlternate drains the only relay of an agent, which gets no
-// alternate. The agent keeps its session until the relay closes it, and dials
-// no relay before.
+// TestDrainNoAlternate drains the only relay of an agent. The agent keeps its
+// session until the relay closes it, and dials no relay before.
 func TestDrainNoAlternate(t *testing.T) {
 	w := newWorld(t)
 	r := w.relay(t, "relay-1")
@@ -795,9 +790,8 @@ func TestDrainMesh(t *testing.T) {
 	closedByDrain(t, prev)
 }
 
-// TestRelist checks that the agent enrolls again for a new relay list when
-// all relays fail or the list is empty, and keeps the cached list while the
-// enroll fails.
+// TestRelist checks that the agent enrolls again when all relays fail or the
+// list is empty, and keeps the cached list while the enroll fails.
 func TestRelist(t *testing.T) {
 	oldMin, oldMax := relistMin, relistMax
 	relistMin, relistMax = 100*time.Millisecond, 400*time.Millisecond

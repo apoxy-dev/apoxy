@@ -132,9 +132,8 @@ func (p *Peer) Apply(req keys.Request, now time.Time) ([]uint32, error) {
 	return refused, err
 }
 
-// SetLaneSockets lets lanes 1 to n-1 send to the peer from their own socket.
-// The other lanes send from the agent socket. A new peer uses the sockets of
-// all lanes.
+// SetLaneSockets lets lanes 1 to n-1 send from their own socket; the others use
+// the agent socket. A new peer uses the sockets of all lanes.
 func (p *Peer) SetLaneSockets(n int) {
 	p.sockets.Store(int32(min(max(n, 1), keys.MaxLanes)))
 }

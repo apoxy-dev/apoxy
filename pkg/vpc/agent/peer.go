@@ -130,10 +130,8 @@ func (p *peer) has(pfx netip.Prefix) bool {
 	return false
 }
 
-// sameAttachment reports whether p is a session with the attachment id of
-// subject, or with an attachment of subject that has one of prefixes. An agent
-// has one attachment for each of its relay sessions, and each one is a peer
-// of its own. Many agents can have one subject.
+// sameAttachment reports whether p has the attachment id of subject, or one of
+// subject with one of prefixes. Many agents can have one subject.
 func (p *peer) sameAttachment(subject, id string, prefixes []netip.Prefix) bool {
 	return p.subject == subject && (p.attachmentID() == id || slices.ContainsFunc(prefixes, p.has))
 }
@@ -211,8 +209,7 @@ func (a *Agent) newPeer(rc *relayConn, qc quic.Connection, dst netip.Addr) (*pee
 }
 
 // Connect opens a peer session to the agent at dst on the relay session with
-// the lowest rank, and exchanges keys with it. It returns when PSP works in
-// both directions.
+// the lowest rank. It returns when PSP works in both directions.
 func (a *Agent) Connect(ctx context.Context, dst netip.Addr) error {
 	rc := a.primary()
 	if rc == nil {
@@ -561,9 +558,8 @@ func (a *Agent) admitQUIC(p *peer, v *dp.Version, g *dp.AttachmentGrant, instanc
 	if err != nil {
 		return err
 	}
-	// A PSP pair with the same attachment is from before the agent changed its mode.
-	// An older QUIC pair that the same agent dialed is lost or moved; a crossed dial stays.
-	// away is as in admit: a prefix has a route on one relay session of a link only.
+	// A PSP pair of this attachment is older than its mode change. An older
+	// QUIC pair of the same dialer is lost or moved; a crossed dial stays.
 	a.mu.Lock()
 	var old []*peer
 	var away *peer
@@ -799,9 +795,8 @@ func (p *peer) register(ctx context.Context, sas []keys.SA) error {
 	return nil
 }
 
-// registerRequest returns the RegisterSPI request for the SPIs of SA lanes.
-// The relay gets the socket lane and the SA lane of each SPI, or no lanes when
-// all are 0.
+// registerRequest returns the RegisterSPI request for the SPIs of SA lanes,
+// with the socket lane and SA lane of each SPI, or none when all are 0.
 func (p *peer) registerRequest(spis []uint32, lanes []int, ttl time.Duration) *dp.RegisterSPIRequest {
 	req := &dp.RegisterSPIRequest{Vpc: p.rc.ref, Destination: p.addr.String(), Spis: spis, ExpiresIn: durationpb.New(ttl)}
 	sock, sa := make([]uint32, len(lanes)), make([]uint32, len(lanes))

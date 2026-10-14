@@ -239,9 +239,8 @@ func (r *testRelay) takeMesh(qc quic.Connection) bool {
 	return true
 }
 
-// cutMesh ends the mesh path between x and y as a lost path: the relay that
-// takes the mesh session closes it with no code, and refuses the next ones.
-// The agents reach the two relays as before. heal opens the path again.
+// cutMesh ends the mesh path between x and y as a lost path: no close code, and
+// the next sessions are refused. heal opens the path again.
 func cutMesh(x, y *testRelay) (heal func()) {
 	// The relay with the lower name dials.
 	dialer, taker := x, y

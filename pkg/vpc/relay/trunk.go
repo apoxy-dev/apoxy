@@ -658,9 +658,8 @@ func (t *trunk) ready(p *trunkPair) {
 	close(ts.ready)
 }
 
-// rekeyed takes the rekeys of the trunk peers out of ups and gives each one
-// to the key exchange of its pair. It returns the other updates. It also
-// forgets the trunk SAs of the members that ended before now.
+// rekeyed gives each trunk rekey in ups to the key exchange of its pair and
+// returns the other updates. It forgets the SAs of ended members.
 func (t *trunk) rekeyed(br *bridge, ups []keys.Update, now time.Time) []keys.Update {
 	t.mu.Lock()
 	defer t.mu.Unlock()

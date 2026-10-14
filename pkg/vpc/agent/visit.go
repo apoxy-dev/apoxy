@@ -182,9 +182,8 @@ func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 	}
 }
 
-// connectVisit reaches dst after the answer REACH_VISIT of home with the relay
-// ref. The agent opens a visitor session to that relay and a peer session on
-// it. The agent with the higher address first waits for the visit of its peer.
+// connectVisit opens a visitor session to the relay of ref and a peer session
+// on it. The agent with the higher address first waits for its peer.
 func (a *Agent) connectVisit(ctx context.Context, home *relayConn, dst netip.Addr, ref *dp.RelayRef) error {
 	if home.visitor() || len(ref.GetAddresses()) == 0 {
 		return fmt.Errorf("relay has no path to peer %s (%v)", dst, dp.Reach_REACH_VISIT)
@@ -376,9 +375,8 @@ func (a *Agent) openVisit(ctx context.Context, home *relayConn, ref *dp.RelayRef
 	return nil, errors.Join(errs...)
 }
 
-// startVisit runs Visit on rc after hello with a grant and the address of
-// its home, then makes the relay peer and the peer listener on the link of its
-// home, as attach does.
+// startVisit runs Visit on rc with a grant and the address of its home, then
+// makes the relay peer and the peer listener on the link of home.
 func (rc *relayConn) startVisit(ctx context.Context) error {
 	a, home := rc.a, rc.home
 	// A relay that does not answer in time ends the visit.
@@ -529,9 +527,8 @@ func (a *Agent) keepVisit(v *visit, retry *pspRetry) {
 	}
 }
 
-// checkVisit asks the home relay how it reaches each peer of v. The peers
-// that it reaches move back to the attached session. The visit ends when no
-// peer uses it, and checkVisit reports that.
+// checkVisit moves the peers of v that the home relay reaches back to the
+// attached session. It reports whether the visit ended with no peer.
 func (a *Agent) checkVisit(v *visit) bool {
 	a.mu.Lock()
 	attached, busy := v.home.live(), v.users > 0

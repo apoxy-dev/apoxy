@@ -70,9 +70,8 @@ func (c *candidate) restate(state dp.AnnouncerState, now time.Time) {
 	}
 }
 
-// announcer is one entry of the route table: an attachment that announces a
-// prefix. The prefix and the attachment ID are the key of the entry. Each
-// connection of an agent to a relay is its own announcer.
+// announcer is one entry of the route table, with the key prefix and attachment
+// ID. Each connection of an agent to a relay is its own announcer.
 type announcer struct {
 	target
 	// candidate is the record of the attachment, which each entry of the
@@ -124,14 +123,8 @@ func (e *announcer) held(now time.Time) int {
 	return 0
 }
 
-// selectOrder is the selection of the route table at the time now. It returns
-// one entry for each connection of an agent to a relay, the newest one: the
-// active announcer first, then the standby announcers in the order that they
-// become active. The order is the state (normal, draining, suspect), then the
-// hold time, then the lower hash, which selects one agent process. The
-// connections of that agent come in the order of their rank, then of the relay
-// name, then of the attachment ID. The result depends only on the set and on
-// now, and not on the order of entries.
+// selectOrder returns the active announcer, then the standby ones: by state,
+// hold time and agent hash, then rank. Only the set and now decide.
 func selectOrder(entries []*announcer, now time.Time) []*announcer {
 	order := make([]*announcer, 0, len(entries))
 	for _, e := range entries {
@@ -144,8 +137,7 @@ func selectOrder(entries []*announcer, now time.Time) []*announcer {
 		}
 	}
 	// When each normal entry is in its hold time, the one whose hold time ends
-	// first is active, and stays active at that end. The usual order comes
-	// back when the last hold time ends, which can move the active role once.
+	// first is active, and it stays active at that end.
 	allHeld := !slices.ContainsFunc(order, func(e *announcer) bool {
 		return e.state == dp.AnnouncerState_ANNOUNCER_STATE_NORMAL && e.held(now) == 0
 	})
@@ -203,9 +195,8 @@ func (set *routeSet) find(s *Session, origin string) *announcer {
 	return nil
 }
 
-// sends reports whether s can send from the prefix: each announcer can, also a
-// standby one, because traffic from its network can leave through it. It
-// takes no lock.
+// sends reports whether s can send from the prefix. A standby announcer can
+// too: traffic from its network can leave through it. It takes no lock.
 func (set *routeSet) sends(s *Session) bool {
 	senders := set.senders.Load()
 	return senders != nil && slices.Contains(*senders, s)
@@ -271,9 +262,8 @@ func (d *domain) activeOf(a netip.Addr) target {
 	return target{}
 }
 
-// addAnnouncer adds an entry for p to d for the attachment of t, which has the
-// record c, and selects again. An entry that d has stays. Router.mu must be
-// held for writing.
+// addAnnouncer adds an entry for p to d for the attachment of t with the record
+// c, and selects again. Router.mu must be held for writing.
 func (r *Router) addAnnouncer(d *domain, p netip.Prefix, t target, c *candidate) {
 	set := d.routes[p]
 	if set == nil {
@@ -354,9 +344,8 @@ func (r *Router) removeAnnouncers(s *Session) {
 	}
 }
 
-// restated runs the selection for p after the record of an entry of set got a
-// new state or hold time. No entry came or went, so the sessions and the rows
-// have work only if the order is new. Router.mu must be held for writing.
+// restated selects for p after an entry got a new state. Sessions and rows
+// change only with a new order. Router.mu must be held for writing.
 func (r *Router) restated(d *domain, p netip.Prefix, set *routeSet) {
 	was := set.order
 	r.reselect(d, p, set)
@@ -381,8 +370,7 @@ func (r *Router) reselect(d *domain, p netip.Prefix, set *routeSet) {
 }
 
 // reroute gives the sessions of d the change of the selection for p from was,
-// and the rows to the active announcer before go to the new one. Router.mu
-// must be held for writing.
+// and moves the rows. Router.mu must be held for writing.
 func (r *Router) reroute(d *domain, p netip.Prefix, set *routeSet, was []*announcer) {
 	d.queueRoute(p, was, set.order)
 	r.newEpoch()
@@ -446,11 +434,8 @@ func (r *Router) endHolds() {
 	r.armHolds(now)
 }
 
-// moveRows gives the rows to the addresses of p on the session of from, which
-// was the active announcer of p, to the target that their senders reach now.
-// With no announcer of p left, to is nil and a row goes to no other session:
-// the route of a shorter prefix does not take it. Router.mu must be held for
-// writing.
+// moveRows gives the rows to p on from to the new target. With to nil they go
+// nowhere, not to a shorter prefix. Router.mu must be held for writing.
 func (r *Router) moveRows(p netip.Prefix, from, to *announcer) {
 	for w := range from.s.inbound {
 		if !p.Contains(w.dst) {
@@ -468,10 +453,8 @@ func (r *Router) moveRows(p netip.Prefix, from, to *announcer) {
 	}
 }
 
-// sees returns the announcer that s gets in RouteDelta for a prefix with the
-// selection order, or nil. A session gets no route for a prefix that its own
-// agent announces, and a route to another relay only with meshRoutes.
-// Router.mu must be held.
+// sees returns the announcer of order for s, or nil: never its own agent,
+// another relay only with meshRoutes. Router.mu must be held.
 func (s *Session) sees(order []*announcer) *announcer {
 	if len(order) == 0 {
 		return nil
@@ -523,9 +506,8 @@ func (d *domain) queueRoute(p netip.Prefix, was, now []*announcer) {
 	}
 }
 
-// queueRoutes puts each route of d that s gets in the sync queue of s, in the
-// place of the queue that s has. Call it only before the first RouteDelta of
-// s. Router.mu must be held.
+// queueRoutes puts each route of d that s gets in the sync queue of s. Call it
+// only before the first RouteDelta of s. Router.mu must be held.
 func (d *domain) queueRoutes(s *Session) {
 	clear(s.sync.routes)
 	clear(s.sync.standby)

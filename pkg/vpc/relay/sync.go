@@ -120,9 +120,8 @@ func (s *Session) sweepNoRoute(now time.Time) {
 	}
 }
 
-// takeSync returns the messages that wait for the agent. Route changes
-// become one RouteDelta with the next revision. The first RouteDelta has all
-// routes of the VPC, and it comes also when the VPC has no routes.
+// takeSync returns the messages that wait for the agent, with the route changes
+// as one RouteDelta. The first one comes also with no routes.
 func (r *Router) takeSync(s *Session) []*dp.SessionResponse {
 	r.mu.Lock()
 	defer r.mu.Unlock()

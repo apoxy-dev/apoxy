@@ -105,11 +105,8 @@ func (rc *relayConn) attachments() []Attachment {
 	return out
 }
 
-// Attach adds an attachment on each attached relay session of the agent. It
-// returns the attachment on the session with the lowest rank that took it,
-// after the relay grant is verified and OnAttachment ran. The agent attaches
-// it on each new relay session until Detach. ctx limits the wait for a free
-// Attach call.
+// Attach adds an attachment on each relay session until Detach. It returns the
+// one on the lowest-rank session that took it. ctx limits the wait.
 func (a *Agent) Attach(ctx context.Context, s AttachmentSpec) (Attachment, error) {
 	if err := s.validate(); err != nil {
 		return Attachment{}, err
@@ -174,8 +171,7 @@ func (a *Agent) Detach(ctx context.Context, name string) error {
 }
 
 // Attachments returns the attachment of Config on each relay session in rank
-// order, then the extra attachments by name, one for each session that has it.
-// An attachment that no session has is there one time, with no address.
+// order, then the extras by name. One with no session has no address.
 func (a *Agent) Attachments() []Attachment {
 	a.attMu.Lock()
 	defer a.attMu.Unlock()
@@ -260,9 +256,8 @@ func (a *Agent) attachOne(ctx context.Context, rc *relayConn, s *AttachmentSpec)
 	return a.attachClaimed(rc, s)
 }
 
-// attachClaimed runs Attach on rc for s, which the caller claimed, and adds
-// the attachment to rc. If Detach removed s while the call ran, it detaches
-// the attachment again.
+// attachClaimed attaches s, which the caller claimed, on rc. If Detach removed
+// s while the call ran, it detaches the attachment again.
 func (a *Agent) attachClaimed(rc *relayConn, s *AttachmentSpec) (*extra, error) {
 	ctx, cancel := context.WithTimeout(rc.ctx, openTimeout)
 	defer cancel()
@@ -297,10 +292,8 @@ func (a *Agent) attachClaimed(rc *relayConn, s *AttachmentSpec) (*extra, error) 
 	return x, err
 }
 
-// attachAll attaches the specs that the caller claimed on rc, at most
-// maxInFlight at a time. When ctx ends, it returns and the calls that run go
-// on. It returns the number of specs that failed or did not start, and an
-// error of one of them.
+// attachAll attaches the claimed specs on rc, at most maxInFlight at a time. It
+// returns the count that failed or did not start, and one error.
 func (a *Agent) attachAll(ctx context.Context, rc *relayConn, specs []*AttachmentSpec) (int, error) {
 	var (
 		mu     sync.Mutex
@@ -410,9 +403,8 @@ type placed struct {
 	x  *extra
 }
 
-// forget removes s from the attachments to keep, and its attachments from the
-// relay sessions and their peers. It queues OnDetach for the attachment on
-// each session that is not a visitor session. attMu must be held.
+// forget removes s and its attachments from the relay sessions and their peers,
+// and queues OnDetach for each one. attMu must be held.
 func (a *Agent) forget(s *AttachmentSpec) []placed {
 	if a.specs[s.Name] == s {
 		delete(a.specs, s.Name)

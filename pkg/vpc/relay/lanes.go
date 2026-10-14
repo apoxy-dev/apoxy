@@ -15,9 +15,8 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// RegisterLanes sets the lane ports of the caller. Forward then takes PSP
-// packets from these ports at the session address as from the session. With
-// receive, it also sends the SA lanes of the caller to these ports.
+// RegisterLanes sets the lane ports of the caller, which Forward takes as
+// session sources. With receive, the SA lanes of the caller go to them.
 func (srv *Server) RegisterLanes(ctx context.Context, in *dp.RegisterLanesRequest) (*emptypb.Empty, error) {
 	c, err := srv.R.caller(ctx)
 	if err != nil {
@@ -79,9 +78,8 @@ func (r *Router) dropLanes(s *Session) {
 	s.lanes, s.receive, s.laneSeen = nil, false, 0
 }
 
-// dst returns where the PSP packets of SA lane go to s: lane port lane mod
-// (n+1) of s, where 0 is the session address. A lane port with no keepalive
-// yet is not used. Router.mu must be held.
+// dst returns where SA lane goes to s: port lane mod (n+1), with 0 the session
+// address, if it has a keepalive. Router.mu must be held.
 func (s *Session) dst(lane int) netip.AddrPort {
 	if lane == 0 || !s.receive {
 		return s.addr
@@ -167,9 +165,8 @@ func (s *Session) from(a netip.AddrPort, now time.Time) bool {
 	return ok
 }
 
-// laneOf returns the lane of source a of s: 0 for its address, also the
-// previous one in the overlap. It returns false when a is not a source of s at
-// now. Router.mu must be held.
+// laneOf returns the lane of source a of s, with 0 for its address and its
+// previous one, or false for no source. Router.mu must be held.
 func (s *Session) laneOf(a netip.AddrPort, now time.Time) (int, bool) {
 	if a == s.addr || (a == s.prev && !now.After(s.prevUntil)) {
 		return 0, true

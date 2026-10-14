@@ -48,9 +48,8 @@ func lossBetween(x, y rxCount) float64 {
 	return 1 - float64(y.packets-x.packets)/float64(y.seq-x.seq)
 }
 
-// TestBreaker sends UDP from a to b at twice the meter rate of the relay. The
-// breaker of a trips on the receive reports of b, and its limiter drops the
-// excess at a, so that the relay meter stops dropping.
+// TestBreaker sends UDP at twice the meter rate of the relay. The breaker of
+// the sender trips on the receive reports, so the meter drops no more.
 func TestBreaker(t *testing.T) {
 	const meter = 250_000 // Bytes per second.
 	w := newWorld(t)

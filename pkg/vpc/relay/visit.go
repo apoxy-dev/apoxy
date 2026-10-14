@@ -24,9 +24,8 @@ const (
 	maxVisitPrefixes = maxEntryPrefixes
 )
 
-// visit is the use of an address of another relay by a session of this relay.
-// The session gets no route and no attachment, so no other relay learns of it.
-// The relay checks the grant one time, at the call: a visit has no time limit.
+// visit is the use of an address of another relay by a session here, with no
+// route or attachment. The grant check is at the call: no time limit.
 type visit struct {
 	prefix netip.Prefix // Prefix of the grant that has the address.
 	id     string       // Attachment of the grant, on the home relay.
@@ -161,9 +160,8 @@ func (r *Router) has(s *Session, a netip.Addr) bool {
 	return set != nil && set.sends(s)
 }
 
-// Visit makes the session of the caller a visitor: the sessions of this relay
-// reach its address of another relay of the mesh on this session. One more call
-// with the grant of another attachment adds the address of that attachment.
+// Visit makes the caller a visitor: this relay reaches its address of another
+// relay on this session. One more call adds another attachment.
 func (srv *Server) Visit(ctx context.Context, in *dp.VisitRequest) (*emptypb.Empty, error) {
 	s, err := srv.R.caller(ctx)
 	if err != nil {
@@ -266,9 +264,8 @@ func (r *Router) checkVisit(s *Session, m *Mesh, addr netip.Addr, g *dp.Attachme
 	return nil, rpc.Errorf(rpc.PermissionDenied, "address %s is not in the grant", addr)
 }
 
-// endVisit ends the visits of s for which end is true, and reports whether it
-// ended one. The rows to their prefixes go to the owner that their senders
-// reach then. Router.mu must be held for writing.
+// endVisit ends the visits of s that end selects, and reports whether one
+// ended. Their rows go to the owner. Router.mu must be held for writing.
 func (r *Router) endVisit(s *Session, reason string, end func(*visit) bool) bool {
 	cur := s.visit.Load()
 	if cur == nil {

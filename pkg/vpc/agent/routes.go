@@ -232,9 +232,8 @@ func (a *Agent) removeAdvertised(p *peer, pfx netip.Prefix) {
 	}
 }
 
-// peerAddr returns the overlay address of the attachment that packets to dst
-// go to on rc: the origin of the longest route with dst, or dst in the VPC
-// network. It reports false when no attachment can get packets to dst.
+// peerAddr returns the overlay address that gets the packets to dst on rc: the
+// origin of the longest route, or dst itself in the VPC network.
 func (a *Agent) peerAddr(rc *relayConn, dst netip.Addr) (netip.Addr, bool) {
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()

@@ -197,9 +197,8 @@ func (a *Agent) Stats() Stats {
 	return Stats{HoldDrops: a.holds.drops.Load()}
 }
 
-// onNoRoute gets the packets that the binding has no route or no SA for, with
-// the link of their source address. The first packet to a unicast destination
-// opens a peer session for it on the relay session of the link.
+// onNoRoute gets the packets that the binding has no route or no SA for. The
+// first one to a unicast destination opens a peer session on its link.
 func (a *Agent) onNoRoute(l *psp.Link, pkt []byte) {
 	dst, ok := unicastDst(pkt)
 	if !ok {

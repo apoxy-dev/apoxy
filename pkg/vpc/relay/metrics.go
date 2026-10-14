@@ -256,9 +256,8 @@ func (r *Router) Describe(ch chan<- *prometheus.Desc) {
 	ch <- meshRTTDesc
 }
 
-// Collect implements prometheus.Collector. It gives the drop counters of the
-// socket path and of the XDP program, the XDP counters, and the counters and
-// the RTT of each mesh member.
+// Collect implements prometheus.Collector with the drop counters, the XDP
+// counters, and the counters and the RTT of each mesh member.
 func (r *Router) Collect(ch chan<- prometheus.Metric) {
 	r.collectTrunk(ch)
 	x := r.xdpStatsNow()

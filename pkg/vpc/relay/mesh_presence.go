@@ -468,9 +468,8 @@ func (p *presence) apply(s *MeshSession, u *dp.PresenceUpdate) error {
 	return err
 }
 
-// keep applies the checked changes of the Presence call of s, where the higher
-// generation of an attachment wins. refuse gets each entry with no routes. An
-// entry with only a new state changes in place, so its routes and rows stay.
+// keep applies the checked changes of the Presence call of s; the higher
+// generation wins. An entry with only a new state changes in place.
 func (p *presence) keep(s *MeshSession, changes []presenceChange, full bool, refuse func(id string, err error)) error {
 	// The router lock keeps the routes in the order of the entries.
 	r := p.router()
