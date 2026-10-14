@@ -67,9 +67,6 @@ func roam(t *testing.T, noRoute time.Duration) {
 		oneWay   = 10 * time.Millisecond // Delay on each link end. The RTT to the relay is 2*oneWay.
 		interval = 2 * time.Millisecond  // Time between the packets of agent a.
 	)
-	oldKeep := pspKeep
-	pspKeep = 200 * time.Millisecond
-	t.Cleanup(func() { pspKeep = oldKeep })
 	relayNS := newNetns(t)
 	agentNS, err := vnetns.Get()
 	require.NoError(t, err)
@@ -128,8 +125,8 @@ func roam(t *testing.T, noRoute time.Duration) {
 		Dst:       &net.IPNet{IP: relayIP, Mask: net.CIDRMask(32, 32)},
 		Gw:        net.IPv4(10, 98, 0, 1),
 	}))
-	at := firstEcho(t, a.stack, ea.addr, eb.addr, 7, interval, 3*time.Second)
-	require.False(t, at.IsZero(), "no data in 3 s after the move")
+	at := firstEcho(t, a.stack, ea.addr, eb.addr, 7, interval, checkTx+2*time.Second)
+	require.False(t, at.IsZero(), "no data in 4 s after the move")
 
 	if noRoute > 0 {
 		// QUIC sends the RPC again when the route comes back, on the same session.
@@ -150,8 +147,8 @@ func roam(t *testing.T, noRoute time.Duration) {
 	require.NotZero(t, tap.psp.Load(), "relay sent no data to the new address")
 	rows, data := time.Unix(0, tap.psp.Load()).Sub(t0), at.Sub(t0)
 	t.Logf("Roam: relay data to the new address %v, data works %v after the move", rows, data)
-	// The next path probe gives the relay the new address.
-	assert.Less(t, data, 1500*time.Millisecond)
+	// The next BFD packet of the agent gives the relay the new address.
+	assert.Less(t, data, checkTx+500*time.Millisecond)
 }
 
 // delay adds netem with delay d to the link name.

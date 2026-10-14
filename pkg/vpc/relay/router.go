@@ -214,6 +214,7 @@ type Session struct {
 	sources      func(netip.Addr) bool       // Allows the inner sources that route to s.
 	udpAddr      atomic.Pointer[net.UDPAddr] // Last address that the bridge sent to.
 	probe        *prober
+	check        *pathCheck    // BFD session of the PSP path in PSP mode, or nil. Router.mu guards it.
 	meter        *rate.Limiter // Tunnel limit. Nil means no limit. Shards use the meter of the owner.
 	rtt          *atomic.Int64 // Smoothed RTT of the connection in nanoseconds. Nil with no trace.
 	live         liveness      // What the liveness check knows of the agent.
@@ -397,6 +398,7 @@ func (r *Router) removeSession(s *Session) {
 		return
 	}
 	s.closed = true
+	r.stopCheck(s)
 	r.markXDP(s)
 	r.endVisit(s, "session closed", each)
 	// The entries go first: a prefix that gets another active announcer takes its rows.

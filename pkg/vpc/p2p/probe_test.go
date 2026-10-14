@@ -37,6 +37,8 @@ func TestProbe(t *testing.T) {
 		{"reply IPv6", Probe{Reply: true, SID: testKeys.SID, Seen: netip.MustParseAddrPort("[2001:db8::1]:443")}, 200, 200},
 		{"no padding", Probe{SID: testKeys.SID}, MinProbeLen, MinProbeLen},
 		{"size too small", Probe{SID: testKeys.SID}, 10, MinProbeLen},
+		{"BFD packet", Probe{SID: testKeys.SID, Counter: 9, BFD: []byte("the 24 B of a BFD packet")}, 0, MinProbeLen + 24},
+		{"BFD packet in a reply", Probe{Reply: true, SID: testKeys.SID, Seen: netip.MustParseAddrPort("192.0.2.1:4500"), BFD: []byte{1, 2, 3}}, 0, MinProbeLen + 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +68,7 @@ func TestOpenProbeErrors(t *testing.T) {
 		{"padding changed", edit(func(b []byte) []byte { b[100] ^= 1; return b })},
 		{"tag changed", edit(func(b []byte) []byte { b[len(b)-1] ^= 1; return b })},
 		{"reply flag set", edit(func(b []byte) []byte { b[2] |= flagReply; return b })},
+		{"BFD flag set", edit(func(b []byte) []byte { b[2] |= flagBFD; return b })},
 		{"cut short", good[:len(good)-1]},
 		{"too short", good[:MinProbeLen-1]},
 		{"not a probe", edit(func(b []byte) []byte { b[0] = 0x04; return b })},

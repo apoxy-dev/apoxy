@@ -56,7 +56,6 @@ var (
 	pspRetryMin  = 30 * time.Second
 	pspRetryMax  = 10 * time.Minute
 	pspRetryNext = 5 * time.Second // From a probe that passes to the next probe.
-	pspKeep      = 5 * time.Second // Period of the probes of a session in PSP mode.
 	// txLanes returns the send lanes to a relay address.
 	txLanes = psp.TxLanes
 )
@@ -152,7 +151,7 @@ type Agent struct {
 	watchers sync.WaitGroup
 
 	probeMu sync.Mutex
-	probes  map[[8]byte]*pathProbe // Path probes that run, by SID.
+	probes  map[[8]byte]probeTaker // Path probes that run and PSP path checks, by SID.
 
 	// admitMu orders the admits, so that a second session of a peer sees the
 	// first as old.
@@ -182,7 +181,7 @@ type Agent struct {
 	// Intervals of the visits. Tests change them before Run.
 	visitCheck, visitAsk, visitWait time.Duration
 	// The times of the PSP probes, from the package values at New.
-	retryMin, retryMax, retryNext, keep time.Duration
+	retryMin, retryMax, retryNext time.Duration
 	// Band and wait of the relay choice. Tests change them before Run.
 	rttBand, rttWaitMin, rttWaitMax time.Duration
 
@@ -199,14 +198,14 @@ func New(cfg Config) *Agent {
 		instance: rand.Uint64(),
 		seed:     maphash.MakeSeed(),
 		wake:     make(chan struct{}, 1),
-		probes:   map[[8]byte]*pathProbe{},
+		probes:   map[[8]byte]probeTaker{},
 		peers:    map[*rpc.Conn]*peer{},
 		visits:   map[string]*visit{},
 		admitted: make(chan struct{}),
 	}
 	a.specs, a.attachWake = map[string]*AttachmentSpec{}, make(chan struct{}, 1)
 	a.visitCheck, a.visitAsk, a.visitWait = visitCheck, visitAsk, visitWait
-	a.retryMin, a.retryMax, a.retryNext, a.keep = pspRetryMin, pspRetryMax, pspRetryNext, pspKeep
+	a.retryMin, a.retryMax, a.retryNext = pspRetryMin, pspRetryMax, pspRetryNext
 	a.rttBand, a.rttWaitMin, a.rttWaitMax = rttBand, rttWaitMin, rttWaitMax
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
@@ -743,12 +742,29 @@ func (rc *relayConn) giveRelayKeys() bool {
 		return false
 	}
 	// A mode change that failed after this point gives the SAs again.
+	rc.keyMu.Lock()
+	defer rc.keyMu.Unlock()
 	select {
 	case <-rc.bridgeRx:
 	default:
 		close(rc.bridgeRx)
 	}
 	return true
+}
+
+// bridge returns bridgeTx and bridgeRx of rc.
+func (rc *relayConn) bridge() (tx, rx chan struct{}) {
+	rc.keyMu.Lock()
+	defer rc.keyMu.Unlock()
+	return rc.bridgeTx, rc.bridgeRx
+}
+
+// resetBridge makes bridgeTx and bridgeRx wait for the SAs of the next change
+// to PSP mode.
+func (rc *relayConn) resetBridge() {
+	rc.keyMu.Lock()
+	defer rc.keyMu.Unlock()
+	rc.bridgeTx, rc.bridgeRx = make(chan struct{}), make(chan struct{})
 }
 
 // sendRelayKeys sends a key change of the relay peer to the relay. It reports

@@ -436,12 +436,13 @@ type testAgent struct {
 }
 
 type agentOptions struct {
-	life time.Duration // Cert life. Zero means 24 hours.
-	mtu  int           // Config.MTU.
-	conn *lossyConn    // Wraps the agent socket if set.
-	slow *slowConn     // Wraps the agent socket if set.
-	move *moveConn     // Wraps the agent socket if set.
-	mode TransportMode
+	life  time.Duration // Cert life. Zero means 24 hours.
+	mtu   int           // Config.MTU.
+	conn  *lossyConn    // Wraps the agent socket if set.
+	block *blockConn    // Wraps the agent socket if set.
+	slow  *slowConn     // Wraps the agent socket if set.
+	move  *moveConn     // Wraps the agent socket if set.
+	mode  TransportMode
 	// quicStart makes attached return while the session is in QUIC mode. Else it
 	// waits for PSP mode when the PSP probes of the agent get a reply.
 	quicStart bool
@@ -623,6 +624,10 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	if opts.conn != nil {
 		opts.conn.PacketConn = conn
 		conn = opts.conn
+	}
+	if opts.block != nil {
+		opts.block.PacketConn = conn
+		conn = opts.block
 	}
 	if opts.move != nil {
 		opts.move.PacketConn = conn

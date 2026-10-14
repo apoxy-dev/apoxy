@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package agent
+
+import (
+	"context"
+	"net"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
+)
+
+// blockConn drops the packets between the agent socket and the PSP socket of
+// a relay. The QUIC socket has another address, so the relay session stays.
+type blockConn struct {
+	net.PacketConn
+	relay   string // Address of the PSP socket of the relay.
+	out, in atomic.Bool
+	// half drops each second BFD packet to the relay.
+	half   atomic.Bool
+	probes atomic.Int32
+}
+
+func (c *blockConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if addr.String() == c.relay {
+		probe := len(p) > 0 && p[0] == p2p.TypeProbe
+		if c.out.Load() || (probe && c.half.Load() && c.probes.Add(1)%2 == 0) {
+			return len(p), nil
+		}
+	}
+	return c.PacketConn.WriteTo(p, addr)
+}
+
+func (c *blockConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	for {
+		n, from, err := c.PacketConn.ReadFrom(p)
+		if err != nil || !c.in.Load() || from.String() != c.relay {
+			return n, from, err
+		}
+	}
+}
+
+// TestPSPPathLost checks that a session whose PSP packets stop changes to QUIC
+// mode and back, and keeps its address, attachment and open TCP connection.
+func TestPSPPathLost(t *testing.T) {
+	oldMax := pspRetryMax
+	pspRetryMax = 400 * time.Millisecond
+	t.Cleanup(func() { pspRetryMax = oldMax })
+	cases := []struct {
+		name    string
+		out, in bool // Directions of the PSP path of a that drop each packet.
+		half    bool // The path to the relay drops each second BFD packet.
+	}{
+		{name: "1 of 2 BFD packets lost", half: true},
+		{name: "both directions", out: true, in: true},
+		{name: "packets to the relay", out: true},
+		{name: "packets from the relay", in: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			block := &blockConn{relay: r.psp}
+			a, b := w.agent(t, "a", r, agentOptions{block: block, tcp: true}), w.agent(t, "b", r, agentOptions{tcp: true})
+			ea, eb := a.attached(t), b.attached(t)
+			serveTCP(t, b.stack, eb.addr, 9000)
+			c := dialTCP(t, a, eb.addr, 9000)
+			roundTrip(t, c, "in PSP mode")
+			rc, id, events := a.current(), a.a.Attachments()[0].ID, a.events("a")
+			same := func() {
+				t.Helper()
+				assert.Same(t, rc, a.current(), "the agent has the same relay session")
+				assert.Equal(t, ea.addr, a.a.Status().Connections[0].Address)
+				assert.Equal(t, id, a.a.Attachments()[0].ID)
+				assert.Empty(t, a.attach, "the agent attached again")
+				assert.Equal(t, events, a.events("a"), "callbacks of the address")
+			}
+
+			if tc.half {
+				block.half.Store(true)
+				require.Never(t, func() bool { return a.a.Status().Mode != dp.Mode_MODE_PSP }, 2*bfdl.DefaultDetectMult*checkTx, 50*time.Millisecond,
+					"the session left PSP mode")
+				assert.Greater(t, block.probes.Load(), int32(bfdl.DefaultDetectMult), "BFD packets of the agent")
+				roundTrip(t, c, "with BFD packets lost")
+				same()
+				return
+			}
+			block.out.Store(tc.out)
+			block.in.Store(tc.in)
+			// TCP sends the lost segments again, as QUIC data.
+			roundTripIn(t, c, "after the PSP packets stop", 30*time.Second)
+			st := a.a.Status()
+			assert.Equal(t, dp.Mode_MODE_QUIC, st.Mode)
+			assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, st.Reason)
+			// The two agents can dial at the same time. A session with no
+			// binding peer is not open yet, and has no mode.
+			a.a.mu.Lock()
+			live := 0
+			for _, p := range a.a.peers {
+				if p.bp != nil {
+					live++
+					assert.True(t, p.quic, "a peer session does not go through the relay")
+				}
+			}
+			a.a.mu.Unlock()
+			assert.NotZero(t, live, "open peer sessions of a")
+			same()
+
+			block.out.Store(false)
+			block.in.Store(false)
+			require.Eventually(t, func() bool { return a.a.Status().Mode == dp.Mode_MODE_PSP }, 30*time.Second, 10*time.Millisecond,
+				"the session did not return to PSP mode")
+			roundTrip(t, c, "back in PSP mode")
+			same()
+		})
+	}
+}
+
+// TestVisitPSPPathLost checks an agent with a visitor session in PSP mode when
+// the PSP path of one of its two sessions stops. The data of the visit stays.
+func TestVisitPSPPathLost(t *testing.T) {
+	oldMax := pspRetryMax
+	pspRetryMax = 400 * time.Millisecond
+	t.Cleanup(func() { pspRetryMax = oldMax })
+	cases := []struct {
+		name string
+		home bool // The path of the attached session stops, not that of the visit.
+	}{
+		{name: "path of the visitor session"},
+		{name: "path of the attached session", home: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			w, r1, r2 := meshRelays(t)
+			block := &blockConn{relay: r2.psp}
+			if tc.home {
+				block.relay = r1.psp
+			}
+			a := w.agent(t, "a", r1, agentOptions{block: block, visitCheck: time.Hour})
+			ea := a.attached(t)
+			b := w.agent(t, "b", r2, agentOptions{visitCheck: time.Hour, visitWait: time.Hour})
+			eb := b.attached(t)
+			echo(t, b.stack, eb.addr, 9000)
+			a.hasRoutes(t, eb.prefixes[0])
+			b.hasRoutes(t, ea.prefixes[0])
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			t.Cleanup(cutMesh(r1, r2))
+			waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
+			v, err := dialOnVisit(t, ctx, a, r2, eb.addr)
+			require.NoError(t, err)
+			require.Eventually(t, func() bool { return v.rc.dataMode() == dp.Mode_MODE_PSP }, 10*time.Second, 5*time.Millisecond,
+				"the visitor session did not change to PSP mode")
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "on the visit in PSP mode")
+			home := a.current()
+			lost, other := v.rc, home
+			if tc.home {
+				lost, other = home, v.rc
+			}
+
+			block.out.Store(true)
+			block.in.Store(true)
+			require.Eventually(t, func() bool { return lost.dataMode() == dp.Mode_MODE_QUIC }, 15*time.Second, 10*time.Millisecond,
+				"the session did not change to QUIC mode")
+			assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, lost.fallback())
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "on the visit after the change")
+			require.NotNil(t, peerOn(a.a, v.rc, eb.addr), "peer session of a on the visit")
+			same := func(msg string) {
+				assert.NoError(t, context.Cause(v.rc.qc.Context()), "%s: the visitor session closed", msg)
+				assert.Same(t, home, a.current(), "%s: relay session of the agent", msg)
+				assert.Equal(t, ea.addr, home.self, "%s: address of the agent", msg)
+				assert.Empty(t, a.attach, "%s: the agent attached again", msg)
+			}
+			same("path lost")
+			t.Logf("mode of the other session after the change: %v", other.dataMode())
+
+			block.out.Store(false)
+			block.in.Store(false)
+			require.Eventually(t, func() bool { return lost.dataMode() == dp.Mode_MODE_PSP }, 45*time.Second, 10*time.Millisecond,
+				"the session did not go back to PSP mode")
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "on the visit after the return")
+			same("path back")
+			t.Logf("mode of the other session after the return: %v", other.dataMode())
+		})
+	}
+}

@@ -274,7 +274,8 @@ func (p *peer) wait(ctx context.Context) error {
 		// Data frames need no SAs. A session in PSP mode needs the relay SAs.
 		chans = nil
 		if p.rc.dataMode() == dp.Mode_MODE_PSP {
-			chans = []chan struct{}{p.rc.bridgeTx, p.rc.bridgeRx}
+			tx, rx := p.rc.bridge()
+			chans = []chan struct{}{tx, rx}
 		}
 	}
 	for _, ch := range chans {

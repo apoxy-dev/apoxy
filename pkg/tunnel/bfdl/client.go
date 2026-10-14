@@ -141,14 +141,7 @@ func (c *Client) Run(ctx context.Context) error {
 			if c.session.Expired() && c.session.State() == StateUp {
 				slog.Warn("BFD client session expired, transitioning to Down")
 				BFDDetectTimeouts.WithLabelValues("client").Inc()
-				c.session.mu.Lock()
-				old := c.session.localState
-				c.session.localState = StateDown
-				c.session.remoteDiscr = 0
-				if c.session.onStateChange != nil {
-					c.session.onStateChange(old, StateDown)
-				}
-				c.session.mu.Unlock()
+				c.session.DetectTimeout()
 			}
 		}
 	}

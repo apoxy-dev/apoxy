@@ -125,6 +125,20 @@ func (s *Session) Expired() bool {
 	return time.Since(s.lastRx) > detectTime
 }
 
+// DetectTimeout transitions the session to Down after its detect timer
+// expired. The remote discriminator is forgotten, as for a new session.
+func (s *Session) DetectTimeout() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	oldState := s.localState
+	s.localState = StateDown
+	s.remoteDiscr = 0
+	if oldState != StateDown && s.onStateChange != nil {
+		s.onStateChange(oldState, StateDown)
+	}
+}
+
 // AdminDown transitions the session to AdminDown state. This signals the
 // remote peer that this session is being intentionally shut down (e.g.,
 // during graceful drain). The remote peer should transition to Down.

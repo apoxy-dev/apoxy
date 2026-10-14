@@ -26,7 +26,7 @@ const (
 // syncState is what the relay still has to send to the agent on Sync.
 type syncState struct {
 	open   bool           // A Session call runs.
-	mode   dp.Mode        // QUIC at Hello. A Rekey call changes it to PSP.
+	mode   dp.Mode        // QUIC at Hello. A Rekey call changes it to PSP, and a lost PSP path to QUIC.
 	hello  dp.Mode        // The mode of Hello, for the metrics.
 	ref    *dp.VPCRef     // VPC of the session, with the network ID.
 	routes map[route]bool // Route changes: true adds, false removes.
@@ -273,7 +273,7 @@ func (r *Router) startSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.H
 	if s.sync.open {
 		return 0, rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
 	}
-	// Each session starts in QUIC mode. Only a Rekey call changes it to PSP mode.
+	// Each session starts in QUIC mode. A Rekey call changes it to PSP.
 	s.sync.open, s.sync.mode, s.sync.hello, s.sync.ref = true, dp.Mode_MODE_QUIC, mode, ref
 	s.name, s.instance = hello.GetName(), hello.GetInstance()
 	s.sync.meshRoutes = s.version.GetRevision() >= meshRoutesRevision && !hello.GetLocalRoutesOnly()

@@ -27,6 +27,7 @@ const (
 	// filter of Geneve tunnels, and that bit keeps the probes out of it.
 	probeVersion = 2
 	flagReply    = 1
+	flagBFD      = 2
 	tagLen       = 16
 	// Type, version, flags, a zero byte, SID, TxID, Round, Counter and Seen.
 	hdrLen = 4 + 8 + 12 + 4 + 8 + 18
@@ -48,6 +49,9 @@ type Probe struct {
 	// set of keys. The relay takes a new PSP address only from a larger one.
 	Counter uint64
 	Seen    netip.AddrPort // In a reply: the source address of the probe.
+	// BFD is the BFD packet of the PSP path check, or nil. It is after the
+	// probe header. OpenProbe returns it with the padding, in its input.
+	BFD []byte
 }
 
 // ProbeKeys are the probe keys of one QUIC connection. Both ends get the same keys.
@@ -78,9 +82,9 @@ func NewProbeKeys(cs tls.ConnectionState) (ProbeKeys, error) {
 }
 
 // AppendProbe appends p to b, with zero padding to size bytes and a tag made
-// with key. A size below MinProbeLen means MinProbeLen.
+// with key. A size below MinProbeLen plus the BFD packet means that length.
 func AppendProbe(b []byte, p Probe, size int, key *[32]byte) []byte {
-	size = max(size, MinProbeLen)
+	size = max(size, MinProbeLen+len(p.BFD))
 	start := len(b)
 	b = slices.Grow(b, size)[:start+size]
 	out := b[start:]
@@ -95,7 +99,11 @@ func AppendProbe(b []byte, p Probe, size int, key *[32]byte) []byte {
 	a := p.Seen.Addr().As16()
 	copy(out[36:52], a[:])
 	binary.BigEndian.PutUint16(out[52:hdrLen], p.Seen.Port())
-	clear(out[hdrLen : size-tagLen])
+	clear(out[hdrLen+len(p.BFD) : size-tagLen])
+	if len(p.BFD) > 0 {
+		out[2] |= flagBFD
+		copy(out[hdrLen:], p.BFD)
+	}
 	tag(out[size-tagLen:], out[:size-tagLen], key)
 	return b
 }
@@ -129,6 +137,9 @@ func OpenProbe(b []byte, key *[32]byte) (Probe, error) {
 	}
 	if p.Reply {
 		p.Seen = netip.AddrPortFrom(netip.AddrFrom16([16]byte(b[36:52])).Unmap(), binary.BigEndian.Uint16(b[52:hdrLen]))
+	}
+	if b[2]&flagBFD != 0 {
+		p.BFD = b[hdrLen:n]
 	}
 	return p, nil
 }

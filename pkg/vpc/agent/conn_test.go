@@ -85,7 +85,13 @@ func serveTCP(t *testing.T, s *stack.Stack, addr netip.Addr, port uint16) {
 // roundTrip writes msg on c and reads the answer of serveTCP.
 func roundTrip(t *testing.T, c net.Conn, msg string) {
 	t.Helper()
-	require.NoError(t, c.SetDeadline(time.Now().Add(5*time.Second)))
+	roundTripIn(t, c, msg, 5*time.Second)
+}
+
+// roundTripIn is roundTrip with the wait for the answer.
+func roundTripIn(t *testing.T, c net.Conn, msg string, wait time.Duration) {
+	t.Helper()
+	require.NoError(t, c.SetDeadline(time.Now().Add(wait)))
 	_, err := c.Write([]byte(msg))
 	require.NoError(t, err, msg)
 	buf := make([]byte, len(msg))

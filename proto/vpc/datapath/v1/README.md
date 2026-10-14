@@ -76,8 +76,9 @@ relay sends the inner packet to that relay (see "Trunk").
 
 ### Data mode
 
-Each session starts in QUIC mode. The only change is from QUIC mode to PSP
-mode, on the open session, when the agent calls `Rekey`. `Hello.mode` tells
+Each session starts in QUIC mode. It changes from QUIC mode to PSP mode, on
+the open session, when the agent calls `Rekey`, and back to QUIC mode when its
+PSP path is lost (see "PSP path check"). `Hello.mode` tells
 the relay which mode the agent wants, and the relay only counts it. After
 `Welcome`, an agent that wants PSP mode sends path probes to
 the PSP socket of the relay, while its `Attach` call runs. These probes have the
@@ -86,8 +87,8 @@ and 1308 B at most. When the first probe passes, the agent calls `Rekey` with
 its SAs for the relay. When no reply comes in 1 s, the session stays in QUIC
 mode and the agent probes again with backoff (30 s, doubling to 10 min). After
 a probe that failed, two probes in a row must pass, 5 s apart. In PSP mode the
-agent sends a probe for 1280 B inner packets each 5 s. An agent with QUIC mode
-in its config sends `fallback_reason` `CONFIG` and does not probe.
+agent sends no such probe: the PSP path check sends its packets. An agent with
+QUIC mode in its config sends `fallback_reason` `CONFIG` and does not probe.
 
 On a visitor session the agent waits for the result of the first probe before
 it opens a peer session there, because the change to PSP mode closes the peer
@@ -111,7 +112,44 @@ with the SAs of the agent. The agent sends PSP packets when it has the relay
 SAs, and it closes the peer sessions of that relay session. The session, its
 attachments and their addresses stay. If a step fails, or if the relay refuses
 each SPI of the agent, the mode stays QUIC and the session has no relay SAs.
-A session does not change from PSP mode to QUIC mode.
+
+### PSP path check
+
+In PSP mode, a BFD session (RFC 5880, with the states Down, Init and Up, no
+authentication section and no echo) checks the PSP path of the relay session.
+Each side sends one BFD control packet each 2 s, and one more at each change
+of its own state. The packet has the state of its sender, so each side knows
+if the other side hears it.
+
+The BFD packet is the payload of a path probe: its 24 B come after the probe
+header, and the probe has the flag `0x02` in its flags byte. The tag of the
+probe covers it. The agent sends its packets to the PSP socket of the relay,
+each with the next probe counter, so they keep the NAT mapping of the PSP path
+and give the relay the PSP address of the session, as each probe does. The
+relay sends no reply to a probe with a BFD packet. It sends its own BFD
+packets to the PSP address of the session, as probe replies with the source
+address of the agent.
+
+A side calls the PSP path lost when the other side says that it is Down after
+the two sides were Up, or when no BFD packet comes for 6 s (3 packets). That
+side then changes the session to QUIC mode, with no call and no message. It
+first sends one BFD packet in the Down state, so the other side makes the
+change at once when that packet passes, and after its own 6 s when it does
+not. The session, its attachments and their addresses stay.
+
+- The agent sends its data as data frames, closes the peer sessions of that
+  relay session (the next packet opens each one again, through the relay),
+  opens the shard connections again, and stops its lane ports and the rekeys
+  of its SAs for the relay. Its fallback reason is `PROBE_TIMEOUT`. It then
+  probes with backoff, as a session whose first probe failed, and calls
+  `Rekey` when two probes in a row pass.
+- The relay sends the data for the agent as data frames, and deletes its relay
+  SAs and the SAs of the agent, so it sends no more rekeys for the session. It
+  takes a later `Rekey` as on each session in QUIC mode.
+
+An open TCP connection continues after the change: TCP sends the packets that
+the PSP path lost again. A packet above the data frame limit (1308 B inner)
+does not fit QUIC mode.
 
 ### Relay connections of an agent
 
@@ -1204,6 +1242,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 17 | `Relay.Grant`. A visit with no time limit. | Before it sends a grant in `Open`, `Grants` or `Visit`, gets a new one with `Grant` when it got its stored grant 5 minutes ago or earlier, on the session that has the attachment. Sends each grant one time: no new grant goes to an open peer session or to a visit. | No duty. | Answers `Grant` with a new grant for an attachment of the session of the caller, which ends 15 minutes after the call, as the grant of `Attach` does, and with `NotFound` for each other attachment ID and for a visitor session. Checks `not_after` of a grant one time, at the `Visit` call, and does not end a visit when it passes. A relay below revision 17 answers `Grant` with `Unimplemented`, and it ends a visit at `not_after` of its grant. |
 | 18 | The change of an open session from QUIC mode to PSP mode with `Rekey`. Data frames from a session in each mode. `Welcome.max_lanes` in each mode. | After two PSP probes pass on a session in QUIC mode, calls `Rekey` on a relay at revision 18 or later, sends PSP packets when it has the relay SAs, and closes the peer sessions of that relay session. Opens no new session for PSP mode. On a relay below revision 18, makes no such `Rekey` call and stays in QUIC mode. | No duty. | Accepts `Rekey` on a session in QUIC mode and changes the session to PSP mode, as in "Data mode". Takes data frames from a session in each mode. Sends its lane port limit in `Welcome.max_lanes` in each mode. A relay below revision 18 answers that `Rekey` with `FailedPrecondition`, drops the data frames of a PSP-mode session, and sends `max_lanes` 0 to a session in QUIC mode. |
 | 19 | `Welcome.psp_host` and `Welcome.psp_port`, and the same two fields in `MeshOpenRequest` and `MeshOpenResponse`. The `Moved` message is gone. The counter of a path probe, and probe version 2. A QUIC socket and a PSP socket on each relay. | Starts each session in QUIC mode. After `Welcome`, sends its path probes, with a counter that grows, to the PSP socket of the relay (`Welcome.psp_host`, or the host that it dialed when that is empty, at `Welcome.psp_port`), and calls `Rekey` when a probe passes. Sends its PSP packets and lane keep-alives to that address. In PSP mode, sends a probe each 5 s. Sends no probe before `Hello` and opens no new session for PSP mode. | No duty. | Reads QUIC on one socket and drops each other packet there. Reads PSP packets, probes, lane keep-alives and the packets of other relays on its PSP socket, and sends to another relay at the PSP socket that this relay gave in `Open`. Sends `psp_host` empty and `psp_port` with the local port of its PSP socket in `Welcome` and in `Open`. Starts each session in QUIC mode, also for a `Hello` with PSP mode, and sends no relay SAs after `Config`. Takes the PSP address of a session from the path probe with the largest counter, when its IP address is that of the QUIC connection. Keeps no probe that comes before its session. The two sides must be at revision 19: there is no code for an older agent or relay. |
+| 20 | The BFD packet in a path probe, with the probe flag `0x02`. The change of an open session from PSP mode to QUIC mode. | In PSP mode, sends a BFD packet to the PSP socket of the relay each 2 s, in place of the probe each 5 s, and at each change of its state. Changes the session to QUIC mode when the PSP path is lost, as in "PSP path check", and probes with backoff for the return to PSP mode. | No duty. | Runs one BFD session for each session in PSP mode, sends its BFD packets to the PSP address of the session, and sends no reply to a probe with a BFD packet. Changes the session to QUIC mode when the PSP path is lost, as in "PSP path check", and takes a later `Rekey` as on each session in QUIC mode. The two sides must be at revision 20: there is no code for an older agent or relay. |
 
 ### Minimum revision
 

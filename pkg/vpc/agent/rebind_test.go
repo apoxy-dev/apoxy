@@ -179,13 +179,10 @@ func firstEcho(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16, i
 }
 
 // TestMove moves the socket of agent a in an open session, and checks when its
-// data to agent b works again in the two directions. Only a path probe from the
-// new source moves the PSP address of the session at the relay.
+// data works again. Only a BFD packet from the new source moves the address.
 func TestMove(t *testing.T) {
-	oldKeep := pspKeep
-	pspKeep = 200 * time.Millisecond
-	t.Cleanup(func() { pspKeep = oldKeep })
-	const within = 3 * time.Second
+	// The next BFD packet, at most checkTx later, moves the address.
+	const within = checkTx + 2*time.Second
 	cases := []struct {
 		name                    string
 		dataOnly, pspOnly, hide bool

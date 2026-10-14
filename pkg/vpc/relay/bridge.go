@@ -614,6 +614,7 @@ func (r *Router) changeToPSP(br *bridge, s *Session, n Network, req keys.Request
 		return refused, err
 	}
 	s.sync.mode = dp.Mode_MODE_PSP
+	r.startCheck(br, s)
 	s.queue(m)
 	modeChanges.Inc()
 	return refused, nil

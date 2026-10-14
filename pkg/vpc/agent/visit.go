@@ -502,8 +502,7 @@ func (a *Agent) visitorsOf(home *relayConn) []*relayConn {
 }
 
 // keepVisit ends v when its session ends, and moves its peers back when the
-// relay of the agent reaches them again. It changes the session of v to PSP
-// mode when a probe of retry after the first one passes.
+// relay of the agent reaches them. It changes the mode of v as watch does.
 func (a *Agent) keepVisit(v *visit, retry *pspRetry) {
 	t := time.NewTicker(a.visitCheck)
 	defer t.Stop()
@@ -515,6 +514,9 @@ func (a *Agent) keepVisit(v *visit, retry *pspRetry) {
 		case <-v.rc.qc.Context().Done():
 			a.endVisit(v, "relay session ended")
 			return
+		case <-v.rc.pspLost():
+			a.useQUIC(v.rc)
+			retry.restart()
 		case <-retry.timer.C:
 			retry.probe()
 		case ok := <-retry.probed:

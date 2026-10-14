@@ -185,13 +185,12 @@ func TestPSPRetry(t *testing.T) {
 	}
 }
 
-// TestSessionStart checks the start of a session: QUIC mode with no wait for the PSP
-// probe, then PSP mode after one probe passes, on the same session and address. Only a
-// session in PSP mode sends the probes of pspKeep.
+// TestSessionStart checks the start of a session: QUIC mode at once, then PSP
+// mode after one probe passes. Only a session in PSP mode sends BFD packets.
 func TestSessionStart(t *testing.T) {
-	oldMin, oldKeep := pspRetryMin, pspKeep
-	pspRetryMin, pspKeep = time.Minute, 50*time.Millisecond
-	t.Cleanup(func() { pspRetryMin, pspKeep = oldMin, oldKeep })
+	oldMin := pspRetryMin
+	pspRetryMin = time.Minute
+	t.Cleanup(func() { pspRetryMin = oldMin })
 	cases := []struct {
 		name   string
 		mode   TransportMode
@@ -224,10 +223,10 @@ func TestSessionStart(t *testing.T) {
 			}, 5*time.Second, 5*time.Millisecond, "data mode and reason")
 			sent := conn.probes.Load()
 			if tc.want == dp.Mode_MODE_PSP {
-				require.Eventually(t, func() bool { return conn.probes.Load() >= sent+3 }, 5*time.Second, 5*time.Millisecond,
-					"a session in PSP mode sent no probes")
+				require.Eventually(t, func() bool { return conn.probes.Load() > sent }, 2*checkTx, 5*time.Millisecond,
+					"a session in PSP mode sent no BFD packet")
 			} else {
-				require.Never(t, func() bool { return conn.probes.Load() > sent }, 6*pspKeep, pspKeep/2,
+				require.Never(t, func() bool { return conn.probes.Load() > sent }, checkTx+checkTx/2, 25*time.Millisecond,
 					"a session in QUIC mode sent a probe")
 			}
 			if tc.mode == TransportQUIC {

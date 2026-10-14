@@ -46,9 +46,8 @@ func (r *Router) removeProber(s *Session) {
 	}
 }
 
-// answerProbe sends a reply of the same size to a path probe on the PSP
-// socket, when the probe comes from the IP address of the QUIC connection of
-// its session. It writes the reply into b. It reports a reply.
+// answerProbe answers a path probe from the IP address of the QUIC connection
+// of its session, in b. A probe with a BFD packet goes to the PSP path check.
 func (r *Router) answerProbe(tr *quic.Transport, b []byte, from net.Addr) bool {
 	sid, ok := p2p.ProbeSID(b)
 	if !ok {
@@ -67,6 +66,11 @@ func (r *Router) answerProbe(tr *quic.Transport, b []byte, from net.Addr) bool {
 	}
 	// The agent can call Rekey when it has the reply, so the address comes first.
 	r.learnAddr(s, src, pr.Counter, now)
+	if pr.BFD != nil {
+		// The relay end of the check sends its own packets: no reply.
+		r.checkPacket(s, pr, now)
+		return true
+	}
 	pr.Reply, pr.Seen = true, src
 	_, _ = tr.WriteTo(p2p.AppendProbe(b[:0], pr, len(b), &s.probe.keys.Listener), from)
 	return true

@@ -24,6 +24,11 @@ const (
 	probeWait     = time.Second
 )
 
+// probeTaker gets the path probe packets of one SID from the agent socket.
+type probeTaker interface {
+	reply(pkt []byte)
+}
+
 // pathProbe is one probe run on the path to the relay.
 type pathProbe struct {
 	keys p2p.ProbeKeys
