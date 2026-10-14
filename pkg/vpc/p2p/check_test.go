@@ -122,3 +122,32 @@ func TestCheckMetrics(t *testing.T) {
 	assert.Equal(t, down0, down())
 	assert.False(t, r.Receive(Probe{BFD: make([]byte, 3)}), "a short BFD packet changed the state")
 }
+
+// TestCheckSize checks the size of the probes with a BFD packet, and that the
+// other end reads a padded BFD packet.
+func TestCheckSize(t *testing.T) {
+	small := MinProbeLen + 24
+	cases := []struct {
+		name string
+		size int
+		want int
+	}{
+		{name: "no size", want: small},
+		{name: "largest PSP packet", size: 1412 + 40, want: 1412 + 40},
+		{name: "size below the probe", size: 10, want: small},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, r := NewCheck(RoleAgent, testTx), NewCheck(RoleRelay, testTx)
+			t.Cleanup(a.Close)
+			t.Cleanup(r.Close)
+			a.SetSize(tc.size)
+			b := a.Append(nil, Probe{SID: testKeys.SID}, &testKeys.Dialer)
+			require.Len(t, b, tc.want)
+			p, err := OpenProbe(b, &testKeys.Dialer)
+			require.NoError(t, err)
+			assert.Len(t, p.BFD, tc.want-MinProbeLen)
+			assert.True(t, r.Receive(p), "the padded BFD packet changed no state")
+		})
+	}
+}

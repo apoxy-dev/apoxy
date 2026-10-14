@@ -3,11 +3,14 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"net"
 	"sync"
 	"time"
+
+	pspwire "github.com/apoxy-dev/softpsp/psp"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
@@ -104,11 +107,21 @@ func (c *pathCheck) end() {
 	c.bfd.Close()
 }
 
+// checkSize returns the size of the BFD packets of a session in PSP mode: the
+// largest PSP packet that the agent sends, with the clamp when it is on.
+func (a *Agent) checkSize() int {
+	a.mu.Lock()
+	b := a.bind
+	a.mu.Unlock()
+	return cmp.Or(b.ClampMTU(), b.DeviceMTU()) + pspwire.Overhead
+}
+
 func (c *pathCheck) setLost() { c.once.Do(func() { close(c.lost) }) }
 
 // send sends one BFD packet with the state of this end.
 func (c *pathCheck) send() {
 	rc := c.rc
+	c.bfd.SetSize(rc.a.checkSize())
 	pkt := c.bfd.Append(nil, p2p.Probe{SID: c.keys.SID, Counter: rc.probeSeq.Add(1)}, &c.keys.Dialer)
 	if _, err := rc.a.cfg.Transport.WriteTo(pkt, net.UDPAddrFromAddrPort(rc.relayAddr)); err != nil {
 		slog.Debug("Failed to send a BFD packet", "relay", rc.addr, "error", err)

@@ -42,9 +42,6 @@ type pathProbe struct {
 // probeMTU returns the inner MTU that the path probe at the change to PSP mode
 // tests: the device MTU, or 0 for no probe.
 func (a *Agent) probeMTU() int {
-	if a.cfg.MTU != 0 {
-		return 0
-	}
 	a.mu.Lock()
 	dev := a.bind.DeviceMTU()
 	a.mu.Unlock()

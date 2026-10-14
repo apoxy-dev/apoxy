@@ -9,11 +9,15 @@ import (
 	"testing"
 	"time"
 
+	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -192,4 +196,53 @@ func TestVisitPSPPathLost(t *testing.T) {
 			t.Logf("mode of the other session after the return: %v", other.dataMode())
 		})
 	}
+}
+
+// TestPathSizeLost lowers the path size under a session in PSP mode. The large
+// BFD packets drop, so the session changes to QUIC mode, and then back to PSP
+// mode with the TCP MSS clamp, where BFD stays Up.
+func TestPathSizeLost(t *testing.T) {
+	oldMin, oldMax, oldNext := pspRetryMin, pspRetryMax, pspRetryNext
+	pspRetryMin, pspRetryMax, pspRetryNext = time.Second, 2*time.Second, 300*time.Millisecond
+	t.Cleanup(func() { pspRetryMin, pspRetryMax, pspRetryNext = oldMin, oldMax, oldNext })
+	const detect = bfdl.DefaultDetectMult * checkTx
+	w := newWorld(t)
+	w.mtu = 1400
+	r := w.relay(t, "relay-1")
+	conn := &lossyConn{}
+	a, b := w.agent(t, "a", r, agentOptions{conn: conn}), w.agent(t, "b", r, agentOptions{})
+	ea, eb := a.attached(t), b.attached(t)
+	rc, bind := a.current(), a.binding()
+	mode := func() dp.Mode { return a.a.Status().Mode }
+	require.Equal(t, dp.Mode_MODE_PSP, mode())
+	require.Zero(t, bind.ClampMTU())
+	echo(t, b.stack, eb.addr, 9000)
+	ping(t, a.stack, ea.addr, eb.addr, 9000, "before the path change")
+	// tooBig sends an inner packet above QUICMTU, which gets packet too big.
+	tooBig := func(msg string) {
+		t.Helper()
+		c, err := gonet.DialUDP(a.stack, fullAddr(ea.addr, 0), fullAddr(eb.addr, 9000), ipv6.ProtocolNumber)
+		require.NoError(t, err)
+		defer c.Close()
+		before := bind.Stats().TxTooBig
+		require.Eventually(t, func() bool {
+			_, _ = c.Write(make([]byte, 1300))
+			return bind.Stats().TxTooBig > before
+		}, 5*time.Second, 50*time.Millisecond, "no packet too big %s", msg)
+	}
+
+	conn.max.Store(psp.QUICMTU + pspwire.Overhead)
+	require.Eventually(t, func() bool { return mode() == dp.Mode_MODE_QUIC }, detect+2*checkTx, 10*time.Millisecond,
+		"BFD stayed Up on a path that drops large packets")
+	assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, a.a.Status().Reason)
+	tooBig("in QUIC mode")
+
+	require.Eventually(t, func() bool { return mode() == dp.Mode_MODE_PSP }, 15*time.Second, 10*time.Millisecond,
+		"the session did not return to PSP mode")
+	assert.Equal(t, psp.QUICMTU, bind.ClampMTU(), "TCP MSS clamp")
+	tooBig("in PSP mode with the clamp")
+	require.Never(t, func() bool { return mode() != dp.Mode_MODE_PSP }, detect+checkTx, 50*time.Millisecond,
+		"BFD went Down on the path with the clamp")
+	ping(t, a.stack, ea.addr, eb.addr, 9000, "after the return to PSP mode")
+	assert.Same(t, rc, a.current(), "the agent has the same relay session")
 }

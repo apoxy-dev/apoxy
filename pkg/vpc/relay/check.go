@@ -88,6 +88,9 @@ func (r *Router) checkPacket(s *Session, pr p2p.Probe, now time.Time) {
 	if c == nil || br == nil {
 		return
 	}
+	// The relay pads its packets to the size of the packets of the agent, so
+	// that the check tests that size in the two directions.
+	c.bfd.SetSize(p2p.MinProbeLen + len(pr.BFD))
 	changed := c.bfd.Receive(pr)
 	switch {
 	case c.bfd.Lost(now):

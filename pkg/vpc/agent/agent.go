@@ -117,8 +117,8 @@ type Config struct {
 	// OnDetach gets each attachment whose address the agent lost, before a next OnAttach of that
 	// address. The callbacks run in order, one at a time, and must not call Attach, Detach or Attachments.
 	OnDetach func(at Attachment)
-	// MTU sets the device MTU, from 1280 to the VPC MTU, with no path probe.
-	// Zero means the VPC MTU. A PSP path that does not carry it gets a TCP MSS clamp.
+	// MTU sets the device MTU, from 1280 to the VPC MTU. Zero means the VPC MTU.
+	// A PSP path that does not carry the device MTU gets a TCP MSS clamp.
 	MTU int
 	// LocalRoutesOnly asks each relay for the routes of its own attachments
 	// only. A host with one agent for each relay sets it.

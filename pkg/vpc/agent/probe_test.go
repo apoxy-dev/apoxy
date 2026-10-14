@@ -33,6 +33,7 @@ func TestPathMTU(t *testing.T) {
 		{"probe fails", 1372, 0, []int32{1400}, 1372, []int{psp.QUICMTU}},
 		{"override", 1372, 1300, []int32{1400}, 1300, []int{0}},
 		{"override above the VPC MTU", 1300, 1372, []int32{0}, 1300, []int{0}},
+		{"override, probe fails", 1412, 1372, []int32{1400}, 1372, []int{psp.QUICMTU}},
 		{"later probes fail and pass", 1372, 0, []int32{0, 1400, 0}, 1372, []int{0, psp.QUICMTU, 0}},
 		{"first probe fails", 1372, 0, []int32{1400, 0}, 1372, []int{psp.QUICMTU, 0}},
 	}

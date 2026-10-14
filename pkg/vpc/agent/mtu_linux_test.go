@@ -27,6 +27,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/netns"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 var (
@@ -40,16 +41,21 @@ func TestPathMTUNetns(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to make network namespaces")
 	}
+	oldMin, oldMax, oldNext := pspRetryMin, pspRetryMax, pspRetryNext
+	pspRetryMin, pspRetryMax, pspRetryNext = time.Second, 2*time.Second, 300*time.Millisecond
+	t.Cleanup(func() { pspRetryMin, pspRetryMax, pspRetryNext = oldMin, oldMax, oldNext })
 	cases := []struct {
 		name      string
 		linkMTU   []int // Relay end of the veth, per session of agent a.
 		wantDev   int
 		wantClamp int
+		open      int // MTU of the relay end that the test sets under the open session. Zero is none.
 	}{
-		{"path carries the VPC MTU", []int{1500}, 1400, 0},
-		{"small path at the first attach", []int{1420}, 1400, psp.QUICMTU},
-		{"path shrinks after the first attach", []int{1500, 1420}, 1400, psp.QUICMTU},
-		{"path grows again", []int{1500, 1420, 1500}, 1400, 0},
+		{"path carries the VPC MTU", []int{1500}, 1400, 0, 0},
+		{"small path at the first attach", []int{1420}, 1400, psp.QUICMTU, 0},
+		{"path shrinks after the first attach", []int{1500, 1420}, 1400, psp.QUICMTU, 0},
+		{"path grows again", []int{1500, 1420, 1500}, 1400, 0, 0},
+		{"path shrinks under the open session", []int{1500}, 1400, psp.QUICMTU, 1420},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,6 +73,15 @@ func TestPathMTUNetns(t *testing.T) {
 					a.reconnect()
 				}
 				ea = a.attached(t)
+			}
+			if tc.open != 0 {
+				require.Zero(t, a.binding().ClampMTU())
+				link(tc.open)
+				// The large BFD packets drop, so the session changes to QUIC mode and
+				// back to PSP mode with the clamp.
+				require.Eventually(t, func() bool {
+					return a.binding().ClampMTU() == tc.wantClamp && a.a.Status().Mode == dp.Mode_MODE_PSP
+				}, 30*time.Second, 50*time.Millisecond, "the session did not return to PSP mode with the clamp")
 			}
 			eb := b.attached(t)
 			assert.Equal(t, tc.wantDev, a.binding().DeviceMTU())

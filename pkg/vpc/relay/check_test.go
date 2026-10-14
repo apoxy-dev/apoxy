@@ -5,6 +5,7 @@ package relay
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,10 +22,13 @@ type agentCheck struct {
 	a    agent
 	k    p2p.ProbeKeys
 	bfd  *p2p.Check
-	lose int // Packets that the path loses after each packet that it carries.
+	lose int          // Packets that the path loses after each packet that it carries.
+	size int          // Size of the BFD packets of the agent. Zero means no padding.
+	got  atomic.Int32 // Size of the last BFD packet of the relay.
 }
 
 func (c *agentCheck) send(bfd *p2p.Check) {
+	bfd.SetSize(c.size)
 	pkt := bfd.Append(nil, p2p.Probe{SID: c.k.SID, Counter: testCounter.Add(1)}, &c.k.Dialer)
 	_, _ = c.a.tr.WriteTo(pkt, c.a.to)
 }
@@ -39,7 +43,12 @@ func (c *agentCheck) run(ctx context.Context, tx time.Duration) {
 			if err != nil {
 				return
 			}
-			if pr, err := p2p.OpenProbe(buf[:n], &c.k.Listener); err == nil && pr.BFD != nil && c.bfd.Receive(pr) {
+			pr, err := p2p.OpenProbe(buf[:n], &c.k.Listener)
+			if err != nil || pr.BFD == nil {
+				continue
+			}
+			c.got.Store(int32(n))
+			if c.bfd.Receive(pr) {
 				c.send(c.bfd)
 			}
 		}
@@ -70,12 +79,14 @@ func TestPathCheck(t *testing.T) {
 	cases := []struct {
 		name string
 		lose int  // See agentCheck.
+		size int  // See agentCheck.
 		stop bool // The BFD packets of the agent stop.
 		down bool // The agent sends a BFD packet in the Down state.
 		want dp.Mode
 	}{
 		{name: "each packet comes", want: dp.Mode_MODE_PSP},
 		{name: "1 of 2 packets lost", lose: 1, want: dp.Mode_MODE_PSP},
+		{name: "padded packets", size: 1412 + 40, want: dp.Mode_MODE_PSP},
 		{name: "packets stop", stop: true, want: dp.Mode_MODE_QUIC},
 		{name: "agent is Down", down: true, want: dp.Mode_MODE_QUIC},
 	}
@@ -84,7 +95,7 @@ func TestPathCheck(t *testing.T) {
 			a := h.mustDial(t, ca.agentCert(t, vpcA, fmt.Sprintf("a%d", i)))
 			s := h.session(t, a)
 			open(t, a)
-			c := &agentCheck{a: a, k: probeKeys(t, a), bfd: p2p.NewCheck(p2p.RoleAgent, tx), lose: tc.lose}
+			c := &agentCheck{a: a, k: probeKeys(t, a), bfd: p2p.NewCheck(p2p.RoleAgent, tx), lose: tc.lose, size: tc.size}
 			t.Cleanup(c.bfd.Close)
 			ctx, stop := context.WithCancel(t.Context())
 			defer stop()
@@ -99,6 +110,8 @@ func TestPathCheck(t *testing.T) {
 			if tc.want == dp.Mode_MODE_PSP {
 				require.Never(t, func() bool { return modeOf(h.r, s) != dp.Mode_MODE_PSP }, 12*tx, tx/4, "the session left PSP mode")
 				assert.True(t, up())
+				// The relay pads its packets to the size of the packets of the agent.
+				assert.Equal(t, int32(max(tc.size, p2p.MinProbeLen+24)), c.got.Load(), "size of the BFD packets of the relay")
 				return
 			}
 			if tc.stop {

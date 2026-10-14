@@ -6,6 +6,7 @@ package bfdl
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -119,6 +120,17 @@ func Marshal(p *Packet) []byte {
 	return buf
 }
 
+// appendPadded appends p to b with zero bytes after it up to size bytes in
+// total (RFC 9764). The Length field does not count the padding.
+func appendPadded(b []byte, p *Packet, size int) []byte {
+	size = max(size, bfdPacketLen)
+	start := len(b)
+	b = slices.Grow(b, size)[:start+size]
+	MarshalTo(b[start:], p)
+	clear(b[start+bfdPacketLen:])
+	return b
+}
+
 // UnmarshalInto decodes a BFD control packet from wire format into p.
 // Use with a stack-allocated Packet to avoid heap allocation.
 func UnmarshalInto(p *Packet, b []byte) error {
@@ -140,6 +152,10 @@ func UnmarshalInto(p *Packet, b []byte) error {
 	length := b[3]
 	if length < bfdPacketLen {
 		return fmt.Errorf("invalid packet length field: %d", length)
+	}
+	// Bytes after the Length field are padding (RFC 9764). They are not checked.
+	if int(length) > len(b) {
+		return fmt.Errorf("packet length field %d is more than the packet size %d", length, len(b))
 	}
 
 	p.MyDiscr = binary.BigEndian.Uint32(b[4:8])

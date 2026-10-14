@@ -61,11 +61,13 @@ func (c *Check) Close() {
 	}
 }
 
+// SetSize sets the size of the next probes that Append makes. The BFD packet
+// gets zero bytes after it (RFC 9764), so a path that loses large packets is lost.
+func (c *Check) SetSize(n int) { c.s.SetPaddedPduSize(n - MinProbeLen) }
+
 // Append appends the probe p with the next BFD packet, tagged with key.
 func (c *Check) Append(b []byte, p Probe, key *[32]byte) []byte {
-	var pkt bfdl.Packet
-	c.s.BuildTx(&pkt)
-	p.BFD = bfdl.Marshal(&pkt)
+	p.BFD = c.s.AppendTx(nil)
 	bfdl.BFDPacketsTx.WithLabelValues(c.role).Inc()
 	return AppendProbe(b, p, 0, key)
 }

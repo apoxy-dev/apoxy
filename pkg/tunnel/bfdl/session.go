@@ -19,6 +19,8 @@ type Session struct {
 	detectMult  uint8
 	txInterval  time.Duration
 	lastRx      time.Time
+	// paddedSize is bfd.PaddedPduSize of RFC 9764. Zero sends no padding.
+	paddedSize int
 
 	onStateChange OnStateChangeFunc
 }
@@ -92,6 +94,23 @@ func (s *Session) BuildTx(pkt *Packet) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.buildTxLocked(pkt)
+}
+
+// SetPaddedPduSize sets the size of each packet that AppendTx makes: the
+// control packet and zero bytes after it. A size below 24 B gives no padding.
+func (s *Session) SetPaddedPduSize(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paddedSize = n
+}
+
+// AppendTx appends the next control packet to b, padded to the padded size.
+func (s *Session) AppendTx(b []byte) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var pkt Packet
+	s.buildTxLocked(&pkt)
+	return appendPadded(b, &pkt, s.paddedSize)
 }
 
 func (s *Session) buildTxLocked(pkt *Packet) {
