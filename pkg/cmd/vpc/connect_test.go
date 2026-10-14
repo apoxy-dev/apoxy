@@ -82,12 +82,10 @@ func TestAgentConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:       "psp transport",
-			args:       []string{"--transport", "psp"},
-			host:       "node1",
-			wantName:   "node1",
-			wantMode:   agent.TransportPSP,
-			wantDriver: driverNetstack,
+			name:    "psp transport",
+			args:    []string{"--transport", "psp"},
+			host:    "node1",
+			wantErr: true,
 		},
 		{
 			name:       "quic transport",

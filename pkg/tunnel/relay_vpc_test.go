@@ -116,6 +116,8 @@ func TestRelay_VPCSharesSocket(t *testing.T) {
 // vpcRelay is a started relay with VPC sessions, and the CA of its agents.
 type vpcRelay struct {
 	r      *tunnel.Relay
+	addr   netip.AddrPort    // QUIC socket of the VPC relay.
+	psp    netip.AddrPort    // PSP socket of the VPC relay.
 	router *vpcrelay.Router  // Nil with no VPC relay sessions.
 	roots  *x509.CertPool    // Relay roots.
 	root   *x509.Certificate // CA of the relay cert.
@@ -132,12 +134,12 @@ type relayOpts struct {
 	relayID      string // Relay ID that a mesh gives of the relay. Empty is "localhost".
 	steerSockets int
 	lameDuck     time.Duration
-	noVPC        bool                // The relay serves no VPC relay sessions.
-	addrs        vpcrelay.Addresses  // Addresses of the attachments. Nil starts at fd00:1::/96.
-	agentCA      *vpctest.CA         // CA of the agents. Nil makes a CA for this relay.
-	relayRoots   *x509.CertPool      // Roots for the relay cert of a grant. Nil is the system roots.
-	setup        func(*tunnel.Relay) // Runs before Start.
-	snapshot     func() []byte       // Snapshot hook of the mesh. Nil is a host with no snapshot.
+	noVPC        bool                                // The relay serves no VPC relay sessions.
+	addrs        vpcrelay.Addresses                  // Addresses of the attachments. Nil starts at fd00:1::/96.
+	agentCA      *vpctest.CA                         // CA of the agents. Nil makes a CA for this relay.
+	relayRoots   *x509.CertPool                      // Roots for the relay cert of a grant. Nil is the system roots.
+	setup        func(*tunnel.Relay, netip.AddrPort) // Runs before Start, with the QUIC address of the VPC relay.
+	snapshot     func() []byte                       // Snapshot hook of the mesh. Nil is a host with no snapshot.
 }
 
 func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcRelay {
@@ -184,13 +186,27 @@ func startRelayWith(t *testing.T, o relayOpts) *vpcRelay {
 	if o.addrs == nil {
 		o.addrs = &vpcAddresses{}
 	}
+	// The VPC relay has its own QUIC sockets and PSP socket, at one IP address.
+	vpcConns := []*net.UDPConn{listenUDP(t)}
+	if steerSockets > 0 {
+		vpcConns, err = steer.Listen("udp", "127.0.0.1:0", steerSockets)
+		require.NoError(t, err)
+	}
+	pspConn := listenUDP(t)
+	conns = append(append(conns, vpcConns...), pspConn)
+	quicSocks := make([]net.PacketConn, len(vpcConns))
+	for i, c := range vpcConns {
+		quicSocks[i] = c
+	}
+	require.NoError(t, r.SetVPCSockets(quicSocks, []net.PacketConn{pspConn}))
+	addr, pspAddr := vpcConns[0].LocalAddr().(*net.UDPAddr).AddrPort(), pspConn.LocalAddr().(*net.UDPAddr).AddrPort()
 	var router *vpcrelay.Router
 	if !o.noVPC {
 		router = r.SetVPC("localhost", vpcTrust{o.agentCA.Pool(), o.relayRoots}, vpcNetworks{}, o.addrs, vpcrelay.Config{})
 	}
 	r.SetLameDuckPeriod(lameDuck)
 	if o.setup != nil {
-		o.setup(r)
+		o.setup(r, addr)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -206,9 +222,17 @@ func startRelayWith(t *testing.T, o relayOpts) *vpcRelay {
 		}
 	})
 	return &vpcRelay{
-		r: r, router: router, roots: cryptoutils.CertPoolForCertificate(relayCA), root: root,
+		r: r, addr: addr, psp: pspAddr, router: router, roots: cryptoutils.CertPoolForCertificate(relayCA), root: root,
 		ca: o.agentCA.Cert, caKey: o.agentCA.Key, ctx: ctx, cancel: cancel, done: done,
 	}
+}
+
+// listenUDP opens a UDP socket on 127.0.0.1. The caller closes it.
+func listenUDP(t *testing.T) *net.UDPConn {
+	t.Helper()
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	return udp
 }
 
 // agentTLS returns the apoxy-vpc/2 client config of agent name.
@@ -231,19 +255,23 @@ func (v *vpcRelay) agentTLS(t *testing.T, name string) *tls.Config {
 	}
 }
 
-// dial dials the relay with conf from a new socket.
+// dial dials the QUIC socket of the VPC relay with conf from a new socket.
 func (v *vpcRelay) dial(t *testing.T, conf *tls.Config) (*quic.Transport, quic.Connection, error) {
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
+	return v.dialAt(t, conf, v.addr, 5*time.Second)
+}
+
+// dialAt dials the relay socket at addr with conf from a new socket.
+func (v *vpcRelay) dialAt(t *testing.T, conf *tls.Config, addr netip.AddrPort, timeout time.Duration) (*quic.Transport, quic.Connection, error) {
+	udp := listenUDP(t)
 	tr := &quic.Transport{Conn: udp}
 	t.Cleanup(func() { _ = tr.Close(); _ = udp.Close() })
 	// quic-go drops non-QUIC packets until the first ReadNonQUICPacket call.
 	stopped, stop := context.WithCancel(context.Background())
 	stop()
 	_, _, _ = tr.ReadNonQUICPacket(stopped, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	qc, err := tr.Dial(ctx, net.UDPAddrFromAddrPort(v.r.Address()), conf, &quic.Config{EnableDatagrams: true})
+	qc, err := tr.Dial(ctx, net.UDPAddrFromAddrPort(addr), conf, &quic.Config{EnableDatagrams: true})
 	return tr, qc, err
 }
 
@@ -262,6 +290,12 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 		_ = resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	}, 5*time.Second, 50*time.Millisecond)
+
+	// The tunnel socket has no VPC relay sessions.
+	_, _, err := v.dialAt(t, v.agentTLS(t, "tunnel-socket"), r.Address(), 5*time.Second)
+	var te *quic.TransportError
+	require.ErrorAs(t, err, &te)
+	assert.True(t, te.Remote, "the relay refused the handshake")
 
 	dial := func(name string) vpcAgent {
 		dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
@@ -307,7 +341,7 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 		pkt := make([]byte, len(inner)+pspwire.Overhead)
 		n, err := pspwire.Seal(aead, pspwire.Header{SPI: 7, VNI: vpcNetwork}, pkt, inner)
 		require.NoError(t, err)
-		_, err = a.tr.WriteTo(pkt[:n], net.UDPAddrFromAddrPort(r.Address()))
+		_, err = a.tr.WriteTo(pkt[:n], net.UDPAddrFromAddrPort(v.psp))
 		require.NoError(t, err)
 		buf := make([]byte, 1500)
 		m, _, err := b.tr.ReadNonQUICPacket(rctx, buf)
@@ -362,8 +396,13 @@ func TestRelay_VPCDrain(t *testing.T) {
 
 			conf := v.agentTLS(t, "late")
 			conf.NextProtos = []string{tc.alpn}
+			// HTTP/3 has the tunnel socket, and the VPC relay its own QUIC socket.
+			to := v.addr
+			if tc.alpn == http3.NextProtoH3 {
+				to = v.r.Address()
+			}
 			start := time.Now()
-			_, late, err := v.dial(t, conf)
+			_, late, err := v.dialAt(t, conf, to, 5*time.Second)
 			if err == nil {
 				select {
 				case <-late.Context().Done():

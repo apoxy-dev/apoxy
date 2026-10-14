@@ -843,7 +843,7 @@ func TestRelayVPCPacketSize(t *testing.T) {
 	}
 }
 
-// TestListenConfigKeepAlive checks the QUIC timers of the relay listener. With a
+// TestListenConfigKeepAlive checks the QUIC timers of the VPC listener. With a
 // VPC relay, the keep-alive is the probe of the liveness check of agent
 // sessions, and the idle timeout stays.
 func TestListenConfigKeepAlive(t *testing.T) {
@@ -857,7 +857,7 @@ func TestListenConfigKeepAlive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := (&Relay{vpc: tc.vpc}).listenConfig()
+			c := (&Relay{vpc: tc.vpc}).vpcListenConfig()
 			if c.KeepAlivePeriod != tc.want {
 				t.Errorf("keep-alive is %s, want %s", c.KeepAlivePeriod, tc.want)
 			}

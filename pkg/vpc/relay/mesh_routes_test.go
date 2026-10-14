@@ -100,7 +100,7 @@ func (w *routeWorld) dial(member string, rev uint32) {
 	conn := newStubConn()
 	s := w.m.newSession(conn, false)
 	require.True(w.t, w.m.track(s))
-	require.NoError(w.t, w.m.admit(s, member, nil, &dp.Version{Revision: rev}, nil))
+	require.NoError(w.t, admitMember(w.m, s, member, &dp.Version{Revision: rev}, nil))
 	w.mesh[member], w.conns[member] = s, conn
 }
 
@@ -180,7 +180,7 @@ func (w *routeWorld) session(name string, vpc VPCKey, subject string, h *dp.Hell
 	w.t.Helper()
 	s := w.join(name, vpc, subject)
 	require.NoError(w.t, w.r.checkRevision(s, h.GetVersion()))
-	require.NoError(w.t, w.r.openSync(s, dp.Mode_MODE_QUIC, ref(vpc), h))
+	require.NoError(w.t, w.r.openIn(s, dp.Mode_MODE_QUIC, ref(vpc), h))
 	return s
 }
 
@@ -1335,7 +1335,7 @@ func (rr *routeRelay) open(t *testing.T, agent, addr string, h *dp.Hello) (*Sess
 	if err := rr.r.checkRevision(s, h.GetVersion()); err != nil {
 		return nil, err
 	}
-	return s, rr.r.openSync(s, dp.Mode_MODE_QUIC, ref(vpcA), h)
+	return s, rr.r.openIn(s, dp.Mode_MODE_QUIC, ref(vpcA), h)
 }
 
 // routes applies the route changes that wait for s, and returns the routes

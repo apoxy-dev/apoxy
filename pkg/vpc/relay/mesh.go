@@ -52,7 +52,8 @@ var (
 type MeshMember struct {
 	// Name is the relay name. Each relay process has its own name.
 	Name string
-	// Addr is the UDP address of the relay socket.
+	// Addr is the UDP address of the QUIC socket of the relay. Its PSP socket
+	// is at the same IP address, with the PSP port of this relay.
 	Addr netip.AddrPort
 }
 
@@ -174,7 +175,7 @@ type MeshSession struct {
 
 	// Set under Mesh.mu before ready closes.
 	name    string
-	addr    netip.AddrPort // Relay socket of the member, from the member set.
+	psp     netip.AddrPort // PSP socket of the member, from Open. Zero if it has none.
 	relay   *dp.RelayRef
 	version *dp.Version
 }
@@ -182,13 +183,31 @@ type MeshSession struct {
 // Name returns the relay name of the member.
 func (s *MeshSession) Name() string { return s.name }
 
-// dataAddr returns the relay socket of the member, which gets its data packets. A NAT
-// can give the session another source port, and the member does not read that port.
-func (s *MeshSession) dataAddr() netip.AddrPort {
-	if s.addr.IsValid() {
-		return s.addr
+// pspSocket returns the PSP socket that a member gave in Open: host, or the
+// address dialed when host is empty, at port. Port 0 gives the zero address.
+func pspSocket(host string, port uint32, dialed netip.Addr) (netip.AddrPort, error) {
+	if port == 0 {
+		return netip.AddrPort{}, nil
 	}
-	return addrPort(s.qc.RemoteAddr())
+	if port > 65535 {
+		return netip.AddrPort{}, fmt.Errorf("PSP port %d is not a port", port)
+	}
+	if host == "" {
+		return netip.AddrPortFrom(dialed.Unmap(), uint16(port)), nil
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("PSP host %q is not an IP address", host)
+	}
+	return netip.AddrPortFrom(ip.Unmap(), uint16(port)), nil
+}
+
+// pspPort returns the port of the PSP socket of this relay, or 0 with no router.
+func (m *Mesh) pspPort() uint32 {
+	if t := m.trunk.Load(); t != nil {
+		return t.r.pspPort()
+	}
+	return 0
 }
 
 // Relay returns the ID and the agent addresses of the member, from Open.
@@ -633,7 +652,7 @@ func (m *Mesh) dial(ctx context.Context, mem *meshMember) (*MeshSession, error) 
 		s.close(dp.MeshCloseCode_MESH_CLOSE_CODE_RESTART, "relay stops")
 		return nil, errMeshStopped
 	}
-	res, err := s.client.Open(ctx, &dp.MeshOpenRequest{Version: m.ver, Name: m.name, Relay: m.cfg.Relay})
+	res, err := s.client.Open(ctx, &dp.MeshOpenRequest{Version: m.ver, Name: m.name, Relay: m.cfg.Relay, PspPort: m.pspPort()})
 	if err != nil {
 		if code, reason, ok := remoteClose(qc, err); ok {
 			err = fmt.Errorf("relay closed the session with %v: %s", code, reason)
@@ -648,6 +667,11 @@ func (m *Mesh) dial(ctx context.Context, mem *meshMember) (*MeshSession, error) 
 	}
 	if err := m.checkRevision(res.GetVersion()); err != nil {
 		s.close(dp.MeshCloseCode_MESH_CLOSE_CODE_UPGRADE, err.Error())
+		return nil, err
+	}
+	// An empty host is the host that this relay dialed.
+	if s.psp, err = pspSocket(res.GetPspHost(), res.GetPspPort(), mem.Addr.Addr()); err != nil {
+		s.close(dp.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED, err.Error())
 		return nil, err
 	}
 	if err := m.admit(s, mem.Name, mem, res.GetVersion(), res.GetRelay()); err != nil {
@@ -783,10 +807,16 @@ func (m *Mesh) Open(ctx context.Context, req *dp.MeshOpenRequest) (*dp.MeshOpenR
 	if err := m.checkRevision(req.GetVersion()); err != nil {
 		return nil, refuse(dp.MeshCloseCode_MESH_CLOSE_CODE_UPGRADE, rpc.FailedPrecondition, err.Error())
 	}
+	// An empty host is the remote IP address of the session.
+	psp, err := pspSocket(req.GetPspHost(), req.GetPspPort(), from.Addr())
+	if err != nil {
+		return nil, refuse(dp.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED, rpc.InvalidArgument, err.Error())
+	}
+	s.psp = psp
 	if err := m.admit(s, name, nil, req.GetVersion(), req.GetRelay()); err != nil {
 		return nil, refuse(admitCloseCode(err), rpc.FailedPrecondition, err.Error())
 	}
-	return &dp.MeshOpenResponse{Version: m.ver, Name: m.name, Relay: m.cfg.Relay}, nil
+	return &dp.MeshOpenResponse{Version: m.ver, Name: m.name, Relay: m.cfg.Relay, PspPort: m.pspPort()}, nil
 }
 
 func (m *Mesh) member(name string) *meshMember {
@@ -817,7 +847,7 @@ func (m *Mesh) admit(s *MeshSession, name string, want *meshMember, v *dp.Versio
 	}
 	old := mem.sess
 	mem.sess, mem.relay = s, ref
-	s.name, s.addr, s.version, s.relay = name, mem.Addr, v, ref
+	s.name, s.version, s.relay = name, v, ref
 	close(s.ready)
 	if !mem.up {
 		mem.up = true

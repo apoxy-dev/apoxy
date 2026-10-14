@@ -32,9 +32,9 @@ func TestIPv4Sources(t *testing.T) {
 		embedded bool           // To far in the /96 of the peer, from the overlay address of the sender.
 		answer   bool
 	}{
-		{name: "PSP source in a route", mode: TransportPSP, routes: own, answer: true},
-		{name: "PSP source in no route", mode: TransportPSP},
-		{name: "PSP IPv4 in the /96 of the peer", mode: TransportPSP, embedded: true, answer: true},
+		{name: "PSP source in a route", mode: TransportAuto, routes: own, answer: true},
+		{name: "PSP source in no route", mode: TransportAuto},
+		{name: "PSP IPv4 in the /96 of the peer", mode: TransportAuto, embedded: true, answer: true},
 		{name: "QUIC source in a route", mode: TransportQUIC, routes: own, answer: true},
 		{name: "QUIC source in no route", mode: TransportQUIC},
 		{name: "QUIC IPv4 in the /96 of the peer", mode: TransportQUIC, embedded: true, answer: true},
@@ -64,7 +64,7 @@ func TestIPv4Sources(t *testing.T) {
 				// PSP drops at the destination, QUIC at the relay.
 				st := b.binding().Stats()
 				assert.Zero(t, st.RxPackets)
-				if tc.mode == TransportPSP {
+				if tc.mode == TransportAuto {
 					assert.NotZero(t, st.RxDrops)
 				}
 			}

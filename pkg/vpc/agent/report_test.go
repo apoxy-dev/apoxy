@@ -56,8 +56,8 @@ func TestBreaker(t *testing.T) {
 	w := newWorld(t)
 	w.relayCfg = relay.Config{LaneRate: meter}
 	r := w.relay(t, "relay-1")
-	a := w.agent(t, "a", r, agentOptions{mode: TransportPSP})
-	b := w.agent(t, "b", r, agentOptions{mode: TransportPSP})
+	a := w.agent(t, "a", r, agentOptions{mode: TransportAuto})
+	b := w.agent(t, "b", r, agentOptions{mode: TransportAuto})
 	ea, eb := a.attached(t), b.attached(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

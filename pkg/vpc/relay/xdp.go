@@ -12,7 +12,7 @@ import (
 
 // XDPConfig sets where the XDP program of the relay runs.
 type XDPConfig struct {
-	// Port is the UDP port of the relay.
+	// Port is the UDP port of the PSP socket of the relay.
 	Port uint16
 	// Iface is the link that gets the PSP packets.
 	Iface string

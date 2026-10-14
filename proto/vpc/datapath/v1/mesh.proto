@@ -50,6 +50,11 @@ message MeshOpenRequest {
   string name = 2;
   // ID and agent addresses of the dialer. Many relays can have one ID.
   RelayRef relay = 3;
+  // IP address of the PSP socket of the dialer. Empty means the remote IP
+  // address of this session.
+  string psp_host = 4;
+  // Port of the PSP socket of the dialer. Zero means that it has no PSP socket.
+  uint32 psp_port = 5;
 }
 
 // MeshOpenResponse is the answer of the relay that accepted.
@@ -60,6 +65,11 @@ message MeshOpenResponse {
   string name = 2;
   // ID and agent addresses of the listener.
   RelayRef relay = 3;
+  // IP address of the PSP socket of the listener. Empty means the host that
+  // the dialer dialed for this session.
+  string psp_host = 4;
+  // Port of the PSP socket of the listener. Zero means that it has no PSP socket.
+  uint32 psp_port = 5;
 }
 
 // Presence tells that an attachment is on the sending relay.

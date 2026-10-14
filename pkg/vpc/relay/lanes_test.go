@@ -119,7 +119,7 @@ func TestLanePortsEnd(t *testing.T) {
 		{
 			name: "session moves",
 			run: func(_ *testing.T, e env) (*Session, string) {
-				e.snd.addr.set(moved)
+				e.snd.move(moved)
 				e.r.Sweep(t0)
 				return e.snd.Session, "192.0.2.1:2001"
 			},
@@ -134,10 +134,10 @@ func TestLanePortsEnd(t *testing.T) {
 		{
 			name: "session joins as a shard",
 			run: func(t *testing.T, e env) (*Session, string) {
-				require.NoError(t, e.r.openSync(e.snd.Session, dp.Mode_MODE_QUIC, ref(vpcA), nil))
+				require.NoError(t, e.r.openIn(e.snd.Session, dp.Mode_MODE_QUIC, ref(vpcA), nil))
 				require.NoError(t, e.r.attach(e.snd.Session, &Attachment{ID: "att-sender"}))
 				sh := newSession(e.snd.id, e.snd.remote)
-				e.r.addSession(sh, t0)
+				e.r.addProbed(sh, t0)
 				require.NoError(t, e.r.registerLanes(sh, []uint32{2002}, false))
 				_, _, err := e.r.joinShard(sh, "att-sender", 1)
 				require.NoError(t, err)
@@ -173,13 +173,13 @@ func TestLaneTwin(t *testing.T) {
 	const addr, lane = "192.0.2.1:1000", "192.0.2.1:2001"
 	r := NewRouter(nil, Config{LaneSources: MaxLaneSources})
 	old := addSession(t, r, vpcA, "sender", addr, "fd00::1/128")
-	require.NoError(t, r.openSync(old.Session, dp.Mode_MODE_PSP, ref(vpcA), nil))
+	require.NoError(t, r.openIn(old.Session, dp.Mode_MODE_PSP, ref(vpcA), nil))
 	rcv := addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 	require.NoError(t, r.registerLanes(old.Session, []uint32{2001}, false))
 	require.NoError(t, r.registerSPI(old.Session, registerLanes(vpcA, "fd00::2", []uint32{1}, []uint32{1}), t0))
 
 	next := addSession(t, r, vpcA, "sender", addr)
-	require.NoError(t, r.openSync(next.Session, dp.Mode_MODE_PSP, ref(vpcA), nil))
+	require.NoError(t, r.openIn(next.Session, dp.Mode_MODE_PSP, ref(vpcA), nil))
 	require.NoError(t, r.registerLanes(next.Session, []uint32{2001}, false))
 	owner := func() *Session {
 		r.mu.RLock()
@@ -262,7 +262,7 @@ func TestXDPLanes(t *testing.T) {
 		{
 			name: "sender migrates",
 			run: func(_ *testing.T, e env) {
-				e.snd.addr.set(moved)
+				e.snd.move(moved)
 				e.r.Sweep(t0)
 			},
 			want: map[string]string{
@@ -465,7 +465,7 @@ func TestKeepalive(t *testing.T) {
 			name: "receiver moves",
 			run: func(_ *testing.T, r *Router, rcv, _ testSession, handle func([]byte, string)) {
 				handle(ka, lane1)
-				rcv.addr.set("198.51.100.2:2000")
+				rcv.move("198.51.100.2:2000")
 				r.Sweep(t0)
 			},
 			want: [2]string{"198.51.100.2:2000", "198.51.100.2:2000"},

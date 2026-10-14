@@ -814,7 +814,7 @@ func openStub(t *testing.T, m *Mesh) (*MeshSession, *stubConn) {
 	conn := newStubConn()
 	s := m.newSession(conn, false)
 	require.True(t, m.track(s))
-	require.NoError(t, m.admit(s, "relay-a", nil, m.ver, nil))
+	require.NoError(t, admitMember(m, s, "relay-a", m.ver, nil))
 	return s, conn
 }
 

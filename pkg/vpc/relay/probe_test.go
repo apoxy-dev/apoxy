@@ -18,6 +18,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 const probeSize = 1452
@@ -53,67 +54,48 @@ func nextReply(t *testing.T, tr *quic.Transport, k p2p.ProbeKeys, wait time.Dura
 	return p, n, true
 }
 
+// TestAnswerProbe sends path probes to the PSP socket of the relay.
 func TestAnswerProbe(t *testing.T) {
 	ca := newCA(t)
 	h := newHarness(t, ca)
 	cases := []struct {
 		name  string
 		probe func(k p2p.ProbeKeys) []byte // The probe with Round 1.
-		other bool                         // Send from another socket.
-		early bool                         // Send before the relay adds the session.
 		reply bool
 	}{
 		{name: "probe", reply: true, probe: func(k p2p.ProbeKeys) []byte {
-			return p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, TxID: [12]byte{7}, Round: 1}, probeSize, &k.Dialer)
-		}},
-		{name: "probe before the session", early: true, reply: true, probe: func(k p2p.ProbeKeys) []byte {
-			return p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, TxID: [12]byte{7}, Round: 1}, probeSize, &k.Dialer)
+			return p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, TxID: [12]byte{7}, Round: 1, Counter: 1}, probeSize, &k.Dialer)
 		}},
 		{name: "small probe", reply: true, probe: func(k p2p.ProbeKeys) []byte {
-			return p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Round: 1}, p2p.MinProbeLen, &k.Dialer)
+			return p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Round: 1, Counter: 1}, p2p.MinProbeLen, &k.Dialer)
 		}},
 		{name: "unknown SID", probe: func(k p2p.ProbeKeys) []byte {
-			return p2p.AppendProbe(nil, p2p.Probe{SID: [8]byte{1}, Round: 1}, probeSize, &k.Dialer)
+			return p2p.AppendProbe(nil, p2p.Probe{SID: [8]byte{1}, Round: 1, Counter: 1}, probeSize, &k.Dialer)
 		}},
 		{name: "listener key", probe: func(k p2p.ProbeKeys) []byte {
-			return p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Round: 1}, probeSize, &k.Listener)
+			return p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Round: 1, Counter: 1}, probeSize, &k.Listener)
 		}},
 		{name: "reply", probe: func(k p2p.ProbeKeys) []byte {
-			return p2p.AppendProbe(nil, p2p.Probe{Reply: true, SID: k.SID, Round: 1}, probeSize, &k.Dialer)
-		}},
-		{name: "other source", other: true, probe: func(k p2p.ProbeKeys) []byte {
-			return p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Round: 1}, probeSize, &k.Dialer)
+			return p2p.AppendProbe(nil, p2p.Probe{Reply: true, SID: k.SID, Round: 1, Counter: 1}, probeSize, &k.Dialer)
 		}},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := h.mustDial(t, ca.agentCert(t, vpcA, fmt.Sprintf("a%d", i)))
-			if !tc.early {
-				h.session(t, a)
-			}
+			s := h.session(t, a)
 			k := probeKeys(t, a)
 			readProbes(a.tr)
 			pkt := tc.probe(k)
-			if tc.other {
-				udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-				require.NoError(t, err)
-				defer udp.Close()
-				_, err = udp.WriteTo(pkt, h.ln.Addr())
-				require.NoError(t, err)
-			} else {
-				_, err := a.tr.WriteTo(pkt, h.ln.Addr())
-				require.NoError(t, err)
-			}
-			// A good probe after it shows which ones got a reply. The relay can
-			// answer it first when the session opens between the two.
-			if !tc.early {
-				_, err := a.tr.WriteTo(p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Round: 2}, probeSize, &k.Dialer), h.ln.Addr())
-				require.NoError(t, err)
-			}
+			_, err := a.tr.WriteTo(pkt, h.pspAddr)
+			require.NoError(t, err)
+			// A good probe after it shows which ones got a reply.
+			_, err = a.tr.WriteTo(p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Round: 2, Counter: 2}, probeSize, &k.Dialer), h.pspAddr)
+			require.NoError(t, err)
 			got, n, ok := nextReply(t, a.tr, k, 5*time.Second)
 			require.True(t, ok)
 			assert.True(t, got.Reply)
 			assert.Equal(t, a.src, got.Seen)
+			assert.Equal(t, a.src, h.r.Addr(s))
 			if !tc.reply {
 				assert.Equal(t, uint32(2), got.Round)
 				return
@@ -135,7 +117,7 @@ func TestProbeRate(t *testing.T) {
 	k := probeKeys(t, a)
 	readProbes(a.tr)
 	for i := range 2 * probeRate {
-		_, err := a.tr.WriteTo(p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Round: uint32(i)}, probeSize, &k.Dialer), h.ln.Addr())
+		_, err := a.tr.WriteTo(p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Round: uint32(i), Counter: uint64(i + 1)}, probeSize, &k.Dialer), h.pspAddr)
 		require.NoError(t, err)
 	}
 	replies := 0
@@ -156,157 +138,141 @@ func TestProbeRate(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 }
 
-// TestEarlyProbe sends a probe before the relay adds its session. The relay
-// answers it when it adds the session.
-func TestEarlyProbe(t *testing.T) {
+// TestQUICSocketDrops sends packets that are not QUIC to the QUIC socket. The
+// relay drops each one, sends no reply, and learns no PSP address from it.
+func TestQUICSocketDrops(t *testing.T) {
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	a := h.mustDial(t, ca.agentCert(t, vpcA, "a"))
+	s := h.session(t, a)
+	k := probeKeys(t, a)
+	readProbes(a.tr)
 	cases := []struct {
-		name     string
-		other    bool          // The probe comes from another address.
-		listener bool          // The probe has the tag of the listener key.
-		age      time.Duration // Age of the probe when the session opens.
-		after    int           // Early probes of other sessions that come after it.
-		reply    bool
-		wantBad  uint64 // Malformed drops.
+		name string
+		pkt  []byte
 	}{
-		{name: "probe", reply: true},
-		{name: "list has room", after: earlyProbes - 1, reply: true},
-		{name: "list is full", after: earlyProbes, wantBad: 1},
-		{name: "other source", other: true, wantBad: 1},
-		{name: "listener key", listener: true, wantBad: 1},
-		{name: "too old", age: 2 * earlyProbeAge, wantBad: 1},
+		{"PSP packet", pspPacket(t, 7, netip.MustParseAddr("fd00::1"))},
+		{"path probe", p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Counter: 1}, probeSize, &k.Dialer)},
+		{"small path probe", p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Counter: 2}, p2p.MinProbeLen, &k.Dialer)},
+		{"Geneve", geneve(0, 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before, classes := h.r.drops[dropNotQUIC].Load(), socketCounts(h.r)
+			_, err := a.tr.WriteTo(tc.pkt, h.ln.Addr())
+			require.NoError(t, err)
+			require.Eventually(t, func() bool {
+				return h.r.drops[dropNotQUIC].Load() == before+1
+			}, 5*time.Second, time.Millisecond, "the relay did not count the packet")
+			_, _, ok := nextReply(t, a.tr, k, 50*time.Millisecond)
+			assert.False(t, ok, "reply from the QUIC socket")
+			assert.False(t, h.r.Addr(s).IsValid(), "PSP address from the QUIC socket")
+			assert.Equal(t, classes, socketCounts(h.r), "PSP packet counted on the QUIC socket")
+			assert.Zero(t, h.r.MalformedDrops())
+			assert.Zero(t, h.r.UnknownSourceDrops())
+		})
+	}
+}
+
+// TestProbeAddress checks which path probes set the PSP address of a session.
+// The QUIC connection of the session is at 192.0.2.1.
+func TestProbeAddress(t *testing.T) {
+	conn := netip.MustParseAddrPort("192.0.2.1:40000")
+	p1, p2 := netip.MustParseAddrPort("192.0.2.1:1001"), netip.MustParseAddrPort("192.0.2.1:1002")
+	otherIP := netip.MustParseAddrPort("192.0.2.9:1001")
+	type step struct {
+		from    netip.AddrPort
+		counter uint64
+		reply   bool
+		addr    netip.AddrPort // PSP address after the step.
+	}
+	cases := []struct {
+		name  string
+		steps []step
+	}{
+		{"probe", []step{{p1, 1, true, p1}}},
+		{"probe from the socket of the connection", []step{{conn, 1, true, conn}}},
+		{"probe from another IP address", []step{{otherIP, 1, false, netip.AddrPort{}}}},
+		{"counter zero", []step{{p1, 0, true, netip.AddrPort{}}}},
+		{"old counter from another port", []step{{p1, 5, true, p1}, {p2, 4, true, p1}}},
+		{"same counter from another port", []step{{p1, 5, true, p1}, {p2, 5, true, p1}}},
+		{"newer counter from another port", []step{{p1, 5, true, p1}, {p2, 6, true, p2}}},
+		{"old counter after a move", []step{{p1, 5, true, p1}, {p2, 6, true, p2}, {p1, 5, true, p2}}},
+		{"newer counter from another IP address", []step{{p1, 5, true, p1}, {otherIP, 6, false, p1}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRouter(&fakeTrust{}, Config{})
-			relayUDP := loopbackUDP(t)
-			tr := &quic.Transport{Conn: relayUDP}
+			tr := &quic.Transport{Conn: loopbackUDP(t)}
 			defer tr.Close()
-			agentUDP := loopbackUDP(t)
-			src := netip.MustParseAddrPort(agentUDP.LocalAddr().String())
-			from := src
-			if tc.other {
-				from = netip.MustParseAddrPort(loopbackUDP(t).LocalAddr().String())
-			}
-
 			var k p2p.ProbeKeys
 			_, _ = rand.Read(k.SID[:])
 			_, _ = rand.Read(k.Dialer[:])
-			_, _ = rand.Read(k.Listener[:])
-			key := &k.Dialer
-			if tc.listener {
-				key = &k.Listener
-			}
-			pkt := p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, TxID: [12]byte{7}}, probeSize, key)
-			require.True(t, r.answerProbe(tr, pkt, net.UDPAddrFromAddrPort(from)))
-			for i := range tc.after {
-				other := p2p.AppendProbe(nil, p2p.Probe{SID: [8]byte{byte(i), 1}}, probeSize, &k.Dialer)
-				require.True(t, r.answerProbe(tr, other, net.UDPAddrFromAddrPort(src)))
-			}
-			for i := range r.early.list {
-				r.early.list[i].at = r.early.list[i].at.Add(-tc.age)
-			}
-
-			s := newSession(Identity{VPC: vpcA, ID: "a"}, func() netip.AddrPort { return src })
+			s := newSession(Identity{VPC: vpcA, ID: "a"}, func() netip.AddrPort { return conn })
 			s.probe = &prober{keys: k, limit: rate.NewLimiter(probeRate, probeRate)}
 			r.addSession(s, time.Now())
-			r.answerEarly(s)
-
-			buf := make([]byte, 2048)
-			require.NoError(t, agentUDP.SetReadDeadline(time.Now().Add(200*time.Millisecond)))
-			n, err := agentUDP.Read(buf)
-			if !tc.reply {
-				require.Error(t, err, "reply to the early probe")
-			} else {
-				require.NoError(t, err)
-				got, err := p2p.OpenProbe(buf[:n], &k.Listener)
-				require.NoError(t, err)
-				assert.Equal(t, p2p.Probe{Reply: true, SID: k.SID, TxID: [12]byte{7}, Seen: src}, got)
-				assert.Equal(t, len(pkt), n)
+			assert.False(t, r.Addr(s).IsValid(), "PSP address before a probe")
+			for i, st := range tc.steps {
+				pkt := p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Counter: st.counter}, p2p.MinProbeLen, &k.Dialer)
+				assert.Equal(t, st.reply, r.answerProbe(tr, pkt, net.UDPAddrFromAddrPort(st.from)), "step %d", i)
+				assert.Equal(t, st.addr, r.Addr(s), "step %d", i)
 			}
-			assert.Equal(t, tc.wantBad, r.MalformedDrops())
 		})
 	}
 }
 
-// TestRefusedProbe sends the path probes of a connection that the relay refuses.
-// They get no reply and do not count as malformed, also after newer probes come.
-func TestRefusedProbe(t *testing.T) {
-	cases := []struct {
-		name    string
-		otherCA bool // The agent cert is from a CA that the relay does not trust.
-		noList  bool // The relay has no revocation list of the VPC.
-		drain   bool // The relay drains.
-		early   bool // The first probe comes before the refusal.
-	}{
-		{name: "cert from another CA", otherCA: true},
-		{name: "no revocation list", noList: true},
-		{name: "relay drains", drain: true},
-		{name: "first probe before the refusal", noList: true, early: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ca := newCA(t)
-			h := newHarness(t, ca)
-			certCA := ca
-			if tc.otherCA {
-				certCA = newCA(t)
-			}
-			if tc.drain {
-				h.srv.Drain(t.Context(), nil)
-			}
-			// The cert check of the relay waits for the trust data until the dial
-			// returns, as the agent side of a TLS 1.3 handshake ends first.
-			h.trust.mu.Lock()
-			a, err := h.dial(t, certCA.agentCert(t, vpcA, "laptop"))
-			if err != nil {
-				h.trust.mu.Unlock()
-				require.NoError(t, err)
-			}
-			k := probeKeys(t, a)
-			from := net.UDPAddrFromAddrPort(a.src)
-			probe := func(round uint32) {
-				pkt := p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, TxID: [12]byte{7}, Round: round}, probeSize, &k.Dialer)
-				require.True(t, h.r.answerProbe(h.tr, pkt, from), "probe %d", round)
-			}
-			rounds := uint32(0)
-			if tc.early {
-				probe(rounds)
-				rounds++
-			}
-			if tc.noList {
-				h.trust.err = errors.New("snapshot has no VPC")
-			}
-			h.trust.mu.Unlock()
-			select {
-			case <-a.qc.Context().Done():
-			case <-time.After(5 * time.Second):
-				t.Fatal("relay did not refuse the connection in 5 s")
-			}
-			for ; rounds < 3; rounds++ {
-				probe(rounds)
-			}
-			_, _, ok := nextReply(t, a.tr, k, 50*time.Millisecond)
-			assert.False(t, ok, "reply to a probe of a refused connection")
-			// Each slot of the list gets a newer probe.
-			for i := range earlyProbes {
-				other := p2p.AppendProbe(nil, p2p.Probe{SID: [8]byte{byte(i), 1}}, probeSize, &k.Dialer)
-				require.True(t, h.r.answerProbe(h.tr, other, from))
-			}
-			assert.Zero(t, h.r.MalformedDrops())
-		})
-	}
-}
+// TestProbeMovesData moves a PSP-mode agent to a new port with a newer path
+// probe. The relay then sends its packets to the new port, and takes packets from it.
+func TestProbeMovesData(t *testing.T) {
+	ca := newCA(t)
+	h := newHarness(t, ca)
+	q := newEnd(t, h, ca, "q", dp.Mode_MODE_QUIC)
+	p := newEnd(t, h, ca, "p", dp.Mode_MODE_PSP)
+	p.giveSAs(t)
+	old := h.r.Addr(p.s)
+	require.Equal(t, p.src, old)
 
-// BenchmarkEarlyProbe measures a probe for a session that the relay does not
-// have, as the read loop keeps it.
-func BenchmarkEarlyProbe(b *testing.B) {
-	r := NewRouter(&fakeTrust{}, Config{})
-	from := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1000}
-	pkt := p2p.AppendProbe(nil, p2p.Probe{SID: [8]byte{1}}, probeSize, &[32]byte{})
-	b.ReportAllocs()
-	for b.Loop() {
-		r.answerProbe(nil, pkt, from)
+	udp := loopbackUDP(t)
+	moved := netip.MustParseAddrPort(udp.LocalAddr().String())
+	k := probeKeys(t, p.agent)
+	probe := func(counter uint64) {
+		t.Helper()
+		_, err := udp.WriteTo(p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Counter: counter}, p2p.MinProbeLen, &k.Dialer), h.pspAddr)
+		require.NoError(t, err)
+		buf := make([]byte, 2048)
+		require.NoError(t, udp.SetReadDeadline(time.Now().Add(5*time.Second)))
+		n, err := udp.Read(buf)
+		require.NoError(t, err)
+		got, err := p2p.OpenProbe(buf[:n], &k.Listener)
+		require.NoError(t, err)
+		assert.Equal(t, moved, got.Seen)
 	}
+	// A replay of an old probe from the new port gets a reply and moves nothing.
+	probe(1)
+	require.Equal(t, old, h.r.Addr(p.s))
+	inner := ipPacket(q.addr, p.addr, []byte("before"))
+	q.send(t, inner)
+	got, _ := p.recv(t)
+	assert.Equal(t, inner, got)
+
+	probe(testCounter.Add(1))
+	require.Equal(t, moved, h.r.Addr(p.s))
+	inner = ipPacket(q.addr, p.addr, []byte("after"))
+	q.send(t, inner)
+	buf := make([]byte, 2048)
+	require.NoError(t, udp.SetReadDeadline(time.Now().Add(5*time.Second)))
+	n, from, err := udp.ReadFrom(buf)
+	require.NoError(t, err)
+	assert.Equal(t, h.pspAddr.String(), from.String())
+	got, _, err = p.psp.rxq.Receive(buf[:n])
+	require.NoError(t, err)
+	assert.Equal(t, inner, got)
+
+	inner = ipPacket(p.addr, q.addr, []byte("from the new port"))
+	_, err = udp.WriteTo(p.psp.seal(t, inner), h.pspAddr)
+	require.NoError(t, err)
+	got, _ = q.recv(t)
+	assert.Equal(t, inner, got)
 }
 
 // loopbackUDP opens a UDP socket on 127.0.0.1 that closes at the end of the test.

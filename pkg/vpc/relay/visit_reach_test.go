@@ -44,7 +44,7 @@ func (g *rowRig) member(ref *dp.RelayRef) *MeshSession {
 		rows: func() (rowStream, error) { return nil, rpc.Errorf(rpc.Unimplemented, "no SPIRows call") },
 	}
 	require.True(g.t, g.m.track(s))
-	require.NoError(g.t, g.m.admit(s, "relay-b", nil, &dp.Version{Revision: dp.Revision}, ref))
+	require.NoError(g.t, admitMember(g.m, s, "relay-b", &dp.Version{Revision: dp.Revision}, ref))
 	g.deliver()
 	return s
 }
@@ -56,8 +56,8 @@ func (g *rowRig) pspSender(rev uint32) *bridgeEnd {
 	e := &bridgeEnd{socket: netip.MustParseAddrPort(brPSocket)}
 	e.s = newSession(Identity{VPC: vpcA, ID: agentID(vpcA, "p")}, func() netip.AddrPort { return e.socket })
 	e.s.version = &dp.Version{Revision: rev}
-	g.r.addSession(e.s, time.Now())
-	require.NoError(g.t, g.r.openSync(e.s, dp.Mode_MODE_PSP, ref(vpcA), nil))
+	g.r.addProbed(e.s, time.Now())
+	require.NoError(g.t, g.r.openIn(e.s, dp.Mode_MODE_PSP, ref(vpcA), nil))
 	require.NoError(g.t, g.r.attach(e.s, attachment("att-p", brPNet)))
 	offer, err := g.r.offer(e.s, Network{ID: testVNI, MTU: 1280}, time.Now())
 	require.NoError(g.t, err)

@@ -25,6 +25,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 
 	"github.com/apoxy-dev/apoxy/pkg/netns"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 )
 
 var (
@@ -45,8 +47,8 @@ func TestPathMTUNetns(t *testing.T) {
 		wantClamp int
 	}{
 		{"path carries the VPC MTU", []int{1500}, 1400, 0},
-		{"small path at the first attach", []int{1420}, 1280, 0},
-		{"path shrinks after the first attach", []int{1500, 1420}, 1400, 1280},
+		{"small path at the first attach", []int{1420}, 1400, psp.QUICMTU},
+		{"path shrinks after the first attach", []int{1500, 1420}, 1400, psp.QUICMTU},
 		{"path grows again", []int{1500, 1420, 1500}, 1400, 0},
 	}
 	for _, tc := range cases {
@@ -55,10 +57,9 @@ func TestPathMTUNetns(t *testing.T) {
 			link := veth(t, relayNS, agentNS, 0)
 			w := newWorld(t)
 			w.mtu = 1400
-			r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP))
-			// PSP mode, so that a QUIC fallback under load does not skip the path probe.
-			b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), tcp: true, mode: TransportPSP})
-			a := w.agent(t, "a", r, agentOptions{udp: listenIn(t, agentNS, agentIP), tcp: true, mode: TransportPSP})
+			r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP), listenIn(t, relayNS, relayIP))
+			b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), tcp: true, mode: TransportAuto})
+			a := w.agent(t, "a", r, agentOptions{udp: listenIn(t, agentNS, agentIP), tcp: true, mode: TransportAuto})
 			var ea attachEvent
 			for i, mtu := range tc.linkMTU {
 				link(mtu)

@@ -45,6 +45,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/agent"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	vpcrelay "github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
@@ -153,8 +154,8 @@ func startMeshRelayWith(t *testing.T, ca *meshCA, opts relayOpts) *meshRelay {
 	if id == "" {
 		id = "localhost"
 	}
-	opts.setup = func(r *tunnel.Relay) {
-		m.ref = &dp.RelayRef{Id: id, Addresses: []string{r.Address().String()}}
+	opts.setup = func(r *tunnel.Relay, addr netip.AddrPort) {
+		m.ref = &dp.RelayRef{Id: id, Addresses: []string{addr.String()}}
 		mesh, err := r.SetMesh(vpcrelay.MeshConfig{Relay: m.ref, TLS: ca.tls(t, opts.name), Verify: ca.verify(m.checks), Snapshot: opts.snapshot})
 		require.NoError(t, err)
 		mesh.OnChange(func(c vpcrelay.MeshChange) { m.changes <- c })
@@ -165,7 +166,7 @@ func startMeshRelayWith(t *testing.T, ca *meshCA, opts relayOpts) *meshRelay {
 }
 
 func (m *meshRelay) member() vpcrelay.MeshMember {
-	return vpcrelay.MeshMember{Name: m.name, Addr: m.r.Address()}
+	return vpcrelay.MeshMember{Name: m.name, Addr: m.addr}
 }
 
 // change returns the next change of a member of m.
@@ -224,8 +225,8 @@ func TestRelay_Mesh(t *testing.T) {
 			require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
 			require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
 			// relay-a dialed from its listening socket: relay-b saw that address.
-			assert.Equal(t, meshCheck{"relay-b", b.r.Address()}, <-a.checks)
-			assert.Equal(t, meshCheck{"relay-a", a.r.Address()}, <-b.checks)
+			assert.Equal(t, meshCheck{"relay-b", b.addr}, <-a.checks)
+			assert.Equal(t, meshCheck{"relay-a", a.addr}, <-b.checks)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -289,6 +290,12 @@ func TestRelay_MeshALPN(t *testing.T) {
 
 			meshConf := ca.tls(t, "relay-a")
 			meshConf.NextProtos = []string{dp.ALPNMesh}
+			if !tc.mesh && tc.noVPC {
+				// The relay does not serve its VPC sockets.
+				_, _, err := v.dialAt(t, meshConf, v.addr, time.Second)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				return
+			}
 			for _, d := range []struct {
 				conf *tls.Config
 				ok   bool
@@ -329,8 +336,7 @@ func TestRelay_MeshKeepAlive(t *testing.T) {
 			t.Parallel()
 			ca := newMeshCA(t)
 			b := startMeshRelay(t, ca, "relay-b", 0, false)
-			udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-			require.NoError(t, err)
+			udp := listenUDP(t)
 			tr := &quic.Transport{Conn: udp}
 			t.Cleanup(func() { _ = tr.Close(); _ = udp.Close() })
 			addr := udp.LocalAddr().(*net.UDPAddr).AddrPort()
@@ -368,7 +374,7 @@ func TestRelay_MeshKeepAlive(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			qc, err := tr.Dial(ctx, net.UDPAddrFromAddrPort(b.r.Address()), tlsConf, quicConf)
+			qc, err := tr.Dial(ctx, net.UDPAddrFromAddrPort(b.addr), tlsConf, quicConf)
 			require.NoError(t, err)
 			defer func() { _ = qc.CloseWithError(0, "") }()
 			res, err := dp.NewMeshClient(rpc.NewConn(qc, nil)).Open(ctx, &dp.MeshOpenRequest{Version: dp.LocalVersion("test"), Name: "relay-a"})
@@ -412,8 +418,7 @@ func (f *meshSink) Presence(_ context.Context, st rpc.ClientStreamServer[dp.Pres
 func TestRelay_MeshPresence(t *testing.T) {
 	ca := newMeshCA(t)
 	b := startMeshRelay(t, ca, "relay-b", 0, false)
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
+	udp := listenUDP(t)
 	tr := &quic.Transport{Conn: udp}
 	t.Cleanup(func() { _ = tr.Close(); _ = udp.Close() })
 	b.mesh.SetMembers([]vpcrelay.MeshMember{{Name: "relay-a", Addr: udp.LocalAddr().(*net.UDPAddr).AddrPort()}})
@@ -422,7 +427,7 @@ func TestRelay_MeshPresence(t *testing.T) {
 	defer cancel()
 	tlsConf := ca.tls(t, "relay-a")
 	tlsConf.NextProtos = []string{dp.ALPNMesh}
-	qc, err := tr.Dial(ctx, net.UDPAddrFromAddrPort(b.r.Address()), tlsConf, &quic.Config{EnableDatagrams: true})
+	qc, err := tr.Dial(ctx, net.UDPAddrFromAddrPort(b.addr), tlsConf, &quic.Config{EnableDatagrams: true})
 	require.NoError(t, err)
 	defer func() { _ = qc.CloseWithError(0, "") }()
 	sink := &meshSink{updates: make(chan *dp.PresenceUpdate, 16)}
@@ -491,6 +496,28 @@ func TestRelay_MeshPresence(t *testing.T) {
 	assert.Greater(t, g.GetGeneration(), e.GetGeneration())
 }
 
+// probeCounter gives each path probe of the tests a larger counter.
+var probeCounter atomic.Uint64
+
+// probeRelay sends a path probe of the session qc from tr to the PSP socket of
+// v, and waits for the reply.
+func probeRelay(t *testing.T, ctx context.Context, v *vpcRelay, tr *quic.Transport, qc quic.Connection) {
+	t.Helper()
+	k, err := p2p.NewProbeKeys(qc.ConnectionState().TLS)
+	require.NoError(t, err)
+	pkt := p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Counter: probeCounter.Add(1)}, p2p.MinProbeLen, &k.Dialer)
+	_, err = tr.WriteTo(pkt, net.UDPAddrFromAddrPort(v.psp))
+	require.NoError(t, err)
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	buf := make([]byte, 1500)
+	n, from, err := tr.ReadNonQUICPacket(rctx, buf)
+	require.NoError(t, err, "no reply to the path probe")
+	assert.Equal(t, v.psp.String(), from.String(), "the reply comes from the PSP socket")
+	_, err = p2p.OpenProbe(buf[:n], &k.Listener)
+	require.NoError(t, err)
+}
+
 // routeAgent is an agent session on a relay that keeps the route changes, the
 // Drain messages and the NoRoute messages of its Session call.
 type routeAgent struct {
@@ -503,7 +530,8 @@ type routeAgent struct {
 }
 
 // openRouteAgent dials v as agent name and sends hello, in QUIC mode if hello
-// gives no mode. It returns after Welcome and Config.
+// gives no mode. It returns after Welcome, Config and the reply to a path
+// probe, so the relay has the socket of the agent as its PSP address.
 func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string, hello *dp.Hello) *routeAgent {
 	t.Helper()
 	tr, qc, err := v.dial(t, v.agentTLS(t, name))
@@ -522,9 +550,12 @@ func openRouteAgent(t *testing.T, ctx context.Context, v *vpcRelay, name string,
 	m, err := st.Recv()
 	require.NoError(t, err)
 	require.NotNil(t, m.GetWelcome(), "first message: %v", m)
+	require.Empty(t, m.GetWelcome().GetPspHost())
+	require.EqualValues(t, v.psp.Port(), m.GetWelcome().GetPspPort())
 	m, err = st.Recv()
 	require.NoError(t, err)
 	require.NotNil(t, m.GetConfig(), "second message: %v", m)
+	probeRelay(t, ctx, v, tr, qc)
 	go func() {
 		for {
 			m, err := st.Recv()
@@ -659,7 +690,7 @@ func TestRelay_MeshDrain(t *testing.T) {
 			require.Equal(t, vpcrelay.MeshChange{Name: "relay-b", Up: true}, a.change(t))
 			require.Equal(t, vpcrelay.MeshChange{Name: "relay-a", Up: true}, b.change(t))
 			// Each relay has the other relay for its agents, with the socket address.
-			require.Equal(t, []string{b.r.Address().String()}, b.ref.GetAddresses())
+			require.Equal(t, []string{b.addr.String()}, b.ref.GetAddresses())
 			assert.Empty(t, cmp.Diff([]*dp.RelayRef{b.ref}, a.mesh.Alternates(), protocmp.Transform()))
 			assert.Empty(t, cmp.Diff([]*dp.RelayRef{a.ref}, b.mesh.Alternates(), protocmp.Transform()))
 
@@ -802,7 +833,7 @@ func (a *routeAgent) sendPSP(t *testing.T, ctx context.Context, v *vpcRelay, to 
 	t.Helper()
 	buf := make([]byte, 1500)
 	for {
-		_, err := a.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(v.r.Address()))
+		_, err := a.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(v.psp))
 		require.NoError(t, err)
 		rctx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		for {
@@ -895,15 +926,19 @@ func testMeshPSP(t *testing.T, steerSockets int) {
 			require.NoError(t, err)
 			got, src := d.from.sendPSP(t, ctx, d.first.vpcRelay, d.to, pkt[:n])
 			assert.Equal(t, pkt[:n], got, "%s, inner size %d", d.name, size)
-			assert.Equal(t, d.last.r.Address(), src, "%s, inner size %d", d.name, size)
+			assert.Equal(t, d.last.psp, src, "%s, inner size %d", d.name, size)
 		}
 	}
 	// Each relay host counts the packets for the other relay, and has the RTT of
 	// the mesh session: the host that dialed it and the host that accepted it.
 	for _, d := range dirs {
-		sent, got := memberSeries(t, d.first, d.last.name), memberSeries(t, d.last, d.first.name)
-		assert.GreaterOrEqual(t, sent["apoxy_vpc_relay_trunk_packets_total tx"], 3.0, d.name)
-		assert.GreaterOrEqual(t, got["apoxy_vpc_relay_trunk_packets_total rx"], 3.0, d.name)
+		// A relay counts a packet after it sends the packet on.
+		var sent map[string]float64
+		require.Eventually(t, func() bool {
+			sent = memberSeries(t, d.first, d.last.name)
+			got := memberSeries(t, d.last, d.first.name)
+			return sent["apoxy_vpc_relay_trunk_packets_total tx"] >= 3 && got["apoxy_vpc_relay_trunk_packets_total rx"] >= 3
+		}, 5*time.Second, 5*time.Millisecond, d.name)
 		assert.Positive(t, sent["apoxy_vpc_relay_mesh_rtt_seconds"], d.name)
 	}
 }
@@ -957,7 +992,7 @@ func TestRelay_MeshNoRoute(t *testing.T) {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		_, err := laptop.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(a.r.Address()))
+		_, err := laptop.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(a.psp))
 		require.NoError(t, err)
 		select {
 		case m := <-laptop.noRoutes:
@@ -1253,7 +1288,7 @@ func TestRelay_MeshVisit(t *testing.T) {
 		require.NoError(t, err)
 		sealed, from := d.from.sendPSP(t, ctx, b.vpcRelay, d.to, pkt[:n])
 		assert.Equal(t, pkt[:n], sealed, d.name)
-		assert.Equal(t, b.r.Address(), from, d.name)
+		assert.Equal(t, b.psp, from, d.name)
 	}
 	// The visitor reaches no address of another relay.
 	_, err = visitor.c.RegisterSPI(ctx, &dp.RegisterSPIRequest{
@@ -1282,6 +1317,7 @@ type hostAgent struct {
 	hostAttach // The last attachment that attached took.
 	attaches   chan hostAttach
 	stop       func() // Ends the agent and waits for it.
+	quic       bool   // The agent has QUIC mode in its config.
 
 	mu     sync.Mutex
 	routes map[netip.Prefix]bool
@@ -1291,12 +1327,11 @@ type hostAgent struct {
 // roots must have the CA of each relay of the mesh.
 func startHostAgent(t *testing.T, ca *vpctest.CA, roots *x509.CertPool, v *vpcRelay, name string, mode agent.TransportMode) *hostAgent {
 	t.Helper()
-	sock, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
+	sock := listenUDP(t)
 	tr := &quic.Transport{Conn: sock}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	h := &hostAgent{
+	h := &hostAgent{quic: mode == agent.TransportQUIC,
 		routes: map[netip.Prefix]bool{}, attaches: make(chan hostAttach, 8),
 		stop: sync.OnceFunc(func() { cancel(); <-done }),
 	}
@@ -1304,7 +1339,7 @@ func startHostAgent(t *testing.T, ca *vpctest.CA, roots *x509.CertPool, v *vpcRe
 		Identity: identity.NewManager(filepath.Join(t.TempDir(), "cred.json"), func(context.Context) (*identity.Credential, error) {
 			return ca.Credential(vpcProject, vpcUID, name, time.Hour)
 		}),
-		Relays:        []identity.Relay{{ID: "localhost", Addresses: []string{v.r.Address().String()}}},
+		Relays:        []identity.Relay{{ID: "localhost", Addresses: []string{v.addr.String()}}},
 		RelayRoots:    roots,
 		Sessions:      1,
 		Transport:     tr,
@@ -1345,6 +1380,11 @@ func (h *hostAgent) attached(t *testing.T) {
 	case h.hostAttach = <-h.attaches:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the agent did not attach in 10 s")
+	}
+	if !h.quic {
+		// Each session starts in QUIC mode, and changes when its PSP probe passes.
+		require.Eventually(t, func() bool { return h.a.Status().Mode == dp.Mode_MODE_PSP }, 10*time.Second, time.Millisecond,
+			"the session did not change to PSP mode")
 	}
 }
 

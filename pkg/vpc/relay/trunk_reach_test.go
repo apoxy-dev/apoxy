@@ -42,9 +42,9 @@ func (g *rowRig) caller(c reachCaller) *Session {
 	if c.rev > 0 {
 		s.version = &dp.Version{Revision: c.rev}
 	}
-	g.r.addSession(s, time.Now())
+	g.r.addProbed(s, time.Now())
 	if !c.noSync {
-		require.NoError(g.t, g.r.openSync(s, c.mode, ref(vpcA), &dp.Hello{LocalRoutesOnly: c.local}))
+		require.NoError(g.t, g.r.openIn(s, c.mode, ref(vpcA), &dp.Hello{LocalRoutesOnly: c.local}))
 	}
 	if !c.spare {
 		require.NoError(g.t, g.r.attach(s, attachment("att-caller", reachNet)))
@@ -349,8 +349,8 @@ func TestAttachPrefixLimit(t *testing.T) {
 			}
 			ap := netip.MustParseAddrPort(reachSocket)
 			s := newSession(Identity{VPC: vpcA, ID: laptop}, func() netip.AddrPort { return ap })
-			r.addSession(s, time.Now())
-			require.NoError(t, r.openSync(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
+			r.addProbed(s, time.Now())
+			require.NoError(t, r.openIn(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			a := attachment("big")
 			for i := range tc.addresses {
 				a.Addresses = append(a.Addresses, netip.MustParsePrefix(fmt.Sprintf("fd00:31:%x::/96", i)))

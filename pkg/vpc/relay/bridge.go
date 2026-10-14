@@ -45,7 +45,8 @@ var (
 // bridge is the PSP endpoint of the relay. It opens the PSP packets that
 // agents send to the relay, and seals the packets that it sends to PSP agents.
 type bridge struct {
-	tr       *quic.Transport // Sends the sealed packets.
+	tr       *quic.Transport // Transport of the PSP socket. It sends the sealed packets.
+	port     uint16          // Port of the PSP socket. Agents and the other relays get it.
 	local    *Session        // Receiver of the rows of relay SAs. It has no address.
 	rxMu     sync.Mutex      // The read loops of all relay sockets share rxq.
 	table    *engine.RxTable
@@ -77,6 +78,14 @@ func (r *Router) startBridge(tr *quic.Transport) *bridge {
 	return br
 }
 
+// pspPort returns the port of the PSP socket, or 0 before PacketHandler.
+func (r *Router) pspPort() uint32 {
+	if br := r.bridge.Load(); br != nil {
+		return uint32(br.port)
+	}
+	return 0
+}
+
 func newBridge(tr *quic.Transport) (*bridge, error) {
 	table, err := engine.NewRxTable(engine.RxConfig{Queues: 1})
 	if err != nil {
@@ -92,6 +101,7 @@ func newBridge(tr *quic.Transport) (*bridge, error) {
 	}
 	return &bridge{
 		tr:       tr,
+		port:     addrPort(tr.Conn.LocalAddr()).Port(),
 		local:    newSession(Identity{}, func() netip.AddrPort { return netip.AddrPort{} }),
 		table:    table,
 		rxq:      table.Queue(0),
@@ -303,21 +313,6 @@ func innerDest(p []byte) (netip.Addr, bool) {
 		return netip.AddrFrom16([16]byte(p[24:40])).Unmap(), true
 	}
 	return netip.Addr{}, false
-}
-
-// offer gives the PSP-mode session s relay SAs, and returns the Rekey message
-// for its agent. It returns nil if the relay has no bridge.
-func (r *Router) offer(s *Session, n Network, now time.Time) (*dp.SessionResponse, error) {
-	br := r.bridge.Load()
-	if br == nil {
-		return nil, nil
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s.closed {
-		return nil, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
-	}
-	return r.offerLocked(br, s, n, now)
 }
 
 // offerLocked makes the relay SAs of s and their rows, and returns the Rekey
@@ -599,6 +594,9 @@ func applyTx(br *bridge, s *Session, req keys.Request, now time.Time) ([]uint32,
 // changeToPSP changes the QUIC-mode session s to PSP mode with the SAs in req.
 // The mode stays QUIC if req gives the relay no SA for lane 0. Router.mu must be held.
 func (r *Router) changeToPSP(br *bridge, s *Session, n Network, req keys.Request, now time.Time) ([]uint32, error) {
+	if !s.addr.IsValid() {
+		return nil, rpc.Errorf(rpc.FailedPrecondition, "session has no PSP address: no path probe passed")
+	}
 	if n.ID != s.sync.ref.GetNetworkId() {
 		// The Session call started after the caller looked for the network.
 		return nil, rpc.Errorf(rpc.Unavailable, "no network for the relay SAs, call again")

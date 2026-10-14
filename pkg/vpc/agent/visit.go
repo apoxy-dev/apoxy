@@ -203,13 +203,6 @@ func (a *Agent) connectVisit(ctx context.Context, home *relayConn, dst netip.Add
 		return fmt.Errorf("visit relay %s for peer %s: %w", ref.GetId(), dst, err)
 	}
 	defer a.release(v)
-	a.mu.Lock()
-	p := a.peerTo(v.rc, dst)
-	a.mu.Unlock()
-	if p != nil && p.idle && a.probeVisit(ctx, v.home, v.rc) {
-		// The sessions with no data path close, and the dial below makes a new one.
-		a.closePeers(func(q *peer) bool { return q.rc == v.rc && q.idle }, "path to the visited relay carries data now")
-	}
 	// The peer opened a session as a visitor while this visit started. It stays.
 	if ok, err := a.usePeer(ctx, home, dst); ok {
 		return err
@@ -335,6 +328,15 @@ func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*
 	}
 	v.err = err
 	a.mu.Unlock()
+	var retry *pspRetry
+	if err == nil {
+		// The change to PSP mode closes the peer sessions of QUIC mode, so the
+		// first probe ends before a user of the visit opens one.
+		retry = newPSPRetry(rc)
+		if retry.probed != nil {
+			retry.result(<-retry.probed)
+		}
+	}
 	close(v.done)
 	if err != nil {
 		if rc != nil {
@@ -342,8 +344,8 @@ func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*
 		}
 		return nil, err
 	}
-	slog.Info("Started a visit", "relay", rc.addr, "address", rc.self, "transport", transportName(rc.dataMode()), "data", rc.data.Load())
-	go a.keepVisit(v)
+	slog.Info("Started a visit", "relay", rc.addr, "address", rc.self, "transport", transportName(rc.dataMode()))
+	go a.keepVisit(v, retry)
 	return v, nil
 }
 
@@ -389,8 +391,6 @@ func (rc *relayConn) startVisit(ctx context.Context) error {
 	l := home.link
 	rc.link = l
 	a.mu.Unlock()
-	// The path probe runs while the relay checks the grant.
-	probed := a.startProbe(ctx, home, rc)
 	grant, err := home.grant.get(ctx)
 	if err != nil {
 		return fmt.Errorf("visit: %w", err)
@@ -409,24 +409,17 @@ func (rc *relayConn) startVisit(ctx context.Context) error {
 	rc.setRelayPeer(p)
 	rc.pc = peerconn.New(rc.qc, rc.self)
 	rc.pc.HandleData(l.HandleData)
-	if rc.dataMode() == dp.Mode_MODE_QUIC {
-		// The packets for the peers of the visit go as data frames on rc, and the
-		// packets for the other peers stay on the attached session.
-		if err := p.UseQUIC(rc.pc); err != nil {
-			return err
-		}
+	// The packets for the peers of the visit go as data frames on rc, and the
+	// packets for the other peers stay on the attached session.
+	if err := p.UseQUIC(rc.pc); err != nil {
+		return err
 	}
 	rc.peerTr = &quic.Transport{Conn: rc.pc}
 	ln, err := rc.peerTr.Listen(a.peerTLS(), peerQUIC)
 	if err != nil {
 		return err
 	}
-	// The peer sessions open only after the probe, so that each one knows the result.
-	rc.data.Store(probed != nil && <-probed)
 	go rc.accept(ln)
-	if rc.dataMode() == dp.Mode_MODE_PSP {
-		go rc.giveRelayKeys()
-	}
 	return nil
 }
 
@@ -508,39 +501,13 @@ func (a *Agent) visitorsOf(home *relayConn) []*relayConn {
 	return out
 }
 
-// startProbe starts the path probe of the visitor session rc at the device
-// MTU, or returns nil when data cannot go on rc. A session in QUIC mode needs no
-// probe: quic-go refuses a data frame above the datagram limit of the session.
-func (a *Agent) startProbe(ctx context.Context, home, rc *relayConn) <-chan bool {
-	if rc.dataMode() == dp.Mode_MODE_QUIC {
-		ok := make(chan bool, 1)
-		ok <- true
-		return ok
-	}
-	// An agent in QUIC mode sends the packets of a PSP peer on its attached session.
-	if home.dataMode() != dp.Mode_MODE_PSP {
-		return nil
-	}
-	a.mu.Lock()
-	mtu := a.bind.DeviceMTU()
-	a.mu.Unlock()
-	return rc.probe(ctx, mtu)
-}
-
-// probeVisit runs the path probe of the visitor session rc again after a probe
-// that failed, and keeps the result. It reports whether data can go on rc now.
-func (a *Agent) probeVisit(ctx context.Context, home, rc *relayConn) bool {
-	probed := a.startProbe(ctx, home, rc)
-	ok := probed != nil && <-probed
-	rc.data.Store(ok)
-	return ok
-}
-
 // keepVisit ends v when its session ends, and moves its peers back when the
-// relay of the agent reaches them again.
-func (a *Agent) keepVisit(v *visit) {
+// relay of the agent reaches them again. It changes the session of v to PSP
+// mode when a probe of retry after the first one passes.
+func (a *Agent) keepVisit(v *visit, retry *pspRetry) {
 	t := time.NewTicker(a.visitCheck)
 	defer t.Stop()
+	defer retry.timer.Stop()
 	for {
 		select {
 		case <-v.rc.ctx.Done():
@@ -548,6 +515,10 @@ func (a *Agent) keepVisit(v *visit) {
 		case <-v.rc.qc.Context().Done():
 			a.endVisit(v, "relay session ended")
 			return
+		case <-retry.timer.C:
+			retry.probe()
+		case ok := <-retry.probed:
+			retry.result(ok)
 		case <-t.C:
 			if a.checkVisit(v) {
 				return
@@ -644,30 +615,4 @@ func (a *Agent) endVisits(home *relayConn, reason string) {
 	for _, v := range vs {
 		a.endVisit(v, reason)
 	}
-}
-
-// admitIdle adds a peer session on a visitor session whose path carries no
-// data. The peer gets no route and no SAs, so only the peer frames go there.
-func (a *Agent) admitIdle(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance uint64) error {
-	claims, prefixes, err := a.checkGrant(p, g)
-	if err != nil {
-		return err
-	}
-	bp, err := p.rc.link.AddPeer(p.rc.relayAddr)
-	if err != nil {
-		return err
-	}
-	a.mu.Lock()
-	if a.gone(p) {
-		a.bind.RemovePeer(bp)
-		a.mu.Unlock()
-		return p.closedError()
-	}
-	p.instance, p.version, p.claims, p.prefixes, p.addr, p.bp, p.idle = instance, v, claims, prefixes, overlayAddr(prefixes), bp, true
-	close(a.admitted)
-	a.admitted = make(chan struct{})
-	a.mu.Unlock()
-	close(p.ready)
-	slog.Info("Opened peer session with no data path", "peer", p.subject, "address", p.addr, "dialer", p.dialer)
-	return nil
 }

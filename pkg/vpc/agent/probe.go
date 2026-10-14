@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,31 +31,26 @@ type pathProbe struct {
 	size int
 	ok   chan struct{} // Closed at the first good reply.
 	once sync.Once
-	from time.Time // Start of the run.
-	// sent has the time from the start to the send of each round. Zero is not sent.
-	sent [probeRounds]atomic.Int64
-	rtt  *atomic.Int64 // Gets the time from the send of a round to its reply.
+	seen *atomic.Pointer[netip.AddrPort] // Gets the source address that the relay saw.
 }
 
-// probeMTU returns the inner MTU that the path probe of a new session tests,
-// or 0 for no probe.
-func (a *Agent) probeMTU(vpcMTU int) int {
+// probeMTU returns the inner MTU that the path probe at the change to PSP mode
+// tests: the device MTU, or 0 for no probe.
+func (a *Agent) probeMTU() int {
 	if a.cfg.MTU != 0 {
 		return 0
 	}
 	a.mu.Lock()
-	if a.bind != nil {
-		vpcMTU = a.bind.DeviceMTU()
-	}
+	dev := a.bind.DeviceMTU()
 	a.mu.Unlock()
-	if vpcMTU <= psp.DefaultMTU {
+	if dev <= psp.DefaultMTU {
 		return 0
 	}
-	return vpcMTU
+	return dev
 }
 
-// probe tests whether the path to the relay carries PSP packets with inner packets
-// of mtu B: true at the first reply, false after 1 s or at the end of the session.
+// probe tests whether the path to the PSP socket of the relay carries PSP packets with inner
+// packets of mtu B: true at the first reply, false after 1 s or at the end of the session.
 func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
 	out := make(chan bool, 1)
 	keys, err := p2p.NewProbeKeys(rc.qc.ConnectionState().TLS)
@@ -64,7 +60,7 @@ func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
 		return out
 	}
 	p := &pathProbe{keys: keys, size: mtu + pspwire.Overhead, ok: make(chan struct{})}
-	p.from, p.rtt = time.Now(), &rc.probeRTT
+	p.seen = &rc.seen
 	_, _ = rand.Read(p.txid[:])
 	a := rc.a
 	a.probeMu.Lock()
@@ -86,8 +82,7 @@ func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
 		defer tick.Stop()
 		for round := uint32(0); ; {
 			if round < probeRounds {
-				buf = p2p.AppendProbe(buf[:0], p2p.Probe{SID: keys.SID, TxID: p.txid, Round: round}, p.size, &keys.Dialer)
-				p.sent[round].Store(max(int64(time.Since(p.from)), 1))
+				buf = p2p.AppendProbe(buf[:0], p2p.Probe{SID: keys.SID, TxID: p.txid, Round: round, Counter: rc.probeSeq.Add(1)}, p.size, &keys.Dialer)
 				if _, err := a.cfg.Transport.WriteTo(buf, to); err != nil {
 					slog.Debug("Failed to send a path probe", "relay", rc.addr, "error", err)
 				}
@@ -141,11 +136,7 @@ func (p *pathProbe) reply(pkt []byte) {
 		return
 	}
 	p.once.Do(func() {
-		if r.Round < probeRounds {
-			if at := p.sent[r.Round].Load(); at != 0 {
-				p.rtt.Store(int64(time.Since(p.from)) - at)
-			}
-		}
+		p.seen.Store(&r.Seen)
 		close(p.ok)
 	})
 }

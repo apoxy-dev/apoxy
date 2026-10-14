@@ -7,7 +7,7 @@ messages and services. The runtime is `pkg/vpc/rpc`, and
 
 ## Connections
 
-QUIC v1, TLS 1.3 with mTLS, UDP 443. The ALPN selects the channel and the
+QUIC v1, TLS 1.3 with mTLS, on the QUIC socket of a relay (UDP 443). The ALPN selects the channel and the
 service that each side serves:
 
 | ALPN           | Between                  | Service | Served by |
@@ -16,11 +16,25 @@ service that each side serves:
 | `apoxy-peer/1` | agent and agent          | `Peer`  | both      |
 | `apoxy-mesh/1` | relay and relay          | `Mesh`  | both      |
 
-The same UDP socket also carries PSP packets (first byte `0x04` or `0x29`),
-which relays forward by SPI rows without decryption. Only PSP packets to the
-relay itself are opened (see "QUIC and PSP bridge"). A relay socket also
-carries the packets of the other relays of its mesh: the PSP packets of their
-agents and trunk packets (see "Trunk").
+A relay has a second UDP socket, the PSP socket (UDP 1000). It carries the
+PSP packets (first byte `0x04` or `0x29`), which relays forward by SPI rows
+without decryption, the path probes and the lane keep-alives of agents. Only
+PSP packets to the relay itself are opened (see "QUIC and PSP bridge"). The
+PSP socket also carries the packets of the other relays of the mesh: the PSP
+packets of their agents and trunk packets (see "Trunk"). The QUIC socket drops
+each packet that is not QUIC.
+
+`Welcome.psp_host` and `Welcome.psp_port` tell an agent where the PSP socket
+is. `psp_host` is an IP address, and when it is empty, the PSP socket is at the
+host that the agent dialed for the session. A relay always sends it empty,
+because it cannot see the host that an agent dialed. `psp_port` is the local
+port of the PSP socket. An agent ends the dial with an error on a `psp_host`
+that is not an IP address and on a `psp_port` of 0. `MeshOpenRequest` and
+`MeshOpenResponse` have the same two fields for the PSP sockets of two relays:
+the dialer sends to the host that it dialed, and the listener sends to the
+remote IP address of the mesh session, each at the port that the other relay
+gave. A relay that gives port 0 has no PSP socket and gets no trunk.
+An agent has one UDP socket for the two relay ports.
 
 ### Relay datagrams
 
@@ -62,14 +76,33 @@ relay sends the inner packet to that relay (see "Trunk").
 
 ### Data mode
 
-`Hello.mode` sets the data mode of a session. The only change is from QUIC
-mode to PSP mode, on the open session, when the agent calls `Rekey`. An agent
-in auto mode first sends path probes for 1280 B inner packets to the relay,
-from its PSP socket. If no reply comes in 1 s, it opens the session in QUIC
-mode with `fallback_reason` `PROBE_TIMEOUT`. In that mode it probes again with
-backoff (30 s, doubling to 10 min). After two probes in a row pass, 5 s apart,
-it calls `Rekey` with its SAs for the relay. An agent with QUIC mode in its
-config sends `CONFIG` and does not probe.
+Each session starts in QUIC mode. The only change is from QUIC mode to PSP
+mode, on the open session, when the agent calls `Rekey`. `Hello.mode` tells
+the relay which mode the agent wants, and the relay only counts it. After
+`Welcome`, an agent that wants PSP mode sends path probes to
+the PSP socket of the relay, while its `Attach` call runs. These probes have the
+size of the largest inner packet of QUIC mode: the device MTU of the agent,
+and 1308 B at most. When the first probe passes, the agent calls `Rekey` with
+its SAs for the relay. When no reply comes in 1 s, the session stays in QUIC
+mode and the agent probes again with backoff (30 s, doubling to 10 min). After
+a probe that failed, two probes in a row must pass, 5 s apart. In PSP mode the
+agent sends a probe for 1280 B inner packets each 5 s. An agent with QUIC mode
+in its config sends `fallback_reason` `CONFIG` and does not probe.
+
+On a visitor session the agent waits for the result of the first probe before
+it opens a peer session there, because the change to PSP mode closes the peer
+sessions of QUIC mode. A visit to a relay whose PSP socket gives no reply thus
+starts 1 s later, in QUIC mode.
+
+A probe has a counter, which the agent increases for each probe that it sends
+with the keys of one relay connection. The relay answers a probe on its PSP
+socket when the source IP address of the probe is the IP address of the QUIC
+connection of its session. The PSP address of a session is the source address
+of such a probe with a larger counter than each one before it. The relay
+takes the PSP packets of the session from this address and from its lane
+ports, and it sends the PSP packets for the agent to this address. A probe
+with an old counter gets an answer, but it does not change the PSP address.
+A session with no PSP address has no PSP packets in the two directions.
 
 On a `Rekey` from a session in QUIC mode, the relay makes its relay SAs for
 the session, applies the SAs of the agent, sets the mode to PSP, and sends its
@@ -79,11 +112,6 @@ SAs, and it closes the peer sessions of that relay session. The session, its
 attachments and their addresses stay. If a step fails, or if the relay refuses
 each SPI of the agent, the mode stays QUIC and the session has no relay SAs.
 A session does not change from PSP mode to QUIC mode.
-
-The agent sends its first probe before the relay checks its cert. A relay
-that refuses the connection sends no reply to the probes of that connection,
-and for 1 s it does not count them as `malformed`. The agent stops a probe
-run when the connection of its session ends.
 
 ### Relay connections of an agent
 
@@ -145,7 +173,7 @@ network drops packets and does not mark them.
 
 ### Trunk
 
-Two relays of a mesh send two kinds of packets to the relay socket of each
+Two relays of a mesh send two kinds of packets to the PSP socket of each
 other. The PSP packet of an agent for a PSP-mode agent of the other relay goes
 with no change: no relay opens it, and no relay seals it again. A clear inner
 packet that a relay holds, and a message of the relay itself, go in a trunk
@@ -180,15 +208,16 @@ each packet from the address of its mesh session with another relay:
 A relay does not use the SA or the row of one member for a packet from the
 address of another member.
 
-A relay knows the other relay by the source IP address of a packet. The source
-port can be different from the port of the mesh session: a NAT on the host of
-the other relay can give the session a new source port, and the XDP program of
-that relay sends from the relay port and does not use the NAT. So a relay also
-takes a PSP packet from each other port of the IP address of the session, if
-that address and port are not the socket of one of its agent sessions. If two
-relays have one IP address, a relay takes only the packets from the address
-and port of each session. A relay sends its own packets to the address and
-port of the session.
+A relay knows the other relay by the source IP address of a packet, which is
+the IP address of the mesh session. The source port can be different from the
+PSP port: a NAT on the host of the other relay can give its packets a new
+source port, and the XDP program of that relay sends from the PSP port and does
+not use the NAT. So a relay takes a PSP packet from each port of the IP address
+of the session, if that address and port are not the PSP address of one of its
+agent sessions. A relay sends its own packets to the PSP socket that the other
+relay gave in `Open`. When two relays of a mesh have one IP address, a relay
+knows each of them only by the full address of its PSP socket, so their
+packets must come from their PSP ports.
 
 An SPI thus has one use for the packets from one relay to another. The relay
 of the receiver cannot keep this rule: the SPIs of the rows come from agents.
@@ -259,13 +288,13 @@ no route. The call needs no trunk SA and does not wait for the other relay.
 The relay applies the source address check, the meter of the row and the
 tunnel limit to each packet of the row, as for a row to one of its own
 sessions, and it does not open the packet. It sends the packet with no change
-from its own port to the relay socket of the other relay. It drops a PSP
+from its PSP socket to the PSP socket of the other relay. It drops a PSP
 packet with an inner packet above the inner MTU of the trunk (`trunk_mtu`),
 and it does not send the packet in parts. The relay gives each such row to the
 other relay with `SPIRows` (see "Mesh").
 
 The XDP program forwards the packets of such a row as it forwards the packets
-of a row to an agent, with the relay socket of the other relay as the next
+of a row to an agent, with the PSP socket of the other relay as the next
 hop. The other relay knows this relay by the source IP address of a packet, and
 the program sends from the address that the packet of the agent came to. So
 the row is in the program only while the trunk has a full path and the
@@ -324,7 +353,7 @@ come first. When Permit allows the inner destination and an attachment of
 another relay has its route, the relay seals the inner packet with the trunk
 SA of that relay, with the sender tag of the session of the sender in the VNI
 field. It sends the trunk packet, which is 40 B longer than the inner packet,
-from its own port to the relay socket of the other relay. It sends no
+from its PSP socket to the PSP socket of the other relay. It sends no
 `NoRoute` for such a packet, because the address has a route. The one exception
 is a sender that must visit the other relay (see "Mesh"). It drops the
 inner packet, and counts the drop, in these cases:
@@ -470,7 +499,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, version, name, local_routes_only, instance}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version), `Config`, in PSP mode a rekey with relay SAs, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, version, name, local_routes_only, instance}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version, PSP address), `Config`, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes, rank}` -> `AttachResponse{attachment_id, grant, routes}`. `routes` has one status for each advertised route. Errors: `FailedPrecondition` (the session sent no `Hello`), `AlreadyExists` (another session of this relay has the address). |
 | `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. The first one from a session in QUIC mode changes it to PSP mode (see "Data mode"). Errors: `FailedPrecondition` (no `Session` call), `InvalidArgument` (an SA VNI is not the network ID), `Unavailable` (the relay has no PSP bridge, or it cannot make its relay SAs). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; p2p; subject; attachment_ids; home_relay}`. Errors: `NotFound`, `PermissionDenied`. |
@@ -863,7 +892,7 @@ its relay before it applies them, and unregisters them after a revoke.
 
 | Method      | Kind          | Messages |
 |-------------|---------------|----------|
-| `Open`      | unary         | Dialer and listener each send `{version, name, relay}`. First call on a session. |
+| `Open`      | unary         | Dialer and listener each send `{version, name, relay, psp_host, psp_port}`. First call on a session. Errors: `InvalidArgument` (a `psp_host` that is not an IP address, or a `psp_port` above 65535). |
 | `Presence`  | client stream | `PresenceUpdate`: the full set of the attachments of the caller, then each change. One call on a session. |
 | `SPIRows`   | client stream | `SPIRowUpdate`: the SPI rows of the senders on the caller for receivers on the called relay. A row with a new end time comes again, and a row that ended comes with `removed`. One call on a session. Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 13, the session is not the open session of a member, or the session already has an `SPIRows` call). |
 | `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse`: trunk SAs for packets from the called relay to the caller (see "Trunk"). `refused_spis` has the SPIs that the called relay holds from another receiver or in a row to the caller. Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 13, or the session is not the open session of a member), `InvalidArgument` (an SA VNI is not 0, or an SA lane is not 0). |
@@ -1174,6 +1203,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 16 | A set of announcers for each prefix, with one selection. `Hello.instance`, `AttachRequest.rank`, `AttachResponse.routes`, `Route.standby`, and `instance`, `rank`, `state`, `attached` and `active_from` in a presence entry. The states `DRAINING` and `SUSPECT`, and the hold time of 30 s. | Sends its instance in `Hello`, and sends `Hello` before `Attach`. Attaches on each of its relay connections, with the rank of the connection in `AttachRequest.rank`. Accepts the statuses in `AttachResponse` and the standby list of a route. When the active announcer of a prefix changes, gets a remove and an add, and closes the peer session to the old announcer, as for each removed route. Sends a QUIC keep-alive each 3 s. | No duty. | Keeps each attachment that lists a prefix as an announcer of it, and selects the active one with the rules of "Relay". Does not refuse an `Attach` because another agent announces the route. Checks each advertised route of an `Attach`, and refuses a default route, an IPv4-mapped IPv6 prefix and a prefix that overlaps the network of the VPC. A refused route does not fail the `Attach`: it has a result that is not `ROUTE_RESULT_ACCEPTED` in `AttachResponse.routes`, and the attachment is not an announcer of it. An agent below revision 16 gets no statuses. Refuses an `Attach` before `Hello` with `FailedPrecondition`. Lets each announcer of a prefix send from it, and no other session. Sends the standby list only to a session at revision 16 or later: an older agent gets one announcer for each prefix. Sends a QUIC keep-alive on an agent connection after 2 s with no packet, and gives the attachments of a session the state `SUSPECT` after 6 s with no packet of the agent, and `NORMAL` again after 4 s with packets. Gives all its attachments the state `DRAINING` at the start of a drain, before `Drain`. Sends an entry with a higher generation, the same `attached` and `active_from` for each state change, and applies such an entry in place, with no remove of its routes. Reads each entry of a lost member as `SUSPECT`, and drops the entries of a member that is still down after 5 minutes. Selects a `NORMAL` announcer in its hold time after each `NORMAL` announcer out of it, and, when each one is in its hold time, the one with the earliest `active_from` first. Reads the entry of a relay below revision 16 as instance 0, rank 0, state `NORMAL` and no hold time. A relay below revision 16 keeps one attachment for each prefix: it refuses the `Attach` of a second agent with `AlreadyExists`, and it prefers its own attachment. In a mesh with both kinds of relay, two relays can thus select different announcers for a prefix. Each relay gives a packet from another relay to its own announcer of the prefix, so such a packet does not drop. |
 | 17 | `Relay.Grant`. A visit with no time limit. | Before it sends a grant in `Open`, `Grants` or `Visit`, gets a new one with `Grant` when it got its stored grant 5 minutes ago or earlier, on the session that has the attachment. Sends each grant one time: no new grant goes to an open peer session or to a visit. | No duty. | Answers `Grant` with a new grant for an attachment of the session of the caller, which ends 15 minutes after the call, as the grant of `Attach` does, and with `NotFound` for each other attachment ID and for a visitor session. Checks `not_after` of a grant one time, at the `Visit` call, and does not end a visit when it passes. A relay below revision 17 answers `Grant` with `Unimplemented`, and it ends a visit at `not_after` of its grant. |
 | 18 | The change of an open session from QUIC mode to PSP mode with `Rekey`. Data frames from a session in each mode. `Welcome.max_lanes` in each mode. | After two PSP probes pass on a session in QUIC mode, calls `Rekey` on a relay at revision 18 or later, sends PSP packets when it has the relay SAs, and closes the peer sessions of that relay session. Opens no new session for PSP mode. On a relay below revision 18, makes no such `Rekey` call and stays in QUIC mode. | No duty. | Accepts `Rekey` on a session in QUIC mode and changes the session to PSP mode, as in "Data mode". Takes data frames from a session in each mode. Sends its lane port limit in `Welcome.max_lanes` in each mode. A relay below revision 18 answers that `Rekey` with `FailedPrecondition`, drops the data frames of a PSP-mode session, and sends `max_lanes` 0 to a session in QUIC mode. |
+| 19 | `Welcome.psp_host` and `Welcome.psp_port`, and the same two fields in `MeshOpenRequest` and `MeshOpenResponse`. The `Moved` message is gone. The counter of a path probe, and probe version 2. A QUIC socket and a PSP socket on each relay. | Starts each session in QUIC mode. After `Welcome`, sends its path probes, with a counter that grows, to the PSP socket of the relay (`Welcome.psp_host`, or the host that it dialed when that is empty, at `Welcome.psp_port`), and calls `Rekey` when a probe passes. Sends its PSP packets and lane keep-alives to that address. In PSP mode, sends a probe each 5 s. Sends no probe before `Hello` and opens no new session for PSP mode. | No duty. | Reads QUIC on one socket and drops each other packet there. Reads PSP packets, probes, lane keep-alives and the packets of other relays on its PSP socket, and sends to another relay at the PSP socket that this relay gave in `Open`. Sends `psp_host` empty and `psp_port` with the local port of its PSP socket in `Welcome` and in `Open`. Starts each session in QUIC mode, also for a `Hello` with PSP mode, and sends no relay SAs after `Config`. Takes the PSP address of a session from the path probe with the largest counter, when its IP address is that of the QUIC connection. Keeps no probe that comes before its session. The two sides must be at revision 19: there is no code for an older agent or relay. |
 
 ### Minimum revision
 

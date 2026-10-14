@@ -45,8 +45,8 @@ const (
 	tickInterval = time.Second
 	// The relay removes SPI rows after 5 minutes with no traffic.
 	spiRefresh = 2 * time.Minute
-	// pspPasses is the number of PSP probes in a row that must pass before
-	// the agent moves from QUIC mode back to PSP.
+	// pspPasses is the number of PSP probes in a row that must pass, after a
+	// probe that failed, before the agent changes from QUIC mode to PSP mode.
 	pspPasses = 2
 )
 
@@ -56,6 +56,7 @@ var (
 	pspRetryMin  = 30 * time.Second
 	pspRetryMax  = 10 * time.Minute
 	pspRetryNext = 5 * time.Second // From a probe that passes to the next probe.
+	pspKeep      = 5 * time.Second // Period of the probes of a session in PSP mode.
 	// txLanes returns the send lanes to a relay address.
 	txLanes = psp.TxLanes
 )
@@ -75,10 +76,9 @@ var relayQUIC = &quic.Config{
 type TransportMode int
 
 const (
-	// TransportAuto sends PSP, and QUIC data frames when PSP does not pass.
+	// TransportAuto sends QUIC data frames at first, and PSP after the PSP path
+	// to the relay passes a probe.
 	TransportAuto TransportMode = iota
-	// TransportPSP always sends PSP.
-	TransportPSP
 	// TransportQUIC always sends QUIC data frames on the relay session.
 	TransportQUIC
 )
@@ -124,7 +124,7 @@ type Config struct {
 	// Detach or Attachments.
 	OnDetach func(at Attachment)
 	// MTU sets the device MTU, from 1280 to the VPC MTU, with no path probe.
-	// Zero means the VPC MTU if the path to the relay carries it, else 1280.
+	// Zero means the VPC MTU. A PSP path that does not carry it gets a TCP MSS clamp.
 	MTU int
 	// LocalRoutesOnly asks each relay for the routes of its own attachments
 	// only. A host with one agent for each relay sets it.
@@ -181,6 +181,8 @@ type Agent struct {
 	visits map[string]*visit
 	// Intervals of the visits. Tests change them before Run.
 	visitCheck, visitAsk, visitWait time.Duration
+	// The times of the PSP probes, from the package values at New.
+	retryMin, retryMax, retryNext, keep time.Duration
 	// Band and wait of the relay choice. Tests change them before Run.
 	rttBand, rttWaitMin, rttWaitMax time.Duration
 
@@ -204,6 +206,7 @@ func New(cfg Config) *Agent {
 	}
 	a.specs, a.attachWake = map[string]*AttachmentSpec{}, make(chan struct{}, 1)
 	a.visitCheck, a.visitAsk, a.visitWait = visitCheck, visitAsk, visitWait
+	a.retryMin, a.retryMax, a.retryNext, a.keep = pspRetryMin, pspRetryMax, pspRetryNext, pspKeep
 	a.rttBand, a.rttWaitMin, a.rttWaitMax = rttBand, rttWaitMin, rttWaitMax
 	a.mux = rpc.NewMux()
 	dp.RegisterPeerServer(a.mux, &peerService{a: a})
@@ -313,8 +316,8 @@ func transportName(m dp.Mode) string {
 	return "none"
 }
 
-// open runs the handshake with the relay of rc, picks the data mode, and runs
-// the Session call up to Config.
+// open runs the handshake with the relay of rc and the Session call up to
+// Config. Then it starts the first PSP probe, which runs while the relay attaches.
 func (rc *relayConn) open(ctx context.Context) error {
 	a := rc.a
 	ua, err := net.ResolveUDPAddr("udp", rc.addr)
@@ -327,7 +330,7 @@ func (rc *relayConn) open(ctx context.Context) error {
 	// The dial stops when the agent stops.
 	defer context.AfterFunc(rc.ctx, cancel)()
 	quicCfg := a.quicCfg.Clone()
-	quicCfg.Tracer = a.traceSession(rc.rtt)
+	quicCfg.Tracer = a.traceSession(rc.rtt, &rc.lowRTT)
 	qc, err := a.cfg.Transport.Dial(ctx, ua, &tls.Config{
 		MinVersion:           tls.VersionTLS13,
 		RootCAs:              rc.roots,
@@ -342,18 +345,20 @@ func (rc *relayConn) open(ctx context.Context) error {
 	rc.qc = qc
 	a.mu.Unlock()
 	rc.c = dp.NewRelayClient(rpc.NewConn(qc, nil))
-	rc.relayAddr = qc.RemoteAddr().(*net.UDPAddr).AddrPort()
-	rc.local = rc.localAddr()
 	// A relay that does not answer in time ends the dial.
 	defer context.AfterFunc(ctx, func() { _ = qc.CloseWithError(0, "relay session did not open in time") })()
-	mode, reason := a.pickMode(ctx, rc)
-	rc.mode.Store(int32(mode))
-	rc.reason = reason
+	rc.mode.Store(int32(dp.Mode_MODE_QUIC))
+	if !rc.wantsPSP() {
+		rc.reason.Store(int32(dp.FallbackReason_FALLBACK_REASON_CONFIG))
+	}
 	if err := rc.hello(begin); err != nil {
 		if cause := context.Cause(qc.Context()); cause != nil {
 			err = fmt.Errorf("%w (connection: %w)", err, cause)
 		}
 		return relayUpgrade(rc.addr, err)
+	}
+	if rc.wantsPSP() {
+		rc.first = rc.probe(rc.ctx, a.changeMTU(rc))
 	}
 	return nil
 }
@@ -367,20 +372,6 @@ func (a *Agent) relayRoots(cred *identity.Credential) *x509.CertPool {
 	return cred.RelayPool()
 }
 
-// pickMode returns the data mode of rc, and why it is QUIC. In auto mode, it
-// sends PSP probes to the relay and picks QUIC if no reply comes.
-func (a *Agent) pickMode(ctx context.Context, rc *relayConn) (dp.Mode, dp.FallbackReason) {
-	switch a.cfg.TransportMode {
-	case TransportQUIC:
-		return dp.Mode_MODE_QUIC, dp.FallbackReason_FALLBACK_REASON_CONFIG
-	case TransportAuto:
-		if !<-rc.probe(ctx, psp.DefaultMTU) {
-			return dp.Mode_MODE_QUIC, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
-		}
-	}
-	return dp.Mode_MODE_PSP, dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED
-}
-
 // hello runs the Session call of rc up to Config and starts its Sync reader.
 // The dial started at begin.
 func (rc *relayConn) hello(begin time.Time) error {
@@ -389,8 +380,9 @@ func (rc *relayConn) hello(begin time.Time) error {
 		return err
 	}
 	rc.st = st
+	sent := time.Now()
 	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
-		Mode: rc.dataMode(), FallbackReason: rc.reason, Version: rc.a.ver, Name: rc.a.cfg.Name,
+		Mode: rc.wantedMode(), FallbackReason: rc.fallback(), Version: rc.a.ver, Name: rc.a.cfg.Name,
 		// The relay tells two processes with one identity and one name apart by the instance.
 		Instance: rc.a.instance,
 		// A relay takes a Visit call only on a session with local routes.
@@ -402,11 +394,14 @@ func (rc *relayConn) hello(begin time.Time) error {
 	if err != nil {
 		return err
 	}
+	rc.helloRTT.Store(int64(time.Since(sent)))
 	w := m.GetWelcome()
 	if w == nil {
 		return fmt.Errorf("relay sent %T before Welcome", m.GetMsg())
 	}
-	rc.reflexive, _ = netip.ParseAddrPort(w.GetReflexiveAddress())
+	if rc.relayAddr, err = pspAddr(w, rc.qc.RemoteAddr().(*net.UDPAddr).AddrPort().Addr()); err != nil {
+		return err
+	}
 	rc.maxLanes = w.GetMaxLanes()
 	rc.version = w.GetVersion()
 	// The dial fails for a relay that is too old, so the agent dials the next relay.
@@ -431,8 +426,7 @@ func (rc *relayConn) hello(begin time.Time) error {
 }
 
 // attach runs Attach on rc after hello, then makes the link of rc in the
-// binding, the peer listener, and the relay SAs or the QUIC shards. The
-// connect started at begin.
+// binding, the peer listener and the QUIC shards. The connect started at begin.
 func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	a := rc.a
 	ctx, cancel := context.WithTimeout(ctx, openTimeout)
@@ -440,15 +434,6 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	// A relay that does not answer in time ends the attach.
 	stop := context.AfterFunc(ctx, func() { _ = rc.qc.CloseWithError(0, "relay session did not attach in time") })
 	defer stop()
-	// The path probe runs while the relay attaches. QUIC mode sends no PSP.
-	pathMTU, mode := 0, rc.dataMode()
-	if mode == dp.Mode_MODE_PSP {
-		pathMTU = a.probeMTU(int(rc.mtu))
-	}
-	var probed <-chan bool
-	if pathMTU != 0 {
-		probed = rc.probe(ctx, pathMTU)
-	}
 	res, err := rc.c.Attach(ctx, &dp.AttachRequest{
 		Vpc: rc.ref, Name: a.cfg.Name, Labels: a.cfg.Labels, Routes: prefixStrings(a.cfg.Routes), Rank: rc.rank,
 	})
@@ -466,15 +451,9 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 		return err
 	}
 	a.setAttachment(rc, rc.claims.GetAttachmentId(), prefixes)
-	if probed != nil && !<-probed {
-		pathMTU = psp.DefaultMTU
-	}
-	b, err := a.binding(rc.vpcConfig, pathMTU)
+	b, err := a.binding(rc.vpcConfig)
 	if err != nil {
 		return err
-	}
-	if mode == dp.Mode_MODE_PSP {
-		rc.registerLanes(ctx, b)
 	}
 	l, err := b.AddLink()
 	if err != nil {
@@ -496,11 +475,9 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 	rc.setRelayPeer(p)
 	rc.pc = peerconn.New(rc.qc, rc.self)
 	rc.pc.HandleData(l.HandleData)
-	if mode == dp.Mode_MODE_QUIC {
-		// The routes of a session in QUIC mode go to its relay peer.
-		if err := p.UseQUIC(rc.pc); err != nil {
-			return err
-		}
+	// The routes of a session in QUIC mode go to its relay peer.
+	if err := p.UseQUIC(rc.pc); err != nil {
+		return err
 	}
 	rc.peerTr = &quic.Transport{Conn: rc.pc}
 	ln, err := rc.peerTr.Listen(a.peerTLS(), peerQUIC)
@@ -508,14 +485,10 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 		return err
 	}
 	go rc.accept(ln)
-	if mode == dp.Mode_MODE_QUIC {
-		// Data frames need no SAs. The relay gets the SAs when PSP passes again.
-		var shards context.Context
-		shards, rc.stopShards = context.WithCancel(rc.ctx)
-		go rc.keepShards(shards, quicShards)
-	} else {
-		go rc.giveRelayKeys()
-	}
+	// Data frames need no SAs. The relay gets the SAs when the PSP path passes.
+	var shards context.Context
+	shards, rc.stopShards = context.WithCancel(rc.ctx)
+	go rc.keepShards(shards, quicShards)
 	rc.setup = time.Since(begin)
 	return nil
 }
@@ -523,11 +496,12 @@ func (rc *relayConn) attach(ctx context.Context, begin time.Time) error {
 // registerLanes opens the lane sockets of b and registers their ports at the
 // relay, so that peers send each lane from its own port, and the relay sends
 // the SA lanes of this agent to these ports. It does nothing when the relay
-// takes no lane ports, or when it sees another port than the local port of the
-// agent socket.
+// takes no lane ports, or when its PSP socket sees another port than the local
+// port of the agent socket.
 func (rc *relayConn) registerLanes(ctx context.Context, b *psp.Binding) {
 	n := min(int(rc.maxLanes)+1, txLanes(rc.relayAddr.Addr().Unmap()))
-	if n < 2 || rc.reflexive.Port() != rc.localAddr().Port() {
+	seen := rc.seen.Load()
+	if n < 2 || seen == nil || seen.Port() != rc.a.localPort() {
 		return
 	}
 	ports := b.OpenLanes(n)
@@ -551,6 +525,30 @@ func (rc *relayConn) registerLanes(ctx context.Context, b *psp.Binding) {
 	if req.Receive {
 		b.KeepLanes(rc.relayAddr)
 		go rc.keepLanes(b)
+	}
+}
+
+// localPort returns the port of the agent socket.
+func (a *Agent) localPort() uint16 {
+	if ua, ok := a.cfg.Transport.Conn.LocalAddr().(*net.UDPAddr); ok {
+		return uint16(ua.Port)
+	}
+	return 0
+}
+
+// stopLanes makes the peers of rc send from one socket, after the relay dropped
+// the lane ports of rc.
+func (a *Agent) stopLanes(rc *relayConn) {
+	if rc.lanes.Swap(1) < 2 {
+		return
+	}
+	slog.Info("Relay sees a new address of the agent; peers send on one port", "relay", rc.addr)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range a.peers {
+		if p.rc == rc && p.bp != nil && !p.quic {
+			p.bp.SetLaneSockets(1)
+		}
 	}
 }
 
@@ -597,27 +595,33 @@ func attachError(rc *relayConn, err error) error {
 	return err
 }
 
+// deviceMTU returns the device MTU of the binding, or the one that the binding
+// gets for a VPC MTU. a.mu is held.
+func (a *Agent) deviceMTU(vpcMTU int) int {
+	if a.bind != nil {
+		return a.bind.DeviceMTU()
+	}
+	if vpcMTU == 0 {
+		vpcMTU = psp.DefaultMTU
+	}
+	if a.cfg.MTU != 0 {
+		return min(a.cfg.MTU, vpcMTU)
+	}
+	return vpcMTU
+}
+
 // binding returns the PSP binding of the VPC. The first attach makes it.
-// pathMTU is the MTU that the path probe found, or 0 if no probe ran.
-func (a *Agent) binding(cfg *dp.Config, pathMTU int) (*psp.Binding, error) {
+func (a *Agent) binding(cfg *dp.Config) (*psp.Binding, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.bind != nil {
-		if pathMTU != 0 {
-			a.setClamp(pathMTU)
-		}
 		return a.bind, nil
 	}
 	mtu := int(cfg.GetMtu())
 	if mtu == 0 {
 		mtu = psp.DefaultMTU
 	}
-	dev := mtu
-	if a.cfg.MTU != 0 {
-		dev = min(a.cfg.MTU, mtu)
-	} else if pathMTU != 0 {
-		dev = pathMTU
-	}
+	dev := a.deviceMTU(mtu)
 	b, err := psp.New(psp.Config{
 		Transport: a.cfg.Transport, Demux: &a.demux, VNI: cfg.GetVpc().GetNetworkId(), MTU: mtu, DeviceMTU: dev,
 		NoRoute: a.onNoRoute,
@@ -673,15 +677,14 @@ func (rc *relayConn) send(m *dp.SessionRequest) error {
 	return rc.st.Send(m)
 }
 
-// relayKeys applies relay SAs. Before the attach, it keeps them.
+// relayKeys applies relay SAs. They come only after the Rekey of this agent,
+// which is after the attach.
 func (rc *relayConn) relayKeys(m *dp.KeysRequest) {
 	rc.keyMu.Lock()
 	defer rc.keyMu.Unlock()
-	if rc.relay == nil {
-		rc.pendingKeys = append(rc.pendingKeys, m)
-		return
+	if rc.relay != nil {
+		rc.applyRelayKeys(m)
 	}
-	rc.applyRelayKeys(m)
 }
 
 // relayReport gives the receive counters of the relay to the breaker of the
@@ -695,16 +698,11 @@ func (rc *relayConn) relayReport(m *dp.RxReport) {
 	}
 }
 
-// setRelayPeer sets the relay peer and applies the relay SAs that came
-// before the attach.
+// setRelayPeer sets the relay peer.
 func (rc *relayConn) setRelayPeer(p *psp.Peer) {
 	rc.keyMu.Lock()
 	defer rc.keyMu.Unlock()
 	rc.relay = p
-	for _, m := range rc.pendingKeys {
-		rc.applyRelayKeys(m)
-	}
-	rc.pendingKeys = nil
 }
 
 // applyRelayKeys applies the relay SAs to the transmit SAs of the relay peer.
@@ -881,7 +879,6 @@ func (a *Agent) tick(ctx context.Context) {
 			}
 		case now := <-t.C:
 			a.holds.sweep(now)
-			a.checkMoved()
 			a.mu.Lock()
 			b := a.bind
 			a.mu.Unlock()

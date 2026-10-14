@@ -94,6 +94,9 @@ type Relay struct {
 
 	// steer holds the sockets of a steer group. Empty uses pc only.
 	steer []*net.UDPConn
+
+	// vpcQUIC and vpcPSP are the sockets of the VPC relay, from SetVPCSockets.
+	vpcQUIC, vpcPSP []net.PacketConn
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -257,8 +260,25 @@ func (r *Relay) SetMesh(cfg vpcrelay.MeshConfig) (*vpcrelay.Mesh, error) {
 	return m, nil
 }
 
-// SetSteerGroup serves on the sockets of a steer group, in the order that
-// steer.Listen gives them. Call it before Start.
+// SetVPCSockets gives the relay the sockets of the VPC relay. The QUIC sockets
+// carry the sessions of agents and of other relays, and only QUIC. More than one
+// is a steer group, in the order that steer.Listen gives them. The PSP sockets
+// share one port and carry all other VPC packets. Call it before Start.
+func (r *Relay) SetVPCSockets(quicConns, pspConns []net.PacketConn) error {
+	if len(quicConns) == 0 || len(quicConns) > steer.MaxSockets {
+		return fmt.Errorf("VPC relay has %d QUIC sockets", len(quicConns))
+	}
+	if len(pspConns) == 0 {
+		return errors.New("VPC relay has no PSP socket")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.vpcQUIC, r.vpcPSP = quicConns, pspConns
+	return nil
+}
+
+// SetSteerGroup serves the tunnels on the sockets of a steer group, in the
+// order that steer.Listen gives them. Call it before Start.
 func (r *Relay) SetSteerGroup(conns []*net.UDPConn) error {
 	if len(conns) == 0 || len(conns) > steer.MaxSockets {
 		return fmt.Errorf("steer group has %d sockets", len(conns))
@@ -284,7 +304,7 @@ var relayQUICConfig = func() *quic.Config {
 // RelayQUICConfig returns a copy of the QUIC config of the relay listener.
 func RelayQUICConfig() *quic.Config { return relayQUICConfig.Clone() }
 
-// transports returns one QUIC transport for each relay socket. The transport
+// transports returns one QUIC transport for each tunnel socket. The transport
 // of steer socket i issues the connection IDs that the kernel sends to i.
 func (r *Relay) transports() []*quic.Transport {
 	trs := []*quic.Transport{{Conn: r.pc, StatelessResetKey: r.resetKey}}
@@ -298,24 +318,42 @@ func (r *Relay) transports() []*quic.Transport {
 			}
 		}
 	}
-	if r.vpc != nil {
-		for _, tr := range trs {
-			tr.ConnContext = vpcrelay.TraceContext
-		}
-	}
 	return trs
 }
 
-// listenConfig returns the QUIC config of the relay listeners. For VPC relay
+// vpcTransports returns one transport for each QUIC socket and each PSP socket
+// of the VPC relay. The transport of a PSP socket has no listener.
+func (r *Relay) vpcTransports() (quicTrs, pspTrs []*quic.Transport, err error) {
+	if r.vpc == nil && r.mesh == nil {
+		return nil, nil, nil
+	}
+	if len(r.vpcQUIC) == 0 {
+		return nil, nil, errors.New("VPC relay has no QUIC socket and no PSP socket")
+	}
+	for i, c := range r.vpcQUIC {
+		tr := &quic.Transport{Conn: c, StatelessResetKey: r.resetKey}
+		if len(r.vpcQUIC) > 1 {
+			tr.ConnectionIDGenerator = steer.ConnIDs{Index: uint8(i)}
+		}
+		if r.vpc != nil {
+			tr.ConnContext = vpcrelay.TraceContext
+		}
+		quicTrs = append(quicTrs, tr)
+	}
+	for _, c := range r.vpcPSP {
+		pspTrs = append(pspTrs, &quic.Transport{Conn: c})
+	}
+	return quicTrs, pspTrs, nil
+}
+
+// vpcListenConfig returns the QUIC config of the VPC listeners. For VPC relay
 // sessions it keeps the RTT and sends the keep-alive that the liveness check of
 // the VPC relay needs. A mesh member gets the timers of a mesh session.
-func (r *Relay) listenConfig() *quic.Config {
+func (r *Relay) vpcListenConfig() *quic.Config {
 	c := relayQUICConfig
 	if r.vpc != nil {
 		c = relayQUICConfig.Clone()
 		c.Tracer = vpcrelay.TraceRTT
-		// QUIC gives the config before the ALPN, so the HTTP/3 connections of
-		// the listener get this keep-alive too.
 		c.KeepAlivePeriod = vpcrelay.AgentKeepAlive
 	}
 	if r.mesh != nil {
@@ -324,9 +362,9 @@ func (r *Relay) listenConfig() *quic.Config {
 	return c
 }
 
-// vpcTLSConfig picks the VPC relay config for apoxy-vpc/2 and the mesh config
-// for apoxy-mesh/1, else h3.
-func (r *Relay) vpcTLSConfig(h3 *tls.Config) *tls.Config {
+// vpcTLSConfig picks the mesh config for apoxy-mesh/1, else the VPC relay
+// config. A handshake with another protocol fails.
+func (r *Relay) vpcTLSConfig() *tls.Config {
 	var vpc, mesh *tls.Config
 	if r.vpc != nil {
 		vpc = r.vpc.R.TLSConfig(&tls.Config{GetCertificate: r.getCert})
@@ -335,19 +373,16 @@ func (r *Relay) vpcTLSConfig(h3 *tls.Config) *tls.Config {
 		mesh = r.mesh.TLSConfig()
 	}
 	return &tls.Config{GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-		switch {
-		case vpc != nil && slices.Contains(chi.SupportedProtos, dp.ALPNRelay):
-			return vpc, nil
-		case mesh != nil && slices.Contains(chi.SupportedProtos, dp.ALPNMesh):
+		if vpc == nil || mesh != nil && slices.Contains(chi.SupportedProtos, dp.ALPNMesh) {
 			return mesh, nil
 		}
-		return h3, nil
+		return vpc, nil
 	}}
 }
 
-// accept serves the connections of ln until ln closes. It accepts during the
-// drain too, so that new connections get a close and not a silent drop.
-func (r *Relay) accept(ln *quic.EarlyListener, srv *http3.Server, vpcCtx context.Context, wg *sync.WaitGroup) error {
+// accept gives the connections of ln to serve until ln closes. It accepts
+// during the drain too, so that new connections get a close and not a silent drop.
+func accept(ln *quic.EarlyListener, serve func(quic.EarlyConnection), wg *sync.WaitGroup) error {
 	for {
 		qc, err := ln.Accept(context.Background())
 		if errors.Is(err, quic.ErrServerClosed) {
@@ -356,34 +391,61 @@ func (r *Relay) accept(ln *quic.EarlyListener, srv *http3.Server, vpcCtx context
 		if err != nil {
 			return err
 		}
-		wg.Go(func() { r.serveConn(qc, srv, vpcCtx) })
+		wg.Go(func() { serve(qc) })
 	}
 }
 
-// serveConn gives an apoxy-vpc/2 connection to the VPC server, an apoxy-mesh/1
-// connection to the mesh, and others to h3. vpcCtx ends when Start returns.
+// serveVPCConn gives an apoxy-mesh/1 connection to the mesh and an apoxy-vpc/2
+// connection to the VPC server. vpcCtx ends when Start returns.
+func (r *Relay) serveVPCConn(qc quic.EarlyConnection, vpcCtx context.Context) {
+	// The checks of the agent cert and of the cert of the other relay need the
+	// end of the handshake.
+	select {
+	case <-qc.HandshakeComplete():
+	case <-qc.Context().Done():
+		return
+	case <-vpcCtx.Done():
+		return
+	}
+	switch alpn := qc.ConnectionState().TLS.NegotiatedProtocol; {
+	case r.mesh != nil && alpn == dp.ALPNMesh:
+		r.mesh.ServeConn(vpcCtx, qc)
+	case r.vpc != nil && alpn == dp.ALPNRelay:
+		r.vpc.ServeConn(vpcCtx, qc)
+	default:
+		_ = qc.CloseWithError(0, "unknown protocol")
+	}
+}
+
+// startVPC starts the PSP sockets and returns the listeners of the QUIC
+// sockets. The QUIC sockets drop each packet that is not QUIC.
+func (r *Relay) startVPC(vpcCtx context.Context, quicTrs, pspTrs []*quic.Transport) ([]*quic.EarlyListener, error) {
+	if r.vpc != nil {
+		for _, tr := range pspTrs {
+			tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.vpc.R.PacketHandler(vpcCtx, tr)
+			if err := tr.Start(); err != nil {
+				return nil, fmt.Errorf("failed to start the PSP socket: %w", err)
+			}
+		}
+	}
+	tlsConf, quicConf := r.vpcTLSConfig(), r.vpcListenConfig()
+	lns := make([]*quic.EarlyListener, len(quicTrs))
+	for i, tr := range quicTrs {
+		if r.vpc != nil {
+			tr.NonQUICPacketHandler = r.vpc.R.QUICSocketHandler()
+		}
+		ln, err := tr.ListenEarly(tlsConf, quicConf)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create the VPC QUIC listener: %w", err)
+		}
+		lns[i] = ln
+	}
+	return lns, nil
+}
+
+// serveConn serves an HTTP/3 connection of a tunnel socket. vpcCtx ends when
+// Start returns.
 func (r *Relay) serveConn(qc quic.EarlyConnection, srv *http3.Server, vpcCtx context.Context) {
-	alpn := qc.ConnectionState().TLS.NegotiatedProtocol
-	if r.vpc != nil && alpn == dp.ALPNRelay {
-		select {
-		case <-qc.HandshakeComplete():
-			r.vpc.ServeConn(vpcCtx, qc)
-		case <-qc.Context().Done():
-		case <-vpcCtx.Done():
-		}
-		return
-	}
-	if r.mesh != nil && alpn == dp.ALPNMesh {
-		// The mesh checks the certificate of the other relay, which the
-		// handshake gives at its end.
-		select {
-		case <-qc.HandshakeComplete():
-			r.mesh.ServeConn(vpcCtx, qc)
-		case <-qc.Context().Done():
-		case <-vpcCtx.Done():
-		}
-		return
-	}
 	// After Shutdown, h3 refuses new connections and does not close them.
 	if err := srv.ServeQUICConn(qc); !errors.Is(err, http.ErrServerClosed) {
 		return
@@ -487,18 +549,19 @@ func (r *Relay) ConnectionStats() []ConnStats {
 
 // Start starts the relay.
 func (r *Relay) Start(ctx context.Context) error {
-	// HTTP/3, VPC relay sessions and PSP share the QUIC transport of each
-	// socket.
+	// The tunnel sockets carry HTTP/3 and Geneve. The VPC relay has its own
+	// QUIC sockets and PSP sockets.
 	trs := r.transports()
+	vpcTrs, pspTrs, err := r.vpcTransports()
+	if err != nil {
+		return err
+	}
 	defer func() {
-		for _, tr := range trs {
+		for _, tr := range slices.Concat(trs, vpcTrs, pspTrs) {
 			_ = tr.Close()
 		}
 	}()
 	tlsConf := http3.ConfigureTLSConfig(&tls.Config{GetCertificate: r.getCert})
-	if r.vpc != nil || r.mesh != nil {
-		tlsConf = r.vpcTLSConfig(tlsConf)
-	}
 	// The connection goroutines end at srv.Close, or at vpcCancel for VPC.
 	var conns sync.WaitGroup
 	defer conns.Wait()
@@ -507,16 +570,16 @@ func (r *Relay) Start(ctx context.Context) error {
 	vpcCtx, vpcCancel := context.WithCancel(context.Background())
 	defer vpcCancel()
 	lns := make([]*quic.EarlyListener, len(trs))
-	quicConf := r.listenConfig()
 	for i, tr := range trs {
-		if r.vpc != nil {
-			tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.vpc.R.PacketHandler(vpcCtx, tr)
-		}
-		quicLn, err := tr.ListenEarly(tlsConf, quicConf)
+		quicLn, err := tr.ListenEarly(tlsConf, relayQUICConfig)
 		if err != nil {
 			return fmt.Errorf("failed to create QUIC listener: %w", err)
 		}
 		lns[i] = quicLn
+	}
+	vpcLns, err := r.startVPC(vpcCtx, vpcTrs, pspTrs)
+	if err != nil {
+		return err
 	}
 	if r.vpc != nil {
 		go r.vpc.R.Run(vpcCtx)
@@ -526,9 +589,9 @@ func (r *Relay) Start(ctx context.Context) error {
 			// The other relays get the attachments of this relay, and trunk keys.
 			r.mesh.SetRouter(r.vpc.R)
 		}
-		// The mesh dials from a relay socket, so that the other relays see the
-		// address of this relay. Start waits, so that Run tells them of the stop.
-		conns.Go(func() { r.mesh.Run(vpcCtx, trs[0], relayQUICConfig) })
+		// The mesh dials from a QUIC socket of the VPC relay, so that the other relays
+		// see the address of this relay. Start waits, so that Run tells them of the stop.
+		conns.Go(func() { r.mesh.Run(vpcCtx, vpcTrs[0], relayQUICConfig) })
 	}
 	addr := lns[0].Addr().String()
 
@@ -562,7 +625,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	// stop closes h3, then the listeners. Close refuses the handshakes in flight.
 	stop := func() error {
 		err := srv.Close()
-		for _, ln := range lns {
+		for _, ln := range slices.Concat(lns, vpcLns) {
 			_ = ln.Close()
 		}
 		return err
@@ -669,7 +732,14 @@ func (r *Relay) Start(ctx context.Context) error {
 
 	slog.Info("Starting relay", slog.String("addr", addr), slog.Int("sockets", len(lns)))
 	for _, ln := range lns {
-		g.Go(func() error { return r.accept(ln, &srv, vpcCtx, &conns) })
+		g.Go(func() error {
+			return accept(ln, func(qc quic.EarlyConnection) { r.serveConn(qc, &srv, vpcCtx) }, &conns)
+		})
+	}
+	for _, ln := range vpcLns {
+		g.Go(func() error {
+			return accept(ln, func(qc quic.EarlyConnection) { r.serveVPCConn(qc, vpcCtx) }, &conns)
+		})
 	}
 
 	if err := g.Wait(); err != nil && !errors.Is(err, context.Canceled) {

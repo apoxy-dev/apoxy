@@ -498,7 +498,7 @@ func TestFetchSnapshot(t *testing.T) {
 					if rev == 0 {
 						rev = 14
 					}
-					require.NoError(t, m.admit(s, p.name, nil, &dp.Version{Revision: rev}, nil))
+					require.NoError(t, admitMember(m, s, p.name, &dp.Version{Revision: rev}, nil))
 					if p.ended {
 						conn.cancel(&quic.IdleTimeoutError{})
 						synctest.Wait()

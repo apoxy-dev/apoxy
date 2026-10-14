@@ -36,6 +36,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
@@ -258,10 +259,13 @@ func packet(src, dst netip.Addr, proto byte, sport, dport uint16, size int) []by
 	return p
 }
 
-// fakeRelay is a relay on loopback: relay.Router for sessions and SPI rows,
-// and a loop that forwards PSP packets by SPI.
+// fakeRelay is a relay on loopback: relay.Router for sessions, SPI rows and
+// path probes, and a loop that forwards PSP packets by SPI. One socket has
+// QUIC and PSP.
 type fakeRelay struct {
 	r        *relay.Router
+	probe    func([]byte, net.Addr) // Packet handler of the router. It answers the path probes.
+	probeEnd func()
 	tr       *quic.Transport
 	ln       *quic.Listener
 	ca       *vpctest.CA
@@ -294,11 +298,12 @@ func newFakeRelayLanes(t testing.TB, lanes int) *fakeRelay {
 		accepted: make(chan *relay.Session, 1),
 		q:        make(chan relayPkt, 1024),
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	fr.tr = newTransport(t, fr.handle)
+	fr.probe, fr.probeEnd = fr.r.PacketHandler(ctx, fr.tr)
 	fr.ln, err = fr.tr.Listen(fr.r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{selfSigned(t)}}), nil)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
 	mux := rpc.NewMux()
 	dp.RegisterRelayServer(mux, &relay.Server{R: fr.r})
 	done := make(chan struct{}, 2)
@@ -338,6 +343,11 @@ func newFakeRelayLanes(t testing.TB, lanes int) *fakeRelay {
 
 // handle queues a non-QUIC packet for forward without blocking.
 func (fr *fakeRelay) handle(b []byte, from net.Addr) {
+	if _, ok := p2p.ProbeSID(b); ok {
+		fr.probe(b, from)
+		fr.probeEnd()
+		return
+	}
 	select {
 	case fr.q <- relayPkt{bytes.Clone(b), from.(*net.UDPAddr).AddrPort()}:
 	default:
@@ -394,6 +404,16 @@ func (fr *fakeRelay) attach(t testing.TB, n *node, name string) {
 		t.Fatal("relay did not accept the session")
 	}
 	n.rc = dp.NewRelayClient(rpc.NewConn(qc, nil))
+	// The relay has the PSP address of a session only from a path probe.
+	keys, err := p2p.NewProbeKeys(qc.ConnectionState().TLS)
+	require.NoError(t, err)
+	var counter uint64
+	require.Eventually(t, func() bool {
+		counter++
+		pkt := p2p.AppendProbe(nil, p2p.Probe{SID: keys.SID, Counter: counter}, p2p.MinProbeLen, &keys.Dialer)
+		_, _ = n.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(addrOf(fr.tr)))
+		return fr.r.Addr(n.sess).IsValid()
+	}, 5*time.Second, 200*time.Millisecond, "relay did not learn the PSP address")
 	require.NoError(t, fr.r.AddRoute(n.sess, netip.PrefixFrom(n.v4, 32), name))
 	require.NoError(t, fr.r.AddRoute(n.sess, netip.PrefixFrom(n.v6, 128), name))
 }

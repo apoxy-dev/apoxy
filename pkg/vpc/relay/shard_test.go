@@ -49,7 +49,7 @@ func (w *shardWorld) dial(t *testing.T, cert tls.Certificate) agent {
 	qc, err := w.owner.tr.Dial(ctx, w.h.ln.Addr(), tc, &quic.Config{EnableDatagrams: true})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = qc.CloseWithError(0, "") })
-	return agent{c: dp.NewRelayClient(rpc.NewConn(qc, nil)), qc: qc, tr: w.owner.tr, src: w.owner.src}
+	return agent{c: dp.NewRelayClient(rpc.NewConn(qc, nil)), qc: qc, tr: w.owner.tr, src: w.owner.src, to: w.owner.to}
 }
 
 // join sends the shard Hello on a and returns the call after Welcome.
@@ -278,7 +278,7 @@ func TestShardFromOwnerSocket(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRouter(nil, Config{})
 			owner := addSession(t, r, vpcA, "owner", addr, "fd00::1/128")
-			require.NoError(t, r.openSync(owner.Session, dp.Mode_MODE_PSP, ref(vpcA), nil))
+			require.NoError(t, r.openIn(owner.Session, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.NoError(t, r.attach(owner.Session, &Attachment{ID: "att-owner"}))
 			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			require.NoError(t, r.registerSPI(owner.Session, register(vpcA, "fd00::2", time.Minute, 1), t0))
@@ -291,7 +291,7 @@ func TestShardFromOwnerSocket(t *testing.T) {
 			}
 
 			sh := newSession(tc.id, func() netip.AddrPort { return src })
-			r.addSession(sh, t0)
+			r.addProbed(sh, t0)
 			forward("after the shard connects")
 			if tc.join {
 				_, _, err := r.joinShard(sh, tc.att, tc.index)

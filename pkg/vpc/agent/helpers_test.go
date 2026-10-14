@@ -56,6 +56,8 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// A first PSP probe that a loaded host loses must not keep a session in QUIC mode.
+	pspRetryMin, pspRetryNext = 200*time.Millisecond, 100*time.Millisecond
 	_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 	shuffleRelays = false
 	os.Exit(m.Run())
@@ -189,7 +191,8 @@ type testRelay struct {
 	srv  *relay.Server
 	r    *relay.Router
 	mesh *relay.Mesh // Nil without world.mesh.
-	addr string
+	addr string      // Address of the QUIC socket.
+	psp  string      // Address of the PSP socket.
 	// stopAccept stops the Accept calls, as a relay host in its lame duck. The
 	// listener still completes handshakes, and no session serves them.
 	stopAccept func()
@@ -277,17 +280,22 @@ func loopback(t testing.TB) *net.UDPConn {
 // relay starts a relay on loopback.
 func (w *world) relay(t testing.TB, id string) *testRelay {
 	t.Helper()
-	return w.relayOn(t, id, loopback(t))
+	return w.relayOn(t, id, loopback(t), loopback(t))
 }
 
-// relayOn starts a relay on udp, and closes udp at the end of the test.
-func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay {
+// relayOn starts a relay with the QUIC socket quicSock and the PSP socket
+// pspSock, and closes them at the end of the test.
+func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketConn) *testRelay {
 	t.Helper()
 	cert := w.relayCA.relayCert(t, id)
+	udp, pspUDP := quicSock, pspSock
+	cfg := w.relayCfg
 	// A relay checks the grant of a Visit call with the relay roots of the project.
-	r := relay.NewRouter(relayTrust{w.trust, w.relayCA.Pool()}, w.relayCfg)
-	tr := &quic.Transport{Conn: udp}
-	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(t.Context(), tr)
+	r := relay.NewRouter(relayTrust{w.trust, w.relayCA.Pool()}, cfg)
+	tr := &quic.Transport{Conn: udp, NonQUICPacketHandler: r.QUICSocketHandler()}
+	pspTr := &quic.Transport{Conn: pspUDP}
+	pspTr.NonQUICPacketHandler, pspTr.NonQUICBatchEnd = r.PacketHandler(t.Context(), pspTr)
+	require.NoError(t, pspTr.Start())
 	// As at a real relay, the packets are Not-ECT, and the stream limit takes
 	// the Attach calls of extra attachments.
 	tlsConf := r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}})
@@ -326,7 +334,9 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 	// As Serve, but stopAccept ends only the Accept calls. The end of the ctx
 	// of Serve also closes the sessions.
 	actx, stopAccept := context.WithCancel(ctx)
-	out := &testRelay{id: id, srv: srv, r: r, mesh: mesh, addr: udp.LocalAddr().String(), stopAccept: stopAccept}
+	out := &testRelay{
+		id: id, srv: srv, r: r, mesh: mesh, addr: udp.LocalAddr().String(), psp: pspUDP.LocalAddr().String(), stopAccept: stopAccept,
+	}
 	reason, refuse := w.refuse[id]
 	var wg sync.WaitGroup
 	if mesh != nil {
@@ -357,6 +367,8 @@ func (w *world) relayOn(t testing.TB, id string, udp net.PacketConn) *testRelay 
 		wg.Wait()
 		_ = tr.Close()
 		_ = udp.Close()
+		_ = pspTr.Close()
+		_ = pspUDP.Close()
 	})
 	return out
 }
@@ -403,6 +415,9 @@ type testAgent struct {
 	attach        chan attachEvent
 	cancel        context.CancelFunc
 	done          chan struct{}
+	// pspPath reports whether the PSP probes of the agent get a reply. Then
+	// attached waits for PSP mode.
+	pspPath func() bool
 
 	stackOnce sync.Once
 	stack     *stack.Stack
@@ -421,15 +436,18 @@ type testAgent struct {
 }
 
 type agentOptions struct {
-	life   time.Duration // Cert life. Zero means 24 hours.
-	mtu    int           // Config.MTU.
-	conn   *lossyConn    // Wraps the agent socket if set.
-	slow   *slowConn     // Wraps the agent socket if set.
-	move   *moveConn     // Wraps the agent socket if set.
-	mode   TransportMode
-	udp    *net.UDPConn // Agent socket. Nil means a new socket on loopback.
-	tcp    bool         // Adds TCP to the netstack.
-	routes []netip.Prefix
+	life time.Duration // Cert life. Zero means 24 hours.
+	mtu  int           // Config.MTU.
+	conn *lossyConn    // Wraps the agent socket if set.
+	slow *slowConn     // Wraps the agent socket if set.
+	move *moveConn     // Wraps the agent socket if set.
+	mode TransportMode
+	// quicStart makes attached return while the session is in QUIC mode. Else it
+	// waits for PSP mode when the PSP probes of the agent get a reply.
+	quicStart bool
+	udp       *net.UDPConn // Agent socket. Nil means a new socket on loopback.
+	tcp       bool         // Adds TCP to the netstack.
+	routes    []netip.Prefix
 
 	// identity is the name in the agent cert. Empty means the agent name. The
 	// attachment always has the agent name.
@@ -564,7 +582,7 @@ func (c *slowConn) set(r *testRelay, d time.Duration) {
 	if c.delays == nil {
 		c.delays = map[string]time.Duration{}
 	}
-	c.delays[r.addr] = d
+	c.delays[r.addr], c.delays[r.psp] = d, d
 }
 
 // setLate makes the start of the path to r late.
@@ -574,7 +592,7 @@ func (c *slowConn) setLate(r *testRelay, l lateStart) {
 	if c.late == nil {
 		c.late = map[string]*lateStart{}
 	}
-	c.late[r.addr] = &l
+	c.late[r.addr], c.late[r.psp] = &l, &l
 }
 
 func (c *slowConn) WriteTo(p []byte, addr net.Addr) (int, error) {
@@ -603,20 +621,23 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	}
 	var conn net.PacketConn = udp
 	if opts.conn != nil {
-		opts.conn.PacketConn = udp
+		opts.conn.PacketConn = conn
 		conn = opts.conn
 	}
 	if opts.move != nil {
-		opts.move.PacketConn = udp
+		opts.move.PacketConn = conn
 		conn = opts.move
 	}
 	if opts.slow != nil {
-		opts.slow.PacketConn = udp
+		opts.slow.PacketConn = conn
 		conn = opts.slow
 	}
 	ta := &testAgent{
 		tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}),
 		routes: map[netip.Prefix]bool{}, extras: map[string]netip.Addr{}, vpcStack: opts.vpcStack,
+	}
+	ta.pspPath = func() bool {
+		return opts.mode != TransportQUIC && !opts.quicStart && (opts.conn == nil || !opts.conn.limitProbes.Load())
 	}
 	enroll := func(context.Context) (*identity.Credential, error) {
 		n := ta.enrolls.Add(1)
@@ -851,11 +872,26 @@ func (ta *testAgent) routeEvents(p netip.Prefix) []string {
 	return out
 }
 
-// attached waits for the next OnAttach call.
+// modeOf returns the data mode of the session with the address addr.
+func (ta *testAgent) modeOf(addr netip.Addr) dp.Mode {
+	for _, c := range ta.a.Status().Connections {
+		if c.Address == addr {
+			return c.Mode
+		}
+	}
+	return dp.Mode_MODE_UNSPECIFIED
+}
+
+// attached waits for the next OnAttach call. Each session starts in QUIC mode,
+// so it also waits for the change to PSP mode of an agent with a PSP path.
 func (ta *testAgent) attached(t *testing.T) attachEvent {
 	t.Helper()
 	select {
 	case ev := <-ta.attach:
+		if ta.pspPath() {
+			require.Eventually(t, func() bool { return ta.modeOf(ev.addr) == dp.Mode_MODE_PSP }, 10*time.Second, time.Millisecond,
+				"session did not change to PSP mode")
+		}
 		return ev
 	case <-time.After(10 * time.Second):
 		t.Log(vpcStacks())

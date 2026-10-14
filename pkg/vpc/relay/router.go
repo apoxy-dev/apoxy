@@ -118,7 +118,6 @@ type Router struct {
 	ver    *dp.Version // Protocol version of the relay. Nil is revision 0.
 	drops  [numDropReasons]atomic.Uint64
 	sends  sendStats
-	early  earlyList
 	bridge atomic.Pointer[bridge]
 	trunk  atomic.Pointer[trunk] // Trunk keys of the mesh members. Nil with no mesh.
 	// name is the relay name of this relay in the mesh. It is empty with no
@@ -216,13 +215,14 @@ type Session struct {
 	udpAddr      atomic.Pointer[net.UDPAddr] // Last address that the bridge sent to.
 	probe        *prober
 	meter        *rate.Limiter // Tunnel limit. Nil means no limit. Shards use the meter of the owner.
-	watching     atomic.Bool   // A watch follows the connection after Moved.
 	rtt          *atomic.Int64 // Smoothed RTT of the connection in nanoseconds. Nil with no trace.
 	live         liveness      // What the liveness check knows of the agent.
 
+	probeCounter atomic.Uint64 // Largest counter of a valid path probe.
+
 	// Guarded by Router.mu.
-	addr        netip.AddrPort
-	prev        netip.AddrPort // Valid until prevUntil after a migration.
+	addr        netip.AddrPort // PSP address: the source of the newest path probe. Zero before one.
+	prev        netip.AddrPort // Valid until prevUntil after a change of addr.
 	prevUntil   time.Time
 	lanes       []netip.AddrPort  // Lane sources: lane i sends from lanes[i-1].
 	receive     bool              // The agent reads its lane ports.
@@ -324,7 +324,6 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 	now := time.Now()
 	id, err := r.checkCert(tc.PeerCertificates, now)
 	if err != nil {
-		r.refuseProbes(tc)
 		return nil, fmt.Errorf("agent cert rejected: %w", err)
 	}
 	s := newSession(Identity{VPC: VPCKey{Project: id.Project, UID: id.VPC}, ID: id.String()},
@@ -343,7 +342,6 @@ func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
 		return nil, err
 	}
 	r.addSession(s, now)
-	r.answerEarly(s)
 	context.AfterFunc(qc.Context(), func() { r.removeSession(s) })
 	return s, nil
 }
@@ -379,7 +377,6 @@ func (r *Router) addSession(s *Session, now time.Time) {
 	if s.conn != nil {
 		r.byConn[s.conn] = s
 	}
-	r.setAddr(s, s.remote(), now)
 	r.addProber(s)
 	d := r.domain(s.id.VPC)
 	d.members[s] = struct{}{}
@@ -457,7 +454,7 @@ func (r *Router) dropDomain(vpc VPCKey, d *domain) {
 	}
 }
 
-// setAddr moves s to source address a. The previous address stays valid
+// setAddr moves s to PSP address a. The previous address stays valid
 // for rebindOverlap.
 func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
 	if !a.IsValid() || a == s.addr {
@@ -532,7 +529,7 @@ func (r *Router) passSource(s *Session, a netip.AddrPort) {
 	}
 }
 
-// Addr returns the current source address of s.
+// Addr returns the PSP address of s, or the zero address before a path probe.
 func (r *Router) Addr(s *Session) netip.AddrPort {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -711,15 +708,12 @@ func (r *Router) ReportStatus(s *Session, st *dp.Status) {
 	}
 }
 
-// Sweep follows migrated connections, ends old source addresses, and removes
-// expired and idle rows. A session does not end with its cert.
+// Sweep ends old PSP addresses, and removes expired and idle rows. A session
+// does not end with its cert.
 func (r *Router) Sweep(now time.Time) {
 	idle := now.Add(-rowIdle).UnixNano()
 	r.mu.Lock()
 	for s := range r.sessions {
-		if s.shardOf == nil {
-			r.setAddr(s, s.remote(), now)
-		}
 		if s.prev.IsValid() && now.After(s.prevUntil) {
 			if r.bySource[s.prev] == s {
 				delete(r.bySource, s.prev)

@@ -105,8 +105,8 @@ func TestGenevePassesVPCPackets(t *testing.T) {
 		taken  bool // The program takes the frame for a Geneve tunnel.
 	}{
 		{name: "Geneve keepalive", frames: [][]byte{geneveKeepalive(t, src[0], dst[0]), geneveKeepalive(t, src[1], dst[1])}, taken: true},
-		{name: "path probe", frames: vpc(probe(false, p2p.MinProbeLen), probe(false, earlyProbeLen))},
-		{name: "path probe reply", frames: vpc(probe(true, p2p.MinProbeLen), probe(true, earlyProbeLen))},
+		{name: "path probe", frames: vpc(probe(false, p2p.MinProbeLen), probe(false, probeSize))},
+		{name: "path probe reply", frames: vpc(probe(true, p2p.MinProbeLen), probe(true, probeSize))},
 		{name: "lane keepalive", frames: vpc([]byte{p2p.TypeKeepalive})},
 		// A link pads a short frame to 60 B.
 		{name: "lane keepalive with link padding", frames: vpc([]byte{p2p.TypeKeepalive}), padTo: 60},

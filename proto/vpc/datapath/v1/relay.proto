@@ -14,8 +14,8 @@ option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1
 // VTEPs call it.
 service Relay {
   // Session starts with Hello and Welcome, then carries Sync. The relay sends
-  // routes, NoRoute, key changes, config and drain. The agent sends Ack, Status
-  // and Moved.
+  // routes, NoRoute, key changes, config and drain. The agent sends Ack and
+  // Status.
   rpc Session(stream SessionRequest) returns (stream SessionResponse);
   // Attach adds an attachment to the session.
   rpc Attach(AttachRequest) returns (AttachResponse);
@@ -64,8 +64,9 @@ message SessionRequest {
     Hello hello = 1;
     Ack ack = 2;
     Status status = 3;
-    Moved moved = 4;
   }
+  reserved 4;
+  reserved "moved";
 }
 
 // SessionResponse is a message from the relay on Session.
@@ -86,7 +87,8 @@ message SessionResponse {
 
 // Hello starts a session.
 message Hello {
-  // Data transport of the agent.
+  // Data transport that the agent wants. Each session starts in QUIC mode,
+  // and a Rekey call changes it to PSP mode.
   Mode mode = 1;
   // Maximum number of VPCs on this session. In the MVP the cert names one VPC.
   uint32 max_vpcs_per_session = 2;
@@ -122,10 +124,6 @@ message Shard {
   uint32 index = 2;
 }
 
-// Moved tells the relay that the local address of the agent changed. The
-// relay moves the session only when the QUIC connection moves to a new path.
-message Moved {}
-
 // Welcome answers Hello.
 message Welcome {
   // Source address and port of the agent as the relay sees them.
@@ -135,6 +133,12 @@ message Welcome {
   uint32 max_lanes = 2;
   // Revision of the relay. Not set by a build from before revisions.
   Version version = 3;
+  // IP address of the PSP socket of the relay. Empty means the host that the
+  // agent dialed for this session. The agent sends its path probes, its PSP
+  // packets and its lane keep-alives to this host at psp_port.
+  string psp_host = 4;
+  // Port of the PSP socket of the relay.
+  uint32 psp_port = 5;
 }
 
 // Route is a prefix in a VPC.

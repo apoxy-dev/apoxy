@@ -217,10 +217,9 @@ func TestTransportModes(t *testing.T) {
 		noProbes     bool // The PSP probes of a get no reply.
 		wantA, wantB Status
 	}{
-		{name: "PSP to QUIC", a: TransportPSP, b: TransportQUIC, wantA: inPSP, wantB: quicConfig},
-		{name: "QUIC to PSP", a: TransportQUIC, b: TransportPSP, wantA: quicConfig, wantB: inPSP},
+		{name: "PSP to QUIC", a: TransportAuto, b: TransportQUIC, wantA: inPSP, wantB: quicConfig},
+		{name: "QUIC to PSP", a: TransportQUIC, b: TransportAuto, wantA: quicConfig, wantB: inPSP},
 		{name: "QUIC to QUIC", a: TransportQUIC, b: TransportQUIC, wantA: quicConfig, wantB: quicConfig},
-		{name: "auto to QUIC", b: TransportQUIC, wantA: inPSP, wantB: quicConfig},
 		{name: "auto with no PSP path to auto", noProbes: true, wantA: quicTimeout, wantB: inPSP},
 	}
 	for _, tc := range cases {
@@ -238,9 +237,10 @@ func TestTransportModes(t *testing.T) {
 				ta   *testAgent
 				want Status
 			}{{a, tc.wantA}, {b, tc.wantB}} {
+				// The reason of a probe that failed comes after the wait for its reply.
+				require.Eventually(t, func() bool { return x.ta.a.Status().Reason == x.want.Reason }, 5*time.Second, 5*time.Millisecond)
 				st := x.ta.a.Status()
 				assert.Equal(t, x.want.Mode, st.Mode)
-				assert.Equal(t, x.want.Reason, st.Reason)
 				assert.Positive(t, st.Connect)
 				assert.Less(t, st.Connect, openTimeout)
 			}
@@ -271,7 +271,7 @@ func TestDualStackSocket(t *testing.T) {
 		mode TransportMode
 		want dp.Mode
 	}{
-		{name: "PSP", mode: TransportPSP, want: dp.Mode_MODE_PSP},
+		{name: "PSP", mode: TransportAuto, want: dp.Mode_MODE_PSP},
 		{name: "QUIC", mode: TransportQUIC, want: dp.Mode_MODE_QUIC},
 	}
 	for _, tc := range cases {
@@ -282,7 +282,7 @@ func TestDualStackSocket(t *testing.T) {
 			}
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a, b := w.agent(t, "a", r, agentOptions{mode: tc.mode, udp: udp}), w.agent(t, "b", r, agentOptions{mode: TransportPSP})
+			a, b := w.agent(t, "a", r, agentOptions{mode: tc.mode, udp: udp}), w.agent(t, "b", r, agentOptions{mode: TransportAuto})
 			ea, eb := a.attached(t), b.attached(t)
 			assert.Equal(t, tc.want, a.a.Status().Mode)
 
@@ -309,7 +309,7 @@ func TestStatusRTT(t *testing.T) {
 		end    bool // The relay session ends and the relay takes no new one.
 	}{
 		{name: "no session"},
-		{name: "PSP session", attach: true, mode: TransportPSP},
+		{name: "PSP session", attach: true, mode: TransportAuto},
 		{name: "QUIC session", attach: true, mode: TransportQUIC},
 		{name: "ended session", attach: true, mode: TransportQUIC, end: true},
 	}

@@ -98,10 +98,11 @@ func oneVisit(t *testing.T, a, b *testAgent, old *peer, ea, eb attachEvent, heal
 	// The visit with no peer ends at its check.
 	var pa, pb *peer
 	require.Eventually(t, func() bool {
-		if peerCount(a.a) != 1 || peerCount(b.a) != 1 || visitCount(a.a)+visitCount(b.a) != 1 {
+		// One read of each peer set: a second session can open between two reads.
+		pa, pb = solePeer(a.a), solePeer(b.a)
+		if pa == nil || pb == nil || visitCount(a.a)+visitCount(b.a) != 1 {
 			return false
 		}
-		pa, pb = onlyPeer(t, a.a), onlyPeer(t, b.a)
 		// A session with the path down gives its place to the session of a new visit.
 		return pa.rc.visitor() != pb.rc.visitor() && keyed(pa) && keyed(pb) && !pathDown(a.a, pa) && !pathDown(b.a, pb)
 	}, 20*time.Second, 20*time.Millisecond, "one peer session on one visit")
@@ -120,6 +121,19 @@ func oneVisit(t *testing.T, a, b *testAgent, old *peer, ea, eb attachEvent, heal
 	}, 30*time.Second, 20*time.Millisecond, "peer session on the attached sessions")
 	ping(t, a.stack, ea.addr, eb.addr, 9000, "to b over the trunk")
 	ping(t, b.stack, eb.addr, ea.addr, 9000, "to a over the trunk")
+}
+
+// solePeer returns the peer session of a when it has exactly one, else nil.
+func solePeer(a *Agent) *peer {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.peers) != 1 {
+		return nil
+	}
+	for _, p := range a.peers {
+		return p
+	}
+	return nil
 }
 
 // visitPair returns agent a on relay-1 and agent b on relay-2 of one mesh, with
@@ -218,26 +232,41 @@ func TestVisitRules(t *testing.T) {
 
 // TestVisit gives agent a the answer REACH_VISIT for agent b on another relay.
 // The mesh path is up, so the relay of b takes the visit as with a cut path.
+// The visitor session carries data in QUIC mode at once, and changes to PSP
+// mode when its probe passes.
 func TestVisit(t *testing.T) {
 	cases := []struct {
 		name       string
 		mode       TransportMode
-		dropProbes bool // The path probes of the visitor session get no reply.
-		data       bool // Data goes on the visitor session.
+		dropProbes bool    // The PSP port of the visited relay drops each packet.
+		homeQUIC   bool    // The PSP port of the relay of the attachment drops each packet.
+		want       dp.Mode // Mode of the visitor session at the end.
 	}{
-		{name: "PSP", mode: TransportPSP, data: true},
-		{name: "PSP, path probe fails", mode: TransportPSP, dropProbes: true},
-		{name: "QUIC", mode: TransportQUIC, data: true},
+		{name: "PSP path passes", want: dp.Mode_MODE_PSP},
+		{name: "attached session stays in QUIC mode", homeQUIC: true, want: dp.Mode_MODE_PSP},
+		{name: "PSP port of the visited relay is closed", dropProbes: true, want: dp.Mode_MODE_QUIC},
+		{name: "QUIC mode in the config", mode: TransportQUIC, want: dp.Mode_MODE_QUIC},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, r1, r2 := meshRelays(t)
 			conn := &lossyConn{}
-			a := w.agent(t, "a", r1, agentOptions{mode: tc.mode, conn: conn, visitCheck: time.Hour})
+			if tc.homeQUIC {
+				// The attached session does not probe again in the time of the test.
+				defer func(d time.Duration) { pspRetryMin = d }(pspRetryMin)
+				pspRetryMin = time.Minute
+				conn.limitProbes.Store(true)
+			}
+			a := w.agent(t, "a", r1, agentOptions{mode: tc.mode, conn: conn, visitCheck: time.Hour, quicStart: tc.homeQUIC})
 			ea := a.attached(t)
 			home, far := r1, r2
+			if tc.homeQUIC {
+				require.Eventually(t, func() bool {
+					return a.current().fallback() == dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
+				}, 5*time.Second, 5*time.Millisecond, "the probe of the attached session did not fail")
+			}
 			route := netip.MustParsePrefix("fd99::/64")
-			b := w.agent(t, "b", far, agentOptions{mode: TransportPSP, routes: []netip.Prefix{route}})
+			b := w.agent(t, "b", far, agentOptions{routes: []netip.Prefix{route}})
 			eb := b.attached(t)
 			echo(t, a.stack, ea.addr, 9000)
 			echo(t, b.stack, eb.addr, 9000)
@@ -247,12 +276,14 @@ func TestVisit(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			rc := a.current()
-			err := a.a.connect(ctx, rc, eb.addr, visitAnswer(far))
-			if tc.data {
-				require.NoError(t, err)
-			} else {
-				require.ErrorIs(t, err, errVisitNoData)
+			begin := time.Now()
+			require.NoError(t, a.a.connect(ctx, rc, eb.addr, visitAnswer(far)))
+			// The peer sessions open after the first probe, which ends at once on a path that answers.
+			if !tc.dropProbes {
+				assert.Less(t, time.Since(begin), probeWait, "the visit waited longer than its first PSP probe")
 			}
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b at the start of the visit")
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a at the start of the visit")
 
 			// The visitor session has the address of a, and the attached session stays.
 			v := visitOf(a.a, far)
@@ -263,40 +294,46 @@ func TestVisit(t *testing.T) {
 			assert.True(t, v.rc.visitor())
 			assert.Equal(t, far.addr, v.rc.addr)
 			assert.Equal(t, ea.addr, v.rc.self)
-			assert.Equal(t, tc.data, v.rc.data.Load(), "result of the path probe")
 			assert.Equal(t, 1, visitCount(a.a))
 			// The key changes of a relay peer go to the session of that relay.
 			assert.Same(t, rc, a.a.relayOfBinding(rc.relay))
 			assert.Same(t, v.rc, a.a.relayOfBinding(v.rc.relay))
 
-			// The peer session is on the visitor session. b took it on its own relay.
-			p := onlyPeer(t, a.a)
-			assert.Same(t, v.rc, p.rc)
-			assert.True(t, p.dialer)
-			assert.Equal(t, !tc.data, p.idle)
-			require.Eventually(t, func() bool { return peerCount(b.a) == 1 }, 5*time.Second, 10*time.Millisecond)
-			assert.False(t, onlyPeer(t, b.a).dialer)
-			advertised := func() []netip.Prefix {
-				a.a.mu.Lock()
-				defer a.a.mu.Unlock()
-				return p.advertised
+			if tc.want == dp.Mode_MODE_PSP {
+				require.Eventually(t, func() bool { return v.rc.dataMode() == dp.Mode_MODE_PSP }, 5*time.Second, 5*time.Millisecond,
+					"the visitor session did not change to PSP mode")
+			} else if tc.dropProbes {
+				require.Eventually(t, func() bool {
+					return v.rc.fallback() == dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
+				}, 5*time.Second, 5*time.Millisecond, "the probe of the visitor session did not fail")
 			}
-			if !tc.data {
-				// Only the peer frames go to the relay of b: a gets no SA, no SPI row and no route.
-				assert.ErrorIs(t, p.wait(ctx), errVisitNoData)
-				require.Never(t, func() bool { return spiCount(p) != 0 || len(p.bp.RxReport()) != 0 || len(advertised()) != 0 },
-					300*time.Millisecond, 20*time.Millisecond, "SAs, SPI rows or routes of a for b")
-				return
-			}
-			assert.Equal(t, []netip.Prefix{route}, advertised())
-			assert.Equal(t, unmap(v.rc.relayAddr), unmap(p.bp.Addr()), "data of a goes to the relay of b")
+			// The pings open the peer session again after a change of the mode.
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "to b")
 			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
+			assert.Equal(t, tc.want, v.rc.dataMode(), "mode of the visitor session")
+			if tc.homeQUIC {
+				assert.Equal(t, dp.Mode_MODE_QUIC, rc.dataMode(), "mode of the attached session")
+			}
+			assert.Same(t, v, visitOf(a.a, far), "the visit stays")
+
+			// The peer session is on the visitor session. b took it on its own relay.
+			var p *peer
+			require.Eventually(t, func() bool {
+				p = peerOn(a.a, v.rc, eb.addr)
+				return p != nil && peerCount(a.a) == 1 && peerCount(b.a) == 1
+			}, 5*time.Second, 10*time.Millisecond, "one peer session on the visit")
+			assert.Same(t, v.rc, p.rc)
+			a.a.mu.Lock()
+			advertised := p.advertised
+			a.a.mu.Unlock()
+			assert.Equal(t, []netip.Prefix{route}, advertised)
+			assert.Equal(t, unmap(v.rc.relayAddr), unmap(p.bp.Addr()), "data of a goes to the relay of b")
+			assert.Equal(t, tc.want == dp.Mode_MODE_QUIC, p.quic)
 			if tc.mode == TransportQUIC {
 				// The data of a goes as data frames, so a seals and opens no PSP packet.
-				assert.True(t, p.quic)
 				assert.Zero(t, pspPackets(a.a.bind.LanePackets())+pspPackets(a.a.bind.RxLanePackets()), "PSP packets of a")
-			} else {
+			}
+			if tc.want == dp.Mode_MODE_PSP {
 				assert.NotZero(t, spiCount(p), "SPIs of a at the visited relay")
 				assert.NotZero(t, rxCountOf(p.bp).packets, "packets from b on the visitor session")
 			}
@@ -324,9 +361,9 @@ func TestVisitData(t *testing.T) {
 		name         string
 		modeA, modeB TransportMode // a is the visitor.
 	}{
-		{name: "PSP visitor to PSP peer", modeA: TransportPSP, modeB: TransportPSP},
-		{name: "QUIC visitor to PSP peer", modeA: TransportQUIC, modeB: TransportPSP},
-		{name: "PSP visitor to QUIC peer", modeA: TransportPSP, modeB: TransportQUIC},
+		{name: "PSP visitor to PSP peer", modeA: TransportAuto, modeB: TransportAuto},
+		{name: "QUIC visitor to PSP peer", modeA: TransportQUIC, modeB: TransportAuto},
+		{name: "PSP visitor to QUIC peer", modeA: TransportAuto, modeB: TransportQUIC},
 		{name: "QUIC visitor to QUIC peer", modeA: TransportQUIC, modeB: TransportQUIC},
 	}
 	for _, tc := range cases {
@@ -351,11 +388,9 @@ func TestVisitData(t *testing.T) {
 			waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
 			v, err := dialOnVisit(t, ctx, a, r2, eb.addr)
 			require.NoError(t, err)
-			assert.True(t, v.rc.data.Load(), "data goes on the visitor session")
 			assert.Equal(t, quicA, v.rc.dataMode() == dp.Mode_MODE_QUIC, "mode of the visitor session")
 			p := peerOn(a.a, v.rc, eb.addr)
 			require.NotNil(t, p, "peer session of a on the visit")
-			assert.False(t, p.idle)
 			assert.Equal(t, quicA || quicB, p.quic, "the relay of b opens the packets")
 			require.Eventually(t, func() bool { return peerOn(b.a, b.current(), ea.addr) != nil }, 5*time.Second, 10*time.Millisecond)
 
@@ -404,8 +439,8 @@ func TestVisitAttachments(t *testing.T) {
 		name         string
 		modeA, modeB TransportMode // a is the visitor.
 	}{
-		{name: "PSP visitor to PSP peer", modeA: TransportPSP, modeB: TransportPSP},
-		{name: "QUIC visitor to PSP peer", modeA: TransportQUIC, modeB: TransportPSP},
+		{name: "PSP visitor to PSP peer", modeA: TransportAuto, modeB: TransportAuto},
+		{name: "QUIC visitor to PSP peer", modeA: TransportQUIC, modeB: TransportAuto},
 		{name: "QUIC visitor to QUIC peer", modeA: TransportQUIC, modeB: TransportQUIC},
 	}
 	for _, tc := range cases {
@@ -424,7 +459,6 @@ func TestVisitAttachments(t *testing.T) {
 			waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
 			v, err := dialOnVisit(t, ctx, a, r2, eb.addr)
 			require.NoError(t, err)
-			require.True(t, v.rc.data.Load(), "data goes on the visitor session")
 			reaches := func(dst netip.Addr) func() bool {
 				return func() bool { return liveOn(b.a, b.current(), ea.addr) && liveOn(b.a, b.current(), dst) }
 			}
@@ -476,8 +510,8 @@ func TestVisitAttachmentsRelayRevision(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r1, r2, a, b, ea, eb := visitPair(t,
-				agentOptions{mode: TransportPSP, visitCheck: time.Hour},
-				agentOptions{mode: TransportPSP, visitCheck: time.Hour, visitWait: time.Hour})
+				agentOptions{mode: TransportAuto, visitCheck: time.Hour},
+				agentOptions{mode: TransportAuto, visitCheck: time.Hour, visitWait: time.Hour})
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			x, err := a.a.Attach(ctx, AttachmentSpec{Name: "a-2"})
@@ -522,7 +556,7 @@ func TestVisitLimit(t *testing.T) {
 	r1, r2, r3, r4 := w.relay(t, "relay-1"), w.relay(t, "relay-2"), w.relay(t, "relay-3"), w.relay(t, "relay-4")
 	joinMesh(t, r1, r2, r3, r4)
 	conn := &lossyConn{}
-	a := w.agent(t, "a", r1, agentOptions{mode: TransportPSP, conn: conn, visitCheck: time.Hour})
+	a := w.agent(t, "a", r1, agentOptions{mode: TransportAuto, conn: conn, visitCheck: time.Hour})
 	ea := a.attached(t)
 	peers := []struct {
 		name  string
@@ -532,7 +566,7 @@ func TestVisitLimit(t *testing.T) {
 	}{{name: "b", relay: r2}, {name: "c", relay: r2}, {name: "d", relay: r3}, {name: "e", relay: r4}}
 	for i := range peers {
 		p := &peers[i]
-		p.ta = w.agent(t, p.name, p.relay, agentOptions{mode: TransportPSP})
+		p.ta = w.agent(t, p.name, p.relay, agentOptions{mode: TransportAuto})
 		ev := p.ta.attached(t)
 		p.addr = ev.addr
 		echo(t, p.ta.stack, ev.addr, 9000)
@@ -590,7 +624,7 @@ func TestVisitReturn(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, visitCheck: time.Hour}, agentOptions{mode: TransportPSP})
+			_, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportAuto, visitCheck: time.Hour}, agentOptions{mode: TransportAuto})
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			require.NoError(t, a.a.connect(ctx, a.current(), eb.addr, visitAnswer(r2)))
@@ -619,7 +653,6 @@ func TestVisitReturn(t *testing.T) {
 			}
 			p := onlyPeer(t, a.a)
 			assert.Same(t, a.current(), p.rc, "the peer session is on the attached session")
-			assert.False(t, p.idle)
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "over the trunk")
 			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a over the trunk")
 		})
@@ -646,8 +679,8 @@ func TestVisitTurn(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, visitCheck: time.Hour},
-				agentOptions{mode: TransportPSP, visitAsk: tc.ask, visitWait: time.Minute})
+			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportAuto, visitCheck: time.Hour},
+				agentOptions{mode: TransportAuto, visitAsk: tc.ask, visitWait: time.Minute})
 			wait := tc.wait
 			if wait == 0 {
 				wait = 10 * time.Second
@@ -696,7 +729,7 @@ func TestNoRoute(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, r2, a, _, _, eb := visitPair(t, agentOptions{mode: TransportPSP}, agentOptions{mode: TransportPSP})
+			_, r2, a, _, _, eb := visitPair(t, agentOptions{mode: TransportAuto}, agentOptions{mode: TransportAuto})
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			require.NoError(t, a.a.Connect(ctx, eb.addr))
@@ -788,31 +821,28 @@ func TestVisitAfterCut(t *testing.T) {
 			},
 		},
 		{
-			name: "path probe fails, then passes",
+			name: "PSP port of the visited relay opens later",
 			run: func(t *testing.T, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, conn *lossyConn) {
 				cutMesh(r1, r2)
 				waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
 				conn.limitProbes.Store(true)
-				send(t, a.stack, ea.addr, eb.addr, 9000, "no data path")
-				require.Eventually(t, func() bool { return unreachableIn(a) > 0 }, 10*time.Second, 10*time.Millisecond, "ICMP error")
+				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit in QUIC mode")
 				v := visitOf(a.a, r2)
 				require.NotNil(t, v)
-				assert.False(t, v.rc.data.Load())
-				idle := onlyPeer(t, a.a)
-				assert.True(t, idle.idle)
-				assert.Same(t, v.rc, idle.rc)
-				require.Equal(t, 1, peerCount(b.a), "the peer frames went to b")
-				assert.Zero(t, rxCountOf(onlyPeer(t, b.a).bp).packets, "data packets of a at b")
+				require.Equal(t, dp.Mode_MODE_QUIC, v.rc.dataMode())
+				inQUIC := peerOn(a.a, v.rc, eb.addr)
+				require.NotNil(t, inQUIC)
+				assert.True(t, inQUIC.quic)
 
-				// The next open after the wait of the failure probes again.
+				// The probes after the backoff pass, and the session changes to PSP mode.
 				conn.limitProbes.Store(false)
-				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit")
+				require.Eventually(t, func() bool { return v.rc.dataMode() == dp.Mode_MODE_PSP }, 10*time.Second, 5*time.Millisecond)
+				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit in PSP mode")
 				assert.Same(t, v, visitOf(a.a, r2), "the visit stays")
-				assert.True(t, v.rc.data.Load())
-				assert.Error(t, idle.qc.Context().Err(), "the session with no data path closed")
+				assert.Error(t, inQUIC.qc.Context().Err(), "the session of QUIC mode closed")
 				p := peerOn(a.a, v.rc, eb.addr)
 				require.NotNil(t, p)
-				assert.False(t, p.idle)
+				assert.False(t, p.quic)
 			},
 		},
 		{
@@ -914,8 +944,8 @@ func TestVisitAfterCut(t *testing.T) {
 			if wait == 0 {
 				wait = time.Hour
 			}
-			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, conn: conn, visitCheck: tc.check},
-				agentOptions{mode: TransportPSP, visitCheck: tc.check, visitWait: wait})
+			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportAuto, conn: conn, visitCheck: tc.check},
+				agentOptions{mode: TransportAuto, visitCheck: tc.check, visitWait: wait})
 			if tc.before {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
@@ -972,26 +1002,13 @@ func TestVisitBoth(t *testing.T) {
 				assert.Same(t, pb, onlyPeer(t, b.a))
 			},
 		},
-		{
-			// b waits with no end, so only the refused keys of a start its visit.
-			name: "the visit of the lower address has no data path", wait: time.Hour,
-			run: func(t *testing.T, ctx context.Context, r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent, conn *lossyConn) {
-				done := make(chan error, 1)
-				go func() { done <- b.a.connect(ctx, b.current(), ea.addr, visitAnswer(r1)) }()
-				conn.limitProbes.Store(true)
-				require.ErrorIs(t, a.a.connect(ctx, a.current(), eb.addr, visitAnswer(r2)), errVisitNoData)
-				require.NoError(t, <-done)
-				// b reaches a on its own visit now, so it does not wait again.
-				require.NoError(t, b.a.connect(ctx, b.current(), ea.addr, visitAnswer(r1)))
-			},
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			conn := &lossyConn{}
-			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, conn: conn, visitCheck: time.Hour},
-				agentOptions{mode: TransportPSP, visitCheck: time.Hour, visitAsk: time.Hour, visitWait: tc.wait})
+			r1, r2, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportAuto, conn: conn, visitCheck: time.Hour},
+				agentOptions{mode: TransportAuto, visitCheck: time.Hour, visitAsk: time.Hour, visitWait: tc.wait})
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			tc.run(t, ctx, r1, r2, a, b, ea, eb, conn)
@@ -1052,7 +1069,7 @@ func TestVisitDuplicate(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			r1, _, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportPSP, visitCheck: time.Hour}, agentOptions{mode: TransportPSP, visitCheck: time.Hour})
+			r1, _, a, b, ea, eb := visitPair(t, agentOptions{mode: TransportAuto, visitCheck: time.Hour}, agentOptions{mode: TransportAuto, visitCheck: time.Hour})
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			require.NoError(t, a.a.Connect(ctx, eb.addr))

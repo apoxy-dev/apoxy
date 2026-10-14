@@ -131,7 +131,7 @@ func newEnd(t *testing.T, h *harness, ca *testCA, name string, mode dp.Mode) *en
 func (e *end) send(t *testing.T, inner []byte) {
 	t.Helper()
 	if e.psp != nil {
-		_, err := e.tr.WriteTo(e.psp.seal(t, inner), e.qc.RemoteAddr())
+		_, err := e.tr.WriteTo(e.psp.seal(t, inner), e.to)
 		require.NoError(t, err)
 		return
 	}
@@ -173,6 +173,7 @@ func (e *end) giveSAs(t *testing.T) {
 // the relay SAs that come on the Session stream.
 func (e *end) toPSP(t *testing.T) {
 	t.Helper()
+	probeTo(t, e.agent, e.to)
 	e.psp = newPSPReceiver(t, time.Now())
 	e.giveSAs(t)
 	var offer *dp.KeysRequest
@@ -260,7 +261,7 @@ func TestBridgeDrops(t *testing.T) {
 	}
 	sendPSP := func(e *end, pkt []byte) func(t *testing.T) {
 		return func(t *testing.T) {
-			_, err := e.tr.WriteTo(pkt, e.qc.RemoteAddr())
+			_, err := e.tr.WriteTo(pkt, e.to)
 			require.NoError(t, err)
 		}
 	}
@@ -376,7 +377,8 @@ func (c *discardConn) ReadFrom([]byte) (int, net.Addr, error) {
 func (c *discardConn) WriteTo(b []byte, _ net.Addr) (int, error) { return len(b), nil }
 func (c *discardConn) Close() error                              { c.once.Do(func() { close(c.done) }); return nil }
 func (c *discardConn) LocalAddr() net.Addr {
-	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 443}
+	// The members of the mesh tests have this port, as a PSP port.
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 6081}
 }
 func (c *discardConn) SetDeadline(time.Time) error      { return nil }
 func (c *discardConn) SetReadDeadline(time.Time) error  { return nil }
@@ -403,16 +405,16 @@ func localRouterConfig(tb testing.TB, cfg Config) (*Router, func([]byte, net.Add
 	return r, handle
 }
 
-// localSession adds a session at addr with prefix and a Session call in mode.
-// Its datagrams go nowhere.
+// localSession adds a session with the PSP address addr, prefix and a Session
+// call, in the data mode mode. Its datagrams go nowhere.
 func localSession(tb testing.TB, r *Router, name, addr, prefix string, mode dp.Mode) *Session {
 	tb.Helper()
 	ap := netip.MustParseAddrPort(addr)
 	s := newSession(Identity{VPC: vpcA, ID: name}, func() netip.AddrPort { return ap })
 	s.sendDatagram = func([]byte) error { return nil }
-	r.addSession(s, t0)
+	r.addProbed(s, t0)
 	require.NoError(tb, r.AddRoute(s, netip.MustParsePrefix(prefix), "att-"+name))
-	require.NoError(tb, r.openSync(s, mode, ref(vpcA), nil))
+	require.NoError(tb, r.openIn(s, mode, ref(vpcA), nil))
 	return s
 }
 
@@ -446,7 +448,7 @@ func TestDataShards(t *testing.T) {
 	shardOf := func(owner *Session, att string, i uint32) *Session {
 		t.Helper()
 		sh := newSession(owner.id, func() netip.AddrPort { return netip.AddrPort{} })
-		r.addSession(sh, t0)
+		r.addProbed(sh, t0)
 		_, _, err := r.joinShard(sh, att, i)
 		require.NoError(t, err)
 		return sh

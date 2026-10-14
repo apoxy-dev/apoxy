@@ -173,8 +173,8 @@ func (g *rowRig) agent(subject, addr, prefix string) *Session {
 	g.t.Helper()
 	ap := netip.MustParseAddrPort(addr)
 	s := newSession(Identity{VPC: vpcA, ID: subject}, func() netip.AddrPort { return ap })
-	g.r.addSession(s, time.Now())
-	require.NoError(g.t, g.r.openSync(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
+	g.r.addProbed(s, time.Now())
+	require.NoError(g.t, g.r.openIn(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
 	require.NoError(g.t, g.r.attach(s, attachment("att-"+addr, prefix)))
 	return s
 }
@@ -366,7 +366,7 @@ func (g *rowRig) secondAt(keyed bool, addr netip.AddrPort) *rowMember {
 		rows: b.calls.open,
 	}
 	require.True(g.t, g.m.track(b.sess))
-	require.NoError(g.t, g.m.admit(b.sess, "relay-b", nil, &dp.Version{Revision: trunkRevision}, nil))
+	require.NoError(g.t, admitMember(g.m, b.sess, "relay-b", &dp.Version{Revision: trunkRevision}, nil))
 	require.NoError(g.t, g.m.pres.accept(b.sess))
 	g.deliver()
 	if keyed {
@@ -1546,6 +1546,7 @@ apoxy_vpc_relay_dropped_packets_total{reason="mesh_permit"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_too_large"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_unknown_tag"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="not_quic"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="send_queue"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_expired"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_keys"} 1
@@ -1764,8 +1765,8 @@ func TestTrunkRowBetweenRelays(t *testing.T) {
 				t.Cleanup(func() { _ = udp.Close() })
 				ap := netip.MustParseAddrPort(udp.LocalAddr().String())
 				s := newSession(Identity{VPC: vpcA, ID: subject}, func() netip.AddrPort { return ap })
-				n.r.addSession(s, time.Now())
-				require.NoError(t, n.r.openSync(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
+				n.r.addProbed(s, time.Now())
+				require.NoError(t, n.r.openIn(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
 				require.NoError(t, n.r.attach(s, attachment("att-"+prefix, prefix)))
 				return s, udp
 			}

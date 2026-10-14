@@ -44,7 +44,7 @@ func geneve(optWords, n int) []byte {
 	return b
 }
 
-// TestPacketHandler sends packets to the relay socket, and checks that the
+// TestPacketHandler sends packets to the PSP socket, and checks that the
 // relay forwards PSP packets by the SPI rows of the sender and drops the
 // others. Only the read loop of the relay transport calls the handler.
 func TestPacketHandler(t *testing.T) {
@@ -62,6 +62,8 @@ func TestPacketHandler(t *testing.T) {
 	_, err = snd.c.RegisterSPI(ctx, register(vpcA, dst.String(), time.Minute, 7))
 	require.NoError(t, err)
 	sndSession, rcvSession := h.session(t, snd), h.session(t, rcv)
+	probeTo(t, snd, snd.to)
+	probeTo(t, rcv, rcv.to)
 	other, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
 	defer other.Close()
@@ -95,14 +97,14 @@ func TestPacketHandler(t *testing.T) {
 				d := drops()
 				return [2]uint64{d[0] - before[0], d[1] - before[1]}, h.r.UnknownSourceDrops() - source, h.r.MalformedDrops() - bad
 			}
-			_, err := tc.from(tc.pkt, h.ln.Addr())
+			_, err := tc.from(tc.pkt, h.pspAddr)
 			require.NoError(t, err)
 			if tc.wantSent {
 				buf := make([]byte, 1500)
 				n, from, err := rcv.tr.ReadNonQUICPacket(ctx, buf)
 				require.NoError(t, err)
 				assert.Equal(t, tc.pkt, buf[:n])
-				assert.Equal(t, h.ln.Addr().String(), from.String())
+				assert.Equal(t, h.pspAddr.String(), from.String())
 			} else {
 				require.Eventually(t, func() bool {
 					d, s, b := changed()

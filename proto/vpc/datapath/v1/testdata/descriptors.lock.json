@@ -471,15 +471,6 @@
               "typeName": ".apoxy.vpc.datapath.v1.Status",
               "oneofIndex": 0,
               "jsonName": "status"
-            },
-            {
-              "name": "moved",
-              "number": 4,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_MESSAGE",
-              "typeName": ".apoxy.vpc.datapath.v1.Moved",
-              "oneofIndex": 0,
-              "jsonName": "moved"
             }
           ],
           "oneofDecl": [
@@ -630,9 +621,6 @@
               "jsonName": "index"
             }
           ]
-        },
-        {
-          "name": "Moved"
         },
         {
           "name": "Welcome",

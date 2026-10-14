@@ -446,7 +446,7 @@ apoxy alpha vpc connect [VPC] [flags]
       --relays int             Relay sessions to keep, 1 to 3. One carries the traffic. The others are open on other relays and take over when it ends. (default 2)
       --route stringArray      CIDR that this host advertises into the VPC. Repeatable. The VPC is IPv6 only. To reach an IPv4 address behind a netstack host, use that host's VPC /96 with the IPv4 address in the last 32 bits. Plain IPv4 works only between tun hosts whose source address is in a CIDR that they advertise.
       --socks-addr string      SOCKS5 listen address of the netstack driver. Empty disables the proxy. (default "localhost:1080")
-      --transport string       Data transport: auto, psp or quic. Auto uses psp, and quic when the path to the relay drops psp. (default "auto")
+      --transport string       Data transport: auto or quic. Auto starts on quic, and changes to psp when the path to the relay carries psp. (default "auto")
       --tun-ifname string      Name of the TUN device of the tun driver. (default "apoxy0")
 ```
 

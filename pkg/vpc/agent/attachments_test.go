@@ -186,7 +186,7 @@ func TestDetachDialedAttachment(t *testing.T) {
 		name string
 		mode TransportMode
 	}{
-		{name: "PSP", mode: TransportPSP},
+		{name: "PSP", mode: TransportAuto},
 		{name: "QUIC", mode: TransportQUIC},
 	}
 	for _, tc := range cases {

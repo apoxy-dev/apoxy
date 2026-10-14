@@ -62,8 +62,8 @@ func (c *rekeyClient) times() []time.Time {
 	return append([]time.Time(nil), c.calls...)
 }
 
-// TestPSPRetry checks that a session in QUIC mode changes to PSP mode after two probes
-// pass, with the same address and open TCP connection, and stays on QUIC when it fails.
+// TestPSPRetry checks that a session whose first probe failed changes to PSP mode after
+// two probes pass, with the same address and open TCP connection, and stays on QUIC when it fails.
 func TestPSPRetry(t *testing.T) {
 	oldMin, oldMax, oldNext := pspRetryMin, pspRetryMax, pspRetryNext
 	pspRetryMin, pspRetryMax, pspRetryNext = 100*time.Millisecond, 400*time.Millisecond, 300*time.Millisecond
@@ -105,9 +105,10 @@ func TestPSPRetry(t *testing.T) {
 				require.Greater(t, a.binding().DeviceMTU(), psp.QUICMTU)
 				conn.max.Store(int32(tc.path + pspwire.Overhead))
 			}
-			st := a.a.Status()
-			require.Equal(t, dp.Mode_MODE_QUIC, st.Mode)
-			require.Equal(t, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, st.Reason)
+			require.Equal(t, dp.Mode_MODE_QUIC, a.a.Status().Mode)
+			require.Eventually(t, func() bool {
+				return a.a.Status().Reason == dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
+			}, 5*time.Second, 5*time.Millisecond, "the first probe did not fail")
 			serveTCP(t, b.stack, eb.addr, 9000)
 			c := dialTCP(t, a, eb.addr, 9000)
 			roundTrip(t, c, "in QUIC mode")
@@ -184,27 +185,61 @@ func TestPSPRetry(t *testing.T) {
 	}
 }
 
-// TestPSPRetryStart checks which sessions probe PSP again: one in QUIC mode from a
-// failed probe, on a relay that changes the mode of an open session.
-func TestPSPRetryStart(t *testing.T) {
-	timeout := dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
+// TestSessionStart checks the start of a session: QUIC mode with no wait for the PSP
+// probe, then PSP mode after one probe passes, on the same session and address. Only a
+// session in PSP mode sends the probes of pspKeep.
+func TestSessionStart(t *testing.T) {
+	oldMin, oldKeep := pspRetryMin, pspKeep
+	pspRetryMin, pspKeep = time.Minute, 50*time.Millisecond
+	t.Cleanup(func() { pspRetryMin, pspKeep = oldMin, oldKeep })
 	cases := []struct {
-		name    string
-		reason  dp.FallbackReason
-		version *dp.Version // Version of the relay. Nil is a relay from before revisions.
-		want    bool
+		name   string
+		mode   TransportMode
+		drop   bool // The PSP port of the relay drops each packet.
+		want   dp.Mode
+		reason dp.FallbackReason
 	}{
-		{name: "probe failed", reason: timeout, version: &dp.Version{Revision: modeChange}, want: true},
-		{name: "probe failed, later relay", reason: timeout, version: &dp.Version{Revision: modeChange + 1}, want: true},
-		{name: "probe failed, relay below the revision", reason: timeout, version: &dp.Version{Revision: modeChange - 1}},
-		{name: "probe failed, relay from before revisions", reason: timeout},
-		{name: "QUIC mode from the config", reason: dp.FallbackReason_FALLBACK_REASON_CONFIG, version: &dp.Version{Revision: modeChange}},
-		{name: "PSP mode", version: &dp.Version{Revision: modeChange}},
+		{name: "PSP path passes", want: dp.Mode_MODE_PSP},
+		{name: "PSP port drops packets", drop: true, want: dp.Mode_MODE_QUIC, reason: dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT},
+		{name: "QUIC mode in the config", mode: TransportQUIC, want: dp.Mode_MODE_QUIC, reason: dp.FallbackReason_FALLBACK_REASON_CONFIG},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newPSPRetry(&relayConn{reason: tc.reason, version: tc.version})
-			assert.Equal(t, tc.want, r.timer.Stop(), "the timer of the next probe runs")
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			conn := &lossyConn{}
+			conn.limitProbes.Store(tc.drop)
+			a := w.agent(t, "a", r, agentOptions{conn: conn, mode: tc.mode, tcp: true, quicStart: true})
+			b := w.agent(t, "b", r, agentOptions{tcp: true})
+			ea, eb := a.attached(t), b.attached(t)
+			rc := a.current()
+			assert.Less(t, a.a.Status().Setup, probeWait, "the attach waited for the result of the PSP probe")
+			serveTCP(t, b.stack, eb.addr, 9000)
+			c := dialTCP(t, a, eb.addr, 9000)
+			roundTrip(t, c, "after the attach")
+
+			require.Eventually(t, func() bool {
+				st := a.a.Status()
+				return st.Mode == tc.want && st.Reason == tc.reason
+			}, 5*time.Second, 5*time.Millisecond, "data mode and reason")
+			sent := conn.probes.Load()
+			if tc.want == dp.Mode_MODE_PSP {
+				require.Eventually(t, func() bool { return conn.probes.Load() >= sent+3 }, 5*time.Second, 5*time.Millisecond,
+					"a session in PSP mode sent no probes")
+			} else {
+				require.Never(t, func() bool { return conn.probes.Load() > sent }, 6*pspKeep, pspKeep/2,
+					"a session in QUIC mode sent a probe")
+			}
+			if tc.mode == TransportQUIC {
+				assert.Zero(t, sent, "probes of an agent with QUIC mode in its config")
+			}
+			st := a.a.Status()
+			assert.Equal(t, tc.want, st.Mode)
+			assert.Same(t, rc, a.current(), "the agent has the same relay session")
+			assert.Empty(t, a.attach, "the agent attached again")
+			assert.Equal(t, ea.addr, st.Connections[0].Address)
+			assert.Equal(t, rc.claims.GetAttachmentId(), a.a.Attachments()[0].ID)
+			roundTrip(t, c, "at the end")
 		})
 	}
 }

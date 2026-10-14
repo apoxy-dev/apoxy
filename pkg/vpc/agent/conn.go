@@ -68,8 +68,7 @@ type relayConn struct {
 	qc     quic.Connection
 	c      dp.RelayClient
 	st     rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
-	sendMu sync.Mutex     // Guards sends on st after start.
-	local  netip.AddrPort // Local address at the last check. Only tick changes it after the dial.
+	sendMu sync.Mutex // Guards sends on st after start.
 	ep     endpoint
 	addr   string         // Relay address as dialed.
 	name   string         // TLS name of the relay.
@@ -78,25 +77,27 @@ type relayConn struct {
 	// sessions. A visitor session has no attachment: its grant, prefixes and
 	// address are those of home.
 	home *relayConn
-	// data is true when the path of a visitor session carries data: the result
-	// of its path probe.
-	data atomic.Bool
 	// extrasOf is home after the relay took the extra attachments of home in the
 	// visit. An older relay takes none. Guarded by Agent.attMu.
 	extrasOf *relayConn
 
-	relayAddr netip.AddrPort    // Where PSP packets to peers go.
-	version   *dp.Version       // Version of the relay, from Welcome. Nil is revision 0.
-	reflexive netip.AddrPort    // Address of the agent socket as the relay sees it.
-	maxLanes  uint32            // Most lane ports that the relay takes.
-	lanes     atomic.Int32      // Send lanes: the lane ports that the relay took, plus 1.
-	mode      atomic.Int32      // Data mode, a dp.Mode. See dataMode.
-	reason    dp.FallbackReason // Why the session started in QUIC mode.
-	connect   time.Duration     // Time to connect: from the start of the dial to the first Config.
-	rtt       *atomic.Int64     // Smoothed RTT of qc in nanoseconds.
-	probeRTT  atomic.Int64      // Round-trip time of the last path probe with a reply. Zero is none.
-	setup     time.Duration     // See Status.Setup.
-	vpcConfig *dp.Config        // The first Config.
+	relayAddr netip.AddrPort // Where PSP packets, path probes and lane keep-alives go. See pspAddr.
+	version   *dp.Version    // Version of the relay, from Welcome. Nil is revision 0.
+	// seen is the address of the agent socket as the PSP socket of the relay saw it, from
+	// the last probe reply. The relay sends the PSP packets of the session there.
+	seen      atomic.Pointer[netip.AddrPort]
+	maxLanes  uint32        // Most lane ports that the relay takes.
+	lanes     atomic.Int32  // Send lanes: the lane ports that the relay took, plus 1.
+	mode      atomic.Int32  // Data mode, a dp.Mode. See dataMode.
+	reason    atomic.Int32  // Why the session is in QUIC mode, a dp.FallbackReason. See fallback.
+	first     <-chan bool   // Result of the probe that starts after Welcome. Nil for no probe.
+	probeSeq  atomic.Uint64 // Counter of the last path probe packet of the connection.
+	connect   time.Duration // Time to connect: from the start of the dial to the first Config.
+	rtt       *atomic.Int64 // Smoothed RTT of qc in nanoseconds.
+	lowRTT    atomic.Int64  // Lowest RTT of qc in nanoseconds, for the relay choice. Zero is not known.
+	helloRTT  atomic.Int64  // Time from the send of Hello to Welcome in nanoseconds, for the relay choice.
+	setup     time.Duration // See Status.Setup.
+	vpcConfig *dp.Config    // The first Config.
 	ref       *dp.VPCRef
 	mtu       uint32
 	grant     *ownGrant
@@ -120,17 +121,16 @@ type relayConn struct {
 
 	// relay is the relay as a peer of the binding. Packets for QUIC-mode peers
 	// go to it, sealed with the SAs that the relay gives in PSP mode. The
-	// attach sets it. Relay SAs that come before it wait in pendingKeys.
-	keyMu       sync.Mutex
-	relay       *psp.Peer
-	pendingKeys []*dp.KeysRequest
+	// attach sets it.
+	keyMu sync.Mutex
+	relay *psp.Peer
 	// bridgeTx closes when the relay SAs first apply, bridgeRx when the relay first takes
 	// the SAs of this agent. The QUIC pairs of a session in PSP mode wait for both.
 	bridgeTx, bridgeRx chan struct{}
 
 	pc     *peerconn.Conn
 	peerTr *quic.Transport
-	// stopShards stops the QUIC shards of a session that started in QUIC mode.
+	// stopShards stops the QUIC shards of the session. A visitor session has none.
 	stopShards context.CancelFunc
 	// drained gets the alternates of the Drain of the relay. The watcher of the
 	// session reads it.
@@ -140,16 +140,46 @@ type relayConn struct {
 // visitor reports whether rc is a visitor session.
 func (rc *relayConn) visitor() bool { return rc.home != nil }
 
-// dataMode returns the form of the data that rc sends. After the dial, only
-// the change from QUIC mode to PSP mode writes it.
+// dataMode returns the form of the data that rc sends. Each session starts in
+// QUIC mode, and only the change to PSP mode writes it after that.
 func (rc *relayConn) dataMode() dp.Mode { return dp.Mode(rc.mode.Load()) }
 
-// fallback returns why rc is in QUIC mode, and no reason for a session in PSP mode.
+// wantsPSP reports whether rc changes to PSP mode when its PSP path passes.
+func (rc *relayConn) wantsPSP() bool { return rc.a.cfg.TransportMode != TransportQUIC }
+
+// wantedMode returns the mode that Hello tells the relay. The relay only counts it.
+func (rc *relayConn) wantedMode() dp.Mode {
+	if rc.wantsPSP() {
+		return dp.Mode_MODE_PSP
+	}
+	return dp.Mode_MODE_QUIC
+}
+
+// fallback returns why rc is in QUIC mode: its config or a probe that failed. It
+// returns no reason before the first probe result and for a session in PSP mode.
 func (rc *relayConn) fallback() dp.FallbackReason {
 	if rc.dataMode() != dp.Mode_MODE_QUIC {
 		return dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED
 	}
-	return rc.reason
+	return dp.FallbackReason(rc.reason.Load())
+}
+
+// pspAddr returns where the PSP packets, the path probes and the lane
+// keep-alives of a session go: the PSP host of the relay, or dialed, the IP
+// address of the QUIC connection, when the relay gives no host, at its PSP port.
+func pspAddr(w *dp.Welcome, dialed netip.Addr) (netip.AddrPort, error) {
+	port := w.GetPspPort()
+	if port == 0 || port > 65535 {
+		return netip.AddrPort{}, fmt.Errorf("relay PSP port %d is not a port", port)
+	}
+	host := dialed
+	if h := w.GetPspHost(); h != "" {
+		var err error
+		if host, err = netip.ParseAddr(h); err != nil {
+			return netip.AddrPort{}, fmt.Errorf("relay PSP host %q is not an IP address", h)
+		}
+	}
+	return netip.AddrPortFrom(host.Unmap(), uint16(port)), nil
 }
 
 // dialRelay adds a session to the relay at e in the state dialing, and runs it up to
@@ -203,7 +233,7 @@ func (a *Agent) attach(ctx context.Context, rc *relayConn, rank uint32, begin ti
 		return errNoRelay
 	}
 	slog.Info("Attached to the VPC", "relay", rc.addr, "address", rc.self, "prefixes", rc.prefixes, "rank", rank,
-		"transport", transportName(rc.dataMode()), "fallback", rc.reason, "connect", rc.connect, "setup", rc.setup)
+		"transport", transportName(rc.dataMode()), "fallback", rc.fallback(), "connect", rc.connect, "setup", rc.setup)
 	// OnRoutes follows the new session only after its OnAttach.
 	a.deliver()
 	a.usePrimary()
@@ -363,11 +393,10 @@ func (a *Agent) usePrimary() {
 }
 
 // watch follows the attached session rc until it ends. It changes rc to PSP
-// mode when PSP passes again. A new agent cert does not change rc.
+// mode when the PSP path passes. A new agent cert does not change rc.
 func (a *Agent) watch(rc *relayConn) {
 	retry := newPSPRetry(rc)
 	defer retry.timer.Stop()
-	var probed <-chan bool
 	for {
 		select {
 		case <-rc.ctx.Done():
@@ -383,12 +412,9 @@ func (a *Agent) watch(rc *relayConn) {
 		case alts := <-rc.drained:
 			a.drain(rc, alts)
 		case <-retry.timer.C:
-			probed = rc.probe(rc.ctx, a.changeMTU())
-		case ok := <-probed:
-			probed = nil
-			if retry.passed(ok) && a.usePSP(rc) != nil {
-				retry.backoff()
-			}
+			retry.probe()
+		case ok := <-retry.probed:
+			retry.result(ok)
 		}
 	}
 }
@@ -405,10 +431,10 @@ func (a *Agent) usePSP(rc *relayConn) error {
 	ctx, cancel := context.WithTimeout(rc.ctx, keysTimeout)
 	defer cancel()
 	defer context.AfterFunc(rc.qc.Context(), cancel)()
-	// As in the attach, a path that does not carry the device MTU gets the MSS clamp.
-	mtu := a.probeMTU(int(rc.mtu))
+	// A path that does not carry the device MTU gets the MSS clamp.
+	mtu := a.probeMTU()
 	if mtu != 0 && !<-rc.probe(ctx, mtu) {
-		mtu = a.changeMTU()
+		mtu = a.changeMTU(rc)
 	}
 	if err := rc.tradeRelayKeys(ctx); err != nil {
 		if !rc.ended() {
@@ -416,18 +442,23 @@ func (a *Agent) usePSP(rc *relayConn) error {
 		}
 		return err
 	}
-	// The relay has the SAs of this agent and sends PSP. Now this agent sends PSP too.
-	if err := rc.relay.UseQUIC(nil); err != nil {
-		return err
-	}
-	rc.mode.Store(int32(dp.Mode_MODE_PSP))
-	rc.stopShards()
 	if mtu != 0 {
 		a.mu.Lock()
 		a.setClamp(mtu)
 		a.mu.Unlock()
 	}
-	rc.registerLanes(ctx, b)
+	if !rc.visitor() {
+		rc.registerLanes(ctx, b)
+	}
+	// The relay has the SAs of this agent and sends PSP. Now this agent sends PSP too.
+	if err := rc.relay.UseQUIC(nil); err != nil {
+		return err
+	}
+	rc.mode.Store(int32(dp.Mode_MODE_PSP))
+	if !rc.visitor() {
+		rc.stopShards()
+	}
+	go rc.keepPSP()
 	// The peer sessions of QUIC mode send through the relay. The next packet to
 	// a peer opens a session of PSP mode.
 	a.closePeers(func(p *peer) bool { return p.rc == rc }, "relay session changed to PSP mode")
@@ -437,10 +468,37 @@ func (a *Agent) usePSP(rc *relayConn) error {
 
 // changeMTU returns the inner packet size of the probes before the change to PSP
 // mode: the largest packet of QUIC mode, so that each open connection still fits.
-func (a *Agent) changeMTU() int {
+func (a *Agent) changeMTU(rc *relayConn) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return min(a.bind.DeviceMTU(), psp.QUICMTU)
+	return min(a.deviceMTU(int(rc.mtu)), psp.QUICMTU)
+}
+
+// keepPSP sends a path probe at each pspKeep period while rc is open in PSP mode.
+// The probe keeps the NAT mapping of the PSP path and tells the relay a new source
+// port. A probe with no reply changes nothing.
+func (rc *relayConn) keepPSP() {
+	t := time.NewTicker(rc.a.keep)
+	defer t.Stop()
+	seen := rc.seen.Load()
+	for {
+		select {
+		case <-rc.ctx.Done():
+			return
+		case <-rc.qc.Context().Done():
+			return
+		case <-t.C:
+			if !<-rc.probe(rc.ctx, psp.DefaultMTU) {
+				slog.Debug("Path probe of a session in PSP mode got no reply", "relay", rc.addr)
+				continue
+			}
+			// The relay drops the lane ports of a session when its PSP address changes.
+			if now := rc.seen.Load(); *now != *seen {
+				seen = now
+				rc.a.stopLanes(rc)
+			}
+		}
+	}
 }
 
 // tradeRelayKeys gives the relay the receive SAs of this agent with Rekey, which changes
@@ -468,39 +526,48 @@ func refEndpoints(refs []*dp.RelayRef) []endpoint {
 	return eps
 }
 
-// pspRetry probes PSP again, with backoff, for a session that is in QUIC mode
-// because its first probe failed.
+// pspRetry runs the PSP probes of a session in QUIC mode: the probe that starts
+// after Welcome, then probes with backoff. It changes the session to PSP mode.
 type pspRetry struct {
+	rc     *relayConn
 	timer  *time.Timer // Starts the next probe.
+	probed <-chan bool // Result of the probe that runs. Nil for none.
 	wait   time.Duration
 	passes int // Probes in a row that passed.
 }
 
+// newPSPRetry returns the probes of rc. One pass of the first probe is enough. A
+// session with QUIC mode in its config has no probe, so its timer never starts.
 func newPSPRetry(rc *relayConn) *pspRetry {
-	r := &pspRetry{timer: time.NewTimer(pspRetryMin), wait: pspRetryMin}
-	// An older relay does not change the mode of an open session, so no probe runs.
-	if rc.reason != dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT || !rc.relayAtLeast(modeChange) {
-		r.timer.Stop()
-	}
+	r := &pspRetry{rc: rc, timer: time.NewTimer(rc.a.retryMin), probed: rc.first, wait: rc.a.retryMin, passes: pspPasses - 1}
+	r.timer.Stop()
 	return r
 }
 
-// passed takes the result of one probe. It reports true after pspPasses
-// probes in a row passed: then the agent changes the session to PSP mode.
-func (r *pspRetry) passed(ok bool) bool {
-	if !ok {
+// probe starts the next probe.
+func (r *pspRetry) probe() {
+	r.probed = r.rc.probe(r.rc.ctx, r.rc.a.changeMTU(r.rc))
+}
+
+// result takes the result of the probe that ran. After pspPasses probes in a
+// row passed, it changes the session to PSP mode.
+func (r *pspRetry) result(ok bool) {
+	r.probed = nil
+	switch {
+	case !ok:
+		r.rc.reason.Store(int32(dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT))
 		r.backoff()
-		return false
+	case r.passes+1 < pspPasses:
+		r.passes++
+		r.timer.Reset(r.rc.a.retryNext)
+	case r.rc.a.usePSP(r.rc) != nil:
+		r.backoff()
 	}
-	if r.passes++; r.passes < pspPasses {
-		r.timer.Reset(pspRetryNext)
-		return false
-	}
-	return true
 }
 
 // backoff starts again after a probe or a mode change that failed.
 func (r *pspRetry) backoff() {
-	r.passes, r.wait = 0, min(2*r.wait, pspRetryMax)
+	r.passes = 0
 	r.timer.Reset(r.wait)
+	r.wait = min(2*r.wait, r.rc.a.retryMax)
 }

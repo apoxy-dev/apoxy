@@ -6,7 +6,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/netip"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -15,16 +15,8 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 )
 
-const (
-	// probeRate is the most path probes per second that one session gets replies to.
-	probeRate = 10
-	// The relay keeps earlyProbes probes for unknown sessions for earlyProbeAge.
-	// The first probe of an agent comes before the relay adds its session.
-	earlyProbes   = 16
-	earlyProbeAge = time.Second
-	// earlyProbeLen is the largest probe that the relay reads.
-	earlyProbeLen = maxUDP
-)
+// probeRate is the most path probes per second that one session gets replies to.
+const probeRate = 10
 
 // prober answers the path probes of one session.
 type prober struct {
@@ -38,32 +30,6 @@ func newProber(tc tls.ConnectionState) (*prober, error) {
 		return nil, err
 	}
 	return &prober{keys: k, limit: rate.NewLimiter(probeRate, probeRate)}, nil
-}
-
-// earlyProbe is a probe that came before its session.
-type earlyProbe struct {
-	tr   *quic.Transport
-	sid  [8]byte
-	from netip.AddrPort
-	at   time.Time
-	n    int // Zero means a free slot.
-	buf  [earlyProbeLen]byte
-}
-
-// refusal is the session ID and the time of a connection that the relay refused.
-type refusal struct {
-	sid [8]byte
-	at  time.Time
-}
-
-// earlyList keeps the newest early probes, and the newest connections that
-// the relay refused.
-type earlyList struct {
-	mu          sync.Mutex
-	next        int
-	list        [earlyProbes]earlyProbe
-	nextRefused int
-	refused     [earlyProbes]refusal
 }
 
 // addProber runs with r.mu held.
@@ -80,107 +46,72 @@ func (r *Router) removeProber(s *Session) {
 	}
 }
 
-// answerProbe sends a reply of the same size to a path probe that comes from
-// the address of its session. It writes the reply into b. A probe for an
-// unknown session waits for that session. It reports a reply or a wait.
+// answerProbe sends a reply of the same size to a path probe on the PSP
+// socket, when the probe comes from the IP address of the QUIC connection of
+// its session. It writes the reply into b. It reports a reply.
 func (r *Router) answerProbe(tr *quic.Transport, b []byte, from net.Addr) bool {
 	sid, ok := p2p.ProbeSID(b)
 	if !ok {
 		return false
 	}
-	src, now := addrPort(from), time.Now()
-	s, ok := r.prober(sid, src, now)
-	if s == nil {
-		return r.keepEarly(tr, sid, src, b, now)
-	}
-	return ok && s.probe.answer(tr, b, src, from, now)
-}
-
-// prober returns the session of sid, and reports whether src is its address.
-func (r *Router) prober(sid [8]byte, src netip.AddrPort, now time.Time) (*Session, bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	s := r.probes[sid]
-	return s, s != nil && (src == s.addr || (src == s.prev && now.Before(s.prevUntil)))
-}
-
-// answer sends the reply to the probe in b from src to the address to.
-func (p *prober) answer(tr *quic.Transport, b []byte, src netip.AddrPort, to net.Addr, now time.Time) bool {
-	if !p.limit.AllowN(now, 1) {
+	r.mu.RUnlock()
+	src, now := addrPort(from), time.Now()
+	if s == nil || s.remote().Addr() != src.Addr() {
 		return false
 	}
-	pr, err := p2p.OpenProbe(b, &p.keys.Dialer)
-	if err != nil || pr.Reply {
+	pr, ok := s.probe.open(b, now)
+	if !ok {
 		return false
 	}
+	// The agent can call Rekey when it has the reply, so the address comes first.
+	r.learnAddr(s, src, pr.Counter, now)
 	pr.Reply, pr.Seen = true, src
-	_, _ = tr.WriteTo(p2p.AppendProbe(b[:0], pr, len(b), &p.keys.Listener), to)
+	_, _ = tr.WriteTo(p2p.AppendProbe(b[:0], pr, len(b), &s.probe.keys.Listener), from)
 	return true
 }
 
-// keepEarly keeps the probe in b until its session opens. A kept probe that
-// gets no reply counts as malformed when a newer one takes its slot.
-func (r *Router) keepEarly(tr *quic.Transport, sid [8]byte, src netip.AddrPort, b []byte, now time.Time) bool {
-	if len(b) > earlyProbeLen {
-		return false
+// open returns the probe of the agent in b, within the probe rate.
+func (p *prober) open(b []byte, now time.Time) (p2p.Probe, bool) {
+	if !p.limit.AllowN(now, 1) {
+		return p2p.Probe{}, false
 	}
-	l := &r.early
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	// The session can open after the first look. answerEarly runs after it opens.
-	if s, ok := r.prober(sid, src, now); s != nil {
-		return ok && s.probe.answer(tr, b, src, net.UDPAddrFromAddrPort(src), now)
+	pr, err := p2p.OpenProbe(b, &p.keys.Dialer)
+	return pr, err == nil && !pr.Reply
+}
+
+// learnAddr makes src the PSP address of s when the probe has a larger counter
+// than each probe before it. A replay of an old probe thus does not move it.
+func (r *Router) learnAddr(s *Session, src netip.AddrPort, counter uint64, now time.Time) {
+	if !newestProbe(&s.probeCounter, counter) {
+		return
 	}
-	// The probe of a refused connection is not malformed, and gets no slot.
-	for i := range l.refused {
-		if f := &l.refused[i]; f.sid == sid && now.Sub(f.at) <= earlyProbeAge {
+	// Most probes come from the address that the session has: no write lock.
+	r.mu.RLock()
+	same := src == s.addr
+	r.mu.RUnlock()
+	if same {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// A newer probe can pass between the two locks. Only the newest one moves the address.
+	if s.closed || s.shardOf != nil || counter < s.probeCounter.Load() {
+		return
+	}
+	r.setAddr(s, src, now)
+}
+
+// newestProbe raises c to counter. It is false when c is already that large.
+func newestProbe(c *atomic.Uint64, counter uint64) bool {
+	for {
+		old := c.Load()
+		if counter <= old {
+			return false
+		}
+		if c.CompareAndSwap(old, counter) {
 			return true
 		}
 	}
-	e := &l.list[l.next]
-	l.next = (l.next + 1) % earlyProbes
-	if e.n != 0 {
-		r.drops[dropMalformed].Add(1)
-	}
-	e.tr, e.sid, e.from, e.at, e.n = tr, sid, src, now, copy(e.buf[:], b)
-	return true
-}
-
-// answerEarly answers the early probes of s, after AddSession adds s.
-func (r *Router) answerEarly(s *Session) {
-	l := &r.early
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := time.Now()
-	for i := range earlyProbes {
-		e := &l.list[(l.next+i)%earlyProbes] // Oldest first.
-		if e.n == 0 || e.sid != s.probe.keys.SID {
-			continue
-		}
-		n := e.n
-		e.n = 0
-		if _, ok := r.prober(e.sid, e.from, now); !ok || now.Sub(e.at) > earlyProbeAge ||
-			!s.probe.answer(e.tr, e.buf[:n], e.from, net.UDPAddrFromAddrPort(e.from), now) {
-			r.drops[dropMalformed].Add(1)
-		}
-	}
-}
-
-// refuseProbes drops the early probes of a connection that the relay refuses,
-// and remembers it for earlyProbeAge. Its agent sent them before the refusal came.
-func (r *Router) refuseProbes(tc tls.ConnectionState) {
-	k, err := p2p.NewProbeKeys(tc)
-	if err != nil {
-		return
-	}
-	l := &r.early
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for i := range l.list {
-		if e := &l.list[i]; e.sid == k.SID {
-			e.n = 0
-		}
-	}
-	l.refused[l.nextRefused] = refusal{sid: k.SID, at: time.Now()}
-	l.nextRefused = (l.nextRefused + 1) % len(l.refused)
 }

@@ -4,8 +4,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,16 +19,21 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // moveConn sends from the next socket after move, as after a NAT rebinding
-// or a roam. With dataOnly, only PSP packets move, as forged packets do.
+// or a roam. With dataOnly, only PSP packets move, as forged packets do. With
+// pspOnly, the PSP packets and the path probes move, as with a new NAT mapping
+// for the PSP port of the relay only.
 type moveConn struct {
 	net.PacketConn // Socket before the move.
-	next           *net.UDPConn
+	next           net.PacketConn
 	dataOnly       bool
+	pspOnly        bool
 	hide           bool // LocalAddr keeps the first socket, so the agent sees no change.
 	moved          atomic.Bool
+	deadline       atomic.Int64 // Read deadline of readBoth in Unix nanoseconds. Zero is none.
 }
 
 func (c *moveConn) move() {
@@ -46,30 +53,69 @@ func (c *moveConn) reader() net.PacketConn {
 
 func (c *moveConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	for {
+		if c.pspOnly && c.moved.Load() {
+			return c.readBoth(p)
+		}
 		r := c.reader()
 		n, addr, err := r.ReadFrom(p)
-		if err != nil && r != c.reader() {
+		if err != nil && (r != c.reader() || c.pspOnly && c.moved.Load()) {
 			continue
 		}
 		return n, addr, err
 	}
 }
 
+// readBoth reads the next packet of the two sockets: QUIC stays on the first one.
+func (c *moveConn) readBoth(p []byte) (int, net.Addr, error) {
+	for {
+		if d := c.deadline.Load(); d != 0 && time.Now().UnixNano() >= d {
+			return 0, nil, os.ErrDeadlineExceeded
+		}
+		for _, r := range []net.PacketConn{c.next, c.PacketConn} {
+			_ = r.SetReadDeadline(time.Now().Add(time.Millisecond))
+			n, addr, err := r.ReadFrom(p)
+			if err == nil || !errors.Is(err, os.ErrDeadlineExceeded) {
+				return n, addr, err
+			}
+		}
+	}
+}
+
 func (c *moveConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	if c.moved.Load() && (!c.dataOnly || isPSP(p)) {
+	if c.moved.Load() && c.moves(p) {
 		return c.next.WriteTo(p, addr)
 	}
 	return c.PacketConn.WriteTo(p, addr)
 }
 
+// moves reports whether the packet p goes from the next socket after the move.
+func (c *moveConn) moves(p []byte) bool {
+	switch {
+	case c.dataOnly:
+		return isPSP(p)
+	case c.pspOnly:
+		return len(p) > 0 && p[0]&0x40 == 0
+	}
+	return true
+}
+
 func (c *moveConn) LocalAddr() net.Addr {
-	if c.moved.Load() && !c.hide {
+	if c.moved.Load() && !c.hide && !c.pspOnly {
 		return c.next.LocalAddr()
 	}
 	return c.PacketConn.LocalAddr()
 }
 
 func (c *moveConn) SetReadDeadline(t time.Time) error {
+	if c.pspOnly && c.moved.Load() {
+		// readBoth sets the deadlines of the two sockets.
+		var d int64
+		if !t.IsZero() {
+			d = t.UnixNano()
+		}
+		c.deadline.Store(d)
+		return nil
+	}
 	_ = c.next.SetReadDeadline(t)
 	return c.PacketConn.SetReadDeadline(t)
 }
@@ -78,7 +124,7 @@ func (c *moveConn) SetReadDeadline(t time.Time) error {
 func isPSP(p []byte) bool { return len(p) > 0 && p[0]&0x40 == 0 && p[0] != p2p.TypeProbe }
 
 // tapConn keeps the times of the first QUIC packet and the first PSP packet
-// that the relay sends to to.
+// that a relay socket sends to to.
 type tapConn struct {
 	net.PacketConn
 	to        netip.AddrPort
@@ -132,64 +178,59 @@ func firstEcho(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16, i
 	return time.Time{}
 }
 
-// TestMove moves the socket of agent a, and checks when its data to agent b
-// works again. Only the move of the QUIC connection moves the relay rows.
+// TestMove moves the socket of agent a in an open session, and checks when its
+// data to agent b works again in the two directions. Only a path probe from the
+// new source moves the PSP address of the session at the relay.
 func TestMove(t *testing.T) {
+	oldKeep := pspKeep
+	pspKeep = 200 * time.Millisecond
+	t.Cleanup(func() { pspKeep = oldKeep })
+	const within = 3 * time.Second
 	cases := []struct {
-		name     string
-		dataOnly bool
-		hide     bool
-		within   time.Duration // Data works again in this time. Zero means not in 3 s.
+		name                    string
+		dataOnly, pspOnly, hide bool
+		data                    bool // Data works again.
 	}{
-		{"only data moves", true, false, 0},
-		// The next tick sends Moved.
-		{"all move", false, false, 1500 * time.Millisecond},
-		// The QUIC keepalive moves the connection, then the sweep moves the rows.
-		{"unseen rebind", false, true, 9 * time.Second},
+		{name: "only data moves", dataOnly: true},
+		{name: "all move", data: true},
+		{name: "unseen rebind", hide: true, data: true},
+		{name: "new source port to the PSP port only", pspOnly: true, data: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.hide && testing.Short() {
-				t.Skip("waits for the QUIC keepalive")
-			}
 			next := loopback(t)
 			t.Cleanup(func() { _ = next.Close() })
 			tap := &tapConn{PacketConn: loopback(t), to: unmap(next.LocalAddr().(*net.UDPAddr).AddrPort())}
 			w := newWorld(t)
-			r := w.relayOn(t, "relay-1", tap)
+			r := w.relayOn(t, "relay-1", loopback(t), tap)
 			runRouter(t, r)
-			mc := &moveConn{next: next, dataOnly: tc.dataOnly, hide: tc.hide}
-			b := w.agent(t, "b", r, agentOptions{mode: TransportPSP})
-			a := w.agent(t, "a", r, agentOptions{mode: TransportPSP, move: mc})
+			mc := &moveConn{next: next, dataOnly: tc.dataOnly, pspOnly: tc.pspOnly, hide: tc.hide}
+			b := w.agent(t, "b", r, agentOptions{})
+			a := w.agent(t, "a", r, agentOptions{move: mc})
 			ea, eb := a.attached(t), b.attached(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			require.NoError(t, a.a.Connect(ctx, eb.addr))
 			echo(t, b.stack, eb.addr, 7)
 			ping(t, a.stack, ea.addr, eb.addr, 7, "before the move")
-			drops := r.r.UnknownSourceDrops()
-			// With no QUIC packet in flight, quic-go does not move the connection by itself.
-			time.Sleep(1500 * time.Millisecond)
+			rc, drops := a.current(), r.r.UnknownSourceDrops()
 
 			t0 := time.Now()
 			mc.move()
-			if tc.within == 0 {
-				at := firstEcho(t, a.stack, ea.addr, eb.addr, 7, 20*time.Millisecond, 3*time.Second)
+			// An echo is data in the two directions: the relay sends it to the address that it has.
+			at := firstEcho(t, a.stack, ea.addr, eb.addr, 7, 20*time.Millisecond, within)
+			if !tc.data {
 				assert.True(t, at.IsZero(), "data works with only data from the new source")
 				assert.Zero(t, tap.psp.Load(), "relay sent data to the new source")
 				assert.Greater(t, r.r.UnknownSourceDrops(), drops)
 				return
 			}
-			at := firstEcho(t, a.stack, ea.addr, eb.addr, 7, 20*time.Millisecond, tc.within)
-			require.False(t, at.IsZero(), "no data in %v", tc.within)
-			require.NotZero(t, tap.quic.Load(), "relay sent no QUIC packet to the new source")
+			require.False(t, at.IsZero(), "no data in %v", within)
 			require.NotZero(t, tap.psp.Load(), "relay sent no data to the new source")
-			follow := time.Duration(tap.psp.Load() - tap.quic.Load())
-			t.Logf("Data works again %v after the move. The rows followed the path challenge after %v.", at.Sub(t0), follow)
-			if !tc.hide {
-				// Moved starts a watch. The sweep alone takes up to 1 s.
-				assert.Less(t, follow, 300*time.Millisecond, "rows followed the connection late")
-			}
+			t.Logf("Data works again %v after the move.", at.Sub(t0))
+			assert.Same(t, rc, a.current(), "the agent has the same relay session")
+			assert.Empty(t, a.attach, "the agent attached again")
+			assert.Equal(t, dp.Mode_MODE_PSP, a.a.Status().Mode)
 		})
 	}
 }

@@ -44,18 +44,29 @@ func (f *fakeAddr) set(a string) {
 type testSession struct {
 	*Session
 	addr *fakeAddr
+	r    *Router
 }
 
-// addSession adds a session in vpc at addr with the routes.
+// move moves the QUIC connection and the PSP address of s to a at t0, as a
+// newer path probe from a does.
+func (s testSession) move(a string) {
+	s.addr.set(a)
+	s.r.mu.Lock()
+	defer s.r.mu.Unlock()
+	s.r.setAddr(s.Session, netip.MustParseAddrPort(a), t0)
+}
+
+// addSession adds a session in vpc with the routes. Its QUIC connection and
+// its PSP address are at addr.
 func addSession(t *testing.T, r *Router, vpc VPCKey, id, addr string, routes ...string) testSession {
 	t.Helper()
 	fa := &fakeAddr{a: netip.MustParseAddrPort(addr)}
 	s := newSession(Identity{VPC: vpc, ID: id}, fa.get)
-	r.addSession(s, t0)
+	r.addProbed(s, t0)
 	for _, p := range routes {
 		require.NoError(t, r.AddRoute(s, netip.MustParsePrefix(p), "att-"+id))
 	}
-	return testSession{s, fa}
+	return testSession{s, fa, r}
 }
 
 // RemoveRoute removes the entries of s for p. It is only for tests.
@@ -185,7 +196,7 @@ func TestForward(t *testing.T) {
 			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			require.NoError(t, r.registerSPI(snd.Session, register(vpcA, "fd00::2", time.Minute, 1), t0))
 			if tc.move != "" {
-				snd.addr.set(tc.move)
+				snd.move(tc.move)
 				r.Sweep(t0)
 			}
 			dst, v := r.Forward(netip.MustParseAddrPort(tc.src), tc.spi, size, t0.Add(tc.at))
@@ -218,14 +229,14 @@ func TestSourceAfterClose(t *testing.T) {
 			switch tc.other {
 			case "session":
 				other = addSession(t, r, vpcA, "agent", addr, "fd00::1/128").Session
-				require.NoError(t, r.openSync(other, dp.Mode_MODE_PSP, ref(vpcA), nil))
+				require.NoError(t, r.openIn(other, dp.Mode_MODE_PSP, ref(vpcA), nil))
 				require.NoError(t, r.registerSPI(other, register(vpcA, "fd00::2", time.Minute, 1), t0))
 			case "shard dial":
 				other = addSession(t, r, vpcA, "agent", addr).Session
 			}
 			// A newer session from the same socket takes the source, then closes.
 			newer := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(newer, dp.Mode_MODE_PSP, ref(vpcA), nil))
+			require.NoError(t, r.openIn(newer, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.Same(t, newer, r.bySource[netip.MustParseAddrPort(addr)])
 			r.removeSession(newer)
 
@@ -267,10 +278,10 @@ func TestTwinRows(t *testing.T) {
 			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			addSession(t, r, vpcB, "receiver", "192.0.2.4:2000", "fd00::2/128")
 			old := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(old, dp.Mode_MODE_PSP, ref(vpcA), nil))
+			require.NoError(t, r.openIn(old, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.NoError(t, r.registerSPI(old, register(vpcA, "fd00::2", time.Minute, 1), t0))
 			next := addSession(t, r, tc.vpc, tc.agent, addr).Session
-			require.NoError(t, r.openSync(next, dp.Mode_MODE_PSP, ref(tc.vpc), nil))
+			require.NoError(t, r.openIn(next, dp.Mode_MODE_PSP, ref(tc.vpc), nil))
 			require.Same(t, next, r.bySource[netip.MustParseAddrPort(addr)])
 			if tc.agent == "agent" {
 				assert.Equal(t, rpc.AlreadyExists, codeOf(r.registerSPI(next, register(vpcA, "fd00::2", time.Minute, 1), t0)))
@@ -444,7 +455,7 @@ func TestResolvePeer(t *testing.T) {
 			c := addSession(t, r, vpcA, "caller", "192.0.2.1:1000", "fd00::1/128")
 			peer := newSession(Identity{VPC: vpcA, ID: "peer"},
 				func() netip.AddrPort { return netip.MustParseAddrPort("192.0.2.2:2000") })
-			r.addSession(peer, t0)
+			r.addProbed(peer, t0)
 			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("fd00::2/128"), "att"))
 			require.NoError(t, r.AddRoute(peer, netip.MustParsePrefix("10.1.2.0/24"), "att"))
 			r.mu.Lock()
@@ -591,7 +602,7 @@ func TestLiveness(t *testing.T) {
 				if !tc.noTrace {
 					s.live.heard = &heard
 				}
-				r.addSession(s, start)
+				r.addProbed(s, start)
 				require.NoError(t, r.AddRoute(s, netip.MustParsePrefix(prefixA), "x"))
 
 				var got []string

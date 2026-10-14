@@ -373,9 +373,9 @@ func dataSession(t *testing.T, r *Router, id, addr, prefix string, mode dp.Mode)
 	ap := netip.MustParseAddrPort(addr)
 	s := newSession(Identity{VPC: vpcA, ID: id}, func() netip.AddrPort { return ap })
 	s.sendDatagram = func([]byte) error { return nil }
-	r.addSession(s, t0)
+	r.addProbed(s, t0)
 	require.NoError(t, r.attach(s, attachment(id, prefix)))
-	require.NoError(t, r.openSync(s, mode, ref(vpcA), nil))
+	require.NoError(t, r.openIn(s, mode, ref(vpcA), nil))
 	return s
 }
 
@@ -423,7 +423,7 @@ func TestAttachmentStatsData(t *testing.T) {
 			src := dataSession(t, r, "src", "192.0.2.1:1", "fd00:1::/96", dp.Mode_MODE_QUIC)
 			dataSession(t, r, "dst", "192.0.2.2:1", "fd00:2::/96", dp.Mode_MODE_QUIC)
 			shard := newSession(src.id, func() netip.AddrPort { return netip.AddrPort{} })
-			r.addSession(shard, t0)
+			r.addProbed(shard, t0)
 			_, _, err := r.joinShard(shard, "src", 1)
 			require.NoError(t, err)
 			tc.send(t, r, src, shard, make([]byte, maxUDP))

@@ -264,7 +264,7 @@ func (t *trunk) reaches(name string) bool {
 // pairOf returns the pair of the member of s, and makes it if it is new. A
 // member at a new address gets a new pair. t.mu must be held.
 func (t *trunk) pairOf(br *bridge, s *MeshSession) *trunkPair {
-	addr := s.dataAddr()
+	addr := s.psp
 	p := t.pairs[s.name]
 	if p != nil && p.addr == addr {
 		return p
@@ -427,14 +427,15 @@ func (t *trunk) prune(br *bridge, p *trunkPair) {
 }
 
 // opened starts the key exchange and the SPIRows call with the member of the new
-// session s. A member from before the trunk revision gets no call and no packet.
+// session s. A member from before the trunk revision or with no PSP socket
+// gets no call and no packet.
 func (t *trunk) opened(s *MeshSession) {
 	t.endRows(s)
 	br := t.r.bridge.Load()
 	if br == nil {
 		return
 	}
-	if s.Version().GetRevision() < trunkRevision {
+	if s.Version().GetRevision() < trunkRevision || !s.psp.IsValid() {
 		// The member can have a pair from a session at a later revision.
 		t.mu.Lock()
 		if p := t.pairs[s.name]; p != nil {
@@ -727,6 +728,9 @@ func (t *trunk) apply(s *MeshSession, req keys.Request, now time.Time) ([]uint32
 	}
 	if got := s.Version().GetRevision(); got < trunkRevision {
 		return nil, rpc.Errorf(rpc.FailedPrecondition, "revision %d has no trunk", got)
+	}
+	if !s.psp.IsValid() {
+		return nil, rpc.Errorf(rpc.FailedPrecondition, "relay %q gave no PSP port", s.name)
 	}
 	for _, sa := range req.SAs {
 		// A trunk SA has no VNI. The VNI field of its packets has the sender tag.

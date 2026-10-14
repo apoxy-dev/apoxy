@@ -110,6 +110,7 @@ const (
 	dropSendQueue // The forward goroutine of the destination is too slow.
 	dropTrunkMTU  // The packet is too large for the trunk to another relay.
 	dropTrunkKeys // The relay has no trunk to another relay now, or no SA of it for a clear packet.
+	dropNotQUIC   // A packet on the QUIC socket that is not QUIC.
 	dropData      // The relay opened a data frame or a PSP packet of an agent and did not send it on.
 	// The reasons below are for a peer frame to or from a mesh member.
 	dropMeshNoSession  // The member of the destination has no open mesh session.
@@ -146,6 +147,7 @@ var dropLabels = [numDropReasons]string{
 	dropSendQueue:      "send_queue",
 	dropTrunkMTU:       "trunk_mtu",
 	dropTrunkKeys:      "trunk_keys",
+	dropNotQUIC:        "not_quic",
 	dropData:           "data",
 	dropMeshNoSession:  "mesh_no_session",
 	dropMeshOldMember:  "mesh_old_member",

@@ -77,8 +77,8 @@ func (g *rowRig) bridgeEnd(mode dp.Mode, name, socket string, prefixes ...string
 		e.frames = append(e.frames, slices.Clone(b))
 		return nil
 	}
-	g.r.addSession(e.s, time.Now())
-	require.NoError(g.t, g.r.openSync(e.s, mode, ref(vpcA), nil))
+	g.r.addProbed(e.s, time.Now())
+	require.NoError(g.t, g.r.openIn(e.s, mode, ref(vpcA), nil))
 	require.NoError(g.t, g.r.attach(e.s, attachment("att-"+name, prefixes...)))
 	if mode == dp.Mode_MODE_PSP {
 		offer, err := g.r.offer(e.s, Network{ID: testVNI, MTU: 1280}, time.Now())
@@ -314,13 +314,13 @@ func TestTrunkBridgeSend(t *testing.T) {
 				case tc.spare:
 					// The sessions of a subject send from the routes of the subject.
 					spare := &bridgeEnd{s: newSession(from.s.id, func() netip.AddrPort { return netip.MustParseAddrPort("192.0.2.23:1") })}
-					g.r.addSession(spare.s, time.Now())
-					require.NoError(t, g.r.openSync(spare.s, dp.Mode_MODE_QUIC, ref(vpcA), nil))
+					g.r.addProbed(spare.s, time.Now())
+					require.NoError(t, g.r.openIn(spare.s, dp.Mode_MODE_QUIC, ref(vpcA), nil))
 					in, from = spare, spare
 				case tc.shard:
 					// A frame on a shard counts as the session of its attachment.
 					in = &bridgeEnd{s: newSession(from.s.id, func() netip.AddrPort { return netip.AddrPort{} })}
-					g.r.addSession(in.s, time.Now())
+					g.r.addProbed(in.s, time.Now())
 					_, _, err := g.r.joinShard(in.s, "att-q", 1)
 					require.NoError(t, err)
 				}
@@ -532,7 +532,7 @@ func TestTrunkBridgeDeliver(t *testing.T) {
 			name: "agent with no Session call",
 			setup: func(_ *testing.T, g *rowRig, _, _ *bridgeEnd) {
 				s := newSession(Identity{VPC: vpcA, ID: agentID(vpcA, "idle")}, func() netip.AddrPort { return netip.MustParseAddrPort("192.0.2.25:1") })
-				g.r.addSession(s, time.Now())
+				g.r.addProbed(s, time.Now())
 				require.NoError(g.t, g.r.attach(s, attachment("att-idle", "fd00:25::/96")))
 			},
 			dst: "fd00:25::1", drop: "trunk_not_sent",
@@ -762,7 +762,7 @@ func TestTrunkBridgeShards(t *testing.T) {
 		count(q.s)
 		for _, i := range []uint32{1, 3} {
 			sh := newSession(q.s.id, func() netip.AddrPort { return netip.AddrPort{} })
-			g.r.addSession(sh, time.Now())
+			g.r.addProbed(sh, time.Now())
 			_, _, err := g.r.joinShard(sh, "att-q", i)
 			require.NoError(t, err)
 			count(sh)
@@ -951,8 +951,8 @@ func newRelayEnd(t *testing.T, n *trunkNode, mode dp.Mode, name, prefix string) 
 		e.frames <- slices.Clone(b)
 		return nil
 	}
-	n.r.addSession(e.s, time.Now())
-	require.NoError(t, n.r.openSync(e.s, mode, ref(vpcA), nil))
+	n.r.addProbed(e.s, time.Now())
+	require.NoError(t, n.r.openIn(e.s, mode, ref(vpcA), nil))
 	require.NoError(t, n.r.attach(e.s, attachment("att-"+name, prefix)))
 	if mode == dp.Mode_MODE_PSP {
 		offer, err := n.r.offer(e.s, Network{ID: testVNI, MTU: 1280}, time.Now())

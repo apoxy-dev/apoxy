@@ -136,13 +136,14 @@ func newCutNode(t *testing.T, ca *testCA, name string) *meshNode {
 	return newNode(t, ca, name, true)
 }
 
+// newNode returns a node with one socket, which a test with a router also
+// uses as the PSP socket.
 func newNode(t *testing.T, ca *testCA, name string, cut bool) *meshNode {
 	t.Helper()
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
+	sock := loopbackUDP(t)
 	n := &meshNode{
 		name:      name,
-		addr:      netip.MustParseAddrPort(udp.LocalAddr().String()),
+		addr:      addrPort(sock.LocalAddr()),
 		changes:   make(chan MeshChange, 256),
 		sessions:  make(chan *MeshSession, 256),
 		datagrams: make(chan string, 256),
@@ -157,13 +158,14 @@ func newNode(t *testing.T, ca *testCA, name string, cut bool) *meshNode {
 			return ca.verifyName(chain, name, from)
 		},
 	}
-	var pc net.PacketConn = udp
+	var pc net.PacketConn = sock
 	if cut {
-		c := &cutConn{PacketConn: udp}
+		c := &cutConn{PacketConn: sock}
 		n.cut, pc = &c.cut, c
 	}
-	n.m, err = NewMesh(name, cfg)
+	m, err := NewMesh(name, cfg)
 	require.NoError(t, err)
+	n.m = m
 	n.m.OnChange(func(c MeshChange) { n.changes <- c })
 	n.m.OnSession(func(s *MeshSession) { n.sessions <- s })
 	n.m.OnDatagram(func(s *MeshSession, b []byte) { n.datagrams <- s.Name() + ":" + string(b) })
@@ -180,7 +182,6 @@ func newNode(t *testing.T, ca *testCA, name string, cut bool) *meshNode {
 		n.cancel()
 		n.wg.Wait()
 		_ = n.tr.Close()
-		_ = udp.Close()
 	})
 	return n
 }
@@ -461,10 +462,8 @@ func TestMeshOneSession(t *testing.T) {
 // rawDial dials the mesh of n with cert, as a relay that is not in the test.
 func (n *meshNode) rawDial(t *testing.T, cert tls.Certificate) quic.Connection {
 	t.Helper()
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
-	tr := &quic.Transport{Conn: udp}
-	t.Cleanup(func() { _ = tr.Close(); _ = udp.Close() })
+	tr := &quic.Transport{Conn: loopbackUDP(t)}
+	t.Cleanup(func() { _ = tr.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	conf := meshTLS(cert)
@@ -1134,7 +1133,7 @@ func TestMeshDownTime(t *testing.T) {
 						conn = newStubConn()
 						sess := m.newSession(conn, false)
 						require.True(t, m.track(sess))
-						require.NoError(t, m.admit(sess, "relay-a", nil, m.ver, nil))
+						require.NoError(t, admitMember(m, sess, "relay-a", m.ver, nil))
 					case "lose":
 						conn.cancel(&quic.IdleTimeoutError{})
 					case "restart":
@@ -1200,8 +1199,8 @@ func TestMeshStop(t *testing.T) {
 			agent := func(n *trunkNode, subject, addr, prefix string) *Session {
 				ap := netip.MustParseAddrPort(addr)
 				s := newSession(Identity{VPC: vpcA, ID: subject}, func() netip.AddrPort { return ap })
-				n.r.addSession(s, time.Now())
-				require.NoError(t, n.r.openSync(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
+				n.r.addProbed(s, time.Now())
+				require.NoError(t, n.r.openIn(s, dp.Mode_MODE_PSP, ref(vpcA), nil))
 				require.NoError(t, n.r.attach(s, attachment("att-"+prefix, prefix)))
 				return s
 			}
@@ -1377,7 +1376,7 @@ func TestMeshAlternates(t *testing.T) {
 					conn := newStubConn()
 					sess := m.newSession(conn, false)
 					require.True(t, m.track(sess))
-					require.NoError(t, m.admit(sess, name, nil, m.ver, ref))
+					require.NoError(t, admitMember(m, sess, name, m.ver, ref))
 					return conn
 				}
 				for _, mem := range tc.members {

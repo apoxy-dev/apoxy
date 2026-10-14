@@ -31,7 +31,7 @@ func TestProbe(t *testing.T) {
 		size    int
 		wantLen int
 	}{
-		{"request", Probe{SID: testKeys.SID, TxID: [12]byte{9}, Round: 2}, 1320, 1320},
+		{"request", Probe{SID: testKeys.SID, TxID: [12]byte{9}, Round: 2, Counter: 1<<40 + 7}, 1320, 1320},
 		{"largest", Probe{SID: testKeys.SID, Round: 1}, 1452, 1452},
 		{"reply IPv4", Probe{Reply: true, SID: testKeys.SID, Seen: netip.MustParseAddrPort("192.0.2.1:4500")}, 1320, 1320},
 		{"reply IPv6", Probe{Reply: true, SID: testKeys.SID, Seen: netip.MustParseAddrPort("[2001:db8::1]:443")}, 200, 200},
@@ -69,7 +69,7 @@ func TestOpenProbeErrors(t *testing.T) {
 		{"cut short", good[:len(good)-1]},
 		{"too short", good[:MinProbeLen-1]},
 		{"not a probe", edit(func(b []byte) []byte { b[0] = 0x04; return b })},
-		{"unknown version", edit(func(b []byte) []byte { b[1] = 2; return b })},
+		{"old version", edit(func(b []byte) []byte { b[1] = 1; return b })},
 		{"empty", nil},
 	}
 	for _, tc := range cases {

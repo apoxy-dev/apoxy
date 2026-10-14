@@ -126,12 +126,12 @@ func TestPeerOnOtherRelay(t *testing.T) {
 		// and false when each agent has SAs of the other agent.
 		bridge bool
 	}{
-		{name: "PSP to PSP", a: TransportPSP, b: TransportPSP},
-		{name: "PSP to PSP, both agents dial", a: TransportPSP, b: TransportPSP, both: true},
+		{name: "PSP to PSP", a: TransportAuto, b: TransportAuto},
+		{name: "PSP to PSP, both agents dial", a: TransportAuto, b: TransportAuto, both: true},
 		{name: "QUIC to QUIC", a: TransportQUIC, b: TransportQUIC, bridge: true},
 		{name: "QUIC to QUIC, both agents dial", a: TransportQUIC, b: TransportQUIC, both: true, bridge: true},
-		{name: "PSP to QUIC", a: TransportPSP, b: TransportQUIC, bridge: true},
-		{name: "QUIC to PSP", a: TransportQUIC, b: TransportPSP, bridge: true},
+		{name: "PSP to QUIC", a: TransportAuto, b: TransportQUIC, bridge: true},
+		{name: "QUIC to PSP", a: TransportQUIC, b: TransportAuto, bridge: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,7 +246,7 @@ func TestFirstPacketOnOtherRelay(t *testing.T) {
 	cases := []struct {
 		name string
 		mode TransportMode
-	}{{"PSP", TransportPSP}, {"QUIC", TransportQUIC}}
+	}{{"PSP", TransportAuto}, {"QUIC", TransportQUIC}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, r1, r2 := meshRelays(t)
@@ -279,7 +279,7 @@ func TestPeerAfterMoveToOtherRelay(t *testing.T) {
 	cases := []struct {
 		name string
 		mode TransportMode
-	}{{"PSP", TransportPSP}, {"QUIC", TransportQUIC}}
+	}{{"PSP", TransportAuto}, {"QUIC", TransportQUIC}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, r1, r2 := meshRelays(t)
@@ -327,8 +327,8 @@ func TestPeerAfterDrain(t *testing.T) {
 		mode  TransportMode
 		third bool // b is on the relay that a does not move to.
 	}{
-		{name: "PSP, peer on the new relay", mode: TransportPSP},
-		{name: "PSP, peer on a third relay", mode: TransportPSP, third: true},
+		{name: "PSP, peer on the new relay", mode: TransportAuto},
+		{name: "PSP, peer on a third relay", mode: TransportAuto, third: true},
 		{name: "QUIC, peer on the new relay", mode: TransportQUIC},
 		{name: "QUIC, peer on a third relay", mode: TransportQUIC, third: true},
 	}

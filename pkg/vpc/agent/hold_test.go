@@ -217,7 +217,7 @@ func TestFirstPacket(t *testing.T) {
 	cases := []struct {
 		name string
 		mode TransportMode
-	}{{"PSP", TransportPSP}, {"QUIC", TransportQUIC}}
+	}{{"PSP", TransportAuto}, {"QUIC", TransportQUIC}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)

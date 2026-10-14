@@ -56,20 +56,6 @@ func (r *laneRelay) calls() [][]uint32 {
 	return append([][]uint32(nil), r.lanes...)
 }
 
-// sessionStream records the messages that the agent sends on its Session call.
-type sessionStream struct {
-	rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
-	mu   sync.Mutex
-	sent int
-}
-
-func (s *sessionStream) Send(*dp.SessionRequest) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sent++
-	return nil
-}
-
 // setTxLanes makes registerLanes see n queues on the link to the relay.
 func setTxLanes(t *testing.T, n int) {
 	old := txLanes
@@ -87,17 +73,17 @@ func TestRegisterLanes(t *testing.T) {
 		name      string
 		maxLanes  uint32
 		queues    int
-		reflexive func(local netip.AddrPort) netip.AddrPort // Nil means local.
+		seen      func(local netip.AddrPort) netip.AddrPort // Address that the relay sees. Nil means local.
 		err       error
 		wantPorts int // Ports of the call. -1 means no call.
 		wantLanes uint32
 	}{
 		{name: "relay takes the lane ports", maxLanes: 15, queues: 4, wantPorts: 3, wantLanes: 4},
 		{name: "relay limit below the queues", maxLanes: 2, queues: 8, wantPorts: 2, wantLanes: 3},
-		{name: "address translation with the same port", maxLanes: 15, queues: 4, reflexive: natIP, wantPorts: 3, wantLanes: 4},
+		{name: "address translation with the same port", maxLanes: 15, queues: 4, seen: natIP, wantPorts: 3, wantLanes: 4},
 		{name: "relay takes no lane ports", maxLanes: 0, queues: 4, wantPorts: -1, wantLanes: 1},
 		{name: "one queue", maxLanes: 15, queues: 1, wantPorts: -1, wantLanes: 1},
-		{name: "port translation", maxLanes: 15, queues: 4, reflexive: natPort, wantPorts: -1, wantLanes: 1},
+		{name: "port translation", maxLanes: 15, queues: 4, seen: natPort, wantPorts: -1, wantLanes: 1},
 		{name: "relay refuses", maxLanes: 15, queues: 4, err: rpc.Errorf(rpc.AlreadyExists, "taken"), wantPorts: 3, wantLanes: 1},
 	}
 	for _, tc := range cases {
@@ -111,11 +97,11 @@ func TestRegisterLanes(t *testing.T) {
 			require.NoError(t, err)
 			defer ka.Close()
 			rc.relayAddr = ka.LocalAddr().(*net.UDPAddr).AddrPort()
-			rc.local = rc.localAddr()
-			rc.reflexive = rc.local
-			if tc.reflexive != nil {
-				rc.reflexive = tc.reflexive(rc.local)
+			seen := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), a.localPort())
+			if tc.seen != nil {
+				seen = tc.seen(seen)
 			}
+			rc.seen.Store(&seen)
 
 			rc.registerLanes(context.Background(), a.bind)
 			assert.Equal(t, tc.wantLanes, rc.sendLanes())
@@ -213,40 +199,22 @@ func TestPeerLanes(t *testing.T) {
 	}
 }
 
-// TestMovedLanes checks that a move of the agent stops the lane sockets of its
-// peers and removes the lane ports at the relay.
-func TestMovedLanes(t *testing.T) {
+// TestStopLanes checks that the peers of a session send from one socket after
+// the relay saw a new address of the agent.
+func TestStopLanes(t *testing.T) {
 	w := newWorld(t)
 	cert := w.relayCA.relayCert(t, "relay-1")
-	cases := []struct {
-		name      string
-		lanes     int32
-		wantCalls int
-	}{
-		{"lanes", 4, 1},
-		{"no lanes", 1, 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, lanes := range []int32{4, 1} {
+		t.Run(fmt.Sprintf("%d lanes", lanes), func(t *testing.T) {
 			a := w.stubAgent(t, "a")
-			r, st := &laneRelay{}, &sessionStream{}
-			a.primary().c, a.primary().st = r, st
-			a.primary().lanes.Store(tc.lanes)
+			a.primary().lanes.Store(lanes)
 			p, _ := stubPeer(a, "b", false)
 			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 4))
-			require.Equal(t, int(tc.lanes)-1, p.bp.SendLane(int(tc.lanes)-1))
+			require.Equal(t, int(lanes)-1, p.bp.SendLane(int(lanes)-1))
 
-			a.checkMoved()
+			a.stopLanes(a.primary())
 			assert.Equal(t, uint32(1), a.primary().sendLanes())
-			assert.Equal(t, 0, p.bp.SendLane(int(tc.lanes)-1))
-			require.Eventually(t, func() bool {
-				st.mu.Lock()
-				defer st.mu.Unlock()
-				return st.sent == 1 && len(r.calls()) == tc.wantCalls
-			}, 5*time.Second, 10*time.Millisecond, "Moved and the lane port removal")
-			for _, c := range r.calls() {
-				assert.Empty(t, c)
-			}
+			assert.Equal(t, 0, p.bp.SendLane(int(lanes)-1))
 		})
 	}
 }
@@ -269,8 +237,8 @@ func TestLanes(t *testing.T) {
 			w := newWorld(t)
 			w.relayCfg = relay.Config{LaneSources: tc.relayLanes}
 			r := w.relay(t, "relay-1")
-			a := w.agent(t, "a", r, agentOptions{mode: TransportPSP})
-			b := w.agent(t, "b", r, agentOptions{mode: TransportPSP})
+			a := w.agent(t, "a", r, agentOptions{mode: TransportAuto})
+			b := w.agent(t, "b", r, agentOptions{mode: TransportAuto})
 			ea, eb := a.attached(t), b.attached(t)
 			assert.Equal(t, tc.wantLanes, a.current().sendLanes())
 			assert.Equal(t, tc.wantLanes, b.current().sendLanes())

@@ -136,12 +136,12 @@ func (g *visitRig) sessionOf(mode dp.Mode, subject, socket string, h *dp.Hello) 
 		e.frames = append(e.frames, slices.Clone(b))
 		return nil
 	}
-	g.r.addSession(e.s, time.Now())
+	g.r.addProbed(e.s, time.Now())
 	if h == nil {
 		return e
 	}
 	require.NoError(g.t, g.r.checkRevision(e.s, h.GetVersion()))
-	require.NoError(g.t, g.r.openSync(e.s, mode, ref(vpcA), h))
+	require.NoError(g.t, g.r.openIn(e.s, mode, ref(vpcA), h))
 	if mode == dp.Mode_MODE_PSP {
 		offer, err := g.r.offer(e.s, Network{ID: testVNI, MTU: 1280}, time.Now())
 		require.NoError(g.t, err)

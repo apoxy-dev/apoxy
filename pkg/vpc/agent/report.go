@@ -124,12 +124,13 @@ func (a *Agent) traceLoss(context.Context, logging.Perspective, quic.ConnectionI
 }
 
 // traceSession is traceLoss for a relay session. It also keeps the smoothed
-// RTT of the session in rtt.
-func (a *Agent) traceSession(rtt *atomic.Int64) func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer {
+// RTT of the session in rtt and its lowest RTT in low.
+func (a *Agent) traceSession(rtt, low *atomic.Int64) func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer {
 	return func(ctx context.Context, p logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
 		t := a.traceLoss(ctx, p, id)
 		t.UpdatedMetrics = func(s *logging.RTTStats, _, _ logging.ByteCount, _ int) {
 			rtt.Store(int64(s.SmoothedRTT()))
+			low.Store(int64(s.MinRTT()))
 		}
 		return t
 	}

@@ -26,7 +26,7 @@ const (
 // syncState is what the relay still has to send to the agent on Sync.
 type syncState struct {
 	open   bool           // A Session call runs.
-	mode   dp.Mode        // From Hello. A Rekey call changes QUIC to PSP.
+	mode   dp.Mode        // QUIC at Hello. A Rekey call changes it to PSP.
 	hello  dp.Mode        // The mode of Hello, for the metrics.
 	ref    *dp.VPCRef     // VPC of the session, with the network ID.
 	routes map[route]bool // Route changes: true adds, false removes.
@@ -213,9 +213,11 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 		s.close(dp.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, msg)
 	}()
 	if err := st.Send(&dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{
-		ReflexiveAddress: srv.R.Addr(s).String(),
+		ReflexiveAddress: s.remote().String(),
 		MaxLanes:         uint32(srv.R.cfg.LaneSources),
 		Version:          srv.R.ver,
+		// The host stays empty: the agent sends to the host that it dialed.
+		PspPort: srv.R.pspPort(),
 	}}}); err != nil {
 		return err
 	}
@@ -226,16 +228,6 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 		DnsSearchDomains: n.DNSSearchDomains,
 	}}}); err != nil {
 		return err
-	}
-	if mode == dp.Mode_MODE_PSP {
-		m, err := srv.R.offer(s, n, time.Now())
-		if err != nil {
-			slog.Warn("Failed to give relay SAs to an agent", "agent", s.id.ID, "error", err)
-		} else if m != nil {
-			if err := st.Send(m); err != nil {
-				return err
-			}
-		}
 	}
 
 	recvDone := make(chan error, 1)
@@ -281,7 +273,8 @@ func (r *Router) startSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.H
 	if s.sync.open {
 		return 0, rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
 	}
-	s.sync.open, s.sync.mode, s.sync.hello, s.sync.ref = true, mode, mode, ref
+	// Each session starts in QUIC mode. Only a Rekey call changes it to PSP mode.
+	s.sync.open, s.sync.mode, s.sync.hello, s.sync.ref = true, dp.Mode_MODE_QUIC, mode, ref
 	s.name, s.instance = hello.GetName(), hello.GetInstance()
 	s.sync.meshRoutes = s.version.GetRevision() >= meshRoutesRevision && !hello.GetLocalRoutesOnly()
 	d := r.domain(s.id.VPC)
@@ -319,8 +312,6 @@ func (r *Router) recvSync(s *Session, st rpc.BidiStreamServer[dp.SessionRequest,
 				r.reportConnect(s, d.AsDuration())
 			}
 			r.ReportStatus(s, m.Status)
-		case *dp.SessionRequest_Moved:
-			r.watchAddr(s)
 		case nil:
 			slog.Debug("Ignoring an unknown message on a Session call", "agent", s.id.ID)
 		default:

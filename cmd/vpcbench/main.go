@@ -124,7 +124,7 @@ func main() {
 
 // options are the flags of all commands.
 type options struct {
-	Listen, Relay, Server, WorkDir string
+	Listen, PSPListen, Relay, Server, WorkDir string
 	// Mesh is the name of the relay in the mesh. Join is the control address of
 	// the relay whose mesh and CA the relay takes.
 	Mesh, Join string
@@ -165,6 +165,7 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.StringVar(&o.Listen, "listen", "", "relay: UDP and TCP control address; server: TCP control address, and UDP with -via direct")
 	}
 	if cmd == "relay" {
+		fs.StringVar(&o.PSPListen, "psp-listen", "", "UDP address of the PSP socket, which the agents get from the relay (default: the IP address of -listen with port 1000)")
 		fs.StringVar(&o.XDP, "xdp", "", "link on which XDP forwards the PSP packets; the relay CPU then includes the program run time (empty: the socket forwards them)")
 		fs.StringVar(&o.XDPMode, "xdp-mode", "generic", "XDP attach mode: generic, or driver, which uses generic mode when the driver refuses the program")
 		fs.DurationVar(&o.XDPHop, "xdp-hop", 0, "time that the XDP program keeps the next hop of a row (0: a route lookup for each packet)")
@@ -178,7 +179,7 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.StringVar(&o.Driver, "driver", "netstack", "data path driver: netstack or tun")
 		fs.StringVar(&o.Transport, "transport", "psp", "data transport through the relay: psp or quic")
 		fs.StringVar(&o.Via, "via", "relay", "data path: relay, or direct with no relay and no agent")
-		fs.DurationVar(&o.StartTimeout, "start-timeout", 30*time.Second, "time limit of each wait for the relay, the server, an attach or a peer session")
+		fs.DurationVar(&o.StartTimeout, "start-timeout", 30*time.Second, "time limit of each wait for the relay, the server, an attach, PSP mode or a peer session")
 	}
 	if cmd == "client" {
 		fs.StringVar(&o.Server, "server", "", "server control address host:port")
@@ -312,7 +313,7 @@ func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, na
 		_ = tr.Close()
 		_ = uc.Close()
 	}}}
-	mode := agent.TransportPSP
+	mode := agent.TransportAuto
 	if o.Transport == "quic" {
 		mode = agent.TransportQUIC
 	}
@@ -362,11 +363,35 @@ func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, na
 		s.close()
 		return nil, fmt.Errorf("agent %s did not attach in %s", name, o.StartTimeout)
 	}
+	if o.Transport == "psp" {
+		if err := waitPSP(ctx, s.a, name, o.StartTimeout); err != nil {
+			s.close()
+			return nil, err
+		}
+	}
 	if err := s.startNet(ctx, fail, o, tunnet.NetworkPrefixOf(s.addr)); err != nil {
 		s.close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// waitPSP waits until the relay session of a is in PSP mode. Each session starts in
+// QUIC mode, so a run with -transport psp must not start before the change.
+func waitPSP(ctx context.Context, a *agent.Agent, name string, limit time.Duration) error {
+	t := time.NewTicker(10 * time.Millisecond)
+	defer t.Stop()
+	end := time.After(limit)
+	for a.Status().Mode != dp.Mode_MODE_PSP {
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		case <-end:
+			return fmt.Errorf("agent %s did not change to PSP mode in %s: the path to the PSP port of the relay carries no PSP", name, limit)
+		case <-t.C:
+		}
+	}
+	return nil
 }
 
 // listenUDPFor opens an agent socket in the address family of addr.

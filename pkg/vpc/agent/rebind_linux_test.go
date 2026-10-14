@@ -67,6 +67,9 @@ func roam(t *testing.T, noRoute time.Duration) {
 		oneWay   = 10 * time.Millisecond // Delay on each link end. The RTT to the relay is 2*oneWay.
 		interval = 2 * time.Millisecond  // Time between the packets of agent a.
 	)
+	oldKeep := pspKeep
+	pspKeep = 200 * time.Millisecond
+	t.Cleanup(func() { pspKeep = oldKeep })
 	relayNS := newNetns(t)
 	agentNS, err := vnetns.Get()
 	require.NoError(t, err)
@@ -85,18 +88,16 @@ func roam(t *testing.T, noRoute time.Duration) {
 	newAddr := netip.AddrPortFrom(netip.MustParseAddr("10.98.0.2"), uint16(udp.LocalAddr().(*net.UDPAddr).Port))
 	tap := &tapConn{PacketConn: listenIn(t, relayNS, relayIP), to: newAddr}
 	w := newWorld(t)
-	r := w.relayOn(t, "relay-1", tap)
+	r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP), tap)
 	runRouter(t, r)
-	b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), mode: TransportPSP})
-	a := w.agent(t, "a", r, agentOptions{udp: udp, mode: TransportPSP})
+	b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), mode: TransportAuto})
+	a := w.agent(t, "a", r, agentOptions{udp: udp, mode: TransportAuto})
 	ea, eb := a.attached(t), b.attached(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	require.NoError(t, a.a.Connect(ctx, eb.addr))
 	echo(t, b.stack, eb.addr, 7)
 	ping(t, a.stack, ea.addr, eb.addr, 7, "before the move")
-	// With no QUIC packet in flight, the first QUIC packet on the new path is Moved.
-	time.Sleep(1500 * time.Millisecond)
 
 	a.a.mu.Lock()
 	rc := a.a.primaryLocked()
@@ -146,18 +147,11 @@ func roam(t *testing.T, noRoute time.Duration) {
 		assert.Less(t, at.Sub(tr), 2*time.Second)
 		return
 	}
-	require.NotZero(t, tap.quic.Load(), "relay sent no QUIC packet to the new address")
 	require.NotZero(t, tap.psp.Load(), "relay sent no data to the new address")
-	// The relay sends a PATH_CHALLENGE to the new path first. It moves the
-	// connection when the response comes back, one RTT later.
-	rtt := 2 * oneWay
-	challenge := time.Unix(0, tap.quic.Load()).Sub(t0)
-	migrated, rows, data := challenge+rtt, time.Unix(0, tap.psp.Load()).Sub(t0), at.Sub(t0)
-	t.Logf("Roam: challenge %v, connection moved %v, relay data to the new address %v, data works %v after the move (%v after the connection moved)",
-		challenge, migrated, rows, data, data-migrated)
+	rows, data := time.Unix(0, tap.psp.Load()).Sub(t0), at.Sub(t0)
+	t.Logf("Roam: relay data to the new address %v, data works %v after the move", rows, data)
+	// The next path probe gives the relay the new address.
 	assert.Less(t, data, 1500*time.Millisecond)
-	// Moved starts a watch. The sweep alone takes up to 1 s.
-	assert.LessOrEqual(t, data-migrated, 200*time.Millisecond, "data works late after the move")
 }
 
 // delay adds netem with delay d to the link name.

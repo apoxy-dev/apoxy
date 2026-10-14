@@ -117,7 +117,6 @@ func (srv *Server) leave() {
 // removes it. A host that shares its listener calls it for apoxy-vpc/2.
 func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
 	if !srv.enter() {
-		srv.R.refuseProbes(qc.ConnectionState().TLS)
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), "relay is draining")
 		return
 	}

@@ -31,6 +31,7 @@ type trunkNode struct {
 	*meshNode
 	r    *Router
 	conn *cutConn
+	psp  *quic.Transport // PSP socket of a node from newTwoSocketNode.
 }
 
 func newTrunkNode(t *testing.T, ca *testCA, name string) *trunkNode {
@@ -669,7 +670,7 @@ func (g *trunkRig) open(rev uint32) *MeshSession {
 	g.m.mu.Lock()
 	g.m.members["relay-a"].Addr = g.addr
 	g.m.mu.Unlock()
-	require.NoError(g.t, g.m.admit(s, "relay-a", nil, &dp.Version{Revision: rev}, g.ref))
+	require.NoError(g.t, admitMember(g.m, s, "relay-a", &dp.Version{Revision: rev}, g.ref))
 	return s
 }
 

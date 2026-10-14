@@ -210,7 +210,7 @@ func TestXDPSync(t *testing.T) {
 		{
 			name: "sender migrates",
 			run: func(_ *testing.T, e env) {
-				e.snd.addr.set(moved)
+				e.snd.move(moved)
 				e.r.Sweep(t0)
 			},
 			want: map[string]string{snd + "/1": rcv, snd + "/2": rcv, moved + "/1": rcv, moved + "/2": rcv},
@@ -218,7 +218,7 @@ func TestXDPSync(t *testing.T) {
 		{
 			name: "old sender address ends",
 			run: func(_ *testing.T, e env) {
-				e.snd.addr.set(moved)
+				e.snd.move(moved)
 				e.r.Sweep(t0)
 				e.r.Sweep(t0.Add(rebindOverlap + time.Second))
 			},
@@ -228,7 +228,7 @@ func TestXDPSync(t *testing.T) {
 		{
 			name: "receiver migrates",
 			run: func(_ *testing.T, e env) {
-				e.rcv.addr.set(moved)
+				e.rcv.move(moved)
 				e.r.Sweep(t0)
 			},
 			want: map[string]string{snd + "/1": moved, snd + "/2": moved},
@@ -236,7 +236,7 @@ func TestXDPSync(t *testing.T) {
 		{
 			name: "receiver of the other family",
 			run: func(_ *testing.T, e env) {
-				e.rcv.addr.set("[2001:db8::2]:2000")
+				e.rcv.move("[2001:db8::2]:2000")
 				e.r.Sweep(t0)
 			},
 			want: map[string]string{},
@@ -276,7 +276,7 @@ func TestXDPSync(t *testing.T) {
 			name: "failed update leaves no row",
 			run: func(_ *testing.T, e env) {
 				e.f.putErr = errors.New("update failed")
-				e.rcv.addr.set(moved)
+				e.rcv.move(moved)
 				e.r.Sweep(t0)
 			},
 			want: map[string]string{},
@@ -285,7 +285,7 @@ func TestXDPSync(t *testing.T) {
 			name: "update works again",
 			run: func(_ *testing.T, e env) {
 				e.f.putErr = errors.New("update failed")
-				e.rcv.addr.set(moved)
+				e.rcv.move(moved)
 				e.r.Sweep(t0)
 				e.f.putErr = nil
 				e.r.Sweep(t0)
@@ -334,10 +334,10 @@ func TestXDPSyncTwin(t *testing.T) {
 			r.setXDP(f, t0)
 			addSession(t, r, vpcA, "receiver", "192.0.2.2:2000", "fd00::2/128")
 			old := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(old, dp.Mode_MODE_PSP, ref(vpcA), nil))
+			require.NoError(t, r.openIn(old, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.NoError(t, r.registerSPI(old, register(vpcA, "fd00::2", time.Minute, 1), t0))
 			next := addSession(t, r, vpcA, "agent", addr).Session
-			require.NoError(t, r.openSync(next, dp.Mode_MODE_PSP, ref(vpcA), nil))
+			require.NoError(t, r.openIn(next, dp.Mode_MODE_PSP, ref(vpcA), nil))
 			require.NoError(t, r.registerSPI(next, register(vpcA, "fd00::2", time.Minute, 2), t0))
 			if tc.local {
 				local := newSession(Identity{}, func() netip.AddrPort { return netip.AddrPort{} })
@@ -399,7 +399,7 @@ func TestXDPExpiry(t *testing.T) {
 	assert.Equal(t, t0.Add(time.Minute), f.rows[key("192.0.2.1:1000", 1)].expires)
 
 	// The old address of a sender ends at the end of the overlap.
-	snd.addr.set("198.51.100.1:3000")
+	snd.move("198.51.100.1:3000")
 	r.Sweep(t0)
 	assert.Equal(t, t0.Add(rebindOverlap), f.rows[key("192.0.2.1:1000", 1)].expires)
 	assert.Equal(t, t0.Add(time.Minute), f.rows[key("198.51.100.1:3000", 1)].expires)
@@ -509,6 +509,7 @@ apoxy_vpc_relay_dropped_packets_total{reason="mesh_permit"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_too_large"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_unknown_tag"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="not_quic"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="send_queue"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_expired"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_keys"} 0

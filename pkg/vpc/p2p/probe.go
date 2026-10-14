@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package p2p has the path probe of VPC agents. An agent sends probes on the UDP socket of
+// Package p2p has the path probe of VPC agents. An agent sends probes from the UDP socket of
 // its QUIC sessions, and the receiver sends back a reply of the same size.
 package p2p
 
@@ -25,11 +25,11 @@ const TypeKeepalive = 0x03
 const (
 	// probeVersion must have a bit in its low 6 bits. A relay port also has the XDP
 	// filter of Geneve tunnels, and that bit keeps the probes out of it.
-	probeVersion = 1
+	probeVersion = 2
 	flagReply    = 1
 	tagLen       = 16
-	// Type, version, flags, a zero byte, SID, TxID, Round and Seen.
-	hdrLen = 4 + 8 + 12 + 4 + 18
+	// Type, version, flags, a zero byte, SID, TxID, Round, Counter and Seen.
+	hdrLen = 4 + 8 + 12 + 4 + 8 + 18
 	// MinProbeLen is the length of a probe with no padding.
 	MinProbeLen = hdrLen + tagLen
 )
@@ -44,7 +44,10 @@ type Probe struct {
 	SID   [8]byte  // From ProbeKeys.
 	TxID  [12]byte // Random ID of one probe run.
 	Round uint32
-	Seen  netip.AddrPort // In a reply: the source address of the probe.
+	// Counter grows with each probe that an agent sends to its relay with one
+	// set of keys. The relay takes a new PSP address only from a larger one.
+	Counter uint64
+	Seen    netip.AddrPort // In a reply: the source address of the probe.
 }
 
 // ProbeKeys are the probe keys of one QUIC connection. Both ends get the same keys.
@@ -88,9 +91,10 @@ func AppendProbe(b []byte, p Probe, size int, key *[32]byte) []byte {
 	copy(out[4:12], p.SID[:])
 	copy(out[12:24], p.TxID[:])
 	binary.BigEndian.PutUint32(out[24:28], p.Round)
+	binary.BigEndian.PutUint64(out[28:36], p.Counter)
 	a := p.Seen.Addr().As16()
-	copy(out[28:44], a[:])
-	binary.BigEndian.PutUint16(out[44:hdrLen], p.Seen.Port())
+	copy(out[36:52], a[:])
+	binary.BigEndian.PutUint16(out[52:hdrLen], p.Seen.Port())
 	clear(out[hdrLen : size-tagLen])
 	tag(out[size-tagLen:], out[:size-tagLen], key)
 	return b
@@ -117,13 +121,14 @@ func OpenProbe(b []byte, key *[32]byte) (Probe, error) {
 		return Probe{}, ErrProbe
 	}
 	p := Probe{
-		Reply: b[2]&flagReply != 0,
-		SID:   sid,
-		TxID:  [12]byte(b[12:24]),
-		Round: binary.BigEndian.Uint32(b[24:28]),
+		Reply:   b[2]&flagReply != 0,
+		SID:     sid,
+		TxID:    [12]byte(b[12:24]),
+		Round:   binary.BigEndian.Uint32(b[24:28]),
+		Counter: binary.BigEndian.Uint64(b[28:36]),
 	}
 	if p.Reply {
-		p.Seen = netip.AddrPortFrom(netip.AddrFrom16([16]byte(b[28:44])).Unmap(), binary.BigEndian.Uint16(b[44:hdrLen]))
+		p.Seen = netip.AddrPortFrom(netip.AddrFrom16([16]byte(b[36:52])).Unmap(), binary.BigEndian.Uint16(b[52:hdrLen]))
 	}
 	return p, nil
 }

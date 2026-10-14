@@ -329,14 +329,15 @@ func (a *Agent) choiceWait(rc *relayConn) time.Duration {
 	return min(max(rttRounds*rtt, a.rttWaitMin), a.rttWaitMax)
 }
 
-// choiceRTT returns the round-trip time of rc for the choice: the lower of the
-// QUIC time and the path probe time. One late packet raises only one of them.
+// choiceRTT returns the round-trip time of rc for the choice: the lower known
+// time of the lowest QUIC time and the time from Hello to Welcome. After a late
+// start of the path, QUIC can have no sample of the Hello exchange at the choice.
 func (rc *relayConn) choiceRTT() time.Duration {
-	rtt, probe := time.Duration(rc.rtt.Load()), time.Duration(rc.probeRTT.Load())
-	if probe > 0 && (rtt <= 0 || probe < rtt) {
-		return probe
+	low, hello := time.Duration(rc.lowRTT.Load()), time.Duration(rc.helloRTT.Load())
+	if low <= 0 || hello > 0 && hello < low {
+		return hello
 	}
-	return rtt
+	return low
 }
 
 // rank returns the sessions in conns that are not nil, in the order of the

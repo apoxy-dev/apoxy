@@ -31,8 +31,8 @@ const (
 // RelayClient is the client API of the Relay service.
 type RelayClient interface {
 	// Session starts with Hello and Welcome, then carries Sync. The relay sends
-	// routes, NoRoute, key changes, config and drain. The agent sends Ack, Status
-	// and Moved.
+	// routes, NoRoute, key changes, config and drain. The agent sends Ack and
+	// Status.
 	Session(ctx context.Context) (rpc.BidiStreamClient[SessionRequest, SessionResponse], error)
 	// Attach adds an attachment to the session.
 	Attach(ctx context.Context, in *AttachRequest) (*AttachResponse, error)
@@ -143,8 +143,8 @@ func (c relayClient) Grant(ctx context.Context, in *GrantRequest) (*GrantRespons
 // RelayServer is the server API of the Relay service.
 type RelayServer interface {
 	// Session starts with Hello and Welcome, then carries Sync. The relay sends
-	// routes, NoRoute, key changes, config and drain. The agent sends Ack, Status
-	// and Moved.
+	// routes, NoRoute, key changes, config and drain. The agent sends Ack and
+	// Status.
 	Session(context.Context, rpc.BidiStreamServer[SessionRequest, SessionResponse]) error
 	// Attach adds an attachment to the session.
 	Attach(context.Context, *AttachRequest) (*AttachResponse, error)

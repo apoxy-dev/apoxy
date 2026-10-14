@@ -547,7 +547,7 @@ func TestLoopback(t *testing.T) {
 			var relays []string
 			for i := range tc.relays {
 				ro := o
-				ro.Listen = "127.0.0.1:0"
+				ro.Listen, ro.PSPListen = "127.0.0.1:0", "127.0.0.1:0"
 				if tc.relays > 1 {
 					ro.Mesh = fmt.Sprintf("relay-%d", i+1)
 				}

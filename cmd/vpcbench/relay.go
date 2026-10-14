@@ -28,7 +28,7 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// relaySockBuf is the socket buffer size of the relay socket, as in the relay.
+// relaySockBuf is the socket buffer size of the PSP socket, as in the relay.
 const relaySockBuf = 16 << 20
 
 // runRelay serves relay sessions of one VPC with the vpctest fakes until ctx
@@ -38,20 +38,19 @@ const relaySockBuf = 16 << 20
 // a mesh session.
 func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error {
 	start := time.Now()
-	ua, err := net.ResolveUDPAddr("udp", o.Listen)
-	if err != nil {
-		return err
-	}
-	uc, err := net.ListenUDP("udp", ua)
+	uc, err := listenUDP(o.Listen)
 	if err != nil {
 		return err
 	}
 	defer uc.Close()
-	if err := errors.Join(uc.SetReadBuffer(relaySockBuf), uc.SetWriteBuffer(relaySockBuf)); err != nil {
-		slog.Warn("Failed to set the relay socket buffers", "bytes", relaySockBuf, "error", err)
-	}
 	addr := uc.LocalAddr().(*net.UDPAddr).AddrPort()
-	slog.Info("Relay socket is ready", "address", addr, "rcvbuf", sockRcvbuf(uc))
+	pc, err := listenPSP(o, addr)
+	if err != nil {
+		return err
+	}
+	defer pc.Close()
+	pspAddr := pc.LocalAddr().(*net.UDPAddr).AddrPort()
+	slog.Info("Relay sockets are ready", "address", addr, "psp_address", pspAddr, "rcvbuf", sockRcvbuf(pc))
 
 	// The relay of -join has its control port only after the join, so its agents
 	// get the CA of the two relays.
@@ -82,7 +81,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	xdpCPU := func() float64 { return 0 }
 	var xdpMode string
 	if o.XDP != "" {
-		x, mode, err := r.StartXDP(relay.XDPConfig{Port: addr.Port(), Iface: o.XDP, Generic: o.XDPMode != "driver", NextHopCache: o.XDPHop})
+		x, mode, err := r.StartXDP(relay.XDPConfig{Port: pspAddr.Port(), Iface: o.XDP, Generic: o.XDPMode != "driver", NextHopCache: o.XDPHop})
 		if err != nil {
 			return err
 		}
@@ -96,10 +95,15 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 		xdpCPU, xdpMode = sec, mode
 	}
 	// The kernel joins the datagrams of a socket with UDP GRO before generic
-	// XDP runs, so the relay socket has no GRO with XDP in generic mode.
-	tr := &quic.Transport{Conn: uc, EnableGRO: xdpMode != "generic"}
+	// XDP runs, so the PSP socket has no GRO with XDP in generic mode.
+	psp := &quic.Transport{Conn: pc, EnableGRO: xdpMode != "generic"}
+	defer psp.Close()
+	psp.NonQUICPacketHandler, psp.NonQUICBatchEnd = r.PacketHandler(ctx, psp)
+	if err := psp.Start(); err != nil {
+		return err
+	}
+	tr := &quic.Transport{Conn: uc, NonQUICPacketHandler: r.QUICSocketHandler()}
 	defer tr.Close()
-	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(ctx, tr)
 	tlsConf, quicConf := r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), tunnel.RelayQUICConfig()
 	var mesh *relay.Mesh
 	if o.Mesh != "" {
@@ -174,7 +178,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 				xdpS := xdpCPU()
 				m := mark{
 					Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds() + xdpS, HostCPU: bench.HostCPUSeconds(),
-					Drops: drops, DropReasons: reasons, SockDrops: sockDrops(uc),
+					Drops: drops, DropReasons: reasons, SockDrops: sockDrops(pc),
 					XDPPackets: xdp, XDPPassed: passed, XDPSeconds: xdpS, XDPMode: xdpMode,
 					Sends: r.ForwardStats(), CPUs: bench.PerCPU(),
 				}
@@ -201,6 +205,35 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 		return nil
 	}
 	return err
+}
+
+// defaultPSPPort is the PSP port of a relay with no -psp-listen.
+const defaultPSPPort = 1000
+
+// listenPSP opens the PSP socket of the relay: at -psp-listen, or at the IP
+// address of the QUIC socket with the default PSP port.
+func listenPSP(o options, quicAddr netip.AddrPort) (*net.UDPConn, error) {
+	addr := o.PSPListen
+	if addr == "" {
+		addr = netip.AddrPortFrom(quicAddr.Addr(), defaultPSPPort).String()
+	}
+	pc, err := listenUDP(addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := errors.Join(pc.SetReadBuffer(relaySockBuf), pc.SetWriteBuffer(relaySockBuf)); err != nil {
+		slog.Warn("Failed to set the PSP socket buffers", "bytes", relaySockBuf, "error", err)
+	}
+	return pc, nil
+}
+
+// listenUDP opens the UDP socket of a relay at addr.
+func listenUDP(addr string) (*net.UDPConn, error) {
+	ua, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return net.ListenUDP("udp", ua)
 }
 
 // serveMesh gives the connections of the other relays to mesh and the

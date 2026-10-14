@@ -4,15 +4,20 @@ package agent
 
 import (
 	"context"
+	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// TestPathMTU checks the device MTU and the MSS clamp that the path probes
-// set. The agent socket drops packets above a size in each session.
+// TestPathMTU checks the device MTU, and the MSS clamp that the path probe at the
+// change to PSP mode sets. The agent socket drops packets above a size in each session.
 func TestPathMTU(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -25,11 +30,11 @@ func TestPathMTU(t *testing.T) {
 		{"default MTU", 0, 0, []int32{1400}, 1280, []int{0}},
 		{"probe passes", 1360, 0, []int32{0}, 1360, []int{0}},
 		{"largest MTU", 1412, 0, []int32{0}, 1412, []int{0}},
-		{"probe fails", 1372, 0, []int32{1400}, 1280, []int{0}},
+		{"probe fails", 1372, 0, []int32{1400}, 1372, []int{psp.QUICMTU}},
 		{"override", 1372, 1300, []int32{1400}, 1300, []int{0}},
 		{"override above the VPC MTU", 1300, 1372, []int32{0}, 1300, []int{0}},
-		{"later probes fail and pass", 1372, 0, []int32{0, 1400, 0}, 1372, []int{0, 1280, 0}},
-		{"first probe fails", 1372, 0, []int32{1400, 0}, 1280, []int{0, 0}},
+		{"later probes fail and pass", 1372, 0, []int32{0, 1400, 0}, 1372, []int{0, psp.QUICMTU, 0}},
+		{"first probe fails", 1372, 0, []int32{1400, 0}, 1372, []int{psp.QUICMTU, 0}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,8 +58,8 @@ func TestPathMTU(t *testing.T) {
 	}
 }
 
-// TestProbeRefusedSession starts an agent in auto mode whose relay refuses each
-// connection. The agent must send only one path probe for each connection.
+// TestProbeRefusedSession starts an agent whose relay refuses each connection.
+// The agent must send at most one path probe for each connection.
 func TestProbeRefusedSession(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -69,10 +74,42 @@ func TestProbeRefusedSession(t *testing.T) {
 			r := w.relay(t, "relay-1")
 			tc.refuse(t, w, r)
 			conn := &lossyConn{}
-			w.agent(t, "a", r, agentOptions{conn: conn})
+			a := w.agent(t, "a", r, agentOptions{conn: conn, quicStart: true})
 			// The agent dials again after each refusal, with a new session ID.
-			require.Eventually(t, func() bool { return len(conn.probeRuns()) >= 2 }, 10*time.Second, 10*time.Millisecond)
-			assert.Equal(t, 1, conn.probeRuns()[0].n, "path probes of the first connection")
+			require.Never(t, func() bool {
+				return slices.ContainsFunc(conn.probeRuns(), func(r probeRun) bool { return r.n > 1 })
+			}, 3*time.Second, 20*time.Millisecond, "path probes of one connection")
+			assert.Empty(t, a.attach, "the agent attached")
+		})
+	}
+}
+
+// TestPSPAddr checks where an agent sends the PSP packets of a session.
+func TestPSPAddr(t *testing.T) {
+	dialed := netip.MustParseAddr("192.0.2.1")
+	cases := []struct {
+		name string
+		host string
+		port uint32
+		want string // Empty means that the dial fails.
+	}{
+		{name: "empty host is the dialed host", port: 1000, want: "192.0.2.1:1000"},
+		{name: "set host", host: "198.51.100.7", port: 1001, want: "198.51.100.7:1001"},
+		{name: "set IPv6 host", host: "2001:db8::7", port: 1001, want: "[2001:db8::7]:1001"},
+		{name: "host that is not an IP address", host: "relay.example.net", port: 1000},
+		{name: "port 0", host: "198.51.100.7"},
+		{name: "port 0 with an empty host"},
+		{name: "port above the range", port: 65536},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := pspAddr(&dp.Welcome{PspHost: tc.host, PspPort: tc.port}, dialed)
+			if tc.want == "" {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got.String())
 		})
 	}
 }

@@ -66,7 +66,7 @@ func TestTunnelLimit(t *testing.T) {
 			require.NoError(t, r.registerSPI(src, register(vpcA, dstIP.String(), time.Minute, 7), t0))
 			require.NoError(t, r.attach(src, &Attachment{ID: "att-src"}))
 			shard := newSession(src.id, func() netip.AddrPort { return netip.AddrPort{} })
-			r.addSession(shard, t0)
+			r.addProbed(shard, t0)
 			_, _, err := r.joinShard(shard, "att-src", 1)
 			require.NoError(t, err)
 
@@ -127,6 +127,7 @@ apoxy_vpc_relay_dropped_packets_total{reason="mesh_permit"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_source"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_too_large"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="mesh_unknown_tag"} 0
+apoxy_vpc_relay_dropped_packets_total{reason="not_quic"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="send_queue"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_expired"} 0
 apoxy_vpc_relay_dropped_packets_total{reason="trunk_keys"} 0

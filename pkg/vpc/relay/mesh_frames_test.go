@@ -575,7 +575,7 @@ func TestMeshPeerFrameSend(t *testing.T) {
 				from := w.sess["server"]
 				if tc.shard {
 					from = newSession(from.id, func() netip.AddrPort { return netip.AddrPort{} })
-					w.r.addSession(from, t0)
+					w.r.addProbed(from, t0)
 					_, _, err := w.r.joinShard(from, "s", 1)
 					require.NoError(t, err)
 				}

@@ -21,11 +21,14 @@ import (
 )
 
 // ecnProxy forwards UDP between agents and a relay, with one socket to the
-// relay for each agent. It reads the ECN bits of each packet that it gets.
+// relay for each agent. Its two front sockets stand for the QUIC socket and the
+// PSP socket of the relay. It reads the ECN bits of each packet that it gets.
 type ecnProxy struct {
-	t     *testing.T
-	front *net.UDPConn
-	relay netip.AddrPort
+	t        *testing.T
+	front    *net.UDPConn // For the QUIC socket of the relay.
+	pspFront *net.UDPConn // For the PSP socket of the relay, at its port number.
+	quic     netip.AddrPort
+	psp      netip.AddrPort
 
 	mu    sync.Mutex
 	backs map[netip.AddrPort]*net.UDPConn
@@ -38,28 +41,60 @@ type ecnCount struct {
 	noTOS   int // Packets with no IP_TOS control message.
 }
 
-func newECNProxy(t *testing.T, relayAddr string) *ecnProxy {
+func newECNProxy(t *testing.T, quicAddr, pspAddr net.Addr, pspFront *net.UDPConn) *ecnProxy {
 	px := &ecnProxy{
-		t:     t,
-		front: recvTOS(t, loopback(t)),
-		relay: netip.MustParseAddrPort(relayAddr),
-		backs: map[netip.AddrPort]*net.UDPConn{},
-		seen:  map[string]*ecnCount{},
+		t:        t,
+		front:    recvTOS(t, loopback(t)),
+		pspFront: recvTOS(t, pspFront),
+		quic:     netip.MustParseAddrPort(quicAddr.String()),
+		psp:      netip.MustParseAddrPort(pspAddr.String()),
+		backs:    map[netip.AddrPort]*net.UDPConn{},
+		seen:     map[string]*ecnCount{},
 	}
 	t.Cleanup(func() {
 		_ = px.front.Close()
+		_ = px.pspFront.Close()
 		px.mu.Lock()
 		defer px.mu.Unlock()
 		for _, c := range px.backs {
 			_ = c.Close()
 		}
 	})
-	go px.serve(px.front, "agent", func(b []byte, from netip.AddrPort) {
-		if back := px.back(from); back != nil {
-			_, _ = back.WriteToUDPAddrPort(b, px.relay)
-		}
-	})
+	go px.serve(px.front, "agent", px.toRelay(px.quic))
+	go px.serve(px.pspFront, "agent", px.toRelay(px.psp))
 	return px
+}
+
+// toRelay returns a forward of the packets of an agent to the relay socket to.
+func (px *ecnProxy) toRelay(to netip.AddrPort) func([]byte, netip.AddrPort) {
+	return func(b []byte, from netip.AddrPort) {
+		if back := px.back(from); back != nil {
+			_, _ = back.WriteToUDPAddrPort(b, to)
+		}
+	}
+}
+
+// relaySockets returns a QUIC socket and a PSP socket for a relay at 127.0.0.2,
+// and a socket at 127.0.0.1 with the port of the PSP socket. An agent that dials
+// the proxy at 127.0.0.1 sends its PSP packets to that socket.
+func relaySockets(t *testing.T) (quicSock, pspSock, pspFront *net.UDPConn) {
+	t.Helper()
+	at := func(ip byte, port int) (*net.UDPConn, error) {
+		return net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, ip), Port: port})
+	}
+	quicSock, err := at(2, 0)
+	require.NoError(t, err)
+	// Another socket can have the port at 127.0.0.1, so try some ports.
+	for range 50 {
+		pspSock, err = at(2, 0)
+		require.NoError(t, err)
+		if pspFront, err = at(1, pspSock.LocalAddr().(*net.UDPAddr).Port); err == nil {
+			return quicSock, pspSock, pspFront
+		}
+		_ = pspSock.Close()
+	}
+	require.NoError(t, err, "no free port at the two addresses")
+	return nil, nil, nil
 }
 
 func (px *ecnProxy) addr() string { return px.front.LocalAddr().String() }
@@ -77,7 +112,13 @@ func (px *ecnProxy) back(from netip.AddrPort) *net.UDPConn {
 		return nil
 	}
 	px.backs[from] = recvTOS(px.t, c)
-	go px.serve(c, "relay", func(b []byte, _ netip.AddrPort) { _, _ = px.front.WriteToUDPAddrPort(b, from) })
+	go px.serve(c, "relay", func(b []byte, relay netip.AddrPort) {
+		out := px.front
+		if relay == px.psp {
+			out = px.pspFront
+		}
+		_, _ = out.WriteToUDPAddrPort(b, from)
+	})
 	return c
 }
 
@@ -159,12 +200,13 @@ func tosOf(oob []byte) (byte, bool) {
 // agents and the relay must send all packets as Not-ECT.
 func TestNotECT(t *testing.T) {
 	w := newWorld(t)
-	r := w.relay(t, "relay-1")
-	px := newECNProxy(t, r.addr)
+	quicSock, pspSock, pspFront := relaySockets(t)
+	px := newECNProxy(t, quicSock.LocalAddr(), pspSock.LocalAddr(), pspFront)
+	r := w.relayOn(t, "relay-1", quicSock, pspSock)
 	relays := []identity.Relay{{ID: r.id, Addresses: []string{px.addr()}}}
-	a := w.agent(t, "a", r, agentOptions{mode: TransportPSP, relays: relays})
+	a := w.agent(t, "a", r, agentOptions{mode: TransportAuto, relays: relays})
 	b := w.agent(t, "b", r, agentOptions{mode: TransportQUIC, relays: relays})
-	c := w.agent(t, "c", r, agentOptions{mode: TransportPSP, relays: relays})
+	c := w.agent(t, "c", r, agentOptions{mode: TransportAuto, relays: relays})
 	ea, eb, ec := a.attached(t), b.attached(t), c.attached(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

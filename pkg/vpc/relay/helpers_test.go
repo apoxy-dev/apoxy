@@ -20,17 +20,21 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/apoxy-dev/softpsp/keys"
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp/keyproto"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -277,7 +281,8 @@ func (f *fakeAddresses) count() int {
 	return len(f.assigned)
 }
 
-// harness is a relay that serves relay sessions on loopback QUIC.
+// harness is a relay that serves relay sessions on a loopback QUIC socket,
+// with a PSP socket.
 type harness struct {
 	srv        *Server
 	r          *Router
@@ -286,7 +291,9 @@ type harness struct {
 	addrs      *fakeAddresses
 	relayRoots *x509.CertPool // Roots of the relay cert.
 	ln         *quic.Listener
-	tr         *quic.Transport
+	tr         *quic.Transport // QUIC socket.
+	psp        *quic.Transport // PSP socket.
+	pspAddr    net.Addr
 	mux        *rpc.Mux
 }
 
@@ -361,14 +368,18 @@ func newHarness(t *testing.T, ca *testCA, opts ...func(*Router)) *harness {
 	require.NoError(t, err)
 	// The relay keeps the RTT of each session and sends the keep-alive of the
 	// liveness check, as a relay host does.
-	tr := &quic.Transport{Conn: udp, ConnContext: TraceContext}
-	tr.NonQUICPacketHandler, tr.NonQUICBatchEnd = r.PacketHandler(t.Context(), tr)
+	tr := &quic.Transport{Conn: udp, ConnContext: TraceContext, NonQUICPacketHandler: r.QUICSocketHandler()}
+	pspUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	psp := &quic.Transport{Conn: pspUDP}
+	psp.NonQUICPacketHandler, psp.NonQUICBatchEnd = r.PacketHandler(t.Context(), psp)
+	require.NoError(t, psp.Start())
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}),
 		&quic.Config{EnableDatagrams: true, Tracer: TraceRTT, KeepAlivePeriod: AgentKeepAlive})
 	require.NoError(t, err)
 	h := &harness{
 		r: r, trust: trust, nets: &fakeNetworks{}, addrs: &fakeAddresses{},
-		relayRoots: roots, ln: ln, tr: tr, mux: rpc.NewMux(),
+		relayRoots: roots, ln: ln, tr: tr, psp: psp, pspAddr: pspUDP.LocalAddr(), mux: rpc.NewMux(),
 	}
 	h.srv = &Server{
 		R: r, Networks: h.nets, Addresses: h.addrs, RelayID: "relay-1",
@@ -383,6 +394,7 @@ func newHarness(t *testing.T, ca *testCA, opts ...func(*Router)) *harness {
 		_ = ln.Close()
 		wg.Wait()
 		_ = tr.Close()
+		_ = psp.Close()
 	})
 	return h
 }
@@ -394,6 +406,7 @@ type agent struct {
 	qc  quic.Connection
 	tr  *quic.Transport
 	src netip.AddrPort // Source address as the relay sees it.
+	to  net.Addr       // PSP socket of the relay.
 }
 
 // dial connects an agent with cert on ALPN alpn (the relay ALPN if empty).
@@ -424,7 +437,7 @@ func (h *harness) dial(t *testing.T, cert tls.Certificate, alpn ...string) (agen
 		return agent{}, err
 	}
 	t.Cleanup(func() { _ = qc.CloseWithError(0, "") })
-	return agent{c: dp.NewRelayClient(rpc.NewConn(qc, nil)), qc: qc, tr: tr, src: netip.MustParseAddrPort(udp.LocalAddr().String())}, nil
+	return agent{c: dp.NewRelayClient(rpc.NewConn(qc, nil)), qc: qc, tr: tr, src: netip.MustParseAddrPort(udp.LocalAddr().String()), to: h.pspAddr}, nil
 }
 
 func (h *harness) mustDial(t *testing.T, cert tls.Certificate) agent {
@@ -457,25 +470,101 @@ func (h *harness) session(t *testing.T, a agent) *Session {
 	require.Eventually(t, func() bool {
 		h.r.mu.RLock()
 		defer h.r.mu.RUnlock()
-		s = h.r.bySource[a.src]
+		for o := range h.r.sessions {
+			if o.remote() == a.src {
+				s = o
+			}
+		}
 		return s != nil
 	}, 5*time.Second, 5*time.Millisecond)
 	return s
 }
 
+// testCounter gives each test probe a larger counter than the one before it.
+var testCounter atomic.Uint64
+
+// probeTo sends one path probe of a to the PSP socket at to, and waits for the
+// reply. The relay then has the socket of a as the PSP address of its session.
+func probeTo(t *testing.T, a agent, to net.Addr) {
+	t.Helper()
+	k, err := p2p.NewProbeKeys(a.qc.ConnectionState().TLS)
+	require.NoError(t, err)
+	_, err = a.tr.WriteTo(p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Counter: testCounter.Add(1)}, p2p.MinProbeLen, &k.Dialer), to)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	buf := make([]byte, 2048)
+	n, _, err := a.tr.ReadNonQUICPacket(ctx, buf)
+	require.NoError(t, err, "no reply to the path probe")
+	_, err = p2p.OpenProbe(buf[:n], &k.Listener)
+	require.NoError(t, err)
+}
+
+// offer gives s relay SAs, as the change to PSP mode does, for a test that
+// sets the mode of s itself. It returns nil if the relay has no bridge.
+func (r *Router) offer(s *Session, n Network, now time.Time) (*dp.SessionResponse, error) {
+	br := r.bridge.Load()
+	if br == nil {
+		return nil, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s.closed {
+		return nil, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
+	}
+	return r.offerLocked(br, s, n, now)
+}
+
+// addProbed adds s with the address of its QUIC connection as its PSP address,
+// as a path probe from the socket of the connection gives it.
+func (r *Router) addProbed(s *Session, now time.Time) {
+	r.addSession(s, now)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.setAddr(s, s.remote(), now)
+}
+
+// openIn opens the Session call of s and puts s in the data mode mode. It
+// gives s no SAs.
+func (r *Router) openIn(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.Hello) error {
+	if err := r.openSync(s, mode, ref, hello); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s.sync.mode = mode
+	return nil
+}
+
+// replayStream gives the messages in pending before the next ones of the stream.
+type replayStream struct {
+	syncStream
+	pending []*dp.SessionResponse
+}
+
+func (s *replayStream) Recv() (*dp.SessionResponse, error) {
+	if len(s.pending) > 0 {
+		m := s.pending[0]
+		s.pending = s.pending[1:]
+		return m, nil
+	}
+	return s.syncStream.Recv()
+}
+
 // syncStream is the agent side of a Session call.
 type syncStream = rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
 
-// open starts the Session call of a in PSP mode and returns it after Welcome,
-// Config and the relay SAs.
+// open starts the Session call of a, changes the session to PSP mode, and
+// returns the stream after Welcome, Config and the relay SAs.
 func open(t *testing.T, a agent) (syncStream, *dp.Welcome, *dp.Config) {
 	t.Helper()
 	st, w, c, _ := openMode(t, a, dp.Mode_MODE_PSP)
 	return st, w, c
 }
 
-// openMode starts the Session call of a in mode. In PSP mode, it also returns
-// the relay SAs that come after Config.
+// openMode starts the Session call of a. For PSP mode it sends a path probe
+// and changes the session with a Rekey call, and it returns the relay SAs. The
+// relay then has no SAs of the agent: the test gives its own.
 func openMode(t *testing.T, a agent, mode dp.Mode) (syncStream, *dp.Welcome, *dp.Config, *dp.KeysRequest) {
 	t.Helper()
 	st, err := a.c.Session(context.Background())
@@ -490,10 +579,30 @@ func openMode(t *testing.T, a agent, mode dp.Mode) (syncStream, *dp.Welcome, *dp
 	if mode != dp.Mode_MODE_PSP {
 		return st, w.GetWelcome(), c.GetConfig(), nil
 	}
-	k, err := st.Recv()
+	probeTo(t, a, a.to)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	first := newPSPReceiver(t, time.Now()).req
+	_, err = a.c.Rekey(ctx, keyproto.ToProto(first))
 	require.NoError(t, err)
-	require.NotNil(t, k.GetRekey(), "third message: %v", k)
-	return st, w.GetWelcome(), c.GetConfig(), k.GetRekey()
+	// The messages before the relay SAs stay for the test.
+	rs := &replayStream{syncStream: st}
+	var k *dp.SessionResponse
+	for {
+		k, err = st.Recv()
+		require.NoError(t, err)
+		if k.GetRekey() != nil {
+			break
+		}
+		rs.pending = append(rs.pending, k)
+	}
+	spis := make([]uint32, len(first.SAs))
+	for i, sa := range first.SAs {
+		spis[i] = sa.SPI
+	}
+	_, err = a.c.Rekey(ctx, keyproto.ToProto(keys.Request{Op: keys.OpRevoke, SPIs: spis}))
+	require.NoError(t, err)
+	return rs, w.GetWelcome(), c.GetConfig(), k.GetRekey()
 }
 
 // sayHello starts the Session call of a in QUIC mode, for a test that needs
@@ -555,4 +664,18 @@ func closeCode(t *testing.T, qc quic.Connection) quic.ApplicationErrorCode {
 	var ae *quic.ApplicationError
 	require.ErrorAs(t, context.Cause(qc.Context()), &ae)
 	return ae.ErrorCode
+}
+
+// admitMember admits s as the session of the member name, as Open does. The
+// member has its PSP socket at its relay address with the PSP port of m, so
+// that a test with no socket of the member knows where the trunk packets go.
+func admitMember(m *Mesh, s *MeshSession, name string, v *dp.Version, ref *dp.RelayRef) error {
+	at := addrPort(s.qc.RemoteAddr())
+	if mem := m.member(name); mem != nil && mem.Addr.IsValid() {
+		at = mem.Addr
+	}
+	if port := m.pspPort(); port != 0 {
+		s.psp = netip.AddrPortFrom(at.Addr(), uint16(port))
+	}
+	return m.admit(s, name, nil, v, ref)
 }
