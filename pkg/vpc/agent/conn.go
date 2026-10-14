@@ -298,11 +298,11 @@ func (a *Agent) drain(rc *relayConn, alts []*dp.RelayRef) {
 func (a *Agent) end(rc *relayConn) {
 	a.attMu.Lock()
 	a.mu.Lock()
-	was := rc.state
+	was, live := rc.state, rc.live()
 	rc.state = connEnded
 	a.conns = slices.DeleteFunc(a.conns, func(o *relayConn) bool { return o == rc })
 	a.mu.Unlock()
-	shown := !rc.visitor() && (was == connAttached || was == connDraining)
+	shown := !rc.visitor() && live
 	if f := a.cfg.OnDetach; shown && f != nil {
 		for _, at := range slices.Backward(rc.attachments()) {
 			a.events = append(a.events, func() { f(at) })
@@ -340,13 +340,17 @@ func (a *Agent) primary() *relayConn {
 
 // primaryLocked is primary for a caller that holds a.mu.
 func (a *Agent) primaryLocked() *relayConn {
-	if rcs := a.sessionsLocked(connAttached); len(rcs) > 0 {
-		return rcs[0]
+	var best *relayConn
+	for _, rc := range a.conns {
+		if rc.visitor() || !rc.live() {
+			continue
+		}
+		// An attached session is before a draining one, then the lowest rank is first.
+		if best == nil || cmp.Or(cmp.Compare(rc.state, best.state), cmp.Compare(rc.rank, best.rank)) < 0 {
+			best = rc
+		}
 	}
-	if rcs := a.sessionsLocked(connDraining); len(rcs) > 0 {
-		return rcs[0]
-	}
-	return nil
+	return best
 }
 
 // sessions returns the sessions of the agent in one of states that are not

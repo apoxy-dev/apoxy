@@ -636,7 +636,7 @@ func TestDetach(t *testing.T) {
 	}
 }
 
-// TestAttachGrantLife checks that the grant of Attach ends grantLife after the
+// TestAttachGrantLife checks that the grant of Attach ends GrantLife after the
 // call, also when the agent cert ends before that.
 func TestAttachGrantLife(t *testing.T) {
 	ca := newCA(t)
@@ -658,14 +658,14 @@ func TestAttachGrantLife(t *testing.T) {
 			claims, err := VerifyGrant(res.Grant, h.relayRoots, after)
 			require.NoError(t, err)
 			end := claims.NotAfter.AsTime()
-			assert.False(t, end.Before(before.Add(grantLife)) || end.After(after.Add(grantLife)),
+			assert.False(t, end.Before(before.Add(GrantLife)) || end.After(after.Add(GrantLife)),
 				"end %v, call from %v to %v", end, before, after)
 		})
 	}
 }
 
 // TestGrant checks the Grant call: a session gets a grant only for its own
-// attachment, with the claims of the grant of Attach and an end grantLife later.
+// attachment, with the claims of the grant of Attach and an end GrantLife later.
 func TestGrant(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -694,7 +694,7 @@ func TestGrant(t *testing.T) {
 		claims, err := VerifyGrant(g, h.relayRoots, now)
 		require.NoError(t, err)
 		assert.Empty(t, cmp.Diff(first, claims, protocmp.Transform(), protocmp.IgnoreFields(&dp.GrantClaims{}, "not_after")))
-		assert.WithinDuration(t, now.Add(grantLife), claims.NotAfter.AsTime(), time.Second)
+		assert.WithinDuration(t, now.Add(GrantLife), claims.NotAfter.AsTime(), time.Second)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -711,8 +711,8 @@ func TestGrant(t *testing.T) {
 			sameClaims(t, g, now)
 			claims, err := VerifyGrant(g, h.relayRoots, now)
 			require.NoError(t, err)
-			assert.True(t, claims.NotAfter.AsTime().Equal(now.Add(grantLife)), "end %v, call at %v", claims.NotAfter.AsTime(), now)
-			_, err = VerifyGrant(g, h.relayRoots, now.Add(grantLife))
+			assert.True(t, claims.NotAfter.AsTime().Equal(now.Add(GrantLife)), "end %v, call at %v", claims.NotAfter.AsTime(), now)
+			_, err = VerifyGrant(g, h.relayRoots, now.Add(GrantLife))
 			assert.ErrorContains(t, err, "grant has ended")
 		})
 	}

@@ -29,6 +29,7 @@ type syncState struct {
 	mode   dp.Mode        // QUIC at Hello. A Rekey call changes it to PSP, and a lost PSP path to QUIC.
 	hello  dp.Mode        // The mode of Hello, for the metrics.
 	ref    *dp.VPCRef     // VPC of the session, with the network ID.
+	mtu    uint32         // MTU of the VPC at Hello, for the relay SAs.
 	routes map[route]bool // Route changes: true adds, false removes.
 	// standby has the prefixes whose route stays and whose standby list changed.
 	standby map[netip.Prefix]struct{}
@@ -199,7 +200,7 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 		return err
 	}
 	ref := &dp.VPCRef{ProjectId: s.id.VPC.Project, VpcUid: s.id.VPC.UID, NetworkId: n.ID}
-	if err := srv.R.openSync(s, mode, ref, hello); err != nil {
+	if err := srv.R.openSync(s, mode, ref, n.MTU, hello); err != nil {
 		return err
 	}
 	sessionsTotal.WithLabelValues(modeLabel(mode), reasonLabel(hello)).Inc()
@@ -253,8 +254,8 @@ func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.Sessi
 
 // openSync marks the Session call of s as open, and gives s the agent name
 // and the instance of its Hello. A session has at most one Session call.
-func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.Hello) error {
-	refused, err := r.startSync(s, mode, ref, hello)
+func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef, mtu uint32, hello *dp.Hello) error {
+	refused, err := r.startSync(s, mode, ref, mtu, hello)
 	if refused > 0 {
 		slog.Warn("Refused attachments of other relays with another network ID", "project", s.id.VPC.Project,
 			"vpc", s.id.VPC.UID, "network_id", ref.GetNetworkId(), "count", refused)
@@ -264,7 +265,7 @@ func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.He
 
 // startSync does the work of openSync. It returns the number of attachments
 // of other relays that have another network ID than ref.
-func (r *Router) startSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.Hello) (int, error) {
+func (r *Router) startSync(s *Session, mode dp.Mode, ref *dp.VPCRef, mtu uint32, hello *dp.Hello) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if s.closed {
@@ -274,7 +275,7 @@ func (r *Router) startSync(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.H
 		return 0, rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
 	}
 	// Each session starts in QUIC mode. A Rekey call changes it to PSP.
-	s.sync.open, s.sync.mode, s.sync.hello, s.sync.ref = true, dp.Mode_MODE_QUIC, mode, ref
+	s.sync.open, s.sync.mode, s.sync.hello, s.sync.ref, s.sync.mtu = true, dp.Mode_MODE_QUIC, mode, ref, mtu
 	s.name, s.instance = hello.GetName(), hello.GetInstance()
 	s.sync.meshRoutes = s.version.GetRevision() >= meshRoutesRevision && !hello.GetLocalRoutesOnly()
 	d := r.domain(s.id.VPC)

@@ -357,7 +357,7 @@ type hostDevice struct {
 	agent     *agent.Agent
 
 	dev    overlay
-	addrs  map[netip.Addr]int              // Relay sessions that use each address on the device.
+	addrs  map[netip.Addr]bool             // Overlay addresses on the device.
 	extras map[netip.Addr]agent.Attachment // Extra attachments on the device, by address.
 	fwd    *forwardNetwork                 // Of the netstack driver.
 }
@@ -386,7 +386,7 @@ func (h *hostDevice) start(b *psp.Binding, addr netip.Addr) {
 		h.fail(err)
 		return
 	}
-	h.addrs = map[netip.Addr]int{addr: 1}
+	h.addrs = map[netip.Addr]bool{addr: true}
 	for _, w := range hostcheck.Check(h.conn, h.driver == driverTun) {
 		fmt.Fprintf(h.out, "Warning: %s\n  Fix: %s\n", w.Problem, w.Fix)
 	}
@@ -427,7 +427,7 @@ func (h *hostDevice) attachment(at agent.Attachment) {
 // deprecated makes the address of an attachment not preferred, because its
 // relay drains.
 func (h *hostDevice) deprecated(at agent.Attachment) {
-	if h.addrs[at.Address] == 0 {
+	if !h.addrs[at.Address] {
 		return
 	}
 	if err := h.dev.deprecate(at.Address); err != nil {
@@ -438,30 +438,25 @@ func (h *hostDevice) deprecated(at agent.Attachment) {
 // detach removes the address of an attachment from the device.
 func (h *hostDevice) detach(at agent.Attachment) {
 	h.remove(at.Address)
-	if _, ok := h.extras[at.Address]; ok && h.addrs[at.Address] == 0 {
+	if _, ok := h.extras[at.Address]; ok && !h.addrs[at.Address] {
 		delete(h.extras, at.Address)
 		h.ownChanged()
 	}
 }
 
-// add puts an overlay address on the device. A session that replaces another
-// one on the same relay can get the same address before the old one ends.
+// add puts an overlay address on the device. The agent gives an address again
+// only after its OnDetach, so no other session uses it.
 func (h *hostDevice) add(addr netip.Addr) error {
-	if h.addrs[addr] == 0 {
-		if err := h.dev.addAddr(addr); err != nil {
-			return err
-		}
+	if err := h.dev.addAddr(addr); err != nil {
+		return err
 	}
-	h.addrs[addr]++
+	h.addrs[addr] = true
 	return nil
 }
 
-// remove takes an overlay address from the device when its last session ends.
+// remove takes an overlay address from the device.
 func (h *hostDevice) remove(addr netip.Addr) {
-	if h.addrs[addr] == 0 {
-		return
-	}
-	if h.addrs[addr]--; h.addrs[addr] > 0 {
+	if !h.addrs[addr] {
 		return
 	}
 	delete(h.addrs, addr)

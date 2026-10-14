@@ -135,7 +135,7 @@ func (srv *Server) Attach(ctx context.Context, in *dp.AttachRequest) (*dp.Attach
 	return &dp.AttachResponse{AttachmentId: a.ID, Grant: grant, Routes: statuses}, nil
 }
 
-// signGrant returns a grant for a that ends grantLife after now.
+// signGrant returns a grant for a that ends GrantLife after now.
 func (srv *Server) signGrant(a *Attachment, now time.Time) (*dp.AttachmentGrant, error) {
 	cert, err := srv.cert()
 	if err != nil {
@@ -147,7 +147,7 @@ func (srv *Server) signGrant(a *Attachment, now time.Time) (*dp.AttachmentGrant,
 		Subject:      a.Subject,
 		Addresses:    prefixStrings(a.Addresses),
 		RelayId:      srv.RelayID,
-		NotAfter:     timestamppb.New(now.Add(grantLife)),
+		NotAfter:     timestamppb.New(now.Add(GrantLife)),
 	})
 	if err != nil {
 		return nil, rpc.Errorf(rpc.Internal, "grant: %v", err)
@@ -156,7 +156,7 @@ func (srv *Server) signGrant(a *Attachment, now time.Time) (*dp.AttachmentGrant,
 }
 
 // Grant returns a new grant for an attachment of the session of the caller. It
-// has the claims of the grant of Attach, and it ends grantLife from now.
+// has the claims of the grant of Attach, and it ends GrantLife from now.
 func (srv *Server) Grant(ctx context.Context, in *dp.GrantRequest) (*dp.GrantResponse, error) {
 	s, err := srv.R.caller(ctx)
 	if err != nil {

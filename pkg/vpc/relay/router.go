@@ -35,10 +35,10 @@ const (
 	minBurst      = 64 << 10
 	// MaxLaneSources is the most lane ports of a session: lanes 1 and up.
 	MaxLaneSources = keys.MaxLanes - 1
-	// grantLife is the time from the signing of a grant to its end. An agent
-	// sends a grant that it got less than 5 minutes ago, so a reader with a
-	// clock up to 10 minutes ahead of the relay accepts it.
-	grantLife = 15 * time.Minute
+	// GrantLife is the time from the signing of a grant to its end. An agent
+	// sends a grant in the first third of its life, so a reader with a clock up
+	// to two thirds of it ahead of the relay accepts the grant.
+	GrantLife = 15 * time.Minute
 )
 
 // VPCKey is the key of a routing domain: one VPC of one project. The VPC
@@ -388,7 +388,6 @@ func (r *Router) addSession(s *Session, now time.Time) {
 		// A visitor sends from the prefix of its visit, which is not its route.
 		return s.visit.Load().of(a) != nil
 	}
-	d.queueRoutes(s)
 }
 
 func (r *Router) removeSession(s *Session) {

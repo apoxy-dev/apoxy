@@ -531,29 +531,16 @@ func (srv *Server) Rekey(ctx context.Context, in *dp.KeysRequest) (*dp.KeysRespo
 	if err != nil {
 		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
-	var n Network
-	if srv.R.mode(s) == dp.Mode_MODE_QUIC {
-		// The relay SAs of the change to PSP mode need the MTU of the VPC.
-		if n, err = srv.network(s.id.VPC); err != nil {
-			return nil, err
-		}
-	}
-	refused, err := srv.R.rekey(s, n, req, time.Now())
+	refused, err := srv.R.rekey(s, req, time.Now())
 	if err != nil {
 		return nil, err
 	}
 	return &dp.KeysResponse{RefusedSpis: refused}, nil
 }
 
-func (r *Router) mode(s *Session) dp.Mode {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return s.sync.mode
-}
-
-// rekey applies req to the SAs of the relay for s. n is the network of a
-// QUIC-mode session, which changes to PSP mode.
-func (r *Router) rekey(s *Session, n Network, req keys.Request, now time.Time) ([]uint32, error) {
+// rekey applies req to the SAs of the relay for s. A QUIC-mode session
+// changes to PSP mode.
+func (r *Router) rekey(s *Session, req keys.Request, now time.Time) ([]uint32, error) {
 	br := r.bridge.Load()
 	if br == nil {
 		return nil, rpc.Errorf(rpc.Unavailable, "relay has no PSP bridge")
@@ -573,7 +560,7 @@ func (r *Router) rekey(s *Session, n Network, req keys.Request, now time.Time) (
 		}
 	}
 	if s.sync.mode == dp.Mode_MODE_QUIC {
-		return r.changeToPSP(br, s, n, req, now)
+		return r.changeToPSP(br, s, req, now)
 	}
 	return applyTx(br, s, req, now)
 }
@@ -593,18 +580,14 @@ func applyTx(br *bridge, s *Session, req keys.Request, now time.Time) ([]uint32,
 
 // changeToPSP changes the QUIC-mode session s to PSP mode with the SAs in req.
 // The mode stays QUIC if req gives the relay no SA for lane 0. Router.mu must be held.
-func (r *Router) changeToPSP(br *bridge, s *Session, n Network, req keys.Request, now time.Time) ([]uint32, error) {
+func (r *Router) changeToPSP(br *bridge, s *Session, req keys.Request, now time.Time) ([]uint32, error) {
 	if !s.addr.IsValid() {
 		return nil, rpc.Errorf(rpc.FailedPrecondition, "session has no PSP address: no path probe passed")
-	}
-	if n.ID != s.sync.ref.GetNetworkId() {
-		// The Session call started after the caller looked for the network.
-		return nil, rpc.Errorf(rpc.Unavailable, "no network for the relay SAs, call again")
 	}
 	if len(s.sync.out) >= maxSyncQueue {
 		return nil, rpc.Errorf(rpc.Unavailable, "no room for the relay SAs in the session queue")
 	}
-	m, err := r.offerLocked(br, s, n, now)
+	m, err := r.offerLocked(br, s, Network{ID: s.sync.ref.GetNetworkId(), MTU: s.sync.mtu}, now)
 	if err != nil {
 		return nil, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
 	}

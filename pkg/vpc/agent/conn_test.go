@@ -49,17 +49,14 @@ func ranks(a *testAgent) (attached, draining []uint32) {
 	return attached, draining
 }
 
-// peersOn returns the number of open peer sessions of a on rc.
+// peersOn returns the number of open peer sessions of a on rc, from Status.
 func peersOn(a *testAgent, rc *relayConn) int {
-	a.a.mu.Lock()
-	defer a.a.mu.Unlock()
-	n := 0
-	for _, p := range a.a.peers {
-		if p.rc == rc && p.bp != nil && p.qc.Context().Err() == nil {
-			n++
+	for _, c := range a.a.Status().Connections {
+		if c.Address == rc.self {
+			return c.Peers
 		}
 	}
-	return n
+	return 0
 }
 
 // serveTCP answers the bytes of each TCP connection to addr:port.
@@ -384,4 +381,19 @@ func TestAttachFails(t *testing.T) {
 	a.attached(t)
 	assert.Equal(t, r2.addr, a.current().addr)
 	assert.NoError(t, prev.qc.Context().Err(), "the other session stays open")
+}
+
+// TestAddressAgain checks that the OnDetach of an address comes before the
+// next OnAttach of it, when the relay gives the next session the same address.
+func TestAddressAgain(t *testing.T) {
+	w := newWorld(t)
+	w.addrs.sameAgain()
+	r := w.relay(t, "relay-1")
+	a := w.agent(t, "a", r, agentOptions{})
+	first := a.attached(t)
+	_ = a.current().qc.CloseWithError(0, "test ends the session")
+	second := a.attached(t)
+	require.Equal(t, first.addr, second.addr, "the relay gave the same address")
+	addr := first.addr.String()
+	require.Equal(t, []string{"attach a " + addr, "detach a " + addr, "attach a " + addr}, a.events("a"))
 }

@@ -20,13 +20,13 @@ const (
 	livenessInterval = 250 * time.Millisecond
 	// suspectAfter is the time with no packet of an agent after which the
 	// entries of its session are suspect.
-	suspectAfter = 6 * time.Second
+	suspectAfter = 3 * AgentKeepAlive
 	// normalAfter is the time for which a suspect agent must answer before its
 	// entries are normal again: a packet must come this long after the first one.
 	normalAfter = 4 * time.Second
 	// normalQuiet is the longest time between two packets of an agent that
 	// answers. A longer silence starts normalAfter again.
-	normalQuiet = 3 * time.Second
+	normalQuiet = AgentKeepAlive * 3 / 2
 	// holdTime is the time after an attach, or after a return to the normal
 	// state, in which an entry does not replace a live active announcer.
 	holdTime = 30 * time.Second

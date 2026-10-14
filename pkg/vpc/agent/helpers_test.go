@@ -97,6 +97,8 @@ type fakeAddresses struct {
 	holdDone         chan struct{}
 	holdName         string
 	inHold, mostHold int // Assign calls that wait now, and the most at once.
+	// same has the first address of each subject when the allocator gives it again.
+	same map[string][]netip.Prefix
 }
 
 func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost func()) ([]netip.Prefix, error) {
@@ -116,8 +118,25 @@ func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost 
 			return nil, ctx.Err()
 		}
 	}
+	if p, ok := f.same[a.Subject]; ok {
+		f.mu.Unlock()
+		return p, nil
+	}
 	f.mu.Unlock()
-	return f.Addresses.Assign(ctx, a, onLost)
+	p, err := f.Addresses.Assign(ctx, a, onLost)
+	f.mu.Lock()
+	if err == nil && f.same != nil {
+		f.same[a.Subject] = p
+	}
+	f.mu.Unlock()
+	return p, err
+}
+
+// sameAgain makes Assign give each subject its first address again.
+func (f *fakeAddresses) sameAgain() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.same = map[string][]netip.Prefix{}
 }
 
 // hold makes Assign wait for the names with prefix until release runs.
@@ -688,7 +707,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 
 		LocalRoutesOnly: opts.localRoutesOnly,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
-			ta.note("attach", name, addr)
+			ta.note(t, "attach", name, addr)
 			ta.netstack(t, b, addr, opts.tcp)
 			ta.attach <- attachEvent{addr, prefixes}
 		},
@@ -717,11 +736,11 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 			ta.extraMu.Lock()
 			ta.extras[at.Name] = at.Address
 			ta.extraMu.Unlock()
-			ta.note("attach", at.Name, at.Address)
+			ta.note(t, "attach", at.Name, at.Address)
 			ta.netstack(t, ta.binding(), at.Address, opts.tcp)
 		},
 		OnDeprecated: func(at Attachment) {
-			ta.note("deprecate", at.Name, at.Address)
+			ta.note(t, "deprecate", at.Name, at.Address)
 			ta.deprecateAddr(t, at.Address)
 		},
 		OnDetach: func(at Attachment) {
@@ -730,7 +749,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 				delete(ta.extras, at.Name)
 			}
 			ta.extraMu.Unlock()
-			ta.note("detach", at.Name, at.Address)
+			ta.note(t, "detach", at.Name, at.Address)
 			ta.removeAddr(t, at.Address)
 		},
 	}
@@ -808,10 +827,20 @@ func (ta *testAgent) extraAddr(name string) netip.Addr {
 	return ta.extras[name]
 }
 
-// note adds a callback of an address to the log.
-func (ta *testAgent) note(event, name string, addr netip.Addr) {
+// note adds a callback of an address to the log. It fails t when an address
+// gets OnAttach before the OnDetach of its last OnAttach, or OnDetach with none.
+func (ta *testAgent) note(t *testing.T, event, name string, addr netip.Addr) {
 	ta.extraMu.Lock()
 	defer ta.extraMu.Unlock()
+	held := false
+	for _, e := range ta.log {
+		if f := strings.Fields(e); f[2] == addr.String() && f[0] != "deprecate" {
+			held = f[0] == "attach"
+		}
+	}
+	if event != "deprecate" && held == (event == "attach") {
+		t.Errorf("agent %s: %s of address %s in the wrong order: %v", name, event, addr, ta.log)
+	}
 	ta.log = append(ta.log, event+" "+name+" "+addr.String())
 }
 

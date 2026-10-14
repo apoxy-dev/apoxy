@@ -70,33 +70,32 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.watchers.Wait()
 	}()
 	wg.Go(func() { a.tick(ctx) })
-	wg.Go(func() { a.keepCert(ctx) })
+	wg.Go(func() { a.followCert(ctx) })
 	wg.Go(func() { a.keepAttachments(ctx) })
-	if a.cfg.Identity.FromFile() {
-		// The agent cannot get a new cert. After the cert of the file expires,
-		// its sessions stay, and Run opens no session.
-		wg.Go(func() {
-			var expired *identity.ExpiredError
-			if errors.As(a.cfg.Identity.Run(ctx), &expired) {
-				a.expired.Store(expired)
-				a.wakeRun()
-			}
-		})
-	}
+	wg.Go(func() {
+		// The manager renews the cert, so that the next handshake has a valid one.
+		// After the cert of an identity file expires, the sessions stay, and Run opens none.
+		var expired *identity.ExpiredError
+		if errors.As(a.cfg.Identity.Run(ctx), &expired) {
+			a.expired.Store(expired)
+			a.wakeRun()
+		}
+	})
 
 	k := keeper{a: a, backoff: minBackoff, relist: relister{wait: relistMin}}
 	for ctx.Err() == nil {
 		var err error
 		n, eps := a.missing()
+		none := a.primary() == nil
 		switch expired := a.fileExpired(); {
-		case expired != nil && a.primary() == nil:
+		case expired != nil && none:
 			return expired
 		case expired != nil:
 			k.warnExpired(n)
 			a.waitWake(ctx)
 		case n > 0:
 			err = k.fill(ctx, n, eps)
-		case a.primary() == nil:
+		case none:
 			// The agent has no session and no relay to dial.
 			err = k.retry(ctx, 0, errNoRelays)
 		default:
@@ -362,38 +361,16 @@ func (a *Agent) rank(conns []*relayConn) []*relayConn {
 	return order
 }
 
-// keepCert renews the agent cert before it expires, so that the next
-// handshake has a valid one. The open sessions keep their connections.
-func (a *Agent) keepCert(ctx context.Context) {
-	id := a.cfg.Identity
-	t := time.NewTimer(0)
-	defer t.Stop()
+// followCert makes Run count again after each new agent cert, which can have
+// a new relay list. The open sessions keep their connections.
+func (a *Agent) followCert(ctx context.Context) {
 	for {
-		cred := id.Current()
-		t.Reset(time.Until(cred.RenewAt()))
-		if id.FromFile() {
-			// The agent does not renew the cert of an identity file. It waits for a new file.
-			t.Stop()
-		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-id.Changed():
-		case <-t.C:
-			if id.Current() == cred {
-				if err := id.Renew(ctx); err != nil {
-					slog.Warn("Failed to renew agent cert", "error", err)
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(renewRetry):
-					}
-					continue
-				}
-			}
+		case <-a.cfg.Identity.Changed():
+			a.wakeRun()
 		}
-		// The new cert can have a new relay list, so Run counts again.
-		a.wakeRun()
 	}
 }
 

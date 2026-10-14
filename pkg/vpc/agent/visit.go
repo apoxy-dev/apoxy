@@ -362,14 +362,14 @@ func (a *Agent) openVisit(ctx context.Context, home *relayConn, ref *dp.RelayRef
 	ctx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
 	var errs []error
-	for _, addr := range ref.GetAddresses() {
-		rc, err := a.dialRelay(ctx, endpoint{id: ref.GetId(), addr: addr}, home)
+	for _, e := range refEndpoints([]*dp.RelayRef{ref}) {
+		rc, err := a.dialRelay(ctx, e, home)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("relay %s: %w", addr, err))
+			errs = append(errs, fmt.Errorf("relay %s: %w", e.addr, err))
 			continue
 		}
 		if err := rc.startVisit(ctx); err != nil {
-			return rc, fmt.Errorf("relay %s: %w", addr, err)
+			return rc, fmt.Errorf("relay %s: %w", e.addr, err)
 		}
 		return rc, nil
 	}

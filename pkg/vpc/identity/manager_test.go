@@ -197,6 +197,7 @@ func TestFileManagerReload(t *testing.T) {
 			first := identityFile{age: 2 * time.Hour}.write(t, ca, path)
 			m := NewFileManager(path, WithClock(func() time.Time { return testNow }, time.After))
 			require.NoError(t, m.Start(context.Background()))
+			require.Empty(t, m.Changed(), "the first read of the file is no change")
 			var next *Credential
 			if tc.next != nil {
 				next = tc.next.write(t, ca, path)
@@ -428,6 +429,15 @@ func TestManagerRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, second.Cert.Raw, onDisk.Cert.Raw)
 	assert.Equal(t, 3, f.calls)
+	assert.Len(t, m.Changed(), 1, "a renew tells Changed")
+
+	// After a Renew call of another caller, Run does not enroll at the old renew time.
+	now = now.Add(time.Hour)
+	require.NoError(t, m.Renew(context.Background()))
+	now = now.Add(13 * time.Hour)
+	fire <- now
+	assert.Equal(t, time.Hour, <-waits)
+	assert.Equal(t, 4, f.calls)
 
 	cancel()
 	assert.ErrorIs(t, <-done, context.Canceled)

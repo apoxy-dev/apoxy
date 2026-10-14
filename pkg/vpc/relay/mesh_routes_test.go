@@ -910,7 +910,7 @@ func TestMeshRouteVPC(t *testing.T) {
 					require.NoError(t, w.r.checkRevision(s, h.GetVersion()))
 					vpc := ref(vpcA)
 					vpc.NetworkId = st.hello
-					refused, err := w.r.startSync(s, dp.Mode_MODE_QUIC, vpc, h)
+					refused, err := w.r.startSync(s, dp.Mode_MODE_QUIC, vpc, 0, h)
 					require.NoError(t, err)
 					assert.Equal(t, st.refused, refused, "attachments that step %d refuses", i)
 					assert.Equal(t, st.delta, w.changes(name), "routes of the session of step %d", i)

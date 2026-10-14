@@ -613,7 +613,7 @@ func BenchmarkForwardData(b *testing.B) {
 			d := localSession(b, r, "d", "192.0.2.2:1", "fd00:2::/96", mode)
 			if mode == dp.Mode_MODE_PSP {
 				sa := keys.SA{SPI: 0x1001, Key: make([]byte, 16), VNI: testVNI, ExpiresIn: time.Hour}
-				_, err := r.rekey(d, Network{}, keys.Request{Op: keys.OpOffer, SAs: []keys.SA{sa}}, t0)
+				_, err := r.rekey(d, keys.Request{Op: keys.OpOffer, SAs: []keys.SA{sa}}, t0)
 				require.NoError(b, err)
 			}
 			frame := peerconn.EncodeData(nil, testVNI, ipPacket(netip.MustParseAddr("fd00:1::1"), netip.MustParseAddr("fd00:2::1"), make([]byte, 1200)))

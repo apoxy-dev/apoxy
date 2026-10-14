@@ -32,7 +32,7 @@ type Manager struct {
 
 	poll     time.Duration // Time between two reads of the identity file.
 	reloadMu sync.Mutex    // One read of the identity file at a time.
-	changed  chan struct{} // Gets a value when a new identity file is in use.
+	changed  chan struct{} // Gets a value when the manager has a new credential.
 }
 
 // ExpiredError tells that the cert of an identity file expired, and that the
@@ -77,6 +77,7 @@ func NewManager(path string, enroll EnrollFunc, opts ...ManagerOption) *Manager 
 		after:      time.After,
 		retryDelay: 30 * time.Second,
 		poll:       30 * time.Second,
+		changed:    make(chan struct{}, 1),
 	}
 	for _, o := range opts {
 		o(m)
@@ -88,17 +89,24 @@ func NewManager(path string, enroll EnrollFunc, opts ...ManagerOption) *Manager 
 // enrolls: the file comes from "apoxy alpha vpc enroll" or from a call to
 // EnrollFile, and that program replaces it before the cert expires.
 func NewFileManager(path string, opts ...ManagerOption) *Manager {
-	m := NewManager(path, nil, opts...)
-	m.changed = make(chan struct{}, 1)
-	return m
+	return NewManager(path, nil, opts...)
 }
 
 // FromFile reports whether the credential comes from an identity file.
 func (m *Manager) FromFile() bool { return m.enroll == nil }
 
-// Changed gets a value each time the manager starts to use a new identity
-// file. It is nil for a manager that enrolls.
+// Changed gets a value each time the manager has a new credential: after a
+// renew, or from a new identity file.
 func (m *Manager) Changed() <-chan struct{} { return m.changed }
+
+// use makes c the credential in use and tells Changed.
+func (m *Manager) use(c *Credential) {
+	m.cur.Store(c)
+	select {
+	case m.changed <- struct{}{}:
+	default:
+	}
+}
 
 // Start loads the cached credential, or enrolls when the cache has no cert
 // with relays that is before its renew time. When that enroll fails, it uses
@@ -185,11 +193,7 @@ func (m *Manager) reload() (bool, error) {
 		return false, fmt.Errorf("the certificate in identity file %s expires at %s, which is not later than the certificate in use (%s)",
 			m.path, c.Cert.NotAfter.UTC().Format(time.RFC3339), cur.Cert.NotAfter.UTC().Format(time.RFC3339))
 	}
-	m.cur.Store(c)
-	select {
-	case m.changed <- struct{}{}:
-	default:
-	}
+	m.use(c)
 	return true, nil
 }
 
@@ -248,7 +252,7 @@ func (m *Manager) Renew(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	m.cur.Store(c)
+	m.use(c)
 	// The cache only saves an enroll at the next start, so a failed write
 	// does not fail the renew.
 	if err := SaveCredential(m.path, c); err != nil {
@@ -271,7 +275,8 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 	failed := false
 	for {
-		wait := max(m.cur.Load().RenewAt().Sub(m.now()), 0)
+		cur := m.cur.Load()
+		wait := max(cur.RenewAt().Sub(m.now()), 0)
 		if failed {
 			wait = max(wait, m.retryDelay)
 		}
@@ -279,6 +284,11 @@ func (m *Manager) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-m.after(wait):
+		}
+		// A Renew call of another caller gave a new cert during the wait.
+		if m.cur.Load() != cur {
+			failed = false
+			continue
 		}
 		err := m.Renew(ctx)
 		failed = err != nil

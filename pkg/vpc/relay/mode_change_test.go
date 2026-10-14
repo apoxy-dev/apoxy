@@ -18,14 +18,12 @@ import (
 // TestRekeyFromQUIC checks the Rekey call of a session in QUIC mode: it
 // changes the session to PSP mode, or it changes nothing.
 func TestRekeyFromQUIC(t *testing.T) {
-	network := Network{ID: testVNI, MTU: 1280}
 	offer := func(spi, vni uint32) keys.Request {
 		return keys.Request{Op: keys.OpOffer, SAs: []keys.SA{{SPI: spi, Key: make([]byte, 16), VNI: vni, ExpiresIn: time.Hour}}}
 	}
 	cases := []struct {
 		name     string
 		noBridge bool
-		noNet    bool // The call has the zero Network.
 		prep     func(t *testing.T, r *Router, s *Session)
 		req      keys.Request
 		code     rpc.Code
@@ -37,7 +35,7 @@ func TestRekeyFromQUIC(t *testing.T) {
 		{name: "each SPI refused", req: offer(0x1001, testVNI), refused: []uint32{0x1001}, mode: dp.Mode_MODE_QUIC,
 			prep: func(t *testing.T, r *Router, _ *Session) {
 				p := localSession(t, r, "p", "192.0.2.2:1", "fd00:2::/96", dp.Mode_MODE_PSP)
-				_, err := r.rekey(p, Network{}, offer(0x1001, testVNI), t0)
+				_, err := r.rekey(p, offer(0x1001, testVNI), t0)
 				require.NoError(t, err)
 			}},
 		{name: "no SA", req: keys.Request{Op: keys.OpRevoke, SPIs: []uint32{0x1001}}, mode: dp.Mode_MODE_QUIC},
@@ -55,10 +53,9 @@ func TestRekeyFromQUIC(t *testing.T) {
 				}
 			}},
 		{name: "relay with no bridge", noBridge: true, req: offer(0x1001, testVNI), code: rpc.Unavailable, mode: dp.Mode_MODE_QUIC},
-		{name: "no network", noNet: true, req: offer(0x1001, testVNI), code: rpc.Unavailable, mode: dp.Mode_MODE_QUIC},
 		{name: "second Rekey", req: offer(0x1002, testVNI), mode: dp.Mode_MODE_PSP,
 			prep: func(t *testing.T, r *Router, s *Session) {
-				_, err := r.rekey(s, network, offer(0x1001, testVNI), t0)
+				_, err := r.rekey(s, offer(0x1001, testVNI), t0)
 				require.NoError(t, err)
 				r.takeSync(s)
 			}},
@@ -76,14 +73,13 @@ func TestRekeyFromQUIC(t *testing.T) {
 			}
 			changes := testutil.ToFloat64(modeChanges)
 
-			n := network
-			if tc.noNet {
-				n = Network{}
-			}
-			refused, err := r.rekey(s, n, tc.req, t0)
+			refused, err := r.rekey(s, tc.req, t0)
 			require.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
 			assert.Equal(t, tc.refused, refused)
-			assert.Equal(t, tc.mode, r.mode(s))
+			r.mu.RLock()
+			mode := s.sync.mode
+			r.mu.RUnlock()
+			assert.Equal(t, tc.mode, mode)
 			rekeys := 0
 			for _, m := range r.takeSync(s) {
 				if m.GetRekey() != nil {

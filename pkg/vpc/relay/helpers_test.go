@@ -527,7 +527,7 @@ func (r *Router) addProbed(s *Session, now time.Time) {
 // openIn opens the Session call of s and puts s in the data mode mode. It
 // gives s no SAs.
 func (r *Router) openIn(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.Hello) error {
-	if err := r.openSync(s, mode, ref, hello); err != nil {
+	if err := r.openSync(s, mode, ref, 1280, hello); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -615,10 +615,7 @@ func sayHello(t *testing.T, a agent) {
 // sayHelloAt is sayHello for an agent at the revision rev.
 func sayHelloAt(t *testing.T, a agent, rev uint32) {
 	t.Helper()
-	st, err := a.c.Session(context.Background())
-	require.NoError(t, err)
-	hello := &dp.Hello{Mode: dp.Mode_MODE_QUIC, Version: &dp.Version{Revision: rev}}
-	require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: hello}}))
+	st := hello(t, a, &dp.Hello{Mode: dp.Mode_MODE_QUIC, Version: &dp.Version{Revision: rev}})
 	w, err := st.Recv()
 	require.NoError(t, err)
 	require.NotNil(t, w.GetWelcome(), "first message: %v", w)

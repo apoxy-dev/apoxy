@@ -97,7 +97,7 @@ func TestPathCheck(t *testing.T) {
 			require.Eventually(t, func() bool { return up() && c.bfd.Up() }, 5*time.Second, 5*time.Millisecond, "the two ends are not Up")
 
 			if tc.want == dp.Mode_MODE_PSP {
-				require.Never(t, func() bool { return h.r.mode(s) != dp.Mode_MODE_PSP }, 12*tx, tx/4, "the session left PSP mode")
+				require.Never(t, func() bool { return modeOf(h.r, s) != dp.Mode_MODE_PSP }, 12*tx, tx/4, "the session left PSP mode")
 				assert.True(t, up())
 				return
 			}
@@ -110,7 +110,7 @@ func TestPathCheck(t *testing.T) {
 				t.Cleanup(first.Close)
 				c.send(first)
 			}
-			require.Eventually(t, func() bool { return h.r.mode(s) == dp.Mode_MODE_QUIC }, 5*time.Second, 5*time.Millisecond,
+			require.Eventually(t, func() bool { return modeOf(h.r, s) == dp.Mode_MODE_QUIC }, 5*time.Second, 5*time.Millisecond,
 				"the session stays in PSP mode")
 			h.r.mu.RLock()
 			assert.Nil(t, s.check)
@@ -127,7 +127,7 @@ func TestPathCheck(t *testing.T) {
 			defer cancel()
 			_, err := a.c.Rekey(rctx, keyproto.ToProto(newPSPReceiver(t, time.Now()).req))
 			require.NoError(t, err)
-			assert.Equal(t, dp.Mode_MODE_PSP, h.r.mode(s))
+			assert.Equal(t, dp.Mode_MODE_PSP, modeOf(h.r, s))
 			h.r.mu.RLock()
 			defer h.r.mu.RUnlock()
 			assert.NotNil(t, s.check)

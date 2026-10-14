@@ -91,7 +91,7 @@ func (g *rowRig) bridgeEnd(mode dp.Mode, name, socket string, prefixes ...string
 // giveSAs gives the relay the SAs of the PSP-mode agent e for packets to e.
 func (g *rowRig) giveSAs(e *bridgeEnd) {
 	g.t.Helper()
-	refused, err := g.r.rekey(e.s, Network{}, e.psp.req, time.Now())
+	refused, err := g.r.rekey(e.s, e.psp.req, time.Now())
 	require.NoError(g.t, err)
 	require.Empty(g.t, refused)
 }
@@ -958,7 +958,7 @@ func newRelayEnd(t *testing.T, n *trunkNode, mode dp.Mode, name, prefix string) 
 		offer, err := n.r.offer(e.s, Network{ID: testVNI, MTU: 1280}, time.Now())
 		require.NoError(t, err)
 		e.psp = newPSPAgent(t, offer.GetRekey(), time.Now())
-		refused, err := n.r.rekey(e.s, Network{}, e.psp.req, time.Now())
+		refused, err := n.r.rekey(e.s, e.psp.req, time.Now())
 		require.NoError(t, err)
 		require.Empty(t, refused)
 	}

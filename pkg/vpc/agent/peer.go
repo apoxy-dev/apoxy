@@ -475,7 +475,7 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 	}
 	// When both agents dial, the session that the first agent dialed stays. A
 	// session with the path down gives its place to each new session.
-	if old != nil && !old.down && old.instance == instance && old.dialer != p.dialer && old.dialer == a.first(p.rc, p.subject, instance) {
+	if old != nil && !old.down && old.instance == instance && old.dialer != p.dialer && old.dialer == a.first(p.subject, instance) {
 		a.mu.Unlock()
 		return errDuplicate
 	}
@@ -523,7 +523,7 @@ func (a *Agent) admit(p *peer, v *dp.Version, g *dp.AttachmentGrant, instance ui
 
 // first reports whether this agent is before the agent with subject and
 // instance: the lower subject, or the lower instance when they have one subject.
-func (a *Agent) first(rc *relayConn, subject string, instance uint64) bool {
+func (a *Agent) first(subject string, instance uint64) bool {
 	if own := a.cfg.Identity.Current().ID.String(); own != subject {
 		return own < subject
 	}

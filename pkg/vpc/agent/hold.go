@@ -247,8 +247,9 @@ func (a *Agent) openHeld(key holdKey) {
 // sessionOf returns the attached or draining session with the link l, or nil.
 // a.mu must be held.
 func (a *Agent) sessionOf(l *psp.Link) *relayConn {
-	for _, rc := range a.sessionsLocked(connAttached, connDraining) {
-		if rc.link == l {
+	// A visitor session uses the link of its home, and each other session has its own.
+	for _, rc := range a.conns {
+		if !rc.visitor() && rc.live() && rc.link == l {
 			return rc
 		}
 	}

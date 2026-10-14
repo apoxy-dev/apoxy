@@ -427,7 +427,7 @@ func TestHostDeviceAddresses(t *testing.T) {
 	xB := agent.Attachment{Name: "x", Address: addr("fd00:b::2"), Routes: xRoutes}
 	routes := []netip.Prefix{pfx("10.0.0.0/16")}
 	dev := &fakeOverlay{addrs: []netip.Addr{baseA}, routes: routes}
-	h := &hostDevice{dev: dev, addrs: map[netip.Addr]int{baseA: 1}, routes: routes, fwd: newForwardNetwork(nil, nil, routes),
+	h := &hostDevice{dev: dev, addrs: map[netip.Addr]bool{baseA: true}, routes: routes, fwd: newForwardNetwork(nil, nil, routes),
 		fail: func(err error) { t.Errorf("the device failed: %v", err) }}
 	steps := []struct {
 		name           string
@@ -470,18 +470,6 @@ func TestHostDeviceAddresses(t *testing.T) {
 				h.detach(xA)
 				h.detach(agent.Attachment{Base: true, Address: baseA})
 			},
-			wantAddrs: []netip.Addr{baseB, xB.Address},
-			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
-		},
-		{
-			name:      "a new session on relay B gets the address of B",
-			do:        func() { h.attach(nil, baseB, nil) },
-			wantAddrs: []netip.Addr{baseB, xB.Address},
-			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
-		},
-		{
-			name:      "the old session on relay B ends",
-			do:        func() { h.detach(agent.Attachment{Base: true, Address: baseB}) },
 			wantAddrs: []netip.Addr{baseB, xB.Address},
 			wantHost:  []string{"10.0.0.1", "10.1.0.1"},
 		},

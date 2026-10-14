@@ -896,7 +896,7 @@ func TestVisitAfterCut(t *testing.T) {
 				require.NoError(t, a.a.Connect(ctx, eb.addr))
 				old := onlyPeer(t, a.a)
 				require.True(t, old.dialer)
-				require.True(t, a.a.first(a.current(), old.subject, old.instance), "a is the first agent")
+				require.True(t, a.a.first(old.subject, old.instance), "a is the first agent")
 				heal := cutMesh(r1, r2)
 				waitReach(t, b, ea.addr, dp.Reach_REACH_VISIT)
 				// The test gives b the NoRoute for its packet on the old session.
@@ -915,7 +915,7 @@ func TestVisitAfterCut(t *testing.T) {
 				require.NoError(t, a.a.Connect(ctx, eb.addr))
 				old := onlyPeer(t, a.a)
 				require.True(t, old.dialer)
-				require.True(t, a.a.first(a.current(), old.subject, old.instance), "a is the first agent")
+				require.True(t, a.a.first(old.subject, old.instance), "a is the first agent")
 				v, err := b.a.visit(ctx, b.current(), r1.relayRef())
 				require.NoError(t, err)
 				defer b.a.release(v)
@@ -1076,7 +1076,7 @@ func TestVisitDuplicate(t *testing.T) {
 			require.Eventually(t, func() bool { return peerCount(b.a) == 1 }, 5*time.Second, 10*time.Millisecond)
 			oldA, oldB := onlyPeer(t, a.a), onlyPeer(t, b.a)
 			require.True(t, oldA.dialer)
-			require.True(t, a.a.first(a.current(), oldA.subject, oldA.instance), "a is the first agent")
+			require.True(t, a.a.first(oldA.subject, oldA.instance), "a is the first agent")
 			if tc.down {
 				a.a.setDown(a.current(), eb.addr, true)
 				b.a.setDown(b.current(), ea.addr, true)

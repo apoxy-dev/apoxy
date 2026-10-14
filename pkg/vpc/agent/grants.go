@@ -34,9 +34,8 @@ type extra struct {
 }
 
 // grantRefreshAge is the age of a stored grant from which the agent gets a
-// new one before it sends a grant. A relay signs a grant for 15 minutes, so a
-// reader with a clock up to 10 minutes ahead of the relay accepts a sent grant.
-const grantRefreshAge = 5 * time.Minute
+// new one before it sends a grant. See relay.GrantLife for the clock difference.
+const grantRefreshAge = relay.GrantLife / 3
 
 // ownGrant is the grant of one attachment of this agent. The agent sends it
 // to peers and to visited relays, which check it one time.

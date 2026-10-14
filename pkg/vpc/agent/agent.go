@@ -41,7 +41,6 @@ const (
 	// data in QUIC mode.
 	quicShards   = 2
 	openTimeout  = 10 * time.Second
-	renewRetry   = time.Minute
 	tickInterval = time.Second
 	// The relay removes SPI rows after 5 minutes with no traffic.
 	spiRefresh = 2 * time.Minute
@@ -119,8 +118,9 @@ type Config struct {
 	// OnDetach gets an extra attachment after Detach, and each attachment of a
 	// relay session that ended, the attachment of Config too: the agent lost
 	// the address. The agent calls OnAttach, OnAttachment, OnDeprecated and
-	// OnDetach in order, one at a time. The callbacks must not call Attach,
-	// Detach or Attachments.
+	// OnDetach in order, one at a time. An address gets OnDetach before its next
+	// OnAttach or OnAttachment. The callbacks must not call Attach, Detach or
+	// Attachments.
 	OnDetach func(at Attachment)
 	// MTU sets the device MTU, from 1280 to the VPC MTU, with no path probe.
 	// Zero means the VPC MTU. A PSP path that does not carry it gets a TCP MSS clamp.
