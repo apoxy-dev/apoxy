@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
@@ -731,6 +732,178 @@ func TestNoRoute(t *testing.T) {
 			require.True(t, pathDown(a.a, p))
 			a.a.visitAfterNoRoute(a.current(), eb.addr)
 			assert.False(t, pathDown(a.a, p))
+		})
+	}
+}
+
+// canBegin reports whether a new start of key can begin now: none runs and
+// none waits. It ends the start that it begins.
+func canBegin(a *Agent, key startKey) bool {
+	at, ok := a.starts.begin(context.Background(), key, nil, time.Now())
+	if ok {
+		a.starts.end(key, at, nil, time.Now(), time.Hour, time.Hour)
+	}
+	return ok
+}
+
+// failStart records a failed start of key, with a wait of one hour.
+func failStart(t *testing.T, a *Agent, key startKey) {
+	t.Helper()
+	at, ok := a.starts.begin(context.Background(), key, nil, time.Now())
+	require.True(t, ok)
+	a.starts.end(key, at, rpc.Errorf(rpc.NotFound, "no route"), time.Now(), time.Hour, time.Hour)
+	require.False(t, canBegin(a, key), "the failed start waits")
+}
+
+// TestNoRouteReplacesStart checks that a NoRoute with a home relay replaces a
+// start of the address that runs or waits, and keeps a visit of a NoRoute.
+func TestNoRouteReplacesStart(t *testing.T) {
+	failed := errors.New("visit failed")
+	type setup func(t *testing.T, a *Agent, key startKey) (check func(t *testing.T))
+	cases := []struct {
+		name   string
+		cut    bool // The mesh path is cut, so the relay answers REACH_VISIT.
+		home   bool // The NoRoute has a home relay.
+		second bool // The NoRoute is for a second address of b.
+		pre    setup
+		visit  bool // A visit of a to relay-2 opens.
+		// blocked: a start of the address runs or waits after the NoRoute.
+		blocked bool
+	}{
+		{
+			name: "failed start waits", cut: true, home: true, visit: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				failStart(t, a, key)
+				return nil
+			},
+		},
+		{
+			// The start got REACH_TRUNK, and its open waits for lost keys.
+			name: "start runs", cut: true, home: true, visit: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				at, ok := a.starts.begin(context.Background(), key, nil, time.Now())
+				require.True(t, ok)
+				opened, release, ended := make(chan error, 1), make(chan struct{}), make(chan struct{})
+				running := make(chan struct{})
+				go func() {
+					defer close(ended)
+					err := a.starts.once(at.ctx, key, func() error {
+						close(running)
+						<-at.ctx.Done()
+						return context.Cause(at.ctx)
+					})
+					opened <- err
+					// The old start ends after the visit, with an error.
+					<-release
+					a.starts.end(key, at, err, time.Now(), time.Hour, time.Hour)
+				}()
+				<-running
+				return func(t *testing.T) {
+					select {
+					case err := <-opened:
+						assert.ErrorIs(t, err, errRenewed)
+					case <-time.After(time.Second):
+						t.Fatal("the open of the old start did not end")
+					}
+					close(release)
+					<-ended
+					assert.True(t, canBegin(a, key), "the old start set no wait")
+				}
+			},
+		},
+		{
+			name: "visit of a NoRoute runs", cut: true, home: true, blocked: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				at, ok := a.starts.renew(context.Background(), key, key, time.Now())
+				require.True(t, ok)
+				return func(t *testing.T) {
+					assert.NoError(t, at.ctx.Err(), "the visit goes on")
+					a.starts.end(key, at, nil, time.Now(), time.Hour, time.Hour)
+					assert.True(t, canBegin(a, key))
+				}
+			},
+		},
+		{
+			name: "visit of a NoRoute failed and waits", cut: true, home: true, blocked: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				at, ok := a.starts.renew(context.Background(), key, key, time.Now())
+				require.True(t, ok)
+				a.starts.end(key, at, failed, time.Now(), time.Hour, time.Hour)
+				return nil
+			},
+		},
+		{
+			name: "no home relay", cut: true, blocked: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				failStart(t, a, key)
+				return nil
+			},
+		},
+		{
+			// The second answer is REACH_TRUNK: no visit, and the wait ends.
+			name: "relay reaches the peer again", home: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				failStart(t, a, key)
+				return nil
+			},
+		},
+		{
+			// The start is for the second address, the visit for the first.
+			name: "second address of the peer", cut: true, home: true, second: true, visit: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				failStart(t, a, key)
+				return nil
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r1, r2, a, b, _, eb := visitPair(t,
+				agentOptions{mode: TransportAuto, visitCheck: time.Hour},
+				agentOptions{mode: TransportAuto, visitCheck: time.Hour, visitWait: time.Hour})
+			dst := eb.addr
+			if tc.second {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				x, err := b.a.Attach(ctx, AttachmentSpec{Name: "b-2"})
+				require.NoError(t, err)
+				a.hasRoutes(t, x.Prefixes[0])
+				dst = x.Address
+			}
+			if tc.cut {
+				cutMesh(r1, r2)
+				waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
+			} else {
+				a.resolved(t, eb.addr)
+			}
+			rc := a.current()
+			key := startKey{rc.link, dst}
+			check := tc.pre(t, a.a, key)
+
+			m := &dp.NoRoute{Vpc: rc.ref, Address: dst.String()}
+			if tc.home {
+				m.HomeRelay = r2.relayRef()
+			}
+			a.a.noRoute(rc, m)
+			if tc.visit {
+				require.Eventually(t, func() bool {
+					v := visitOf(a.a, r2)
+					return v != nil && peerOn(a.a, v.rc, eb.addr) != nil
+				}, 5*time.Second, 10*time.Millisecond, "peer session of a on its visit")
+			} else {
+				require.Never(t, func() bool { return visitCount(a.a) != 0 },
+					500*time.Millisecond, 10*time.Millisecond, "no visit")
+			}
+			if tc.blocked {
+				assert.False(t, canBegin(a.a, key), "a start runs or waits")
+			} else {
+				require.Eventually(t, func() bool { return canBegin(a.a, key) },
+					time.Second, 10*time.Millisecond, "no start runs or waits")
+			}
+			if check != nil {
+				check(t)
+			}
 		})
 	}
 }

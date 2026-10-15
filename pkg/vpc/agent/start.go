@@ -26,6 +26,8 @@ const (
 var (
 	errNoRelay = errors.New("no relay session")
 	errNoPeer  = errors.New("no attachment routes the destination")
+	// errRenewed is the cause of a start that a NoRoute replaced.
+	errRenewed = errors.New("relay answered again for the address")
 )
 
 // startKey is an address on the link of one relay session. Each relay session
@@ -41,6 +43,7 @@ type starts struct {
 	mu      sync.Mutex
 	addrs   map[startKey]*start
 	opening map[startKey]*opening // Peer sessions that open, by peer address.
+	gen     uint64                // Generation of the last start, from 1.
 }
 
 // start is the state of one address with no peer session.
@@ -48,27 +51,37 @@ type start struct {
 	running bool
 	until   time.Time // The next try after a failed start.
 	wait    time.Duration
+	// gen is the generation of the start that runs or ran last, or 0 after a
+	// renew ended it. The end of an older start changes nothing.
+	gen    uint64
+	cancel context.CancelCauseFunc // Ends the start that runs.
+	// visit is true when the start that runs or waits is the visit of a NoRoute.
+	visit bool
 	// head is the start of a packet to the address since the last ICMP error,
 	// for an ICMP error after a NoRoute of the relay.
 	head     []byte
 	lastICMP time.Time
 }
 
+// attempt is one start of an address. A renew cancels its context.
+type attempt struct {
+	ctx context.Context
+	gen uint64
+}
+
 type opening struct {
+	ctx  context.Context // Of the caller that opens.
 	done chan struct{}
 	err  error
 }
 
-// begin reports whether the caller starts a peer session for key now: no start
-// runs and no failed start waits. It keeps the start of pkt, a packet to the
-// address, for an ICMP error.
-func (s *starts) begin(key startKey, pkt []byte, now time.Time) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// entry returns the state of key, or nil at the address limit. s.mu must be
+// held.
+func (s *starts) entry(key startKey) *start {
 	st := s.addrs[key]
 	if st == nil {
 		if len(s.addrs) >= startEntries {
-			return false
+			return nil
 		}
 		if s.addrs == nil {
 			s.addrs = map[startKey]*start{}
@@ -76,26 +89,73 @@ func (s *starts) begin(key startKey, pkt []byte, now time.Time) bool {
 		st = &start{}
 		s.addrs[key] = st
 	}
+	return st
+}
+
+// run begins a start of st with a context from parent. s.mu must be held.
+func (s *starts) run(st *start, parent context.Context, visit bool) attempt {
+	ctx, cancel := context.WithCancelCause(parent)
+	s.gen++
+	st.running, st.gen, st.cancel, st.visit = true, s.gen, cancel, visit
+	return attempt{ctx: ctx, gen: s.gen}
+}
+
+// stop cancels the start of st that runs and ends its wait. s.mu must be held.
+func (s *starts) stop(st *start) {
+	if st.running {
+		st.cancel(errRenewed)
+	}
+	st.running, st.gen, st.cancel = false, 0, nil
+	st.until, st.wait = time.Time{}, 0
+}
+
+// begin reports whether the caller starts a peer session for key now: no start
+// runs and no failed start waits. It keeps the start of pkt, a packet to the
+// address, for an ICMP error.
+func (s *starts) begin(parent context.Context, key startKey, pkt []byte, now time.Time) (attempt, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.entry(key)
+	if st == nil {
+		return attempt{}, false
+	}
 	if pkt != nil && st.head == nil {
 		st.head = bytes.Clone(pkt[:min(len(pkt), maxICMPBody)])
 	}
 	if st.running || now.Before(st.until) {
-		return false
+		return attempt{}, false
 	}
-	st.running = true
-	return true
+	return s.run(st, parent, false), true
 }
 
-// end ends the start of key. After an error, the next try waits from lo, twice
-// as long for each error in a row, up to hi.
-func (s *starts) end(key startKey, err error, now time.Time, lo, hi time.Duration) {
+// renew begins the visit of a NoRoute for key. The NoRoute is newer, so it
+// ends a start of key or also that runs or waits. A NoRoute visit stays.
+func (s *starts) renew(parent context.Context, key, also startKey, now time.Time) (attempt, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.entry(key)
+	if st == nil || st.visit && (st.running || now.Before(st.until)) {
+		return attempt{}, false
+	}
+	// The NoRoute address can have its own start: see Agent.peerAddr.
+	if o := s.addrs[also]; also != key && o != nil && !o.visit {
+		s.stop(o)
+	}
+	s.stop(st)
+	return s.run(st, parent, true), true
+}
+
+// end ends the start at of key. After an error, the next try waits from lo,
+// twice as long for each error in a row, up to hi.
+func (s *starts) end(key startKey, at attempt, err error, now time.Time, lo, hi time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.addrs[key]
-	if st == nil {
+	if st == nil || st.gen != at.gen {
 		return
 	}
-	st.running = false
+	st.cancel(nil)
+	st.running, st.cancel = false, nil
 	if err == nil {
 		st.until, st.wait = time.Time{}, 0
 		return
@@ -118,15 +178,19 @@ func (s *starts) icmp(key startKey, now time.Time) []byte {
 	return head
 }
 
-// once runs open for key, or waits for the open of key that runs.
-func (s *starts) once(key startKey, open func() error) error {
+// once runs open for key, or waits for the open of key that runs. After an
+// open that a renew ended, a caller with a live ctx runs open itself.
+func (s *starts) once(ctx context.Context, key startKey, open func() error) error {
 	s.mu.Lock()
-	if o := s.opening[key]; o != nil {
+	for o := s.opening[key]; o != nil; o = s.opening[key] {
 		s.mu.Unlock()
 		<-o.done
-		return o.err
+		if ctx.Err() != nil || !errors.Is(context.Cause(o.ctx), errRenewed) {
+			return o.err
+		}
+		s.mu.Lock()
 	}
-	o := &opening{done: make(chan struct{})}
+	o := &opening{ctx: ctx, done: make(chan struct{})}
 	if s.opening == nil {
 		s.opening = map[startKey]*opening{}
 	}
@@ -166,14 +230,14 @@ func (a *Agent) onNoPeer(l *psp.Link, pkt []byte, rx bool) {
 		return
 	}
 	key := startKey{l, addr}
-	if a.starts.begin(key, head, time.Now()) {
-		go a.start(key)
+	if at, ok := a.starts.begin(context.Background(), key, head, time.Now()); ok {
+		go a.start(key, at)
 	}
 }
 
 // start opens a peer session for key. After an error, the next try waits.
-func (a *Agent) start(key startKey) {
-	ctx, cancel := context.WithTimeout(context.Background(), keysTimeout)
+func (a *Agent) start(key startKey, at attempt) {
+	ctx, cancel := context.WithTimeout(at.ctx, keysTimeout)
 	defer cancel()
 	err := a.reach(ctx, key)
 	switch {
@@ -182,7 +246,7 @@ func (a *Agent) start(key startKey) {
 	case err != nil:
 		slog.Debug("Failed to start a peer session; the packets use the default route", "address", key.addr, "error", err)
 	}
-	a.starts.end(key, err, time.Now(), a.retryMin, a.retryMax)
+	a.starts.end(key, at, err, time.Now(), a.retryMin, a.retryMax)
 }
 
 // sessionOf returns the attached or draining session with the link l, or nil.
@@ -226,7 +290,7 @@ func (a *Agent) reach(ctx context.Context, key startKey) error {
 	if err != nil {
 		return err
 	}
-	return a.starts.once(startKey{rc.link, addr}, func() error {
+	return a.starts.once(ctx, startKey{rc.link, addr}, func() error {
 		_, err := a.openPeer(ctx, rc, addr, res)
 		return err
 	})

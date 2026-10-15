@@ -97,21 +97,27 @@ func TestStarts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var s starts
 			start := time.Unix(1000, 0)
+			ctx := context.Background()
 			for i := range tc.fill {
-				s.begin(startKey{addr: netip.AddrFrom16([16]byte{0xfd, 1, 14: byte(i >> 8), 15: byte(i)})}, nil, start)
+				s.begin(ctx, startKey{addr: netip.AddrFrom16([16]byte{0xfd, 1, 14: byte(i >> 8), 15: byte(i)})}, nil, start)
 			}
 			key := startKey{addr: netip.MustParseAddr("fd00::1")}
 			pkt := make([]byte, 100)
 			if tc.rx {
 				pkt = nil
 			}
+			var last attempt
 			for i, st := range tc.steps {
 				now := start.Add(st.at)
 				switch st.op {
 				case begin:
-					assert.Equal(t, st.want, s.begin(key, pkt, now), "step %d: begin at %v", i, st.at)
+					at, ok := s.begin(ctx, key, pkt, now)
+					assert.Equal(t, st.want, ok, "step %d: begin at %v", i, st.at)
+					if ok {
+						last = at
+					}
 				case end:
-					s.end(key, st.err, now, lo, hi)
+					s.end(key, last, st.err, now, lo, hi)
 				case icmp:
 					assert.Equal(t, st.want, s.icmp(key, now) != nil, "step %d: ICMP error at %v", i, st.at)
 				case sweep:
@@ -139,11 +145,11 @@ func TestOnce(t *testing.T) {
 		var wg sync.WaitGroup
 		errs := make([]error, 4)
 		for i := range errs {
-			wg.Go(func() { errs[i] = s.once(k1, open) })
+			wg.Go(func() { errs[i] = s.once(t.Context(), k1, open) })
 		}
 		synctest.Wait()
 		assert.Equal(t, int32(1), runs.Load())
-		assert.NoError(t, s.once(k2, func() error { return nil }))
+		assert.NoError(t, s.once(t.Context(), k2, func() error { return nil }))
 		close(release)
 		wg.Wait()
 		assert.Equal(t, int32(1), runs.Load())
