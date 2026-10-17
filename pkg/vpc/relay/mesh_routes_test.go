@@ -1801,6 +1801,21 @@ func TestMemberLost(t *testing.T) {
 			delta: []string{"-x " + prefixR, "+y " + prefixR, "-x " + prefixA},
 		},
 		{
+			// The watcher sees the route of the address of x go only if the
+			// entries went at memberLostTime.
+			name: "member comes back before memberLostTime: the entries stay after it",
+			steps: func(w *routeWorld) {
+				w.lose("relay-a")
+				w.pass(memberLostTime - 2*time.Minute)
+				w.drain()
+				w.open("relay-a")
+				w.full("relay-a", x(10))
+				w.pass(2 * time.Minute)
+			},
+			order: normalOrder,
+			delta: []string{"-y " + prefixR, "+x " + prefixR + " standby=y"},
+		},
+		{
 			name: "member came back and is lost again: the time starts again",
 			steps: func(w *routeWorld) {
 				w.lose("relay-a")

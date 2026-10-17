@@ -810,6 +810,84 @@ func TestHoldTime(t *testing.T) {
 	}
 }
 
+// TestAttachHold checks that a new attachment of this relay replaces a live
+// active announcer of its prefix only 30 s after its attach.
+func TestAttachHold(t *testing.T) {
+	// The hold time of the design, and not the constant of the code.
+	const hold = 30 * time.Second
+	// x is the entry of relay-a. With rank 3, the new attachment y (rank 2) of
+	// the same agent comes first in the usual order.
+	x := func(rank uint32) *dp.Presence { return ranked(remoteEntry("x", 10, prefixR), rank) }
+	xFirst, yFirst := []string{"x@relay-a", "y@relay-m"}, []string{"y@relay-m", "x@relay-a"}
+	toY := []string{"-x " + prefixR, "+y " + prefixR + " standby=x"}
+	cases := []struct {
+		name string
+		// x returns the entry of x, which is active before the attach. It runs
+		// on the fake clock.
+		x func() *dp.Presence
+		// before is the order until the hold time of y ends, and after is the
+		// order from that end.
+		before, after []string
+		delta         []string // Changes that the watcher gets at that end.
+	}{
+		{
+			name:   "active announcer is normal: the new one waits for its hold time",
+			x:      func() *dp.Presence { return x(3) },
+			before: xFirst, after: yFirst, delta: toY,
+		},
+		{
+			// Each entry is held: the one whose hold ends first is active.
+			name:   "active announcer attached 10 s before: it stays until the hold time of the new one ends",
+			x:      func() *dp.Presence { return heldFor(x(3), hold-10*time.Second) },
+			before: xFirst, after: yFirst, delta: toY,
+		},
+		{
+			name:   "active announcer is suspect: the new one is active at once",
+			x:      func() *dp.Presence { return suspect(x(3)) },
+			before: yFirst, after: yFirst,
+		},
+		{
+			name:   "active announcer is draining: the new one is active at once",
+			x:      func() *dp.Presence { return draining(x(3)) },
+			before: yFirst, after: yFirst,
+		},
+		{
+			name:   "new one is after the active one in the usual order: no change",
+			x:      func() *dp.Presence { return x(1) },
+			before: xFirst, after: xFirst,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				w := newRouteWorld(t, NewRouter(nil, Config{}))
+				w.session("watcher", vpcA, agentID(vpcA, "watcher"), thisRevision())
+				local := w.session("local", vpcA, laptop, namedHello("base"))
+				w.send("relay-a", tc.x())
+				require.Equal(t, []string{"x@relay-a"}, entriesOf(w.r, prefixR))
+				w.drain()
+
+				y := attachment("y", prefixA)
+				y.Routes, y.Rank = []netip.Prefix{netip.MustParsePrefix(prefixR)}, 2
+				require.NoError(t, w.r.attach(local, y))
+				assert.Equal(t, tc.before, entriesOf(w.r, prefixR), "at the attach")
+				w.drain()
+
+				time.Sleep(hold - time.Nanosecond)
+				synctest.Wait()
+				assert.Equal(t, tc.before, entriesOf(w.r, prefixR), "before the end of the hold time")
+				assert.Empty(t, w.changes("watcher"), "changes in the hold time")
+
+				time.Sleep(time.Nanosecond)
+				synctest.Wait()
+				assert.Equal(t, tc.after, entriesOf(w.r, prefixR), "at the end of the hold time")
+				assert.Equal(t, tc.delta, w.changes("watcher"))
+				w.check()
+			})
+		})
+	}
+}
+
 // TestHoldTimer checks that the router has one timer for the hold times of all
 // prefixes, and that the selection runs again for each prefix at its time.
 func TestHoldTimer(t *testing.T) {
