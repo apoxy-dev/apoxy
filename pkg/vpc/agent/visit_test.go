@@ -131,6 +131,14 @@ func solePeer(a *Agent) *peer {
 func visitPair(t *testing.T, optsA, optsB agentOptions) (r1, r2 *testRelay, a, b *testAgent, ea, eb attachEvent) {
 	t.Helper()
 	w, r1, r2 := meshRelays(t)
+	a, b, ea, eb = pairOn(t, w, r1, r2, optsA, optsB)
+	return r1, r2, a, b, ea, eb
+}
+
+// pairOn is visitPair on the relays r1 and r2 of w.
+func pairOn(t *testing.T, w *world, r1, r2 *testRelay,
+	optsA, optsB agentOptions) (a, b *testAgent, ea, eb attachEvent) {
+	t.Helper()
 	a = w.agent(t, "a", r1, optsA)
 	ea = a.attached(t)
 	b = w.agent(t, "b", r2, optsB)
@@ -140,7 +148,7 @@ func visitPair(t *testing.T, optsA, optsB agentOptions) (r1, r2 *testRelay, a, b
 	echo(t, b.stack, eb.addr, 9000)
 	a.hasRoutes(t, eb.prefixes[0])
 	b.hasRoutes(t, ea.prefixes[0])
-	return r1, r2, a, b, ea, eb
+	return a, b, ea, eb
 }
 
 // TestVisitRules checks which agent of a pair visits, and which answers of a
@@ -755,19 +763,160 @@ func failStart(t *testing.T, a *Agent, key startKey) {
 	require.False(t, canBegin(a, key), "the failed start waits")
 }
 
-// TestNoRouteReplacesStart checks that a NoRoute with a home relay replaces a
-// start of the address that runs or waits, and keeps a visit of a NoRoute.
+// peerOf returns the address of the peer session that a start of key opens.
+func peerOf(t *testing.T, a *Agent, key startKey) netip.Addr {
+	t.Helper()
+	a.mu.Lock()
+	rc := a.sessionOf(key.link)
+	a.mu.Unlock()
+	addr, ok := a.peerAddr(rc, key.addr)
+	require.True(t, ok)
+	return addr
+}
+
+// opener is a start that got REACH_TRUNK. As in reach, it records its peer,
+// and its open waits for the end of the start or for release.
+type opener struct {
+	key     startKey
+	at      attempt
+	opened  chan error
+	release chan struct{}
+	ended   chan struct{}
+}
+
+// openStart begins an opener for key. The first one to a peer runs the open,
+// and the next ones wait for it.
+func openStart(t *testing.T, a *Agent, key startKey) *opener {
+	t.Helper()
+	at, ok := a.starts.begin(context.Background(), key, nil, time.Now())
+	require.True(t, ok)
+	peer := startKey{key.link, peerOf(t, a, key)}
+	require.True(t, a.starts.record(key, at, peer.addr))
+	waits := func(op *opening) int {
+		a.starts.mu.Lock()
+		defer a.starts.mu.Unlock()
+		return op.waits
+	}
+	a.starts.mu.Lock()
+	first := a.starts.opening[peer]
+	a.starts.mu.Unlock()
+	var before int
+	if first != nil {
+		before = waits(first)
+	}
+	o := &opener{key: key, at: at, opened: make(chan error, 1),
+		release: make(chan struct{}), ended: make(chan struct{})}
+	running := make(chan struct{})
+	go func() {
+		defer close(o.ended)
+		err := a.starts.once(at.ctx, peer, at, func() error {
+			close(running)
+			select {
+			case <-at.ctx.Done():
+				return context.Cause(at.ctx)
+			case <-o.release:
+				return nil
+			}
+		})
+		o.opened <- err
+		// The start ends after the check.
+		<-o.release
+		a.starts.end(key, at, err, time.Now(), time.Hour, time.Hour)
+	}()
+	if first == nil {
+		<-running
+		return o
+	}
+	require.Eventually(t, func() bool { return waits(first) > before },
+		time.Second, time.Millisecond, "the start waits for the open")
+	return o
+}
+
+// renewed checks that a NoRoute ended the start, and that its late end sets
+// no wait.
+func (o *opener) renewed(t *testing.T, a *Agent) {
+	t.Helper()
+	assert.ErrorIs(t, context.Cause(o.at.ctx), errRenewed, "the start ended")
+	close(o.release)
+	<-o.ended
+	require.Eventually(t, func() bool { return canBegin(a, o.key) },
+		time.Second, 10*time.Millisecond, "the old start set no wait")
+}
+
+// goesOn checks that the start runs, and then ends it.
+func (o *opener) goesOn(t *testing.T) {
+	t.Helper()
+	assert.NoError(t, o.at.ctx.Err(), "the start goes on")
+	close(o.release)
+	<-o.ended
+	assert.NoError(t, <-o.opened)
+}
+
+// TestNoRouteReplacesStart checks that a NoRoute with a home relay ends the
+// starts that open its peer, and their waits. A NoRoute visit stays.
 func TestNoRouteReplacesStart(t *testing.T) {
 	failed := errors.New("visit failed")
 	type setup func(t *testing.T, a *Agent, key startKey) (check func(t *testing.T))
+	startRuns := func(renewed bool) setup {
+		return func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+			o := openStart(t, a, key)
+			if renewed {
+				return func(t *testing.T) { o.renewed(t, a) }
+			}
+			return o.goesOn
+		}
+	}
+	// visitRuns begins a NoRoute visit of the peer of key. Its open runs
+	// until the check.
+	visitRuns := func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+		vkey := startKey{key.link, peerOf(t, a, key)}
+		ctx := context.Background()
+		at, ok := a.starts.renew(ctx, vkey, vkey.addr, time.Now())
+		require.True(t, ok)
+		release, ended := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(ended)
+			_ = a.starts.once(at.ctx, vkey, at, func() error {
+				<-release
+				return nil
+			})
+		}()
+		return func(t *testing.T) {
+			assert.NoError(t, at.ctx.Err(), "the visit goes on")
+			close(release)
+			<-ended
+			a.starts.end(vkey, at, nil, time.Now(), time.Hour, time.Hour)
+		}
+	}
+	// visitFails begins a NoRoute visit of the peer of key that fails and
+	// waits. The check finds the wait.
+	visitFails := func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+		vkey := startKey{key.link, peerOf(t, a, key)}
+		ctx := context.Background()
+		at, ok := a.starts.renew(ctx, vkey, vkey.addr, time.Now())
+		require.True(t, ok)
+		err := a.starts.once(at.ctx, vkey, at, func() error { return failed })
+		a.starts.end(vkey, at, err, time.Now(), time.Hour, time.Hour)
+		return func(t *testing.T) {
+			assert.False(t, canBegin(a, vkey), "the visit waits")
+		}
+	}
 	cases := []struct {
 		name   string
 		cut    bool // The mesh path is cut, so the relay answers REACH_VISIT.
 		home   bool // The NoRoute has a home relay.
 		second bool // The NoRoute is for a second address of b.
-		pre    setup
-		visit  bool // A visit of a to relay-2 opens.
-		// blocked: a start of the address runs or waits after the NoRoute.
+		// prefix: the start is for R in P, a prefix of b. The NoRoute
+		// names b, or R with namesR. twice: a second NoRoute names the
+		// other one after the first visit began.
+		prefix, namesR, twice bool
+		// Agent c on relay-1 has Q in P, a prefix with R: before
+		// the start with third, after it with add. withdraw: c stops
+		// after the start.
+		third, add, withdraw bool
+		pre                  setup
+		visit                bool // A visit of a to relay-2 opens.
+		// blocked: a start of the address runs or waits at the end.
 		blocked bool
 	}{
 		{
@@ -778,59 +927,149 @@ func TestNoRouteReplacesStart(t *testing.T) {
 			},
 		},
 		{
-			// The start got REACH_TRUNK, and its open waits for lost keys.
 			name: "start runs", cut: true, home: true, visit: true,
+			pre: startRuns(true),
+		},
+		{
+			// The visit of b waits for the open of the start of R.
+			name: "start of an address in a prefix of the peer runs",
+			cut:  true, home: true, prefix: true, visit: true,
+			pre: startRuns(true),
+		},
+		{
+			name: "start in a prefix of the peer runs, and NoRoute names it",
+			cut:  true, home: true, prefix: true, namesR: true, visit: true,
+			pre: startRuns(true),
+		},
+		{
+			name: "NoRoute for the peer, then one for the address",
+			cut:  true, home: true, prefix: true, twice: true, visit: true,
+			pre: startRuns(true),
+		},
+		{
+			name: "NoRoute for the address, then one for the peer",
+			cut:  true, home: true, prefix: true, namesR: true, twice: true,
+			visit: true, pre: startRuns(true),
+		},
+		{
+			// The start of R+1 waits for the open of R.
+			name: "two starts in a prefix of the peer run",
+			cut:  true, home: true, prefix: true, visit: true,
 			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
-				at, ok := a.starts.begin(context.Background(), key, nil, time.Now())
-				require.True(t, ok)
-				opened, release, ended := make(chan error, 1), make(chan struct{}), make(chan struct{})
-				running := make(chan struct{})
-				go func() {
-					defer close(ended)
-					err := a.starts.once(at.ctx, key, func() error {
-						close(running)
-						<-at.ctx.Done()
-						return context.Cause(at.ctx)
-					})
-					opened <- err
-					// The old start ends after the visit, with an error.
-					<-release
-					a.starts.end(key, at, err, time.Now(), time.Hour, time.Hour)
-				}()
-				<-running
+				o := openStart(t, a, key)
+				next := openStart(t, a, startKey{key.link, key.addr.Next()})
 				return func(t *testing.T) {
-					select {
-					case err := <-opened:
-						assert.ErrorIs(t, err, errRenewed)
-					case <-time.After(time.Second):
-						t.Fatal("the open of the old start did not end")
-					}
-					close(release)
-					<-ended
-					assert.True(t, canBegin(a, key), "the old start set no wait")
+					o.renewed(t, a)
+					next.renewed(t, a)
 				}
 			},
 		},
 		{
-			name: "visit of a NoRoute runs", cut: true, home: true, blocked: true,
+			// The longer prefix of c routes the address, not P.
+			name: "start to a third peer whose prefix is in the peer prefix",
+			cut:  true, home: true, prefix: true, third: true, visit: true,
+			pre: startRuns(false),
+		},
+		{
+			// The start opens c, also when P routes R again.
+			name: "start to a third peer, and the third peer stops",
+			cut:  true, home: true, prefix: true, third: true, withdraw: true,
+			visit: true, pre: startRuns(false),
+		},
+		{
+			// R has a peer: a NoRoute for R ends its start only when
+			// the start opens b.
+			name: "start to a third peer, the third peer stops, NoRoute names it",
+			cut:  true, home: true, prefix: true, third: true, withdraw: true,
+			namesR: true, visit: true, pre: startRuns(false),
+		},
+		{
+			// The start opens b, also when Q of c routes R now.
+			name: "start in a prefix of the peer, and a third peer starts",
+			cut:  true, home: true, prefix: true, add: true, visit: true,
+			pre: startRuns(true),
+		},
+		{
+			// The NoRoute ends the backoff of R+1. A sweep can
+			// forget R+1: the check looks at its next wait.
+			name: "start in a prefix of the peer failed, and its wait ended",
+			cut:  true, home: true, prefix: true, visit: true,
 			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
-				at, ok := a.starts.renew(context.Background(), key, key, time.Now())
+				next := startKey{key.link, key.addr.Next()}
+				past := time.Now().Add(-4 * time.Hour)
+				ctx := context.Background()
+				at, ok := a.starts.begin(ctx, next, nil, past)
 				require.True(t, ok)
+				require.True(t, a.starts.record(next, at, peerOf(t, a, next)))
+				a.starts.end(next, at, failed, past, 3*time.Hour, 3*time.Hour)
 				return func(t *testing.T) {
-					assert.NoError(t, at.ctx.Err(), "the visit goes on")
-					a.starts.end(key, at, nil, time.Now(), time.Hour, time.Hour)
-					assert.True(t, canBegin(a, key))
+					now := time.Now()
+					at, ok := a.starts.begin(ctx, next, nil, now)
+					require.True(t, ok, "a start of R+1 begins")
+					a.starts.end(next, at, failed, now, time.Hour, 10*time.Hour)
+					later := now.Add(90 * time.Minute)
+					at, ok = a.starts.begin(ctx, next, nil, later)
+					assert.True(t, ok, "the next error waits the first wait")
+					a.starts.end(next, at, nil, now, time.Hour, time.Hour)
 				}
 			},
+		},
+		{
+			// R has no peer: the NoRoute for R also ends its wait.
+			name: "failed start in a prefix with no peer, NoRoute names it",
+			cut:  true, home: true, prefix: true, namesR: true, visit: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				failStart(t, a, key)
+				return nil
+			},
+		},
+		{
+			// R has no peer, and the NoRoute names b, not R.
+			name: "failed start in a prefix with no peer, NoRoute names b",
+			cut:  true, home: true, prefix: true, visit: true, blocked: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				failStart(t, a, key)
+				return nil
+			},
+		},
+		{
+			// The visit of b began before the NoRoute for R. It stays,
+			// and the wait of R ends.
+			name: "failed start with no peer, visit of the peer runs, " +
+				"NoRoute names it",
+			cut: true, home: true, prefix: true, namesR: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				failStart(t, a, key)
+				return visitRuns(t, a, key)
+			},
+		},
+		{
+			name: "failed start with no peer, visit of the peer failed, " +
+				"NoRoute names it",
+			cut: true, home: true, prefix: true, namesR: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				failStart(t, a, key)
+				return visitFails(t, a, key)
+			},
+		},
+		{
+			// The NoRoute for R begins the visit, and the one for b
+			// finds it.
+			name: "failed start with no peer, NoRoute names it, then the peer",
+			cut:  true, home: true, prefix: true, namesR: true, twice: true,
+			visit: true,
+			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
+				failStart(t, a, key)
+				return nil
+			},
+		},
+		{
+			name: "visit of a NoRoute runs", cut: true, home: true,
+			pre: visitRuns,
 		},
 		{
 			name: "visit of a NoRoute failed and waits", cut: true, home: true, blocked: true,
-			pre: func(t *testing.T, a *Agent, key startKey) func(*testing.T) {
-				at, ok := a.starts.renew(context.Background(), key, key, time.Now())
-				require.True(t, ok)
-				a.starts.end(key, at, failed, time.Now(), time.Hour, time.Hour)
-				return nil
-			},
+			pre: visitFails,
 		},
 		{
 			name: "no home relay", cut: true, blocked: true,
@@ -859,17 +1098,42 @@ func TestNoRouteReplacesStart(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			r1, r2, a, b, _, eb := visitPair(t,
-				agentOptions{mode: TransportAuto, visitCheck: time.Hour},
-				agentOptions{mode: TransportAuto, visitCheck: time.Hour, visitWait: time.Hour})
-			dst := eb.addr
+			pfx := netip.MustParsePrefix("2001:db8:1::/64")
+			in := netip.MustParsePrefix("2001:db8:1:0:1::/80")
+			optsA := agentOptions{mode: TransportAuto, visitCheck: time.Hour}
+			optsB := optsA
+			optsB.visitWait = time.Hour
+			if tc.prefix {
+				optsB.routes = []netip.Prefix{pfx}
+			}
+			optsC := agentOptions{mode: TransportAuto}
+			optsC.routes = []netip.Prefix{in}
+			w, r1, r2 := meshRelays(t)
+			a, b, _, eb := pairOn(t, w, r1, r2, optsA, optsB)
+			dst, named := eb.addr, eb.addr
+			if tc.prefix {
+				a.hasRoutes(t, pfx)
+				dst = pfx.Addr().Next()
+			}
+			var c *testAgent
+			if tc.third {
+				c = w.agent(t, "c", r1, optsC)
+				c.attached(t)
+				a.hasRoutes(t, in)
+			}
+			if tc.third || tc.add {
+				dst = in.Addr().Next()
+			}
+			if tc.namesR {
+				named = dst
+			}
 			if tc.second {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				x, err := b.a.Attach(ctx, AttachmentSpec{Name: "b-2"})
 				require.NoError(t, err)
 				a.hasRoutes(t, x.Prefixes[0])
-				dst = x.Address
+				dst, named = x.Address, x.Address
 			}
 			if tc.cut {
 				cutMesh(r1, r2)
@@ -880,12 +1144,47 @@ func TestNoRouteReplacesStart(t *testing.T) {
 			rc := a.current()
 			key := startKey{rc.link, dst}
 			check := tc.pre(t, a.a, key)
+			// The route of dst changes while its start opens.
+			routedBy := func(want bool) func() bool {
+				return func() bool {
+					addr, ok := a.a.peerAddr(rc, dst)
+					return ok && (addr == eb.addr) == want
+				}
+			}
+			switch {
+			case tc.withdraw:
+				c.stop()
+				require.Eventually(t, routedBy(true), 5*time.Second,
+					10*time.Millisecond, "P routes R")
+			case tc.add:
+				w.agent(t, "c", r1, optsC).attached(t)
+				require.Eventually(t, routedBy(false), 5*time.Second,
+					10*time.Millisecond, "Q routes R")
+			}
 
-			m := &dp.NoRoute{Vpc: rc.ref, Address: dst.String()}
+			m := &dp.NoRoute{Vpc: rc.ref, Address: named.String()}
 			if tc.home {
 				m.HomeRelay = r2.relayRef()
 			}
 			a.a.noRoute(rc, m)
+			if tc.twice {
+				began := func() bool {
+					s := &a.a.starts
+					s.mu.Lock()
+					defer s.mu.Unlock()
+					st := s.addrs[startKey{rc.link, eb.addr}]
+					return st != nil && st.visit
+				}
+				require.Eventually(t, func() bool {
+					return visitCount(a.a) != 0 || began()
+				}, 5*time.Second, 10*time.Millisecond, "the first visit began")
+				other := eb.addr
+				if named == eb.addr {
+					other = dst
+				}
+				a.a.noRoute(rc, &dp.NoRoute{Vpc: rc.ref,
+					Address: other.String(), HomeRelay: r2.relayRef()})
+			}
 			if tc.visit {
 				require.Eventually(t, func() bool {
 					v := visitOf(a.a, r2)
@@ -895,14 +1194,15 @@ func TestNoRouteReplacesStart(t *testing.T) {
 				require.Never(t, func() bool { return visitCount(a.a) != 0 },
 					500*time.Millisecond, 10*time.Millisecond, "no visit")
 			}
+			// The old start ends before the first new start of key.
+			if check != nil {
+				check(t)
+			}
 			if tc.blocked {
 				assert.False(t, canBegin(a.a, key), "a start runs or waits")
 			} else {
 				require.Eventually(t, func() bool { return canBegin(a.a, key) },
 					time.Second, 10*time.Millisecond, "no start runs or waits")
-			}
-			if check != nil {
-				check(t)
 			}
 		})
 	}

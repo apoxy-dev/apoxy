@@ -144,9 +144,8 @@ func (a *Agent) cutFrom(ctx context.Context, p *peer) bool {
 	return found
 }
 
-// visitAfterNoRoute asks rc again how it reaches dst, and starts the visit if
-// the answer is still a visit. Another answer sets the path of dst to up again.
-// It replaces a start of dst that runs or waits: see starts.renew.
+// visitAfterNoRoute ends the starts to the peer of dst on rc, and visits it if
+// rc still answers REACH_VISIT. If rc reaches it, its path is up again.
 func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 	if rc.visitor() {
 		return
@@ -156,13 +155,13 @@ func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
 		return
 	}
 	key := startKey{rc.link, addr}
-	at, ok := a.starts.renew(rc.ctx, key, startKey{rc.link, dst}, time.Now())
+	at, ok := a.starts.renew(rc.ctx, key, dst, time.Now())
 	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(at.ctx, keysTimeout)
 	defer cancel()
-	err := a.starts.once(ctx, key, func() error {
+	err := a.starts.once(ctx, key, at, func() error {
 		res, err := rc.resolve(ctx, addr)
 		if err != nil {
 			return err
@@ -557,7 +556,10 @@ func (a *Agent) checkVisit(v *visit) bool {
 		a.closePeers(func(p *peer) bool { return back[p] != nil }, "home relay reaches the peer again")
 	}
 	for p, res := range back {
-		err := a.starts.once(ctx, startKey{v.home.link, p.addr}, func() error { return a.connect(ctx, v.home, p.addr, res) })
+		key := startKey{v.home.link, p.addr}
+		err := a.starts.once(ctx, key, attempt{}, func() error {
+			return a.connect(ctx, v.home, p.addr, res)
+		})
 		if err != nil {
 			slog.Warn("Failed to move a peer session back from a visit", "peer", p.addr, "error", err)
 			continue

@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -145,11 +147,12 @@ func TestOnce(t *testing.T) {
 		var wg sync.WaitGroup
 		errs := make([]error, 4)
 		for i := range errs {
-			wg.Go(func() { errs[i] = s.once(t.Context(), k1, open) })
+			wg.Go(func() { errs[i] = s.once(t.Context(), k1, attempt{}, open) })
 		}
 		synctest.Wait()
 		assert.Equal(t, int32(1), runs.Load())
-		assert.NoError(t, s.once(t.Context(), k2, func() error { return nil }))
+		none := func() error { return nil }
+		assert.NoError(t, s.once(t.Context(), k2, attempt{}, none))
 		close(release)
 		wg.Wait()
 		assert.Equal(t, int32(1), runs.Load())
@@ -158,6 +161,146 @@ func TestOnce(t *testing.T) {
 		}
 		assert.Empty(t, s.opening)
 	})
+}
+
+// TestStartsRenew checks which starts a renew ends, and that the visit runs its
+// own open after the open that runs, whatever opens the peer after the renew.
+func TestStartsRenew(t *testing.T) {
+	link, peer := &psp.Link{}, netip.MustParseAddr("fd00::1")
+	other := netip.MustParseAddr("fd00::2")
+	cases := []struct {
+		name     string
+		link     *psp.Link  // Of the old start, if not link.
+		peer     netip.Addr // That the old start opens, if not peer.
+		late     bool       // The old start opens after the renew.
+		last     bool       // The old start opens after the visit.
+		deadline bool       // The deadline of the old open came first.
+		waiters  int        // Callers with no start that wait for the old open.
+		next     bool       // A new start opens the peer after the renew.
+		ended    bool       // The renew ends the old start.
+	}{
+		{name: "start opens the peer", ended: true},
+		{name: "deadline of the open came first", deadline: true, ended: true},
+		{name: "ended start opens after the renew", late: true, ended: true},
+		{name: "ended start opens after the visit", last: true, ended: true},
+		{name: "two callers wait for the open", waiters: 2, ended: true},
+		{name: "new start opens the peer later", peer: other, next: true},
+		{name: "start on another link", link: &psp.Link{}},
+		{name: "start opens another peer", peer: other},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var s starts
+				l, p := cmp.Or(tc.link, link), cmp.Or(tc.peer, peer)
+				key := startKey{l, netip.MustParseAddr("fd00::1:2")}
+				at, ok := s.begin(t.Context(), key, nil, time.Now())
+				require.True(t, ok)
+				require.True(t, s.record(key, at, p))
+				ctx, cancel := context.WithTimeout(at.ctx, time.Second)
+				defer cancel()
+				// The old open ends late, as a slow dial.
+				// The other opens wait for the test.
+				oldDone, othersDone := make(chan struct{}), make(chan struct{})
+				var oldRuns, visitRuns, otherRuns atomic.Int32
+				var oldErr, visitErr error
+				errs := make([]error, tc.waiters+1)
+				later := func() error {
+					otherRuns.Add(1)
+					<-othersDone
+					return nil
+				}
+				pkey := startKey{l, p}
+				var wg sync.WaitGroup
+				openOld := func() {
+					oldErr = s.once(ctx, pkey, at, func() error {
+						oldRuns.Add(1)
+						<-oldDone
+						return context.Cause(ctx)
+					})
+				}
+				if !tc.late && !tc.last {
+					wg.Go(openOld)
+					synctest.Wait()
+				}
+				for i := range tc.waiters {
+					wg.Go(func() {
+						errs[i] = s.once(t.Context(), pkey, attempt{}, later)
+					})
+				}
+				synctest.Wait()
+				if tc.deadline {
+					time.Sleep(2 * time.Second)
+				}
+				vkey := startKey{link, peer}
+				vat, ok := s.renew(t.Context(), vkey, peer, time.Now())
+				require.True(t, ok)
+				if tc.late {
+					wg.Go(openOld)
+				}
+				if tc.next {
+					nkey := startKey{link, netip.MustParseAddr("fd00::1:3")}
+					nat, ok := s.begin(t.Context(), nkey, nil, time.Now())
+					require.True(t, ok)
+					require.True(t, s.record(nkey, nat, peer))
+					wg.Go(func() {
+						errs[tc.waiters] = s.once(nat.ctx, vkey, nat, later)
+					})
+				}
+				synctest.Wait()
+				if tc.waiters > 0 {
+					close(oldDone)
+					synctest.Wait()
+				}
+				wg.Go(func() {
+					visitErr = s.once(vat.ctx, vkey, vat, func() error {
+						visitRuns.Add(1)
+						return nil
+					})
+				})
+				synctest.Wait()
+				if tc.last {
+					wg.Go(openOld)
+					synctest.Wait()
+				}
+				if tc.ended {
+					assert.ErrorIs(t, context.Cause(at.ctx), errRenewed)
+				} else {
+					assert.NoError(t, at.ctx.Err(), "the start goes on")
+				}
+				n := visitRuns.Load()
+				if tc.ended && !tc.late && !tc.last && tc.waiters == 0 {
+					assert.Zero(t, n, "the visit waits")
+				} else {
+					assert.EqualValues(t, 1, n, "the visit opens")
+				}
+				if tc.waiters == 0 {
+					close(oldDone)
+				}
+				close(othersDone)
+				wg.Wait()
+				assert.EqualValues(t, 1, visitRuns.Load(), "the visit opened")
+				assert.NoError(t, visitErr)
+				assert.Zero(t, otherRuns.Load(), "the later callers waited")
+				for _, err := range errs {
+					assert.NoError(t, err, "the later callers got the visit")
+				}
+				switch {
+				case tc.late:
+					assert.Zero(t, oldRuns.Load(), "the ended start opened")
+				case tc.last:
+					assert.Zero(t, oldRuns.Load(), "the ended start opened")
+					assert.ErrorIs(t, oldErr, errRenewed)
+				case tc.deadline:
+					assert.ErrorIs(t, oldErr, context.DeadlineExceeded)
+				case tc.ended:
+					assert.ErrorIs(t, oldErr, errRenewed)
+				default:
+					assert.NoError(t, oldErr)
+				}
+			})
+		})
+	}
 }
 
 // sendOnce sends msg once from src to dst:port and waits for the echo.
