@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -40,6 +39,10 @@ import (
 
 const (
 	proxyReplicaPendingTimeout = 5 * time.Minute
+	// statusWriteTimeout bounds the terminating status write on shutdown.
+	statusWriteTimeout = 5 * time.Second
+	// terminatingRequeue polls a terminating replica: an Envoy exit triggers no reconcile.
+	terminatingRequeue = time.Second
 )
 
 var _ reconcile.Reconciler = &ProxyReconciler{}
@@ -67,6 +70,7 @@ type options struct {
 	useEnvoyContrib              bool
 	overloadMaxHeapSizeBytes     *uint64
 	overloadMaxActiveConnections *uint64
+	envoyOpts                    []envoy.Option
 }
 
 // Option is a functional option for ProxyReconciler.
@@ -139,6 +143,28 @@ func WithOverloadMaxActiveConnections(count uint64) Option {
 	}
 }
 
+// WithDrainIdleExitQuietPeriod sets the quiet period of the drain idle exit.
+// Zero disables it.
+func WithDrainIdleExitQuietPeriod(d time.Duration) Option {
+	return func(o *options) {
+		o.envoyOpts = append(o.envoyOpts, envoy.WithDrainIdleExitQuietPeriod(d))
+	}
+}
+
+// WithDrainIdleExitTestPause sets the test-only pause after the idle decision.
+func WithDrainIdleExitTestPause(d time.Duration) Option {
+	return func(o *options) {
+		o.envoyOpts = append(o.envoyOpts, envoy.WithDrainIdleExitTestPause(d))
+	}
+}
+
+// WithDrainPhaseHook sets the hook called on every drain phase change.
+func WithDrainPhaseHook(f func(envoy.DrainPhase)) Option {
+	return func(o *options) {
+		o.envoyOpts = append(o.envoyOpts, envoy.WithDrainPhaseHook(f))
+	}
+}
+
 func defaultOptions() *options {
 	return &options{}
 }
@@ -164,6 +190,35 @@ func NewProxyReconciler(
 		localPrivAddr: localPrivAddr,
 		apiServerHost: apiServerHost,
 		options:       sOpts,
+	}
+}
+
+// replicaDeletion moves the replica of a deleted Proxy towards Stopped and
+// reports when to reconcile again.
+func replicaDeletion(logger *slog.Logger, stopped bool, ps envoy.RuntimeStatus, rStatus *ctrlv1alpha1.ProxyReplicaStatus) time.Duration {
+	// If state was terminating and proxy is not running, we can set status to stopped
+	// at which point the main proxy controller will delete the proxy.
+	if stopped {
+		rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseStopped
+		rStatus.Reason = fmt.Sprintf("Proxy replica exited: %v", ps.ProcState)
+		return 0
+	}
+	if rStatus.Phase == ctrlv1alpha1.ProxyReplicaPhaseTerminating {
+		logger.Info("Proxy is terminating")
+		return terminatingRequeue
+	}
+	logger.Info("Deleting Proxy", "phase", rStatus.Phase)
+	rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseTerminating
+	rStatus.Reason = "Proxy is being deleted"
+	return terminatingRequeue
+}
+
+func isClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -269,32 +324,15 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 	if !p.ObjectMeta.DeletionTimestamp.IsZero() { // The object is being deleted
 		logger.Info("Proxy is being deleted")
 
-		// If state was terminating and proxy is not running, we can set status to stopped
-		// at which point the main proxy controller will delete the proxy.
-		if ps.Running {
-			switch rStatus.Phase {
-			case ctrlv1alpha1.ProxyReplicaPhaseRunning:
-				logger.Info("Deleting Proxy")
-				if err := r.Runtime.Shutdown(ctx); err != nil {
-					return reconcile.Result{}, fmt.Errorf("failed to shutdown proxy: %w", err)
-				}
-				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseTerminating
-				rStatus.Reason = "Proxy is being deleted"
-			case ctrlv1alpha1.ProxyReplicaPhaseTerminating:
-				logger.Info("Proxy is terminating")
-			case ctrlv1alpha1.ProxyReplicaPhaseStopped, ctrlv1alpha1.ProxyReplicaPhaseFailed:
-				logger.Error("Proxy process is running but status is stopped or failed", "phase", rStatus.Phase)
-			}
-		} else {
-			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseStopped
-			rStatus.Reason = fmt.Sprintf("Proxy replica exited: %v", ps.ProcState)
-		}
+		// Every deletion stops the supervisor, which may be between a crash and a restart.
+		stopped := r.Runtime.BeginStop()
+		requeueAfter := replicaDeletion(logger, isClosed(stopped), ps, rStatus)
 
 		if err := r.Status().Update(ctx, p); err != nil {
 			return reconcile.Result{}, fmt.Errorf("failed to update Proxy: %w", err)
 		}
 
-		return ctrl.Result{}, nil // Deleted.
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil // Deleted once requeueAfter is zero.
 	}
 
 	var requeueAfter time.Duration
@@ -360,6 +398,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			envoy.WithAdminHost(adminHost),
 			envoy.WithLogsDir("/var/log/apoxy"),
 		}
+		opts = append(opts, r.options.envoyOpts...)
 		if r.options.releaseURL != "" {
 			opts = append(opts, envoy.WithRelease(&envoy.URLRelease{
 				URL: r.options.releaseURL,
@@ -386,7 +425,10 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			opts = append(opts, envoy.WithLogsCollector(lc))
 		}
 
-		if err := r.Start(ctx, opts...); err != nil {
+		if err := r.Start(ctx, opts...); goerrors.Is(err, envoy.ErrShutDown) {
+			logger.Info("Not starting Envoy: backplane is shutting down")
+			return reconcile.Result{}, nil
+		} else if err != nil {
 			if fatalErr, ok := err.(envoy.FatalError); ok {
 				logger.Error("failed to create proxy replica", "error", fatalErr)
 				rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
@@ -421,18 +463,17 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseRunning
 			rStatus.Reason = "Running"
 		case ctrlv1alpha1.ProxyReplicaPhaseTerminating:
-			if err := r.Runtime.Shutdown(ctx); err != nil {
-				rStatus.Reason = fmt.Sprintf("Failed to shutdown proxy: %v", err)
-			}
+			r.Runtime.BeginShutdown()
 		case ctrlv1alpha1.ProxyReplicaPhaseStopped:
 			// Replica is stopped but the process still running.
 			logger.Info("Proxy is stopped but process is still running")
 			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseFailed
 			rStatus.Reason = "Proxy is stopped but process is still running"
 		case ctrlv1alpha1.ProxyReplicaPhaseFailed:
-			// Replica is failed but the process still running.
-			logger.Info("Proxy is failed but process is still running")
-			rStatus.Reason = "Proxy is failed but process is still running"
+			// The supervisor restarted Envoy after a crash.
+			logger.Info("Proxy recovered", "start_time", ps.StartedAt)
+			rStatus.Phase = ctrlv1alpha1.ProxyReplicaPhaseRunning
+			rStatus.Reason = "Recovered"
 		case ctrlv1alpha1.ProxyReplicaPhaseRunning: // Do nothing.
 		}
 	} else {
@@ -532,19 +573,13 @@ func (r *ProxyReconciler) DownloadEnvoy(ctx context.Context) error {
 	return nil
 }
 
-func (r *ProxyReconciler) Shutdown(ctx context.Context, reason string) {
-	var wg sync.WaitGroup
-	wg.Add(2)
+// Shutdown never waits on the status write, so a slow API server cannot eat the drain.
+func (r *ProxyReconciler) Shutdown(ctx context.Context, reason string, drainEnd time.Time) (stopped, done <-chan struct{}) {
+	stopped, done = r.Runtime.BeginShutdownBy(drainEnd)
 
 	go func() {
-		defer wg.Done()
-		if err := r.Runtime.Shutdown(ctx); err != nil {
-			slog.Warn("Failed to shutdown proxy", "error", err)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusWriteTimeout)
+		defer cancel()
 		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 			p := &ctrlv1alpha1.Proxy{}
 			err := r.Get(ctx, types.NamespacedName{Name: r.proxyName}, p)
@@ -577,5 +612,5 @@ func (r *ProxyReconciler) Shutdown(ctx context.Context, reason string) {
 		}
 	}()
 
-	wg.Wait()
+	return stopped, done
 }

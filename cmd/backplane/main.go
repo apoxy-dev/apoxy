@@ -103,6 +103,11 @@ var (
 
 	dnsPort  = flag.Int("dns_port", 8053, "Port for the DNS server.")
 	extIface = flag.String("ext_iface", "eth0", "External interface name.")
+
+	shutdownGracePeriod      = flag.Duration("shutdown_grace_period", 0, "The pod's termination grace period. The shutdown finishes 2s before it. Zero means the drain timeout plus 5s.")
+	kvLeaveOnShutdown        = flag.Bool("kv_leave_on_shutdown", true, "Leave the K/V cluster after Envoy stops on SIGTERM.")
+	drainIdleExitQuietPeriod = flag.Duration("drain_idle_exit_quiet_period", 10*time.Second, "End the drain once Envoy has been idle this long. Zero disables the idle exit.")
+	drainIdleExitTestPause   = flag.Duration("drain_idle_exit_test_pause", 0, "Test only: pause between the idle decision and the Envoy stop.")
 )
 
 func upsertProxyFromPath(ctx context.Context, rC *rest.Config, path string) (string, error) {
@@ -306,6 +311,9 @@ func main() {
 	log.Infof("Setting up controllers...")
 	proxyOpts := []bpctrl.Option{
 		bpctrl.WithGoPluginDir(*goPluginDir),
+		bpctrl.WithDrainIdleExitQuietPeriod(*drainIdleExitQuietPeriod),
+		bpctrl.WithDrainIdleExitTestPause(*drainIdleExitTestPause),
+		bpctrl.WithDrainPhaseHook(setDrainPhase),
 	}
 	if chConn != nil {
 		proxyOpts = append(proxyOpts, bpctrl.WithClickHouseConn(chConn), bpctrl.WithClickHouseOptions(chOpts))
@@ -430,14 +438,27 @@ func main() {
 	go func() {
 		<-sig
 		log.Infof("Received SIGTERM, shutting down")
-		pctrl.Shutdown(ctx, "received SIGTERM") // Blocks until all resources are released.
-		metricsCancel()                         // Cancel metrics server context
-		os.Exit(0)
+		shutdownSequence(shutdownDeps{
+			grace:        *shutdownGracePeriod,
+			budget:       defaultShutdownBudget,
+			leaveEnabled: *kvLeaveOnShutdown,
+			drainTimeout: pctrl.Runtime.DrainTimeout,
+			shutdown: func(drainEnd time.Time) (<-chan struct{}, <-chan struct{}) {
+				return pctrl.Shutdown(ctx, "received SIGTERM", drainEnd)
+			},
+			killEnvoy: pctrl.Runtime.KillEnvoy,
+			leave:     kv.Leave,
+			leaveErr:  kv.LeaveErr,
+			phase:     setDrainPhase,
+			exit: func(code int) {
+				metricsCancel() // Cancel metrics server context
+				os.Exit(code)
+			},
+		})
 	}()
 
 	log.Infof("Starting manager")
 	if err := mgr.Start(ctx); err != nil {
 		log.Fatalf("unable to start manager: %v", err)
 	}
-	kv.Stop(context.Background())
 }
