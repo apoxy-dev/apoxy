@@ -1,0 +1,109 @@
+{
+ "configs": [
+  {
+   "@type": "type.googleapis.com/envoy.admin.v3.ListenersConfigDump.DynamicListener",
+   "name": "http-10080",
+   "active_state": {
+    "listener": {
+     "@type": "type.googleapis.com/envoy.config.listener.v3.Listener",
+     "name": "http-10080",
+     "address": {
+      "socket_address": {
+       "address": "0.0.0.0",
+       "port_value": 10080
+      }
+     },
+     "filter_chains": [
+      {
+       "filters": [
+        {
+         "name": "envoy.filters.network.http_connection_manager",
+         "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+          "stat_prefix": "http",
+          "route_config": {
+           "name": "local",
+           "virtual_hosts": [
+            {
+             "name": "all",
+             "domains": [
+              "*"
+             ],
+             "routes": [
+              {
+               "match": {
+                "prefix": "/"
+               },
+               "direct_response": {
+                "status": 200,
+                "body": {
+                 "inline_string": "ok\n"
+                }
+               }
+              }
+             ]
+            }
+           ]
+          },
+          "http_filters": [
+           {
+            "name": "envoy.filters.http.router",
+            "typed_config": {
+             "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
+            }
+           }
+          ],
+          "http2_protocol_options": {}
+         }
+        }
+       ]
+      }
+     ],
+     "per_connection_buffer_limit_bytes": 2097152
+    },
+    "last_updated": "2026-10-21T00:01:26.651Z"
+   }
+  },
+  {
+   "@type": "type.googleapis.com/envoy.admin.v3.ListenersConfigDump.DynamicListener",
+   "name": "tcp-10443",
+   "active_state": {
+    "listener": {
+     "@type": "type.googleapis.com/envoy.config.listener.v3.Listener",
+     "name": "tcp-10443",
+     "address": {
+      "socket_address": {
+       "address": "0.0.0.0",
+       "port_value": 10443
+      }
+     },
+     "filter_chains": [
+      {
+       "filters": [
+        {
+         "name": "envoy.filters.network.tcp_proxy",
+         "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy",
+          "stat_prefix": "passthrough",
+          "cluster": "self_http"
+         }
+        }
+       ]
+      }
+     ],
+     "per_connection_buffer_limit_bytes": 1048576,
+     "listener_filters": [
+      {
+       "name": "envoy.filters.listener.tls_inspector",
+       "typed_config": {
+        "@type": "type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector"
+       }
+      }
+     ],
+     "listener_filters_timeout": "120s"
+    },
+    "last_updated": "2026-10-21T00:01:26.651Z"
+   }
+  }
+ ]
+}
