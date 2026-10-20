@@ -63,6 +63,7 @@ spec:
           args:
             - --proxy={{ .Values.backplane.proxy.name }}
             - --apiserver_addr={{ include "apoxy-gateway.fullname" . }}-apiserver
+            - --shutdown_grace_period={{ .Values.backplane.proxy.drainTimeoutSeconds | add 20 }}s
           {{- if gt (.Values.backplane.overload.maxHeapSizeBytes | int) 0 }}
             - --overload-max-heap-size-bytes={{ .Values.backplane.overload.maxHeapSizeBytes }}
           {{- end }}
@@ -119,9 +120,8 @@ spec:
           lifecycle:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-      # Set the termination grace period to the drain timeout plus a buffer
-      # to allow for the proxy to finish draining connections.
-      terminationGracePeriodSeconds: {{ .Values.backplane.proxy.drainTimeoutSeconds | add 5 }}
+      # Match --shutdown_grace_period: reserve time to stop Envoy and leave the K/V cluster.
+      terminationGracePeriodSeconds: {{ .Values.backplane.proxy.drainTimeoutSeconds | add 20 }}
       {{- with .Values.backplane.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

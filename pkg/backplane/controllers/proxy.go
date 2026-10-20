@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"crypto/tls"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -67,6 +68,7 @@ type options struct {
 	projectID                    string
 	otelMetricSinkHost           string
 	otelMetricSinkPort           uint32
+	envoyOpts                    []envoy.Option
 }
 
 // Option is a functional option for ProxyReconciler.
@@ -154,6 +156,28 @@ func WithOtelMetricSink(host string, port uint32) Option {
 	return func(o *options) {
 		o.otelMetricSinkHost = host
 		o.otelMetricSinkPort = port
+	}
+}
+
+// WithDrainIdleExitQuietPeriod sets the quiet period of the drain idle exit.
+// Zero disables it.
+func WithDrainIdleExitQuietPeriod(d time.Duration) Option {
+	return func(o *options) {
+		o.envoyOpts = append(o.envoyOpts, envoy.WithDrainIdleExitQuietPeriod(d))
+	}
+}
+
+// WithDrainIdleExitTestPause sets the test-only pause after the idle decision.
+func WithDrainIdleExitTestPause(d time.Duration) Option {
+	return func(o *options) {
+		o.envoyOpts = append(o.envoyOpts, envoy.WithDrainIdleExitTestPause(d))
+	}
+}
+
+// WithDrainPhaseHook sets the hook called on every drain phase change.
+func WithDrainPhaseHook(f func(envoy.DrainPhase)) Option {
+	return func(o *options) {
+		o.envoyOpts = append(o.envoyOpts, envoy.WithDrainPhaseHook(f))
 	}
 }
 
@@ -328,14 +352,9 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 	if !p.ObjectMeta.DeletionTimestamp.IsZero() { // The object is being deleted
 		logger.Info("Proxy is being deleted")
 
-		if ps.Running {
-			logger.Info("Proxy is being stopped")
-			go func() {
-				if err := r.Runtime.Shutdown(ctx); err != nil {
-					logger.Error("Failed to shutdown runtime", "error", err)
-				}
-			}()
-		}
+		// Every deletion stops the supervisor, which may be between a crash and a restart.
+		logger.Info("Proxy is being stopped", "running", ps.Running)
+		r.Runtime.BeginShutdown()
 
 		return ctrl.Result{}, nil // Deleted.
 	}
@@ -370,6 +389,7 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 				InternalAddress: r.privateAddr.String(),
 			}),
 		}
+		opts = append(opts, r.options.envoyOpts...)
 		if rel := r.envoyRelease(p); rel != nil {
 			opts = append(opts, envoy.WithRelease(rel))
 		}
@@ -389,7 +409,10 @@ func (r *ProxyReconciler) Reconcile(ctx context.Context, request reconcile.Reque
 			opts = append(opts, envoy.WithLogsCollector(lc))
 		}
 
-		if err := r.Start(ctx, opts...); err != nil {
+		if err := r.Start(ctx, opts...); stderrors.Is(err, envoy.ErrShutDown) {
+			logger.Info("Not starting Envoy: backplane is shutting down")
+			return reconcile.Result{}, nil
+		} else if err != nil {
 			if fatalErr, ok := err.(envoy.FatalError); ok {
 				logger.Error("Failed to create proxy replica", "error", fatalErr)
 

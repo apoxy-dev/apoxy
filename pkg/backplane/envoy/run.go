@@ -4,12 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,6 +167,29 @@ func WithOTLPMetricSink(addr string) Option {
 	}
 }
 
+// WithDrainIdleExitQuietPeriod sets how long Envoy must stay idle before the
+// drain ends early. Zero disables the idle exit.
+func WithDrainIdleExitQuietPeriod(d time.Duration) Option {
+	return func(r *Runtime) {
+		r.idleQuietPeriod = d
+	}
+}
+
+// WithDrainIdleExitTestPause holds the shutdown between the idle decision and
+// the Envoy stop. It exists for tests only.
+func WithDrainIdleExitTestPause(d time.Duration) Option {
+	return func(r *Runtime) {
+		r.idleTestPause = d
+	}
+}
+
+// WithDrainPhaseHook is called on every drain phase change.
+func WithDrainPhaseHook(f func(DrainPhase)) Option {
+	return func(r *Runtime) {
+		r.phaseHook = f
+	}
+}
+
 // Identity names the Proxy and the replica the Envoy process belongs to.
 type Identity struct {
 	// Proxy is the name of the Proxy object.
@@ -187,7 +208,6 @@ type Runtime struct {
 	// Args are additional arguments to pass to Envoy.
 	Args []string
 
-	stopCh       chan struct{}
 	cmd          *exec.Cmd
 	goPluginDir  string
 	adminHost    string
@@ -198,13 +218,22 @@ type Runtime struct {
 	// tel holds everything the backplane observes about the process.
 	tel telemetry
 
+	idleQuietPeriod time.Duration
+	idleTestPause   time.Duration
+	phaseHook       func(DrainPhase)
+	timeouts        shutdownTimeouts
+	// stopTelemetryFn replaces the telemetry stop in tests.
+	stopTelemetryFn func(context.Context) error
+	// killFn replaces the SIGKILL in tests.
+	killFn func(*os.Process) error
+	// fenced is set once the backplane exits; Start never runs Envoy after it.
+	fenced bool
+
 	mu     sync.RWMutex
 	status RuntimeStatus
 	// pid is the process ID of the running Envoy process, or zero.
 	pid int
-	// exited is closed when the wait on the Envoy process returns. It is nil
-	// until the first process starts.
-	exited chan struct{}
+	gen *generation
 }
 
 // Configure applies options to the runtime before it starts. Metrics read the
@@ -238,9 +267,12 @@ func (r *Runtime) setOptions(opts ...Option) {
 		minDrainTime := defaultDrainTimeoutSeconds * time.Second
 		r.minDrainTime = &minDrainTime
 	}
+	if r.timeouts == (shutdownTimeouts{}) {
+		r.timeouts = defaultShutdownTimeouts
+	}
 }
 
-func (r *Runtime) run(ctx context.Context) error {
+func (r *Runtime) run(ctx context.Context, g *generation) error {
 	id := uuid.New().String()
 
 	nodeConfig := &corev3.Node{
@@ -325,42 +357,43 @@ func (r *Runtime) run(ctx context.Context) error {
 
 	args = append(args, "--drain-time-s", strconv.Itoa(int(r.drainTimeout.Seconds())))
 	args = append(args, r.Args...)
-	r.cmd = exec.CommandContext(rCtx, r.envoyPath(), args...)
-	r.cmd.Dir = runDir
+	cmd := exec.CommandContext(rCtx, r.envoyPath(), args...)
+	cmd.Dir = runDir
 
 	// Wrap subprocess output in structured log entries.
-	r.cmd.Stdout = log.NewSubprocessWriter("envoy", log.InfoLevel)
-	r.cmd.Stderr = log.NewSubprocessWriter("envoy", log.WarnLevel)
-	if err := r.cmd.Start(); err != nil {
+	cmd.Stdout = log.NewSubprocessWriter("envoy", log.InfoLevel)
+	cmd.Stderr = log.NewSubprocessWriter("envoy", log.WarnLevel)
+	if err := r.startProcess(g, cmd); errors.Is(err, errShuttingDown) {
+		return err
+	} else if err != nil {
 		r.recordExit(nil, err, time.Time{})
 		return fmt.Errorf("failed to start envoy: %w", err)
 	}
 
-	pid := r.cmd.Process.Pid
+	pid := cmd.Process.Pid
 	log.Infof("envoy started with PID %d", pid)
 	// Read the OOM kill count outside the lock. The next exit compares against
 	// it to tell an OOM kill from any other kill.
 	kills, killsKnown := defaultCgroupReader().oomKills()
-	exited := make(chan struct{})
 
 	r.mu.Lock()
+	// An unknown start time must not skip the wait below and orphan Envoy.
+	startedAt := time.Now().UTC()
 	p, err := process.NewProcess(int32(pid))
-	if err != nil {
-		r.mu.Unlock()
-		return fmt.Errorf("failed to find envoy process: %w", err)
+	if err == nil {
+		var ctime int64
+		if ctime, err = p.CreateTimeWithContext(rCtx); err == nil {
+			startedAt = time.Unix(0, ctime*int64(time.Millisecond)).UTC() // Convert from milliseconds to seconds.
+		}
 	}
-	ctime, err := p.CreateTimeWithContext(rCtx)
-	if err != nil {
-		r.mu.Unlock()
-		return fmt.Errorf("failed to get envoy process create time: %w", err)
-	}
-	startedAt := time.Unix(0, ctime*int64(time.Millisecond)).UTC() // Convert from milliseconds to seconds.
 	r.status.StartedAt = startedAt
 	r.status.Running = true
 	r.status.Starting = false
 	r.pid = pid
-	r.exited = exited
 	r.mu.Unlock()
+	if err != nil {
+		log.Errorf("failed to read envoy process start time: %v", err)
+	}
 
 	r.tel.startProcess(kills, killsKnown)
 
@@ -375,17 +408,32 @@ func (r *Runtime) run(ctx context.Context) error {
 	// Always record the exit, also when Wait reports an error. The caller
 	// restarts Envoy. Only this goroutine waits on the process, so that the
 	// process state has one reader.
-	waitErr := r.cmd.Wait()
+	waitErr := cmd.Wait()
 	stopSampler()
-	state := r.cmd.ProcessState
+	state := cmd.ProcessState
 	r.recordExit(state, waitErr, startedAt)
 	r.logExit(ctx, pid)
-	close(exited)
 
 	if waitErr != nil {
 		return fmt.Errorf("envoy exited with error: %w", waitErr)
 	}
 
+	return nil
+}
+
+// startProcess starts cmd unless the generation is shutting down. The check
+// and the start share r.mu, so a shutdown never misses a process.
+func (r *Runtime) startProcess(g *generation, cmd *exec.Cmd) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if g.shuttingDown {
+		return errShuttingDown
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	r.cmd = cmd
+	g.cmd = cmd
 	return nil
 }
 
@@ -765,14 +813,24 @@ func (e FatalError) Error() string {
 
 // Start starts the Envoy binary.
 func (r *Runtime) Start(ctx context.Context, opts ...Option) error {
-	status := r.RuntimeStatus()
-	if status.Starting || status.Running {
+	r.mu.Lock()
+	if r.fenced {
+		r.mu.Unlock()
+		return ErrShutDown
+	}
+	if r.status.Starting || r.status.Running || (r.gen != nil && !r.gen.isDone()) {
+		r.mu.Unlock()
 		return nil
 	}
-	r.mu.Lock()
 	r.status.Starting = true
 	r.setOptions(opts...)
+	g := newGeneration()
+	r.gen = g
+	phase := r.phaseHook
 	r.mu.Unlock()
+	if phase != nil {
+		phase(DrainPhaseServing)
+	}
 
 	log.Infof("preparing envoy %s", r.Release)
 
@@ -780,196 +838,60 @@ func (r *Runtime) Start(ctx context.Context, opts ...Option) error {
 	// the status through the same lock, so the download must not hold it.
 	// Starting stays true on failure, which keeps the caller from retrying.
 	if err := r.vendorEnvoyIfNotExists(ctx); err != nil {
+		g.closeExited()
 		return FatalError{Err: fmt.Errorf("failed to vendor envoy: %w", err)}
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.stopCh = make(chan struct{})
-	go func() {
-		runs := 0
-		for {
-			select {
-			case <-ctx.Done():
-				log.Infof("context done")
-				return
-			case <-r.stopCh:
-				log.Infof("envoy stopped")
-				return
-			default:
-			}
-
-			if runs > 0 {
-				r.recordRestart()
-			}
-			runs++
-
-			if err := r.run(ctx); err != nil {
-				log.Errorf("envoy exited with error: %v", err)
-			}
-
-			// Restart envoy unless we are shutting down. The 1s pause keeps a
-			// persistently failing envoy from busy-looping (and spamming logs).
-			select {
-			case <-ctx.Done():
-				log.Infof("context done")
-				return
-			case <-r.stopCh:
-				log.Infof("envoy stopped")
-				return
-			case <-time.After(1 * time.Second):
-			}
-		}
-	}()
-
-	return nil
-}
-
-// postEnvoyAdminAPI sends a POST request to the Envoy admin API.
-func (r *Runtime) postEnvoyAdminAPI(path string) error {
-	if r.cmd == nil {
-		return errors.New("envoy not running")
-	}
-	if r.adminHost == "" {
-		return errors.New("envoy admin host not set")
-	}
-	resp, err := http.Post("http://"+r.adminHost+"/"+path, "application/json", nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected response status: %s", resp.Status)
-	}
-	return nil
-}
-
-// getTotalConnections retrieves the total number of open connections from Envoy's server.total_connections stat.
-func (r *Runtime) getTotalConnections() (*int, error) {
-	resp, err := http.Get(fmt.Sprintf("http://%s//stats?filter=^server\\.total_connections$&format=json",
-		r.adminHost))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected response status: %s", resp.Status)
-	}
-
-	// Define struct to decode JSON response into; expecting a single stat in the response in the format:
-	// {"stats":[{"name":"server.total_connections","value":123}]}
-	var jsonData *struct {
-		Stats []struct {
-			Name  string `json:"name"`
-			Value int    `json:"value"`
-		} `json:"stats"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&jsonData); err != nil {
-		return nil, err
-	}
-
-	if len(jsonData.Stats) == 0 {
-		return nil, fmt.Errorf("no stats found")
-	}
-	c := jsonData.Stats[0].Value
-
-	return &c, nil
-}
-
-// Shutdown gracefully drains connections and shuts down the Envoy process.
-func (r *Runtime) Shutdown(ctx context.Context) error {
-	if r.cmd == nil {
+	if g.shuttingDown {
+		g.closeExited()
 		return nil
 	}
+	go r.supervise(ctx, g)
 
-	log.Infof("shutting down envoy with drain timeout %s", r.drainTimeout)
-
-	startDrain := time.Now()
-
-	if err := r.postEnvoyAdminAPI("healthcheck/fail"); err != nil {
-		log.Errorf("error failing active health checks: %v", err)
-	}
-
-	if err := r.postEnvoyAdminAPI("drain_listeners?graceful&skip_exit"); err != nil {
-		log.Errorf("error initiating graceful drain: %v", err)
-	}
-
-drain:
-	for {
-		conn, err := r.getTotalConnections()
-		if err != nil {
-			log.Errorf("error getting total connections: %v", err)
-		} else if conn != nil {
-			log.Infof("draining, total connections: %d", *conn)
-		}
-
-		if time.Since(startDrain) > *r.drainTimeout {
-			log.Infof("drain timeout reached")
-			break
-		} else if conn != nil && *conn <= 0 &&
-			// Only if we reached the minimum drain time - might still receive new connections.
-			time.Since(startDrain) > *r.minDrainTime {
-			log.Infof("all connections drained")
-			break
-		}
-
-		select {
-		case <-time.After(1 * time.Second):
-		case <-ctx.Done():
-			log.Infof("context done while draining")
-			break drain
-		}
-	}
-
-	stopOnce := sync.OnceValue(func() error {
-		close(r.stopCh)
-		if m := r.metricsIfStarted(); m != nil {
-			// The caller may shut down with a context that is already done.
-			// The last push of the metrics needs a live one.
-			flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), metricsFlushTimeout)
-			err := m.Shutdown(flushCtx)
-			cancel()
-			if err != nil {
-				log.Errorf("error shutting down runtime metrics: %v", err)
-			}
-		}
-		if r.tel.otelCollector != nil {
-			if err := r.tel.otelCollector.Stop(ctx); err != nil {
-				log.Errorf("error shutting down otel collector: %v", err)
-			}
-		}
-
-		if err := r.postEnvoyAdminAPI("quitquitquit"); err != nil {
-			log.Errorf("error posting to quitquitquit: %v", err)
-		}
-
-		// Only run() waits on the process. This goroutine waits for run() to
-		// report the exit instead, so that the process state has one reader.
-		select {
-		case <-r.exitedCh():
-			return r.lastExitError()
-		case <-ctx.Done():
-			log.Infof("context done while waiting for envoy process to exit")
-			return ctx.Err()
-		case <-time.After(1 * time.Second):
-		}
-
-		if err := r.cmd.Process.Kill(); err != nil {
-			return err
-		}
-		return errors.New("envoy process killed")
-	})
-	return stopOnce()
+	return nil
 }
 
-// exitedCh returns the channel that run() closes when the Envoy process ends.
-// It is nil until the first process starts, which blocks the caller until its
-// own timeout.
-func (r *Runtime) exitedCh() <-chan struct{} {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.exited
+// supervise runs Envoy and restarts it until the generation shuts down.
+func (r *Runtime) supervise(ctx context.Context, g *generation) {
+	defer g.closeExited()
+	runs := 0
+	for {
+		select {
+		case <-ctx.Done():
+			log.Infof("context done")
+			return
+		case <-g.stopCh:
+			log.Infof("envoy stopped")
+			return
+		default:
+		}
+
+		if runs > 0 {
+			r.recordRestart()
+		}
+		runs++
+
+		if err := r.run(ctx, g); errors.Is(err, errShuttingDown) {
+			log.Infof("envoy not restarted: shutting down")
+			return
+		} else if err != nil {
+			log.Errorf("envoy exited with error: %v", err)
+		}
+
+		// Restart envoy unless we are shutting down. The 1s pause keeps a
+		// persistently failing envoy from busy-looping (and spamming logs).
+		select {
+		case <-ctx.Done():
+			log.Infof("context done")
+			return
+		case <-g.stopCh:
+			log.Infof("envoy stopped")
+			return
+		case <-time.After(1 * time.Second):
+		}
+	}
 }
 
 // lastExitError describes the last exit of the Envoy process as an error, or
