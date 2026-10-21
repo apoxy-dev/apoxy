@@ -423,3 +423,5 @@ replace sigs.k8s.io/apiserver-runtime => github.com/apoxy-dev/apiserver-runtime 
 replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20250530165952-53cca597715e
 
 replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20250530062404-603929a73f45
+
+replace github.com/buraksezer/olric => github.com/apoxy-dev/olric v0.5.7-0.20261021235425-d0050ba08461
