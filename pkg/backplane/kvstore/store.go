@@ -16,6 +16,10 @@ const (
 
 	// leaveTimeout bounds the olric leave; Discovery.Shutdown waits unbounded.
 	leaveTimeout = 8 * time.Second
+
+	// routingTablePushInterval bounds how long a member that missed a push
+	// routes by a stale table (olric default: 1m).
+	routingTablePushInterval = 10 * time.Second
 )
 
 type Store struct {
@@ -57,6 +61,7 @@ func NewDev() *Store {
 // Uses background context created by New() method.
 func (s *Store) Start(started chan struct{}) error {
 	cfg := config.New("lan")
+	cfg.RoutingTablePushInterval = routingTablePushInterval
 	if !s.dev {
 		cfg.ServiceDiscovery = NewK8sServiceDiscovery(
 			s.k8sNamespace,
