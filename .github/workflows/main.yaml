@@ -5,13 +5,18 @@ on:
       - main
 jobs:
   build-all:
-    runs-on: depot-ubuntu-22.04-16,dagger=0.19.0
+    runs-on: blacksmith-16vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ">=1.21.5"
+      - name: Install Dagger CLI
+        # Blacksmith has no Depot dagger label; pin dagger-for-github v8.4.1.
+        uses: dagger/dagger-for-github@27b130bf0f79a7f6fbbbe0fbca6760dc9bb40a77
+        with:
+          version: "0.19.0"
       - name: Run Dagger pipeline
         env:
           APOXY_DOCKERHUB_PASSWORD: ${{ secrets.APOXY_DOCKERHUB_PASSWORD }}
