@@ -24,12 +24,21 @@ import (
 
 	"github.com/containerd/platforms"
 
+	"dagger/apoxy-cli/internal/cabundle"
 	"dagger/apoxy-cli/internal/dagger"
 	"dagger/apoxy-cli/internal/helmrules"
 )
 
 const ZigVersion = "0.14.1"
 const RcodesignVersion = "0.29.0"
+
+// Pinned to an index carrying ca-certificates-bundle 20260909-r3, which drops the compromised emSign roots.
+const wolfiBase = "cgr.dev/chainguard/wolfi-base@sha256:81211e15a86ea1d5357f284482af45730c51de45eaf10ad9ce205d6bfc2df323"
+
+// Fails the apk step if the repo cannot satisfy the eMudhra-free bundle.
+const caBundleFloor = "ca-certificates-bundle>=20260909-r3"
+
+const caBundlePath = "/etc/ssl/certs/ca-certificates.crt"
 
 type ApoxyCli struct{}
 
@@ -222,8 +231,8 @@ func (m *ApoxyCli) BuildCLIRelease(
 ) *dagger.Container {
 	buildCtr := m.BuildCLI(ctx, src, platform, tag, sha)
 	return dag.Container(dagger.ContainerOpts{Platform: dagger.Platform(platform)}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
-		WithExec([]string{"apk", "add", "-u", "iptables", "ip6tables", "iproute2", "net-tools", "sed", "coreutils"}).
+		From(wolfiBase).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor, "iptables", "ip6tables", "iproute2", "net-tools", "sed", "coreutils"}).
 		WithFile("/bin/apoxy", buildCtr.File("/apoxy")).
 		WithEntrypoint([]string{"/bin/apoxy"})
 }
@@ -743,7 +752,8 @@ func (m *ApoxyCli) BuildAPIServer(
 	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, edgeRuntimeTag, gcrCreds)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
+		From(wolfiBase).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor}).
 		WithFile("/bin/apiserver", builder.File("/src/apiserver")).
 		WithFile("/bin/edge-runtime", runtimeCtr.File("/usr/local/bin/edge-runtime")).
 		WithDirectory("/etc/main", runtimeCtr.Directory("/etc/main")).
@@ -828,8 +838,8 @@ func (m *ApoxyCli) BuildBackplane(
 	runtimeCtr := m.PullEdgeRuntime(ctx, p, src, edgeRuntimeTag, gcrCreds)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
-		WithExec([]string{"apk", "add", "-u", "iptables", "ip6tables", "iproute2", "net-tools"}).
+		From(wolfiBase).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor, "iptables", "ip6tables", "iproute2", "net-tools"}).
 		WithFile("/bin/backplane", builder.File(bpOut)).
 		WithFile("/bin/dial-stdio", builder.File(dsOut)).
 		WithFile("/bin/otel-collector", builder.File(otelOut)).
@@ -875,8 +885,8 @@ func (m *ApoxyCli) BuildTunnelproxy(
 		WithWorkdir("/src")
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
-		WithExec([]string{"apk", "add", "-u", "iptables", "ip6tables", "iproute2", "net-tools", "sed", "coreutils"}).
+		From(wolfiBase).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor, "iptables", "ip6tables", "iproute2", "net-tools", "sed", "coreutils"}).
 		WithFile("/bin/tunnelproxy", builder.File(tpOut)).
 		WithEntrypoint([]string{"/bin/tunnelproxy"})
 }
@@ -913,7 +923,7 @@ func (m *ApoxyCli) Test(ctx context.Context, src *dagger.Directory) (string, err
 		WithExec([]string{"go", "test", "-race", "-short", "./pkg/net/...", "./pkg/netstack/...", "./pkg/tunnel/..."}).
 		WithWorkdir("/src/ci").
 		// The version check reads files outside the ci module, which the test cache does not follow.
-		WithExec([]string{"go", "test", "-count=1", "./internal/helmrules/...", "./internal/daggerversion/...", "./internal/perfsuite/..."}).
+		WithExec([]string{"go", "test", "-count=1", "./internal/helmrules/...", "./internal/daggerversion/...", "./internal/perfsuite/...", "./internal/cabundle/..."}).
 		// The perf modules are Go modules of their own.
 		WithWorkdir("/src/ci/modules/aws").
 		WithExec([]string{"go", "test", "-count=1", "./awsx/..."}).
@@ -1036,10 +1046,10 @@ func (m *ApoxyCli) buildRunscBinaryImage(
 		WithWorkdir("/src")
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
+		From(wolfiBase).
 		// runsc needs a real rootfs (the Sentry chroot reads /etc/localtime) plus
 		// basic net tooling for sandbox setup and the resident egress path.
-		WithExec([]string{"apk", "add", "-u", "iptables", "ip6tables", "iproute2"}).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor, "iptables", "ip6tables", "iproute2"}).
 		WithFile("/bin/"+binName, builder.File(out)).
 		WithEntrypoint([]string{"/bin/" + binName})
 }
@@ -1083,16 +1093,53 @@ func (m *ApoxyCli) buildWorkerd(
 		File("/w/node_modules/" + npmPkg + "/bin/workerd")
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
+		From(wolfiBase).
 		// workerd is dynamically linked against libstdc++/libgcc.
-		WithExec([]string{"apk", "add", "-u", "libstdc++", "libgcc"}).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor, "libstdc++", "libgcc"}).
 		WithFile("/usr/bin/workerd", workerdBin).
 		WithEntrypoint([]string{"/usr/bin/workerd"})
+}
+
+// caBundleVariants reads each variant's CA bundle for cabundle.CheckImage.
+func caBundleVariants(ctx context.Context, variants []*dagger.Container) ([]cabundle.Variant, error) {
+	var out []cabundle.Variant
+	for _, v := range variants {
+		platform, err := v.Platform(ctx)
+		if err != nil {
+			return nil, err
+		}
+		found, err := v.Rootfs().Glob(ctx, strings.TrimPrefix(caBundlePath, "/"))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", platform, err)
+		}
+		if len(found) == 0 {
+			out = append(out, cabundle.Variant{Platform: string(platform), Missing: true})
+			continue
+		}
+		bundle, err := v.File(caBundlePath).Contents(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("%s: read %s: %w", platform, caBundlePath, err)
+		}
+		out = append(out, cabundle.Variant{Platform: string(platform), Bundle: []byte(bundle)})
+	}
+	return out, nil
+}
+
+// verifyCABundles fails if any variant lacks a CA bundle or trusts a compromised eMudhra CA.
+func verifyCABundles(ctx context.Context, name string, variants []*dagger.Container) error {
+	vs, err := caBundleVariants(ctx, variants)
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return cabundle.CheckImage(name, vs, false)
 }
 
 // publishMultiarch publishes a multi-arch image — one OCI manifest spanning the
 // given per-platform variants — to the public GAR repo as <name>:<tag>.
 func publishMultiarch(ctx context.Context, gcrCreds *dagger.Secret, name, tag string, variants []*dagger.Container) error {
+	if err := verifyCABundles(ctx, name, variants); err != nil {
+		return err
+	}
 	addr, err := dag.Container().
 		WithRegistryAuth(GARRegistry, "_json_key", gcrCreds).
 		Publish(ctx, PublicGARRepo+"/"+name+":"+tag, dagger.ContainerPublishOpts{
@@ -1122,6 +1169,12 @@ func (m *ApoxyCli) PublishWorkerd(
 	return publishMultiarch(ctx, gcrCreds, "workerd", tag, ctrs)
 }
 
+// publishTarget is one multi-platform image PublishImages pushes.
+type publishTarget struct {
+	name     string
+	variants []*dagger.Container
+}
+
 // PublishImages publishes images to the registry.
 func (m *ApoxyCli) PublishImages(
 	ctx context.Context,
@@ -1136,61 +1189,47 @@ func (m *ApoxyCli) PublishImages(
 	// +optional
 	githubToken *dagger.Secret,
 ) error {
-	var apiCtrs []*dagger.Container
+	var apiCtrs, bCtrs, tpCtrs, wdCtrs, wmCtrs, cliCtrs []*dagger.Container
 	for _, platform := range linuxPlatforms {
 		apiCtrs = append(apiCtrs, m.BuildAPIServer(ctx, src, platform, edgeRuntimeTag, gcrCreds))
-	}
-	if err := publishMultiarch(ctx, gcrCreds, "apiserver", tag, apiCtrs); err != nil {
-		return err
-	}
-
-	var bCtrs []*dagger.Container
-	for _, platform := range linuxPlatforms {
 		bCtrs = append(bCtrs, m.BuildBackplane(ctx, src, platform, edgeRuntimeTag, gcrCreds))
-	}
-	if err := publishMultiarch(ctx, gcrCreds, "backplane", tag, bCtrs); err != nil {
-		return err
-	}
-
-	var tpCtrs []*dagger.Container
-	for _, platform := range linuxPlatforms {
 		tpCtrs = append(tpCtrs, m.BuildTunnelproxy(ctx, src, platform))
-	}
-	if err := publishMultiarch(ctx, gcrCreds, "tunnelproxy", tag, tpCtrs); err != nil {
-		return err
-	}
-
-	// The stock workerd runtime image builds from the npm prebuilt with no
-	// clrk/source dependency, so it always publishes.
-	var wdCtrs []*dagger.Container
-	for _, platform := range linuxPlatforms {
+		// The stock workerd runtime image builds from the npm prebuilt with no
+		// clrk/source dependency, so it always publishes.
 		wdCtrs = append(wdCtrs, m.buildWorkerd(ctx, platform, ""))
+		cliCtrs = append(cliCtrs, m.BuildCLIRelease(ctx, src, platform, tag, sha))
 	}
-	if err := publishMultiarch(ctx, gcrCreds, "workerd", tag, wdCtrs); err != nil {
-		return err
+	images := []publishTarget{
+		{"apiserver", apiCtrs},
+		{"backplane", bCtrs},
+		{"tunnelproxy", tpCtrs},
+		{"workerd", wdCtrs},
 	}
-
 	// workerd-manager depends on the private clrk module, which the default CI
 	// GITHUB_TOKEN cannot fetch (clrk is a separate private repo). Publish it only
 	// when a clrk-capable token is supplied.
 	if githubToken != nil {
-		var wmCtrs []*dagger.Container
 		for _, platform := range linuxPlatforms {
 			wmCtrs = append(wmCtrs, m.buildWorkerdManager(ctx, src, platform, nil, githubToken))
 		}
-		if err := publishMultiarch(ctx, gcrCreds, "workerd-manager", tag, wmCtrs); err != nil {
-			return err
-		}
+		images = append(images, publishTarget{"workerd-manager", wmCtrs})
 	} else {
 		fmt.Println("Skipping workerd-manager publish: no --github-token for the private clrk module")
 	}
+	images = append(images, publishTarget{"apoxy", cliCtrs})
 
-	var cliCtrs []*dagger.Container
-	for _, platform := range linuxPlatforms {
-		cliCtr := m.BuildCLIRelease(ctx, src, platform, tag, sha)
-		cliCtrs = append(cliCtrs, cliCtr)
+	// Verify every image before the first push so a failure publishes nothing.
+	for _, img := range images {
+		if err := verifyCABundles(ctx, img.name, img.variants); err != nil {
+			return err
+		}
 	}
-	return publishMultiarch(ctx, gcrCreds, "apoxy", tag, cliCtrs)
+	for _, img := range images {
+		if err := publishMultiarch(ctx, gcrCreds, img.name, tag, img.variants); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // PublishHelmRelease publishes a Helm release.
