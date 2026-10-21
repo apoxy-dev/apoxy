@@ -24,10 +24,19 @@ import (
 
 	"github.com/containerd/platforms"
 
+	"dagger/apoxy-cli/internal/cabundle"
 	"dagger/apoxy-cli/internal/dagger"
 )
 
 const ZigVersion = "0.14.1"
+
+// Pinned to an index carrying ca-certificates-bundle 20260909-r3, which drops the compromised emSign roots.
+const wolfiBase = "cgr.dev/chainguard/wolfi-base@sha256:81211e15a86ea1d5357f284482af45730c51de45eaf10ad9ce205d6bfc2df323"
+
+// Fails the apk step if the repo cannot satisfy the eMudhra-free bundle.
+const caBundleFloor = "ca-certificates-bundle>=20260909-r3"
+
+const caBundlePath = "/etc/ssl/certs/ca-certificates.crt"
 
 type ApoxyCli struct{}
 
@@ -224,8 +233,8 @@ func (m *ApoxyCli) BuildCLIRelease(
 ) *dagger.Container {
 	buildCtr := m.BuildCLI(ctx, src, platform, tag, sha)
 	return dag.Container(dagger.ContainerOpts{Platform: dagger.Platform(platform)}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
-		WithExec([]string{"apk", "add", "-u", "iptables", "ip6tables", "iproute2", "net-tools", "sed", "coreutils"}).
+		From(wolfiBase).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor, "iptables", "ip6tables", "iproute2", "net-tools", "sed", "coreutils"}).
 		WithFile("/bin/apoxy", buildCtr.File("/apoxy")).
 		WithEntrypoint([]string{"/bin/apoxy"})
 }
@@ -346,7 +355,8 @@ func (m *ApoxyCli) BuildAPIServer(
 	runtimeCtr := m.PullEdgeRuntime(ctx, p)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
+		From(wolfiBase).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor}).
 		WithFile("/bin/apiserver", builder.File("/src/apiserver")).
 		WithFile("/bin/edge-runtime", runtimeCtr.File("/usr/local/bin/edge-runtime")).
 		WithEntrypoint([]string{"/bin/apiserver"})
@@ -400,8 +410,8 @@ func (m *ApoxyCli) BuildBackplane(
 	runtimeCtr := m.PullEdgeRuntime(ctx, p)
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
-		WithExec([]string{"apk", "add", "-u", "iptables", "ip6tables", "iproute2", "net-tools"}).
+		From(wolfiBase).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor, "iptables", "ip6tables", "iproute2", "net-tools"}).
 		WithFile("/bin/backplane", builder.File(bpOut)).
 		WithFile("/bin/dial-stdio", builder.File(dsOut)).
 		WithFile("/bin/otel-collector", builder.File(otelOut)).
@@ -446,8 +456,8 @@ func (m *ApoxyCli) BuildTunnelproxy(
 		WithWorkdir("/src")
 
 	return dag.Container(dagger.ContainerOpts{Platform: p}).
-		From("cgr.dev/chainguard/wolfi-base:latest").
-		WithExec([]string{"apk", "add", "-u", "iptables", "ip6tables", "iproute2", "net-tools", "sed", "coreutils"}).
+		From(wolfiBase).
+		WithExec([]string{"apk", "add", "-u", caBundleFloor, "iptables", "ip6tables", "iproute2", "net-tools", "sed", "coreutils"}).
 		WithFile("/bin/tunnelproxy", builder.File(tpOut)).
 		WithEntrypoint([]string{"/bin/tunnelproxy"})
 }
@@ -485,6 +495,39 @@ func (m *ApoxyCli) BuildKubeController(
 		WithEntrypoint([]string{"/bin/kube-controller"})
 }
 
+// caBundleVariants reads each variant's CA bundle for cabundle.CheckImage.
+func caBundleVariants(ctx context.Context, variants []*dagger.Container) ([]cabundle.Variant, error) {
+	var out []cabundle.Variant
+	for _, v := range variants {
+		platform, err := v.Platform(ctx)
+		if err != nil {
+			return nil, err
+		}
+		found, err := v.Rootfs().Glob(ctx, strings.TrimPrefix(caBundlePath, "/"))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", platform, err)
+		}
+		if len(found) == 0 {
+			out = append(out, cabundle.Variant{Platform: string(platform), Missing: true})
+			continue
+		}
+		bundle, err := v.File(caBundlePath).Contents(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("%s: read %s: %w", platform, caBundlePath, err)
+		}
+		out = append(out, cabundle.Variant{Platform: string(platform), Bundle: []byte(bundle)})
+	}
+	return out, nil
+}
+
+// publishTarget is one multi-platform image PublishImages pushes.
+type publishTarget struct {
+	repo     string
+	variants []*dagger.Container
+	// allowMissing admits variants that ship no CA bundle and so trust nothing.
+	allowMissing bool
+}
+
 // PublishImages publishes images to the registry.
 func (m *ApoxyCli) PublishImages(
 	ctx context.Context,
@@ -493,106 +536,49 @@ func (m *ApoxyCli) PublishImages(
 	tag string,
 	sha string,
 ) error {
-	var apiCtrs []*dagger.Container
+	var apiCtrs, bCtrs, tpCtrs, kcCtrs, cliCtrs []*dagger.Container
 	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
 		apiCtrs = append(apiCtrs, m.BuildAPIServer(ctx, src, platform))
-	}
-
-	addr, err := dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/apiserver:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: apiCtrs,
-		})
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("API server image published to", addr)
-
-	var bCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
 		bCtrs = append(bCtrs, m.BuildBackplane(ctx, src, platform))
-	}
-
-	addr, err = dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/backplane:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: bCtrs,
-		})
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("Backplane images published to", addr)
-
-	var tpCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
 		tpCtrs = append(tpCtrs, m.BuildTunnelproxy(ctx, src, platform))
-	}
-
-	addr, err = dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/tunnelproxy:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: tpCtrs,
-		})
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("Tunnelproxy images published to", addr)
-
-	var kcCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
 		kcCtrs = append(kcCtrs, m.BuildKubeController(ctx, src, platform))
+		cliCtrs = append(cliCtrs, m.BuildCLIRelease(ctx, src, platform, tag, sha))
+	}
+	targets := []publishTarget{
+		{repo: "apiserver", variants: apiCtrs},
+		{repo: "backplane", variants: bCtrs},
+		{repo: "tunnelproxy", variants: tpCtrs},
+		// The ubuntu base ships no CA bundle.
+		{repo: "kube-controller", variants: kcCtrs, allowMissing: true},
+		{repo: "apoxy", variants: cliCtrs},
 	}
 
-	addr, err = dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/kube-controller:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: kcCtrs,
-		})
-	if err != nil {
-		return err
+	// Verify every image before the first push so a failure publishes nothing.
+	for _, t := range targets {
+		variants, err := caBundleVariants(ctx, t.variants)
+		if err != nil {
+			return fmt.Errorf("%s: %w", t.repo, err)
+		}
+		if err := cabundle.CheckImage(t.repo, variants, t.allowMissing); err != nil {
+			return err
+		}
 	}
 
-	fmt.Println("Kube controller images published to", addr)
-
-	var cliCtrs []*dagger.Container
-	for _, platform := range []string{"linux/amd64", "linux/arm64"} {
-		cliCtr := m.BuildCLIRelease(ctx, src, platform, tag, sha)
-		cliCtrs = append(cliCtrs, cliCtr)
+	for _, t := range targets {
+		addr, err := dag.Container().
+			WithRegistryAuth(
+				"registry-1.docker.io",
+				"apoxy",
+				registryPassword,
+			).
+			Publish(ctx, "docker.io/apoxy/"+t.repo+":"+tag, dagger.ContainerPublishOpts{
+				PlatformVariants: t.variants,
+			})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s images published to %s\n", t.repo, addr)
 	}
-
-	addr, err = dag.Container().
-		WithRegistryAuth(
-			"registry-1.docker.io",
-			"apoxy",
-			registryPassword,
-		).
-		Publish(ctx, "docker.io/apoxy/apoxy:"+tag, dagger.ContainerPublishOpts{
-			PlatformVariants: cliCtrs,
-		})
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("Tunnelproxy images published to", addr)
 	return nil
 }
 
