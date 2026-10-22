@@ -12,7 +12,11 @@ require (
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
 	github.com/apoxy-dev/icx v0.19.1-0.20261006074019-0b857f6d1fb8
 	github.com/apoxy-dev/softpsp v0.0.0-20261013000621-34c37d5a9e41
+	github.com/atoonk/packetio v0.1.11
 	github.com/avast/retry-go/v4 v4.6.1
+	github.com/aws/aws-sdk-go-v2 v1.41.5
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.17
+	github.com/aws/smithy-go v1.24.2
 	github.com/bramvdbogaerde/go-scp v1.5.0
 	github.com/buraksezer/olric v0.5.6
 	github.com/charmbracelet/bubbles v0.21.0
@@ -159,6 +163,7 @@ require (
 	github.com/apache/thrift v0.20.0 // indirect
 	github.com/apparentlymart/go-cidr v1.1.0 // indirect
 	github.com/armon/go-metrics v0.0.0-20180917152333-f0300d1749da // indirect
+	github.com/atoonk/go-afxdp v0.12.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aws/aws-sdk-go v1.55.5 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

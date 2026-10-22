@@ -71,7 +71,7 @@ type gen struct {
 
 func (g *gen) p(format string, args ...any) { fmt.Fprintf(&g.b, format+"\n", args...) }
 
-var initialisms = map[string]string{"vpc": "VPC", "vni": "VNI", "mtu": "MTU", "spi": "SPI", "id": "ID"}
+var initialisms = map[string]string{"vpc": "VPC", "vni": "VNI", "mtu": "MTU", "spi": "SPI", "id": "ID", "tx": "TX", "quic": "QUIC"}
 
 // camel returns the Go name of the last part of a P4 name.
 func camel(name string) string {

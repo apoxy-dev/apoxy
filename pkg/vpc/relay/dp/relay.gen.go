@@ -75,6 +75,8 @@ const (
 	ReasonPuntFull      uint8 = 16
 	ReasonMalformed     uint8 = 17
 	ReasonOpen          uint8 = 18
+	ReasonTXFull        uint8 = 19
+	ReasonQUICFull      uint8 = 20
 )
 
 // counterSizes has the size of each counter.

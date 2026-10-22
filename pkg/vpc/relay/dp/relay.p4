@@ -32,6 +32,10 @@ const bit<8> R_PUNT_FULL = 16;
 const bit<8> R_MALFORMED = 17;
 // open_psp: the packet did not authenticate, had no sequence number or was a replay.
 const bit<8> R_OPEN = 18;
+// The packet I/O of the interface: the TX ring of the interface is full.
+const bit<8> R_TX_FULL = 19;
+// The packet I/O of the interface: the receive queue of the UDP 443 conn is full.
+const bit<8> R_QUIC_FULL = 20;
 
 // A VPC name: "<VPC UID>/<network ID>". The CP sends a string; the DP maps it to a number.
 @p4runtime_translation("apoxy.dev/relay/name", string)
