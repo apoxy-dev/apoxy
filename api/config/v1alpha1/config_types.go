@@ -45,6 +45,9 @@ type Config struct {
 	IsLocalMode bool `json:"isLocalMode,omitempty"`
 	// UpgradeCheck holds state for the automatic upgrade-check prompt.
 	UpgradeCheck *UpgradeCheckState `json:"upgradeCheck,omitempty"`
+	// Relay configures the VPC relay.
+	// +optional
+	Relay *RelayConfig `json:"relay,omitempty"`
 }
 
 // Project is a configuration for a project.
@@ -257,4 +260,43 @@ type KubeMirrorConfig struct {
 	BootstrapToken string `json:"bootstrapToken,omitempty"`
 	// ServiceName for the K8s Service. Defaults to "kube-mirror".
 	ServiceName string `json:"serviceName,omitempty"`
+}
+
+// RelayConfig configures the VPC relay.
+type RelayConfig struct {
+	// Interface is the network interface that the relay owns. The kernel has
+	// no address on it.
+	Interface *RelayInterface `json:"interface,omitempty"`
+}
+
+// RelayInterfaceSource tells where the relay finds its interface and the
+// addresses of it.
+type RelayInterfaceSource string
+
+const (
+	// RelayInterfaceSourceIMDS finds the interface in IMDSv2 of the instance:
+	// the ENI with device number 1. Its private and public IPv4 are the
+	// addresses.
+	RelayInterfaceSourceIMDS RelayInterfaceSource = "IMDS"
+	// RelayInterfaceSourceStatic uses MAC, Addresses and Gateways.
+	RelayInterfaceSourceStatic RelayInterfaceSource = "Static"
+)
+
+// RelayInterface is the network interface that the relay owns. The relay
+// gets two addresses of it: its own address, which the other relays use, and
+// the public address, which agents dial.
+type RelayInterface struct {
+	// Source tells where the relay finds the interface and its addresses.
+	Source RelayInterfaceSource `json:"source"`
+	// MAC is the MAC address of the interface. Only for Static.
+	// +optional
+	MAC string `json:"mac,omitempty"`
+	// Addresses are the prefixes (address/length) of the interface. Only for
+	// Static.
+	// +optional
+	Addresses []string `json:"addresses,omitempty"`
+	// Gateways are the IP addresses of the next-hop routers of the
+	// interface. Only for Static.
+	// +optional
+	Gateways []string `json:"gateways,omitempty"`
 }
