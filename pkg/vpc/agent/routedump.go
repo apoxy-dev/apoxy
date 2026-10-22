@@ -3,15 +3,12 @@
 package agent
 
 import (
-	"cmp"
 	"fmt"
-	"net/netip"
-	"slices"
 	"strings"
 )
 
-// Route is one route of the agent, as GET /debug/routes shows it: the route of
-// a visit, or the default route of a relay session.
+// Route is one route of the agent, as GET /debug/routes shows it: the default
+// route of a relay session.
 type Route struct {
 	Dst    string  `json:"dst"`              // A prefix, an address, or "default".
 	Via    string  `json:"via"`              // The relay.
@@ -33,21 +30,10 @@ func (r Route) String() string {
 	return b.String()
 }
 
-// routeDst returns pfx as ip route shows it: an address for a host prefix.
-func routeDst(pfx netip.Prefix) string {
-	if pfx.IsSingleIP() {
-		return pfx.Addr().String()
-	}
-	return pfx.String()
-}
-
-// Routes returns the routes of the agent: the routes of the visits, then the
-// default route of each relay session in rank order.
+// Routes returns the default route of each relay session in rank order.
 func (a *Agent) Routes() []Route {
 	s := a.snap.Load()
-	visits := slices.Clone(s.visits)
-	slices.SortFunc(visits, func(x, y Route) int { return cmp.Or(cmp.Compare(x.Dst, y.Dst), cmp.Compare(x.Via, y.Via)) })
-	out := visits
+	var out []Route
 	for _, c := range s.conns {
 		rank := c.rank
 		out = append(out, Route{Dst: "default", Via: c.name, Dev: c.name, Src: c.base.Address.String(), Metric: &rank})

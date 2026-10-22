@@ -15,8 +15,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
-
-	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
 func ipAddr(s string) tcpip.Address { return tcpip.AddrFromSlice(netip.MustParseAddr(s).AsSlice()) }
@@ -48,15 +46,13 @@ func TestUnreachable(t *testing.T) {
 	badIHL := ip4(src4, dst4, header.UDPProtocolNumber, 0, udp)
 	badIHL[0] = 0x44
 	cases := []struct {
-		name   string
-		pkt    []byte
-		from   netip.Addr
-		denied bool
-		code   uint8
-		size   int // Size of the error. Zero means no error.
+		name string
+		pkt  []byte
+		from netip.Addr
+		code uint8
+		size int // Size of the error. Zero means no error.
 	}{
 		{name: "IPv6 UDP", pkt: ip6(src6, dst6, header.UDPProtocolNumber, udp), from: self, code: 3, size: 48 + 60},
-		{name: "IPv6 denied", pkt: ip6(src6, dst6, header.UDPProtocolNumber, udp), from: self, denied: true, code: 1, size: 48 + 60},
 		{name: "IPv6 large", pkt: ip6(src6, dst6, header.UDPProtocolNumber, make([]byte, 3000)), from: self, code: 3, size: 1280},
 		{name: "IPv6 echo request", pkt: ip6(src6, dst6, header.ICMPv6ProtocolNumber, echo6), from: self, code: 3, size: 48 + 44},
 		{name: "IPv6 ICMP error", pkt: ip6(src6, dst6, header.ICMPv6ProtocolNumber, err6), from: self},
@@ -65,7 +61,6 @@ func TestUnreachable(t *testing.T) {
 		{name: "IPv6 link local source", pkt: ip6("fe80::1", dst6, header.UDPProtocolNumber, udp), from: self},
 		{name: "IPv6 with no IPv6 agent address", pkt: ip6(src6, dst6, header.UDPProtocolNumber, udp)},
 		{name: "IPv4 UDP", pkt: ip4(src4, dst4, header.UDPProtocolNumber, 0, udp), code: 1, size: 28 + 40},
-		{name: "IPv4 denied", pkt: ip4(src4, dst4, header.UDPProtocolNumber, 0, udp), denied: true, code: 13, size: 28 + 40},
 		{name: "IPv4 large", pkt: ip4(src4, dst4, header.UDPProtocolNumber, 0, make([]byte, 2000)), code: 1, size: 576},
 		{name: "IPv4 echo request", pkt: ip4(src4, dst4, header.ICMPv4ProtocolNumber, 0, echo4), code: 1, size: 28 + 24},
 		{name: "IPv4 ICMP error", pkt: ip4(src4, dst4, header.ICMPv4ProtocolNumber, 0, err4)},
@@ -76,7 +71,7 @@ func TestUnreachable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := unreachable(tc.pkt, tc.from, tc.denied)
+			got := unreachable(tc.pkt, tc.from)
 			if tc.size == 0 {
 				assert.Nil(t, got)
 				return
@@ -112,15 +107,13 @@ func TestUnreachable(t *testing.T) {
 }
 
 // TestNoRouteError checks that packets to a destination that the relay cannot
-// reach get an ICMP error after the NoRoute of the relay: code 3 is no route,
-// code 1 permission denied. A destination keeps one error a second.
+// reach get an ICMP error after the NoRoute of the relay. A destination keeps
+// one error a second.
 func TestNoRouteError(t *testing.T) {
 	absent := func(attachEvent) netip.Addr { return netip.MustParseAddr("fd61:706f:7879:12:3400:99::1") }
-	other := func(eb attachEvent) netip.Addr { return eb.addr }
 	cases := []struct {
 		name    string
 		dst     func(eb attachEvent) netip.Addr
-		deny    bool   // The relay denies the destination.
 		dialErr string // Not empty: a TCP dial in place of a UDP packet fails with this error.
 		// vpcStack uses the netstack of vpc connect, which must let the ICMPv6 error in.
 		vpcStack bool
@@ -130,9 +123,7 @@ func TestNoRouteError(t *testing.T) {
 		{name: "not found", dst: absent},
 		{name: "TCP dial to an absent address", dst: absent, dialErr: (&tcpip.ErrHostUnreachable{}).String()},
 		{name: "outside the VPC", dst: func(attachEvent) netip.Addr { return netip.MustParseAddr("fd97::1") }},
-		{name: "denied", dst: other, deny: true},
-		{name: "TCP dial denied", dst: other, deny: true, dialErr: (&tcpip.ErrPermissionDenied{}).String()},
-		{name: "TCP dial denied, vpc connect stack", dst: other, deny: true, vpcStack: true, dialErr: (&tcpip.ErrPermissionDenied{}).String()},
+		{name: "TCP dial to an absent address, vpc connect stack", dst: absent, vpcStack: true, dialErr: (&tcpip.ErrHostUnreachable{}).String()},
 		{name: "two flows 1.5 s apart", dst: absent, waits: []time.Duration{1500 * time.Millisecond}},
 	}
 	for _, tc := range cases {
@@ -142,11 +133,6 @@ func TestNoRouteError(t *testing.T) {
 			a, b := w.agent(t, "a", r, agentOptions{tcp: tc.dialErr != "", vpcStack: tc.vpcStack}), w.agent(t, "b", r, agentOptions{})
 			ea, eb := a.attached(t), b.attached(t)
 			dst := tc.dst(eb)
-			if tc.deny {
-				// A rule that denies each address also removes the entry of a to the
-				// relay, which has no address, so the rule denies only dst.
-				r.r.SetPermit(func(_ relay.VPCKey, _ string, _ relay.VPCKey, a netip.Addr) bool { return a != dst })
-			}
 			if tc.dialErr != "" {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()

@@ -24,22 +24,9 @@ service Relay {
   rpc Detach(DetachRequest) returns (google.protobuf.Empty);
   // Rekey gives the relay SAs for traffic from the relay to the agent.
   rpc Rekey(KeysRequest) returns (KeysResponse);
-  // ResolvePeer finds how the relay reaches an address. Errors: NotFound,
-  // PermissionDenied.
-  rpc ResolvePeer(ResolvePeerRequest) returns (ResolvePeerResponse);
-  // RegisterSPI adds forward rows for SPIs that a receiver gave to the caller.
-  rpc RegisterSPI(RegisterSPIRequest) returns (google.protobuf.Empty);
-  // UnregisterSPI removes forward rows of the caller.
-  rpc UnregisterSPI(UnregisterSPIRequest) returns (google.protobuf.Empty);
   // RegisterLanes sets the lane ports of the caller. Errors: InvalidArgument,
   // AlreadyExists (a port is a source of another agent), FailedPrecondition.
   rpc RegisterLanes(RegisterLanesRequest) returns (google.protobuf.Empty);
-  // Visit lets the caller use its address of another relay of the mesh on this
-  // relay. Errors: Unimplemented (no mesh), and the codes in the README.
-  rpc Visit(VisitRequest) returns (google.protobuf.Empty);
-  // Grant gives a new grant for an attachment of the session. The grant ends
-  // 15 minutes later. Errors: NotFound, Unavailable (the relay has no key).
-  rpc Grant(GrantRequest) returns (GrantResponse);
 }
 
 // RelayCloseCode is the QUIC application error code when a relay closes a
@@ -169,7 +156,8 @@ message Route {
   VPCRef vpc = 1;
   string prefix = 2;
   // Attachment that gets the packets for the prefix. When more than one
-  // attachment announces the prefix, it is the active announcer.
+  // attachment announces the prefix, it is the active announcer. For the route
+  // of a /88 slot, it is the ID of the relay that holds the slot.
   string origin = 3;
   // The other attachments that announce the prefix, in the order in which
   // they become the active announcer. Only in an added route, for an agent at
@@ -180,7 +168,8 @@ message Route {
   RelayRef relay = 5;
 }
 
-// RouteDelta changes the routes of the agent.
+// RouteDelta changes the routes of the agent. The first route table of a
+// session comes in parts, then one RouteDelta with no routes.
 message RouteDelta {
   // Revision after this delta. It increases with each delta on a session.
   uint64 rev = 1;
@@ -213,9 +202,8 @@ message ICVFailures {
 message NoRoute {
   VPCRef vpc = 1;
   string address = 2;
-  // Home relay of the peer, if the agent must attach to it as a visitor to
-  // reach the address. Not set in each other case.
-  RelayRef home_relay = 3;
+  reserved 3;
+  reserved "home_relay";
 }
 
 // Config is the configuration of a VPC for the agent.
@@ -248,8 +236,8 @@ message AttachRequest {
 
 message AttachResponse {
   string attachment_id = 1;
-  // Grant with the addresses of the attachment.
-  AttachmentGrant grant = 2;
+  reserved 2;
+  reserved "grant";
   // Answer of the relay for each route of the request, in the order of the
   // request, for an agent at revision 16 or later. A route with no answer is
   // accepted.
@@ -262,67 +250,6 @@ message DetachRequest {
   string attachment_id = 1;
 }
 
-message GrantRequest {
-  // Attachment of the session of the caller.
-  string attachment_id = 1;
-}
-
-message GrantResponse {
-  // Grant with the claims of the grant of Attach and a new not_after.
-  AttachmentGrant grant = 1;
-}
-
-// Reach tells how a relay reaches a peer.
-enum Reach {
-  REACH_UNSPECIFIED = 0;
-  // The peer is on this relay.
-  REACH_LOCAL = 1;
-  // The peer is on another relay. This relay sends over the trunk.
-  REACH_TRUNK = 2;
-  // The mesh session to the home relay of the peer is down. Attach to that
-  // relay as a visitor.
-  REACH_VISIT = 3;
-}
-
-message ResolvePeerRequest {
-  VPCRef vpc = 1;
-  // Overlay address of the peer.
-  string address = 2;
-}
-
-message ResolvePeerResponse {
-  Reach reach = 1;
-  // Home relay of the peer. Set for REACH_VISIT.
-  RelayRef home_relay = 2;
-  // True if P2P with the peer is allowed.
-  bool p2p = 3;
-  // SPIFFE ID of the peer. Set for REACH_LOCAL and REACH_TRUNK.
-  string subject = 4;
-  // Attachments of the session that has the address. Set for REACH_LOCAL and
-  // REACH_TRUNK.
-  repeated string attachment_ids = 5;
-}
-
-message RegisterSPIRequest {
-  VPCRef vpc = 1;
-  // Overlay address of the receiver that created the SPIs.
-  string destination = 2;
-  repeated uint32 spis = 3;
-  // Time until the rows expire.
-  google.protobuf.Duration expires_in = 4;
-  // Lane of each SPI, in the order of spis: 0 is the session address, and i
-  // is port i of RegisterLanes. Empty means lane 0 for all.
-  repeated uint32 lanes = 5;
-  // SA lane of each SPI at the receiver, in the order of spis. Empty means
-  // SA lane 0 for all.
-  repeated uint32 sa_lanes = 6;
-}
-
-message UnregisterSPIRequest {
-  VPCRef vpc = 1;
-  repeated uint32 spis = 2;
-}
-
 // RegisterLanesRequest replaces the lane ports of the caller. Each port is a
 // UDP port at the IP address of the session, from which the agent sends PSP
 // packets. Empty removes them.
@@ -331,16 +258,6 @@ message RegisterLanesRequest {
   // The agent reads the lane ports. The relay then sends the PSP packets of SA
   // lane i to lane port i mod (ports + 1), where 0 is the session address.
   bool receive = 2;
-}
-
-// VisitRequest makes the session of the caller a visitor. The session needs a
-// Session call with local_routes_only, and it has and had no attachment.
-message VisitRequest {
-  VPCRef vpc = 1;
-  // Overlay address of the caller on its home relay.
-  string address = 2;
-  // Grant of the home relay for the attachment that has the address.
-  AttachmentGrant grant = 3;
 }
 
 // FallbackReason is why an agent sends data in QUIC mode.

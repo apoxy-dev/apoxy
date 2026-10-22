@@ -20,12 +20,7 @@ const (
 	Relay_Attach_FullMethodName        = "/apoxy.vpc.datapath.v1.Relay/Attach"
 	Relay_Detach_FullMethodName        = "/apoxy.vpc.datapath.v1.Relay/Detach"
 	Relay_Rekey_FullMethodName         = "/apoxy.vpc.datapath.v1.Relay/Rekey"
-	Relay_ResolvePeer_FullMethodName   = "/apoxy.vpc.datapath.v1.Relay/ResolvePeer"
-	Relay_RegisterSPI_FullMethodName   = "/apoxy.vpc.datapath.v1.Relay/RegisterSPI"
-	Relay_UnregisterSPI_FullMethodName = "/apoxy.vpc.datapath.v1.Relay/UnregisterSPI"
 	Relay_RegisterLanes_FullMethodName = "/apoxy.vpc.datapath.v1.Relay/RegisterLanes"
-	Relay_Visit_FullMethodName         = "/apoxy.vpc.datapath.v1.Relay/Visit"
-	Relay_Grant_FullMethodName         = "/apoxy.vpc.datapath.v1.Relay/Grant"
 )
 
 // RelayClient is the client API of the Relay service.
@@ -41,22 +36,9 @@ type RelayClient interface {
 	Detach(ctx context.Context, in *DetachRequest) (*emptypb.Empty, error)
 	// Rekey gives the relay SAs for traffic from the relay to the agent.
 	Rekey(ctx context.Context, in *KeysRequest) (*KeysResponse, error)
-	// ResolvePeer finds how the relay reaches an address. Errors: NotFound,
-	// PermissionDenied.
-	ResolvePeer(ctx context.Context, in *ResolvePeerRequest) (*ResolvePeerResponse, error)
-	// RegisterSPI adds forward rows for SPIs that a receiver gave to the caller.
-	RegisterSPI(ctx context.Context, in *RegisterSPIRequest) (*emptypb.Empty, error)
-	// UnregisterSPI removes forward rows of the caller.
-	UnregisterSPI(ctx context.Context, in *UnregisterSPIRequest) (*emptypb.Empty, error)
 	// RegisterLanes sets the lane ports of the caller. Errors: InvalidArgument,
 	// AlreadyExists (a port is a source of another agent), FailedPrecondition.
 	RegisterLanes(ctx context.Context, in *RegisterLanesRequest) (*emptypb.Empty, error)
-	// Visit lets the caller use its address of another relay of the mesh on this
-	// relay. Errors: Unimplemented (no mesh), and the codes in the README.
-	Visit(ctx context.Context, in *VisitRequest) (*emptypb.Empty, error)
-	// Grant gives a new grant for an attachment of the session. The grant ends
-	// 15 minutes later. Errors: NotFound, Unavailable (the relay has no key).
-	Grant(ctx context.Context, in *GrantRequest) (*GrantResponse, error)
 }
 
 type relayClient struct{ c rpc.Caller }
@@ -92,49 +74,9 @@ func (c relayClient) Rekey(ctx context.Context, in *KeysRequest) (*KeysResponse,
 	return out, nil
 }
 
-func (c relayClient) ResolvePeer(ctx context.Context, in *ResolvePeerRequest) (*ResolvePeerResponse, error) {
-	out := new(ResolvePeerResponse)
-	if err := c.c.Invoke(ctx, Relay_ResolvePeer_FullMethodName, in, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c relayClient) RegisterSPI(ctx context.Context, in *RegisterSPIRequest) (*emptypb.Empty, error) {
-	out := new(emptypb.Empty)
-	if err := c.c.Invoke(ctx, Relay_RegisterSPI_FullMethodName, in, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c relayClient) UnregisterSPI(ctx context.Context, in *UnregisterSPIRequest) (*emptypb.Empty, error) {
-	out := new(emptypb.Empty)
-	if err := c.c.Invoke(ctx, Relay_UnregisterSPI_FullMethodName, in, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c relayClient) RegisterLanes(ctx context.Context, in *RegisterLanesRequest) (*emptypb.Empty, error) {
 	out := new(emptypb.Empty)
 	if err := c.c.Invoke(ctx, Relay_RegisterLanes_FullMethodName, in, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c relayClient) Visit(ctx context.Context, in *VisitRequest) (*emptypb.Empty, error) {
-	out := new(emptypb.Empty)
-	if err := c.c.Invoke(ctx, Relay_Visit_FullMethodName, in, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c relayClient) Grant(ctx context.Context, in *GrantRequest) (*GrantResponse, error) {
-	out := new(GrantResponse)
-	if err := c.c.Invoke(ctx, Relay_Grant_FullMethodName, in, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -153,22 +95,9 @@ type RelayServer interface {
 	Detach(context.Context, *DetachRequest) (*emptypb.Empty, error)
 	// Rekey gives the relay SAs for traffic from the relay to the agent.
 	Rekey(context.Context, *KeysRequest) (*KeysResponse, error)
-	// ResolvePeer finds how the relay reaches an address. Errors: NotFound,
-	// PermissionDenied.
-	ResolvePeer(context.Context, *ResolvePeerRequest) (*ResolvePeerResponse, error)
-	// RegisterSPI adds forward rows for SPIs that a receiver gave to the caller.
-	RegisterSPI(context.Context, *RegisterSPIRequest) (*emptypb.Empty, error)
-	// UnregisterSPI removes forward rows of the caller.
-	UnregisterSPI(context.Context, *UnregisterSPIRequest) (*emptypb.Empty, error)
 	// RegisterLanes sets the lane ports of the caller. Errors: InvalidArgument,
 	// AlreadyExists (a port is a source of another agent), FailedPrecondition.
 	RegisterLanes(context.Context, *RegisterLanesRequest) (*emptypb.Empty, error)
-	// Visit lets the caller use its address of another relay of the mesh on this
-	// relay. Errors: Unimplemented (no mesh), and the codes in the README.
-	Visit(context.Context, *VisitRequest) (*emptypb.Empty, error)
-	// Grant gives a new grant for an attachment of the session. The grant ends
-	// 15 minutes later. Errors: NotFound, Unavailable (the relay has no key).
-	Grant(context.Context, *GrantRequest) (*GrantResponse, error)
 }
 
 // UnimplementedRelayServer returns Unimplemented for each method. Embed it to add
@@ -191,28 +120,8 @@ func (UnimplementedRelayServer) Rekey(context.Context, *KeysRequest) (*KeysRespo
 	return nil, rpc.Errorf(rpc.Unimplemented, "method Rekey not implemented")
 }
 
-func (UnimplementedRelayServer) ResolvePeer(context.Context, *ResolvePeerRequest) (*ResolvePeerResponse, error) {
-	return nil, rpc.Errorf(rpc.Unimplemented, "method ResolvePeer not implemented")
-}
-
-func (UnimplementedRelayServer) RegisterSPI(context.Context, *RegisterSPIRequest) (*emptypb.Empty, error) {
-	return nil, rpc.Errorf(rpc.Unimplemented, "method RegisterSPI not implemented")
-}
-
-func (UnimplementedRelayServer) UnregisterSPI(context.Context, *UnregisterSPIRequest) (*emptypb.Empty, error) {
-	return nil, rpc.Errorf(rpc.Unimplemented, "method UnregisterSPI not implemented")
-}
-
 func (UnimplementedRelayServer) RegisterLanes(context.Context, *RegisterLanesRequest) (*emptypb.Empty, error) {
 	return nil, rpc.Errorf(rpc.Unimplemented, "method RegisterLanes not implemented")
-}
-
-func (UnimplementedRelayServer) Visit(context.Context, *VisitRequest) (*emptypb.Empty, error) {
-	return nil, rpc.Errorf(rpc.Unimplemented, "method Visit not implemented")
-}
-
-func (UnimplementedRelayServer) Grant(context.Context, *GrantRequest) (*GrantResponse, error) {
-	return nil, rpc.Errorf(rpc.Unimplemented, "method Grant not implemented")
 }
 
 // RegisterRelayServer adds the methods of srv to m.
@@ -221,10 +130,5 @@ func RegisterRelayServer(m *rpc.Mux, srv RelayServer) {
 	rpc.HandleUnary(m, Relay_Attach_FullMethodName, srv.Attach)
 	rpc.HandleUnary(m, Relay_Detach_FullMethodName, srv.Detach)
 	rpc.HandleUnary(m, Relay_Rekey_FullMethodName, srv.Rekey)
-	rpc.HandleUnary(m, Relay_ResolvePeer_FullMethodName, srv.ResolvePeer)
-	rpc.HandleUnary(m, Relay_RegisterSPI_FullMethodName, srv.RegisterSPI)
-	rpc.HandleUnary(m, Relay_UnregisterSPI_FullMethodName, srv.UnregisterSPI)
 	rpc.HandleUnary(m, Relay_RegisterLanes_FullMethodName, srv.RegisterLanes)
-	rpc.HandleUnary(m, Relay_Visit_FullMethodName, srv.Visit)
-	rpc.HandleUnary(m, Relay_Grant_FullMethodName, srv.Grant)
 }

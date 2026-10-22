@@ -208,50 +208,8 @@ func (r *relayStub) Rekey(ctx context.Context, in *dp.KeysRequest) (*dp.KeysResp
 	return answer[*dp.KeysResponse](r.stub, "Rekey", in)
 }
 
-func (r *relayStub) ResolvePeer(ctx context.Context, in *dp.ResolvePeerRequest) (*dp.ResolvePeerResponse, error) {
-	return answer[*dp.ResolvePeerResponse](r.stub, "ResolvePeer", in)
-}
-
-func (r *relayStub) RegisterSPI(ctx context.Context, in *dp.RegisterSPIRequest) (*emptypb.Empty, error) {
-	return answer[*emptypb.Empty](r.stub, "RegisterSPI", in)
-}
-
-func (r *relayStub) UnregisterSPI(ctx context.Context, in *dp.UnregisterSPIRequest) (*emptypb.Empty, error) {
-	return answer[*emptypb.Empty](r.stub, "UnregisterSPI", in)
-}
-
 func (r *relayStub) RegisterLanes(ctx context.Context, in *dp.RegisterLanesRequest) (*emptypb.Empty, error) {
 	return answer[*emptypb.Empty](r.stub, "RegisterLanes", in)
-}
-
-func (r *relayStub) Visit(ctx context.Context, in *dp.VisitRequest) (*emptypb.Empty, error) {
-	return answer[*emptypb.Empty](r.stub, "Visit", in)
-}
-
-func (r *relayStub) Grant(ctx context.Context, in *dp.GrantRequest) (*dp.GrantResponse, error) {
-	return answer[*dp.GrantResponse](r.stub, "Grant", in)
-}
-
-type peerStub struct{ *stub }
-
-func (p peerStub) Open(ctx context.Context, in *dp.OpenRequest) (*dp.OpenResponse, error) {
-	return answer[*dp.OpenResponse](p.stub, "Open", in)
-}
-
-func (p peerStub) Keys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysResponse, error) {
-	return answer[*dp.KeysResponse](p.stub, "Keys", in)
-}
-
-func (p peerStub) Paths(ctx context.Context, st rpc.ClientStreamServer[dp.Candidates]) (*emptypb.Empty, error) {
-	return recvAll(p.stub, "Paths", st)
-}
-
-func (p peerStub) Reports(ctx context.Context, st rpc.ClientStreamServer[dp.RxReport]) (*emptypb.Empty, error) {
-	return recvAll(p.stub, "Reports", st)
-}
-
-func (p peerStub) Grants(ctx context.Context, in *dp.GrantsRequest) (*emptypb.Empty, error) {
-	return answer[*emptypb.Empty](p.stub, "Grants", in)
 }
 
 type meshStub struct{ *stub }
@@ -286,7 +244,6 @@ var (
 	vpc    = &dp.VPCRef{ProjectId: "11111111-2222-3333-4444-555555555555", VpcUid: "vpc-uid-1", NetworkId: 0x0a0b0c}
 	relay  = &dp.RelayRef{Id: "relay-b", Addresses: []string{"198.51.100.2:443", "[2001:db8::2]:443"}}
 	sa     = &dp.SA{Spi: 0x8000_1234, Key: bytes.Repeat([]byte{7}, 16), Vni: 0x0a0b0c, ExpiresIn: durationpb.New(10 * time.Minute), Lane: 3}
-	grant  = &dp.AttachmentGrant{Claims: []byte("claims"), Signature: []byte("signature")}
 	offer  = &dp.KeysRequest{Op: &dp.KeysRequest_Offer{Offer: &dp.OfferSAs{Sas: []*dp.SA{sa}}}}
 	rekey  = &dp.KeysRequest{Op: &dp.KeysRequest_Rekey{Rekey: &dp.RekeySA{Sas: []*dp.SA{sa}}}}
 	revoke = &dp.KeysRequest{Op: &dp.KeysRequest_Revoke{Revoke: &dp.RevokeSA{Spis: []uint32{sa.Spi}}}}
@@ -399,7 +356,7 @@ func TestRelaySession(t *testing.T) {
 			Add:    []*dp.Route{{Vpc: vpc, Prefix: "fd61:a0b:c00:1::/96", Origin: "att-2"}},
 			Remove: []*dp.Route{{Vpc: vpc, Prefix: "10.1.0.0/16", Origin: "att-3"}},
 		}}},
-		{Msg: &dp.SessionResponse_NoRoute{NoRoute: &dp.NoRoute{Vpc: vpc, Address: "fd61:a0b:c00:2::9", HomeRelay: relay}}},
+		{Msg: &dp.SessionResponse_NoRoute{NoRoute: &dp.NoRoute{Vpc: vpc, Address: "fd61:a0b:c00:2::9"}}},
 		{Msg: &dp.SessionResponse_Rekey{Rekey: rekey}},
 		{Msg: &dp.SessionResponse_Config{Config: &dp.Config{Vpc: vpc, Mtu: 1280, DnsServers: []string{"fd61:a0b:c00::53"}, DnsSearchDomains: []string{"vpc.internal"}}}},
 		{Msg: &dp.SessionResponse_Drain{Drain: &dp.Drain{Alternates: []*dp.RelayRef{relay}}}},
@@ -447,58 +404,13 @@ func TestRelayCalls(t *testing.T) {
 	runCalls(t, agent, r.stub, []call{
 		unary("Attach", c, dp.RelayClient.Attach,
 			&dp.AttachRequest{Vpc: vpc, Name: "laptop", Labels: map[string]string{"env": "dev"}, Routes: []string{"10.1.0.0/16"}},
-			&dp.AttachResponse{AttachmentId: "att-1", Grant: grant}),
+			&dp.AttachResponse{AttachmentId: "att-1", Addresses: []string{"fd61:a0b:c00:1::/96"}}),
 		unary("Detach", c, dp.RelayClient.Detach, &dp.DetachRequest{AttachmentId: "att-1"}, &emptypb.Empty{}),
 		unary("Detach unknown", c, dp.RelayClient.Detach, &dp.DetachRequest{AttachmentId: "att-9"}, rpc.Errorf(rpc.NotFound, "no attachment")),
 		unary("Rekey", c, dp.RelayClient.Rekey, offer, &dp.KeysResponse{}),
-		unary("ResolvePeer local", c, dp.RelayClient.ResolvePeer,
-			&dp.ResolvePeerRequest{Vpc: vpc, Address: "fd61:a0b:c00:2::8"},
-			&dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, P2P: true, Subject: "spiffe://project-a/vpc/vpc-1/agent/b"}),
-		unary("ResolvePeer visit", c, dp.RelayClient.ResolvePeer,
-			&dp.ResolvePeerRequest{Vpc: vpc, Address: "fd61:a0b:c00:2::9"},
-			&dp.ResolvePeerResponse{Reach: dp.Reach_REACH_VISIT, HomeRelay: relay, P2P: true}),
-		unary("ResolvePeer denied", c, dp.RelayClient.ResolvePeer,
-			&dp.ResolvePeerRequest{Vpc: vpc, Address: "fd61:a0b:c00:3::9"},
-			rpc.Errorf(rpc.PermissionDenied, "permit denies")),
-		unary("RegisterSPI", c, dp.RelayClient.RegisterSPI,
-			&dp.RegisterSPIRequest{Vpc: vpc, Destination: "fd61:a0b:c00:2::9", Spis: []uint32{sa.Spi}, ExpiresIn: durationpb.New(5 * time.Minute)},
-			&emptypb.Empty{}),
-		unary("RegisterSPI with lanes", c, dp.RelayClient.RegisterSPI,
-			&dp.RegisterSPIRequest{Vpc: vpc, Destination: "fd61:a0b:c00:2::9", Spis: []uint32{sa.Spi, 0x80000002}, ExpiresIn: durationpb.New(5 * time.Minute), Lanes: []uint32{0, 1}, SaLanes: []uint32{0, 3}},
-			&emptypb.Empty{}),
 		unary("RegisterLanes", c, dp.RelayClient.RegisterLanes, &dp.RegisterLanesRequest{Ports: []uint32{40001, 40002}, Receive: true}, &emptypb.Empty{}),
 		unary("RegisterLanes taken", c, dp.RelayClient.RegisterLanes, &dp.RegisterLanesRequest{Ports: []uint32{40003}},
 			rpc.Errorf(rpc.AlreadyExists, "port 40003 is a source of another session")),
-		unary("UnregisterSPI", c, dp.RelayClient.UnregisterSPI,
-			&dp.UnregisterSPIRequest{Vpc: vpc, Spis: []uint32{sa.Spi}}, &emptypb.Empty{}),
-		unary("Visit", c, dp.RelayClient.Visit, &dp.VisitRequest{Vpc: vpc, Address: "fd61:a0b:c00:1::1", Grant: grant}, &emptypb.Empty{}),
-		unary("Visit refused", c, dp.RelayClient.Visit, &dp.VisitRequest{Vpc: vpc, Address: "fd61:a0b:c00:2::9", Grant: grant},
-			rpc.Errorf(rpc.PermissionDenied, "address fd61:a0b:c00:2::9 is not in the grant")),
-		unary("Grant", c, dp.RelayClient.Grant, &dp.GrantRequest{AttachmentId: "att-1"}, &dp.GrantResponse{Grant: grant}),
-		unary("Grant unknown", c, dp.RelayClient.Grant, &dp.GrantRequest{AttachmentId: "att-9"}, rpc.Errorf(rpc.NotFound, "no attachment")),
-	})
-}
-
-func TestPeerCalls(t *testing.T) {
-	c := dp.NewPeerClient
-	runBothWays(t, dp.ALPNPeer, func(m *rpc.Mux, s *stub) { dp.RegisterPeerServer(m, peerStub{s}) }, []call{
-		unary("Open", c, dp.PeerClient.Open,
-			&dp.OpenRequest{Grant: grant, Grants: []*dp.AttachmentGrant{grant}, Instance: 0x0102030405060708, Mode: dp.Mode_MODE_PSP, P2P: true, Lanes: 8},
-			&dp.OpenResponse{Grant: grant, Grants: []*dp.AttachmentGrant{grant}, Instance: 0x1112131415161718, Mode: dp.Mode_MODE_QUIC, Lanes: 1}),
-		unary("Grants", c, dp.PeerClient.Grants,
-			&dp.GrantsRequest{Add: []*dp.AttachmentGrant{grant}, Remove: []string{"att-2"}}, &emptypb.Empty{}),
-		unary("Keys offer", c, dp.PeerClient.Keys, offer, &dp.KeysResponse{RefusedSpis: []uint32{sa.Spi}}),
-		unary("Keys rekey", c, dp.PeerClient.Keys, rekey, &dp.KeysResponse{}),
-		unary("Keys revoke", c, dp.PeerClient.Keys, revoke, &dp.KeysResponse{}),
-		clientStream("Paths", c, dp.PeerClient.Paths,
-			&dp.Candidates{Round: 1, Mtu: 1280, Candidates: []*dp.Candidate{
-				{Kind: dp.CandidateKind_CANDIDATE_KIND_HOST, Address: "2001:db8::10", Port: 41641},
-				{Kind: dp.CandidateKind_CANDIDATE_KIND_REFLEXIVE, Address: "203.0.113.7", Port: 40000},
-			}},
-			&dp.Candidates{Round: 2, Mtu: 1280}),
-		clientStream("Reports", c, dp.PeerClient.Reports,
-			&dp.RxReport{Sas: []*dp.SAStats{{Spi: 0x80000001, Packets: 990, Seq: 1000}, {Spi: 0x80000002}}},
-			&dp.RxReport{Sas: []*dp.SAStats{{Spi: 0x80000001, Packets: 1990, Seq: 2000}}}),
 	})
 }
 
@@ -535,16 +447,16 @@ func TestJSONDebug(t *testing.T) {
 	dp.RegisterRelayServer(mux, r)
 	srv := httptest.NewServer(rpc.JSONHandler(mux))
 	defer srv.Close()
-	r.expect("ResolvePeer", &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_TRUNK, P2P: true})
+	r.expect("Attach", &dp.AttachResponse{AttachmentId: "att-1", Addresses: []string{"fd61:a0b:c00:1::/96"}})
 
-	body := `{"vpc":{"project_id":"p-1","vpc_uid":"u-1","network_id":658188},"address":"fd61:a0b:c00:2::9"}`
-	resp, err := http.Post(srv.URL+dp.Relay_ResolvePeer_FullMethodName, "application/json", strings.NewReader(body))
+	body := `{"vpc":{"project_id":"p-1","vpc_uid":"u-1","network_id":658188},"name":"laptop","routes":["fd61:a0b:c00:2::/96"]}`
+	resp, err := http.Post(srv.URL+dp.Relay_Attach_FullMethodName, "application/json", strings.NewReader(body))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	out, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", out)
-	assert.JSONEq(t, `{"reach":"REACH_TRUNK","p2p":true}`, string(out))
-	want := &dp.ResolvePeerRequest{Vpc: &dp.VPCRef{ProjectId: "p-1", VpcUid: "u-1", NetworkId: 0x0a0b0c}, Address: "fd61:a0b:c00:2::9"}
-	assert.Empty(t, diff([]proto.Message{want}, r.requests("ResolvePeer")))
+	assert.JSONEq(t, `{"attachmentId":"att-1","addresses":["fd61:a0b:c00:1::/96"]}`, string(out))
+	want := &dp.AttachRequest{Vpc: &dp.VPCRef{ProjectId: "p-1", VpcUid: "u-1", NetworkId: 0x0a0b0c}, Name: "laptop", Routes: []string{"fd61:a0b:c00:2::/96"}}
+	assert.Empty(t, diff([]proto.Message{want}, r.requests("Attach")))
 }

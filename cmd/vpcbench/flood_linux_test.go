@@ -29,8 +29,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
-
-	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
 // xdpTX is the XDP action of a packet that the program sends on its link.
@@ -257,95 +255,6 @@ func TestFloodRelayForward(t *testing.T) {
 					assert.Zero(t, n, "row %d", i)
 				}
 			}
-		})
-	}
-}
-
-// rodata returns the constants of a loaded program, which hold its config.
-func rodata(p *ebpf.Program) ([]byte, error) {
-	info, err := p.Info()
-	if err != nil {
-		return nil, err
-	}
-	ids, _ := info.MapIDs()
-	for _, id := range ids {
-		m, err := ebpf.NewMapFromID(id)
-		if err != nil {
-			return nil, err
-		}
-		defer m.Close()
-		mi, err := m.Info()
-		if err != nil {
-			return nil, err
-		}
-		if strings.Contains(mi.Name, "rodata") {
-			return m.LookupBytes(uint32(0))
-		}
-	}
-	return nil, errors.New("the program has no constants")
-}
-
-// TestFloodRelayConfig checks that the bench loads the relay program with the
-// same config as the relay of the product does on the same link.
-func TestFloodRelayConfig(t *testing.T) {
-	ns := newFloodNS(t)
-	cases := []struct {
-		name    string
-		product relay.Config
-		hop     time.Duration
-		bench   floodOptions
-		differ  bool
-	}{
-		{name: "no limits"},
-		{name: "next hop cache", hop: time.Second, bench: floodOptions{XDPHop: time.Second}},
-		// The relay command has a tunnel limit of 5 Gbit/s with a burst of 100 ms.
-		{name: "tunnel limit", product: relay.Config{TunnelRate: 625e6, TunnelBurst: 625e5}, bench: floodOptions{TunnelRate: 5e9}},
-		{name: "small tunnel limit with the smallest burst", product: relay.Config{TunnelRate: 1e5, TunnelBurst: 64 << 10}, bench: floodOptions{TunnelRate: 8e5}},
-		{name: "a different limit is a different config", product: relay.Config{TunnelRate: 625e6, TunnelBurst: 625e5}, differ: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var want, got []byte
-			var err error
-			ns.do(func() {
-				var x *relay.XDP
-				x, _, err = relay.NewRouter(nil, tc.product).StartXDP(relay.XDPConfig{Port: floodRelayAP.Port(), Iface: "fl0", Generic: true, NextHopCache: tc.hop})
-				if err != nil {
-					return
-				}
-				defer x.Close()
-				var l netlink.Link
-				if l, err = netlink.LinkByName("fl0"); err != nil {
-					return
-				}
-				var p *ebpf.Program
-				if p, err = ebpf.NewProgramFromID(ebpf.ProgramID(l.Attrs().Xdp.ProgId)); err != nil {
-					return
-				}
-				defer p.Close()
-				want, err = rodata(p)
-			})
-			if errors.Is(err, unix.EPERM) {
-				t.Skipf("cannot load BPF programs: %v", err)
-			}
-			require.NoError(t, err)
-			o := tc.bench
-			o.XDP, o.XDPMode = "fl0", "generic"
-			ns.do(func() {
-				var x *floodXDP
-				if x, err = startFloodXDP(o, floodRelayAP); err != nil {
-					return
-				}
-				defer x.close()
-				got, err = rodata(x.prog.Program())
-			})
-			require.NoError(t, err)
-			require.NotEmpty(t, want)
-			if tc.differ {
-				assert.NotEqual(t, want, got)
-				return
-			}
-			assert.Equal(t, want, got)
 		})
 	}
 }

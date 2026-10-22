@@ -83,7 +83,6 @@ func roam(t *testing.T, noRoute time.Duration) {
 	tap := &tapConn{PacketConn: listenIn(t, relayNS, relayIP), to: newAddr}
 	w := newWorld(t)
 	r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP), tap)
-	runRouter(t, r)
 	b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), mode: TransportAuto})
 	a := w.agent(t, "a", r, agentOptions{udp: udp, mode: TransportAuto})
 	ea, eb := a.attached(t), b.attached(t)

@@ -20,8 +20,6 @@ type snapshot struct {
 	conns []*connSnap
 	// specs are the extra attachments to keep, by name. They stay after Run.
 	specs map[string]*AttachmentSpec
-	// visits are the routes of the visits.
-	visits []Route
 }
 
 // connSnap is one home session in a snapshot.

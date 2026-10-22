@@ -4,7 +4,6 @@ package agent
 
 import (
 	"net/netip"
-	"slices"
 	"testing"
 	"time"
 
@@ -18,33 +17,31 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-// TestIPv4Sources checks that an agent gets IPv4 only from a source in a route
-// of the sender, and that a sender with no IPv4 route uses the /96.
+// TestIPv4Sources checks that the relay refuses IPv4 routes and drops IPv4 that
+// is not in a /96, and that IPv4 in the /96 of the peer gets an answer.
 func TestIPv4Sources(t *testing.T) {
 	lan, far := netip.MustParsePrefix("10.1.0.0/24"), netip.MustParseAddr("10.1.0.5")
 	src := netip.MustParseAddr("192.0.2.10")
-	own := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
 	cases := []struct {
 		name     string
 		mode     TransportMode
-		routes   []netip.Prefix // Of the sender.
-		embedded bool           // To far in the /96 of the peer, from the overlay address of the sender.
+		embedded bool // To far in the /96 of the peer, from the overlay address of the sender.
 		answer   bool
 	}{
-		{name: "PSP source in a route", mode: TransportAuto, routes: own, answer: true},
-		{name: "PSP source in no route", mode: TransportAuto},
+		{name: "PSP IPv4 source", mode: TransportAuto},
 		{name: "PSP IPv4 in the /96 of the peer", mode: TransportAuto, embedded: true, answer: true},
-		{name: "QUIC source in a route", mode: TransportQUIC, routes: own, answer: true},
-		{name: "QUIC source in no route", mode: TransportQUIC},
+		{name: "QUIC IPv4 source", mode: TransportQUIC},
 		{name: "QUIC IPv4 in the /96 of the peer", mode: TransportQUIC, embedded: true, answer: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a := w.agent(t, "a", r, agentOptions{mode: tc.mode, routes: tc.routes})
+			a := w.agent(t, "a", r, agentOptions{mode: tc.mode})
 			b := w.agent(t, "b", r, agentOptions{mode: tc.mode, routes: []netip.Prefix{lan}})
 			ea, eb := a.attached(t), b.attached(t)
+			a.hasRoutes(t, eb.prefixes...)
+			assert.NotContains(t, a.routeSet(), lan, "the relay refuses an IPv4 route")
 			from, to := src, far
 			if tc.embedded {
 				b16 := eb.addr.As16()
@@ -54,8 +51,6 @@ func TestIPv4Sources(t *testing.T) {
 			} else {
 				addIPv4(t, a.stack, from)
 				addIPv4(t, b.stack, to)
-				require.Eventually(t, func() bool { return slices.Contains(a.routeSet(), lan) },
-					5*time.Second, 10*time.Millisecond)
 			}
 			echo(t, b.stack, to, 9000)
 			require.Equal(t, tc.answer, answers(a.stack, from, to, 9000))

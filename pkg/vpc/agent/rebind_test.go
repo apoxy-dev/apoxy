@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"context"
 	"errors"
 	"net"
 	"net/netip"
@@ -143,20 +142,6 @@ func (c *tapConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 
 func unmap(a netip.AddrPort) netip.AddrPort { return netip.AddrPortFrom(a.Addr().Unmap(), a.Port()) }
 
-// runRouter runs the sweep of r, which follows QUIC connections that moved.
-func runRouter(t *testing.T, r *testRelay) {
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		r.r.Run(ctx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-}
-
 // firstEcho sends to dst:port each interval for at most d. It returns the
 // time of the first echo, or the zero time if no echo came.
 func firstEcho(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16, interval, d time.Duration) time.Time {
@@ -198,14 +183,13 @@ func TestMove(t *testing.T) {
 			tap := &tapConn{PacketConn: loopback(t), to: unmap(next.LocalAddr().(*net.UDPAddr).AddrPort())}
 			w := newWorld(t)
 			r := w.relayOn(t, "relay-1", loopback(t), tap)
-			runRouter(t, r)
 			mc := &moveConn{next: next, dataOnly: tc.dataOnly, pspOnly: tc.pspOnly, hide: tc.hide}
 			b := w.agent(t, "b", r, agentOptions{})
 			a := w.agent(t, "a", r, agentOptions{move: mc})
 			ea, eb := a.attached(t), b.attached(t)
 			echo(t, b.stack, eb.addr, 7)
 			ping(t, a.stack, ea.addr, eb.addr, 7, "before the move")
-			rc, drops := a.current(), r.r.UnknownSourceDrops()
+			rc, drops := a.current(), relayDrops(t, r)["unknown_source"]
 
 			t0 := time.Now()
 			mc.move()
@@ -214,7 +198,7 @@ func TestMove(t *testing.T) {
 			if !tc.data {
 				assert.True(t, at.IsZero(), "data works with only data from the new source")
 				assert.Zero(t, tap.psp.Load(), "relay sent data to the new source")
-				assert.Greater(t, r.r.UnknownSourceDrops(), drops)
+				assert.Greater(t, relayDrops(t, r)["unknown_source"], drops)
 				return
 			}
 			require.False(t, at.IsZero(), "no data in %v", within)

@@ -158,7 +158,7 @@ func (r *root) startRound(n int, eps []endpoint) {
 	cred := r.a.cfg.Identity.Current()
 	for i, e := range eps {
 		r.task(func() any {
-			d, err := r.a.dial(ctx, e, r.a.relayRoots(cred), false)
+			d, err := r.a.dial(ctx, e, r.a.relayRoots(cred))
 			return dialResult{round: rd, i: i, d: d, err: err}
 		})
 	}

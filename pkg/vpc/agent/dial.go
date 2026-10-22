@@ -25,7 +25,7 @@ import (
 type dialed struct {
 	ep     endpoint
 	name   string         // TLS name of the relay.
-	roots  *x509.CertPool // Check relay certs and grants. Nil means the system roots.
+	roots  *x509.CertPool // Check relay certs. Nil means the system roots.
 	qc     quic.Connection
 	client dp.RelayClient
 	st     rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
@@ -62,9 +62,9 @@ func (d *dialed) choiceRTT() time.Duration {
 }
 
 // dial runs the handshake with the relay at e and the Session call up to
-// Config. A visitor session asks for local routes only. ctx ends the dial;
+// Config. ctx ends the dial;
 // the Session call of the result lives until its cancel.
-func (a *Agent) dial(ctx context.Context, e endpoint, roots *x509.CertPool, visitor bool) (*dialed, error) {
+func (a *Agent) dial(ctx context.Context, e endpoint, roots *x509.CertPool) (*dialed, error) {
 	host, _, err := net.SplitHostPort(e.addr)
 	if err != nil {
 		return nil, err
@@ -95,7 +95,7 @@ func (a *Agent) dial(ctx context.Context, e endpoint, roots *x509.CertPool, visi
 	stop := context.AfterFunc(ctx, d.cancel)
 	// A relay that does not answer in time ends the dial.
 	late := context.AfterFunc(dctx, func() { _ = qc.CloseWithError(0, "relay session did not open in time") })
-	err = a.hello(d, visitor)
+	err = a.hello(d)
 	late()
 	stop()
 	if err == nil && ctx.Err() != nil {
@@ -112,7 +112,7 @@ func (a *Agent) dial(ctx context.Context, e endpoint, roots *x509.CertPool, visi
 }
 
 // hello runs the Session call of d up to Config.
-func (a *Agent) hello(d *dialed, visitor bool) error {
+func (a *Agent) hello(d *dialed) error {
 	st, err := d.client.Session(d.ctx)
 	if err != nil {
 		return err
@@ -122,9 +122,8 @@ func (a *Agent) hello(d *dialed, visitor bool) error {
 	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
 		Mode: a.wantedMode(), FallbackReason: a.configReason(), Version: a.ver, Name: a.cfg.Name,
 		// The relay tells two processes with one identity and one name apart by the instance.
-		Instance: a.instance,
-		// A relay takes a Visit call only on a session with local routes.
-		LocalRoutesOnly: a.cfg.LocalRoutesOnly || visitor,
+		Instance:        a.instance,
+		LocalRoutesOnly: a.cfg.LocalRoutesOnly,
 	}}}); err != nil {
 		return err
 	}

@@ -27,15 +27,12 @@ const writerQueue = 64
 
 var errNoDataPath = errors.New("no data path")
 
-// session is one relay session: a home session, which has the attachment of
-// Config, or a visitor session, which uses the address of its home session on
-// the relay of a visit.
+// session is one relay session, which has the attachment of Config.
 type session struct {
 	a      *Agent
 	mb, up *mailbox
 	d      *dialed
 	rank   uint32
-	vp     *visitParams // Nil for a home session.
 	ctx    context.Context
 	cancel context.CancelFunc
 	tasks  int
@@ -52,7 +49,6 @@ type session struct {
 	id       string // Attachment ID.
 	prefixes []netip.Prefix
 	self     netip.Addr
-	grant    ownGrant
 	b        *psp.Binding
 	link     *psp.Link
 	peer     *psp.Peer
@@ -60,7 +56,6 @@ type session struct {
 	setup    time.Duration
 	draining bool
 	alts     []endpoint
-	homes    map[string]bool // Relays of the home sessions of the agent.
 
 	routes                   routeTable
 	waitRev                  uint64
@@ -91,34 +86,22 @@ type session struct {
 	byID      map[string]*extra
 	queue     []*xjob
 	running   map[*xjob]bool
-	joining   map[*xjob]bool
 	detaching []*djob
-
-	visits    map[string]*visitRec // By relay.
-	resolving map[netip.Addr]bool
-	visitTk   *time.Ticker
-	vjoined   map[string]bool // Visitor: extra attachments in the visit, by ID.
-	vqueue    []any           // Visitor: joins and leaves before the visit started.
 }
 
-// newSession returns the session on the connection d. A visitor session has
-// vp. The session ends with ctx.
-func newSession(a *Agent, ctx context.Context, up *mailbox, d *dialed, rank uint32, vp *visitParams) *session {
+// newSession returns the session on the connection d. The session ends with ctx.
+func newSession(a *Agent, ctx context.Context, up *mailbox, d *dialed, rank uint32) *session {
 	s := &session{
-		a: a, mb: newMailbox(), up: up, d: d, rank: rank, vp: vp,
+		a: a, mb: newMailbox(), up: up, d: d, rank: rank,
 		rx: make(chan *dp.SessionResponse, 1), next: make(chan struct{}, 1),
 		mode: dp.Mode_MODE_QUIC, lanes: 1,
 		checks: map[*check]bool{}, extraConns: map[*extraConn]bool{},
 		extras: map[string]*extra{}, byID: map[string]*extra{},
-		running: map[*xjob]bool{}, joining: map[*xjob]bool{},
-		visits: map[string]*visitRec{}, resolving: map[netip.Addr]bool{}, vjoined: map[string]bool{},
+		running: map[*xjob]bool{},
 	}
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	return s
 }
-
-// visitor reports whether s is a visitor session.
-func (s *session) visitor() bool { return s.vp != nil }
 
 // addr returns the relay address as dialed.
 func (s *session) addr() string { return s.d.ep.addr }
@@ -164,16 +147,10 @@ func (s *session) run() {
 		case <-tickerC(s.laneTk):
 			b, to := s.b, s.d.relayAddr
 			s.write(func() { b.KeepLanes(to) })
-		case <-tickerC(s.visitTk):
-			s.checkVisits()
 		}
 	}
 	close(s.w)
-	var link *psp.Link
-	if !s.visitor() {
-		link = s.link
-	}
-	s.up.send(sessEnded{s, s.err, link, s.peer})
+	s.up.send(sessEnded{s, s.err, s.link, s.peer})
 }
 
 // tickerC returns the channel of t, or nil.
@@ -186,7 +163,7 @@ func tickerC(t *time.Ticker) <-chan time.Time {
 
 // idle reports whether the session has no child and no task.
 func (s *session) idle() bool {
-	return s.tasks == 0 && len(s.checks) == 0 && len(s.extraConns) == 0 && len(s.visits) == 0
+	return s.tasks == 0 && len(s.checks) == 0 && len(s.extraConns) == 0
 }
 
 // start starts the long tasks, the attach and the first PSP probe. The probe
@@ -204,11 +181,7 @@ func (s *session) start() {
 	if !s.a.wantsPSP() {
 		s.reason = dp.FallbackReason_FALLBACK_REASON_CONFIG
 	}
-	if s.visitor() {
-		s.startVisit()
-	} else {
-		s.attachBase()
-	}
+	s.attachBase()
 	if s.a.wantsPSP() {
 		// One pass is enough at the first probe of a session.
 		s.passes, s.wait = pspPasses-1, s.a.retryMin
@@ -297,9 +270,6 @@ func (s *session) end(err error) {
 		ec.mb.send(endMsg{})
 	}
 	s.cur = nil
-	for _, rec := range s.visits {
-		rec.v.mb.send(endMsg{})
-	}
 	s.sw.send(endMsg{})
 	if s.retry != nil {
 		s.retry.Stop()
@@ -310,10 +280,6 @@ func (s *session) end(err error) {
 		s.att = nil
 	}
 	s.stopLanes()
-	if s.visitTk != nil {
-		s.visitTk.Stop()
-		s.visitTk = nil
-	}
 }
 
 func (s *session) handle(m any) {
@@ -330,9 +296,6 @@ func (s *session) handle(m any) {
 		return
 	case extraEnded:
 		delete(s.extraConns, m.ec)
-		return
-	case vEnded:
-		s.visitEnded(m)
 		return
 	case endMsg:
 		s.end(errAgentStopped)
@@ -362,8 +325,6 @@ func (s *session) handle(m any) {
 		s.baseAttached(m)
 	case bindingMsg:
 		s.bound(m)
-	case homesMsg:
-		s.homes = m.keys
 	case probeDone:
 		s.probeDone(m)
 	case rekeyMsg:
@@ -434,12 +395,26 @@ func (s *session) routeDelta(d *dp.RouteDelta) {
 	changes := s.routes.apply(d, s.ownOrigin)
 	s.waitRev, s.waiting, s.ackOK, s.routesOK = d.GetRev(), true, false, true
 	s.sw.send(ackMsg{d.GetRev()})
-	if s.visitor() {
-		return
-	}
 	add, remove := prefixChanges(changes)
 	s.routesOK = false
 	s.up.send(routesMsg{s: s, add: add, remove: remove, first: first, delta: true, rev: d.GetRev()})
+}
+
+// noRoute sends an ICMP error to the sender of a packet to the address of a
+// NoRoute.
+func (s *session) noRoute(m *dp.NoRoute) {
+	dst, err := netip.ParseAddr(m.GetAddress())
+	if err != nil || s.b == nil || s.link == nil {
+		return
+	}
+	head := s.b.TakeHead(s.link, dst.Unmap(), time.Now())
+	if head == nil {
+		return
+	}
+	if pkt := unreachable(head, s.self); pkt != nil {
+		b := s.b
+		s.write(func() { b.Deliver(pkt) })
+	}
 }
 
 // readNext lets the reader read the next message.
@@ -461,7 +436,7 @@ func (s *session) ownOrigin(origin string) bool {
 // drain marks the session draining when its relay drains. The root opens a
 // session on another relay.
 func (s *session) drain(alts []endpoint) {
-	if s.visitor() || s.draining {
+	if s.draining {
 		return
 	}
 	s.draining, s.alts = true, alts
@@ -477,14 +452,13 @@ func (s *session) drain(alts []endpoint) {
 // baseAttached is the result of the Attach call of the attachment of Config.
 type baseAttached struct {
 	id       string
-	grant    ownGrant
 	prefixes []netip.Prefix
 	err      error
 }
 
 // attachBase starts the Attach call of the attachment of Config.
 func (s *session) attachBase() {
-	cfg, c, qc, ref, rank, addr, roots := &s.a.cfg, s.d.client, s.d.qc, s.d.config.GetVpc(), s.rank, s.addr(), s.d.roots
+	cfg, c, qc, ref, rank, addr := &s.a.cfg, s.d.client, s.d.qc, s.d.config.GetVpc(), s.rank, s.addr()
 	req := &dp.AttachRequest{Vpc: ref, Name: cfg.Name, Labels: cfg.Labels, Routes: prefixStrings(cfg.Routes), Rank: rank}
 	ctx := s.ctx
 	s.task(func() any {
@@ -498,16 +472,11 @@ func (s *session) attachBase() {
 			return baseAttached{err: attachError(qc, fmt.Errorf("attach: %w", err))}
 		}
 		logRefused(addr, req.GetName(), res.GetRoutes())
-		// A bad relay cert fails the attach.
-		claims, err := verifyOwn(addr, roots, res.GetGrant())
-		if err != nil {
-			return baseAttached{err: relayUpgrade(addr, err)}
-		}
-		prefixes, err := parsePrefixes(claims.GetAddresses())
+		prefixes, err := parsePrefixes(res.GetAddresses())
 		if err != nil {
 			return baseAttached{err: err}
 		}
-		return baseAttached{id: claims.GetAttachmentId(), grant: newOwnGrant(res.GetGrant(), claims.GetAttachmentId()), prefixes: prefixes}
+		return baseAttached{id: res.GetAttachmentId(), prefixes: prefixes}
 	})
 }
 
@@ -516,7 +485,7 @@ func (s *session) baseAttached(m baseAttached) {
 		s.end(m.err)
 		return
 	}
-	s.id, s.grant, s.prefixes, s.self = m.id, m.grant, m.prefixes, overlayAddr(m.prefixes)
+	s.id, s.prefixes, s.self = m.id, m.prefixes, overlayAddr(m.prefixes)
 	// The routes that came for the attachment before the attach leave the table.
 	if removed := s.routes.drop(m.id); len(removed) > 0 {
 		s.up.send(routesMsg{s: s, remove: removed})
@@ -579,11 +548,8 @@ func (s *session) useConn() error {
 	return s.peer.UseQUIC(s.pc)
 }
 
-// status gives the root the state of a home session.
+// status gives the root the state of the session.
 func (s *session) status() {
-	if s.visitor() {
-		return
-	}
 	cfg := &s.a.cfg
 	s.up.send(statusMsg{s, sessState{
 		attached: s.attached, link: s.link, peer: s.peer,
@@ -636,7 +602,6 @@ func (s *session) relayKeys(m *dp.KeysRequest) {
 // applied is the result of the relay SAs in the binding.
 func (s *session) applied(m appliedMsg) {
 	if m.peer != s.peer {
-		s.toVisit(m.peer, m)
 		return
 	}
 	err := m.err

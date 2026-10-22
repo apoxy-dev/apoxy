@@ -14,11 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/testing/protocmp"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
@@ -358,42 +356,27 @@ func TestRenew(t *testing.T) {
 }
 
 // TestSessionAfterCertExpiry checks that a relay session carries data to a new
-// destination and starts a visit after its cert expired.
+// destination after its cert expired.
 func TestSessionAfterCertExpiry(t *testing.T) {
-	cases := []struct {
-		name  string
-		visit bool // The relays of a and b have no path, so a visits the relay of b.
-	}{
-		{name: "new destination"},
-		{name: "visit", visit: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w, r1, r2 := meshRelays(t)
-			a := w.agent(t, "a", r1, agentOptions{tcp: true, life: 3 * time.Second, visitCheck: time.Hour})
-			near := w.agent(t, "near", r1, agentOptions{tcp: true})
-			b := w.agent(t, "b", r2, agentOptions{visitCheck: time.Hour})
-			ea, en, eb := a.attached(t), near.attached(t), b.attached(t)
-			echo(t, b.stack, eb.addr, 9000)
-			a.hasRoutes(t, eb.prefixes[0])
-			serveTCP(t, near.stack, en.addr, 9000)
-			c := dialTCP(t, a, en.addr, 9000)
-			roundTrip(t, c, "before the expiry")
+	w := newWorld(t)
+	r := w.relay(t, "relay-1")
+	a := w.agent(t, "a", r, agentOptions{tcp: true, life: 3 * time.Second})
+	near := w.agent(t, "near", r, agentOptions{tcp: true})
+	b := w.agent(t, "b", r, agentOptions{})
+	ea, en, eb := a.attached(t), near.attached(t), b.attached(t)
+	echo(t, b.stack, eb.addr, 9000)
+	a.hasRoutes(t, eb.prefixes[0])
+	serveTCP(t, near.stack, en.addr, 9000)
+	c := dialTCP(t, a, en.addr, 9000)
+	roundTrip(t, c, "before the expiry")
 
-			old := a.current()
-			first := a.ids.Current().Cert.NotAfter
-			require.Eventually(t, func() bool { return time.Now().After(first) }, 10*time.Second, 50*time.Millisecond)
-			roundTrip(t, c, "after the expiry")
-			if tc.visit {
-				t.Cleanup(cutMesh(r1, r2))
-				waitCut(t, r1, r2)
-			}
-			ping(t, a.stack, ea.addr, eb.addr, 9000, "to a new destination")
-			assert.Equal(t, tc.visit, len(a.visitRoutes()) > 0, "a visits the relay of b")
-			assert.Equal(t, old, a.current(), "the agent has the same relay session")
-			assert.Equal(t, []string{"attach a " + ea.addr.String()}, a.events("a"))
-		})
-	}
+	old := a.current()
+	first := a.ids.Current().Cert.NotAfter
+	require.Eventually(t, func() bool { return time.Now().After(first) }, 10*time.Second, 50*time.Millisecond)
+	roundTrip(t, c, "after the expiry")
+	ping(t, a.stack, ea.addr, eb.addr, 9000, "to a new destination")
+	assert.Equal(t, old, a.current(), "the agent has the same relay session")
+	assert.Equal(t, []string{"attach a " + ea.addr.String()}, a.events("a"))
 }
 
 // TestSharedIdentityFile runs two agents with one identity file. A new file
@@ -659,28 +642,6 @@ func TestDrainLocalRoutesOnly(t *testing.T) {
 	assert.Empty(t, r2.r.AttachmentStats(), "the agent has no attachment on the other relay")
 }
 
-// TestDrainMesh drains a relay with the alternates that its mesh gives. An
-// agent that knows only that relay attaches to the first of the other relays.
-func TestDrainMesh(t *testing.T) {
-	w := newWorld(t)
-	w.mesh = true
-	r1, r2, r3 := w.relay(t, "relay-1"), w.relay(t, "relay-2"), w.relay(t, "relay-3")
-	joinMesh(t, r1, r2, r3)
-	a := w.agent(t, "a", r1, agentOptions{sessions: 1})
-	a.attached(t)
-	prev := a.current()
-	alts := r1.mesh.Alternates()
-	want := []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}, {Id: r3.id, Addresses: []string{r3.addr}}}
-	require.Empty(t, cmp.Diff(want, alts, protocmp.Transform()))
-
-	end := drain(t, r1, alts)
-	a.attached(t)
-	assert.Equal(t, r2.addr, a.current().addr, "the agent attaches to the first alternate")
-	assert.NoError(t, prev.qc.Context().Err(), "the draining session stays open")
-	end()
-	closedByDrain(t, prev)
-}
-
 // TestRelist checks that the agent enrolls again when all relays fail or the
 // list is empty, and keeps the cached list while the enroll fails.
 func TestRelist(t *testing.T) {
@@ -774,7 +735,7 @@ func TestCertRefused(t *testing.T) {
 	require.Equal(t, int32(1), a.enrolls.Load())
 
 	w.rotateAgentCA(t)
-	r.r.Recheck()
+	r.r.Recheck(testProject)
 	a.attached(t)
 	assert.Equal(t, int32(2), a.enrolls.Load())
 }

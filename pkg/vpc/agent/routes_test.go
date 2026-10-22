@@ -122,47 +122,13 @@ func TestRoutable(t *testing.T) {
 	}
 }
 
-func TestPeerAddr(t *testing.T) {
-	self := netip.MustParseAddr("fd61:706f:7879:12:3400:1::1")
-	routes := &routeTable{origins: map[netip.Prefix]string{
-		netip.MustParsePrefix("fd61:706f:7879:12:3400:2::/96"): "b",
-		netip.MustParsePrefix("10.9.0.0/16"):                   "b",
-		netip.MustParsePrefix("10.9.9.0/24"):                   "c",
-		netip.MustParsePrefix("fd61:706f:7879:12:3400:3::/96"): "c",
-		netip.MustParsePrefix("0.0.0.0/0"):                     "c",
-		netip.MustParsePrefix("10.7.0.0/16"):                   "d",
-	}}
-	b, c := netip.MustParseAddr("fd61:706f:7879:12:3400:2::1"), netip.MustParseAddr("fd61:706f:7879:12:3400:3::1")
-	cases := []struct {
-		name string
-		dst  string
-		want netip.Addr
-		ok   bool
-	}{
-		{"peer address", "fd61:706f:7879:12:3400:2::1", b, true},
-		{"other address in the peer /96", "fd61:706f:7879:12:3400:2::5", b, true},
-		{"route of a peer", "10.9.0.5", b, true},
-		{"longest route", "10.9.9.5", c, true},
-		{"unknown address in the VPC", "fd61:706f:7879:12:3400:9::1", netip.MustParseAddr("fd61:706f:7879:12:3400:9::1"), true},
-		{"only a default route", "192.0.2.1", netip.MustParseAddr("192.0.2.1"), false},
-		{"origin with no address", "10.7.0.1", netip.MustParseAddr("10.7.0.1"), false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, ok := routes.peerAddr(netip.MustParseAddr(tc.dst), self)
-			assert.Equal(t, tc.want, got)
-			assert.Equal(t, tc.ok, ok)
-		})
-	}
-}
-
 // TestOnRoutes checks that OnRoutes has the prefixes of the other attachments
 // and follows the new session after a reconnect.
 func TestOnRoutes(t *testing.T) {
 	w := newWorld(t)
 	r := w.relay(t, "relay-1")
-	routeB, routeC := netip.MustParsePrefix("10.9.0.0/16"), netip.MustParsePrefix("fd99::/64")
-	a := w.agent(t, "a", r, agentOptions{routes: []netip.Prefix{netip.MustParsePrefix("10.1.0.0/16")}})
+	routeB, routeC := netip.MustParsePrefix("fd98::/64"), netip.MustParsePrefix("fd99::/64")
+	a := w.agent(t, "a", r, agentOptions{routes: []netip.Prefix{netip.MustParsePrefix("fd97::/64")}})
 	a.attached(t)
 	b := w.agent(t, "b", r, agentOptions{routes: []netip.Prefix{routeB}})
 	eb := b.attached(t)
@@ -197,63 +163,4 @@ func TestDNS(t *testing.T) {
 	servers, search := a.a.DNS()
 	assert.Equal(t, w.dns, servers)
 	assert.Equal(t, w.search, search)
-}
-
-// TestRoutesOfOtherRelays checks which agents get the routes of an attachment on
-// another relay of a mesh. Each agent sends to it on the default route.
-func TestRoutesOfOtherRelays(t *testing.T) {
-	cases := []struct {
-		name      string
-		localOnly bool
-		gets      bool
-	}{
-		{name: "agent of this build", gets: true},
-		{name: "local routes only", localOnly: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newWorld(t)
-			w.mesh = true
-			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
-			joinMesh(t, r1, r2)
-			far := netip.MustParsePrefix("fd99::/64")
-			has := func(ta *testAgent, want ...netip.Prefix) {
-				t.Helper()
-				require.Eventually(t, func() bool {
-					got := ta.routeSet()
-					return len(got) == len(want) && !slices.ContainsFunc(want, func(p netip.Prefix) bool { return !slices.Contains(got, p) })
-				}, 5*time.Second, 10*time.Millisecond, "routes of the agent: %v, want %v", ta.routeSet(), want)
-			}
-			a := w.agent(t, "a", r1, agentOptions{localRoutesOnly: tc.localOnly})
-			ea := a.attached(t)
-			watcher := w.agent(t, "watcher", r1, agentOptions{})
-			ew := watcher.attached(t)
-			b := w.agent(t, "b", r2, agentOptions{routes: []netip.Prefix{far}})
-			eb := b.attached(t)
-			// The watcher has the routes of b, so relay-1 sent them to each agent
-			// that gets them. The route of c comes after them.
-			has(watcher, ea.prefixes[0], eb.prefixes[0], far)
-			c := w.agent(t, "c", r1, agentOptions{})
-			ec := c.attached(t)
-			if tc.gets {
-				has(a, ew.prefixes[0], ec.prefixes[0], eb.prefixes[0], far)
-			} else {
-				has(a, ew.prefixes[0], ec.prefixes[0])
-			}
-
-			// The address of b, and an address in its route.
-			inRoute := netip.MustParseAddr("fd99::5")
-			b.netstack(t, b.binding(), inRoute, false)
-			for _, dst := range []netip.Addr{eb.addr, inRoute} {
-				echo(t, b.stack, dst, 9000)
-				ping(t, a.stack, ea.addr, dst, 9000, "to another relay")
-			}
-			assert.Zero(t, unreachableIn(a), "ICMP errors")
-			assert.False(t, a.current().ended(), "relay session of a")
-
-			b.stop()
-			has(watcher, ea.prefixes[0], ec.prefixes[0])
-			has(a, ew.prefixes[0], ec.prefixes[0])
-		})
-	}
 }

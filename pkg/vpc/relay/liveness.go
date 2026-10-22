@@ -3,61 +3,47 @@
 package relay
 
 import (
-	"log/slog"
+	"context"
 	"sync/atomic"
 	"time"
 
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/logging"
+
+	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// The times of the announcer states. The QUIC keep-alive of the relay is the
-// probe: an agent that answers sends a packet each AgentKeepAlive, or more often.
+// The times of the announcer states. The QUIC keep-alive of the relay is the probe: an agent that
+// answers sends a packet each AgentKeepAlive, or more often.
 const (
-	// AgentKeepAlive is the QUIC keep-alive period of the listener of a relay
-	// for agent sessions.
+	// AgentKeepAlive is the QUIC keep-alive period of the listener of a relay for agent
+	// connections.
 	AgentKeepAlive = 2 * time.Second
 	// livenessInterval is the time between two liveness checks.
 	livenessInterval = 250 * time.Millisecond
-	// suspectAfter is the time with no packet of an agent after which the
-	// entries of its session are suspect.
+	// suspectAfter is the time with no packet of an agent after which its candidates are suspect.
 	suspectAfter = 3 * AgentKeepAlive
-	// normalAfter is the time for which a suspect agent must answer before its
-	// entries are normal again: a packet must come this long after the first one.
+	// normalAfter is the time for which a suspect agent must answer before its candidates are
+	// normal again: a packet must come this long after the first one.
 	normalAfter = 4 * time.Second
-	// normalQuiet is the longest time between two packets of an agent that
-	// answers. A longer silence starts normalAfter again.
+	// normalQuiet is the longest time between two packets of an agent that answers. A longer
+	// silence starts normalAfter again.
 	normalQuiet = AgentKeepAlive * 3 / 2
-	// holdTime is the time after an attach, or after a return to the normal
-	// state, in which an entry does not replace a live active announcer.
-	holdTime = 30 * time.Second
-	// memberLostTime is the time after which the entries of a lost mesh member
-	// go, if the member is still down.
-	memberLostTime = 5 * time.Minute
 )
 
-const (
-	stateNormal   = dp.AnnouncerState_ANNOUNCER_STATE_NORMAL
-	stateDraining = dp.AnnouncerState_ANNOUNCER_STATE_DRAINING
-	stateSuspect  = dp.AnnouncerState_ANNOUNCER_STATE_SUSPECT
-	// numAnnouncerStates is the number of states that this build sets.
-	numAnnouncerStates = 3
-)
-
-// liveness is the packet record of one agent session. Only checkLiveness writes
-// the fields below heard; a reader holds Router.mu for writing.
+// liveness is the packet record of one agent connection. Only its A reads and writes it.
 type liveness struct {
-	// heard is the mark that the tracer sets for each packet of the agent. It
-	// is nil for a session with no trace, which is never suspect.
+	// heard is the mark that the tracer sets for each packet of the agent. It is nil for a
+	// connection with no trace, which is never suspect.
 	heard *atomic.Bool
 	last  time.Time // Time of the last check that found the mark.
-	// since is the start of the packets that came with no silence above
-	// normalQuiet between them.
+	// since is the start of the packets that came with no silence above normalQuiet between them.
 	since  time.Time
-	silent bool // The agent is silent, so its entries are suspect.
+	silent bool // The agent is silent, so its candidates are suspect.
 }
 
-// observe takes the mark of the tracer at the check time now, and reports
-// whether the agent is silent. Thus a time is that of a check, not of a packet.
+// observe takes the mark of the tracer at the check time now, and reports whether the agent is
+// silent. Thus a time is that of a check, not of a packet.
 func (l *liveness) observe(now time.Time) bool {
 	if l.heard == nil {
 		return false
@@ -77,85 +63,47 @@ func (l *liveness) observe(now time.Time) bool {
 	return l.silent
 }
 
-// entryState returns the state that the entries of s must have now. Router.mu
-// must be held.
-func (r *Router) entryState(s *Session) dp.AnnouncerState {
-	switch {
-	case s.live.silent:
-		return stateSuspect
-	case r.draining:
-		return stateDraining
-	}
-	return stateNormal
+type traceKey struct{}
+
+// connTrace is what the tracer of one connection keeps for its A.
+type connTrace struct {
+	rtt atomic.Int64 // Smoothed RTT in nanoseconds.
+	// heard is set for each packet of an agent. The liveness check clears it.
+	heard atomic.Bool
 }
 
-// checkLiveness makes a session suspect after suspectAfter of silence, and
-// normal after normalAfter of answers. Only Run calls it.
-func (r *Router) checkLiveness(now time.Time) {
-	var changed []*Session
-	r.mu.RLock()
-	for s := range r.sessions {
-		if s.live.observe(now); r.entryState(s) != s.state {
-			changed = append(changed, s)
-		}
-	}
-	r.mu.RUnlock()
-	if len(changed) == 0 {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, s := range changed {
-		reason := "agent answers again"
-		if s.live.silent {
-			reason = "no packet from the agent"
-		}
-		r.setState(s, r.entryState(s), reason, now)
-	}
+// TraceContext gives a new connection the place for what TraceRTT keeps. It is the ConnContext of
+// the QUIC transport of a relay with TraceRTT.
+func TraceContext(ctx context.Context, _ *quic.ClientInfo) (context.Context, error) {
+	return context.WithValue(ctx, traceKey{}, new(connTrace)), nil
 }
 
-// startDrain gives the entries of each session of this relay the draining
-// state. A suspect session stays suspect. Router.mu must be held for writing.
-func (r *Router) startDrain(now time.Time) {
-	r.draining = true
-	for s := range r.sessions {
-		r.setState(s, r.entryState(s), "relay drains", now)
+// TraceRTT is the Tracer of a relay with TraceContext. It keeps the smoothed RTT for
+// AttachmentStats and marks agent packets for liveness.
+func TraceRTT(ctx context.Context, _ logging.Perspective, _ quic.ConnectionID) *logging.ConnectionTracer {
+	tr := traceOf(ctx)
+	if tr == nil {
+		return nil
 	}
-}
-
-// setState gives the attachments of s the state and selects again; normal
-// starts a new hold time. Router.mu must be held for writing.
-func (r *Router) setState(s *Session, state dp.AnnouncerState, reason string, now time.Time) {
-	if s.closed || s.state == state {
-		return
+	t := &logging.ConnectionTracer{
+		UpdatedMetrics: func(s *logging.RTTStats, _, _ logging.ByteCount, _ int) {
+			tr.rtt.Store(int64(s.SmoothedRTT()))
+		},
 	}
-	s.state = state
-	for _, a := range s.attachments {
-		a.gen = r.nextGen(now)
-		a.cand.restate(state, now)
-		r.announce(s, a)
-	}
-	if d := r.domains[s.id.VPC]; d != nil {
-		// A prefix is in s.routes one time for each entry of s. The second
-		// selection for it finds the same order.
-		for _, p := range s.routes {
-			set := d.routes[p]
-			if set == nil {
-				continue
+	// The received-packet hook costs a frame list for each packet, so only an agent connection
+	// gets it. Hooks of one connection run in turn.
+	t.ChoseALPN = func(alpn string) {
+		if alpn == dpv1.ALPNRelay {
+			t.ReceivedShortHeaderPacket = func(*logging.ShortHeader, logging.ByteCount, logging.ECN, []logging.Frame) {
+				tr.heard.Store(true)
 			}
-			for _, e := range set.entries {
-				// An entry of AddRoute has no attachment: the entry has its own record.
-				if e.s == s && e.att == nil {
-					e.restate(state, now)
-				}
-			}
-			r.restated(d, p, set)
 		}
 	}
-	if len(s.routes) == 0 {
-		return
-	}
-	r.stateChanges[state].Add(1)
-	slog.Info("Changed the state of an agent session", "vpc", s.id.VPC.UID, "agent", s.name,
-		"relay", r.name, "state", stateLabel(state), "reason", reason)
+	return t
+}
+
+// traceOf returns what the tracer keeps for the connection of ctx, or nil.
+func traceOf(ctx context.Context) *connTrace {
+	tr, _ := ctx.Value(traceKey{}).(*connTrace)
+	return tr
 }

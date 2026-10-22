@@ -46,8 +46,8 @@ func TestLanes(t *testing.T) {
 			assert.Len(t, a.binding().LaneConns(), tc.want, "lane sockets")
 			assert.Len(t, a.binding().LanePackets(), 1, "packets of each lane: %v", a.binding().LanePackets())
 			assert.NotZero(t, a.binding().LanePackets()[0])
-			assert.Zero(t, r.r.UnknownSourceDrops())
-			assert.Zero(t, r.r.MalformedDrops(), "the relay takes the lane keepalives")
+			assert.Zero(t, relayDrops(t, r)["unknown_source"])
+			assert.Zero(t, relayDrops(t, r)["malformed"], "the relay takes the lane keepalives")
 		})
 	}
 }

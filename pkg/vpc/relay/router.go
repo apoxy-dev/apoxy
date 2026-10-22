@@ -5,173 +5,135 @@ package relay
 import (
 	"cmp"
 	"context"
-	"crypto/x509"
-	"fmt"
-	"net"
-	"net/netip"
+	"errors"
+	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/apoxy-dev/softpsp/engine"
-	"github.com/apoxy-dev/softpsp/keys"
-	"github.com/quic-go/quic-go"
-	"golang.org/x/time/rate"
+	pspwire "github.com/apoxy-dev/softpsp/psp"
+	p4 "github.com/p4lang/p4runtime/go/p4/v1"
 
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/build"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
+	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 const (
-	// rowIdle is the time with no traffic after which a row is removed.
-	rowIdle = 5 * time.Minute
-	// rebindOverlap is the time that the previous source address of a sender
-	// stays valid after its connection migrates.
-	rebindOverlap = 5 * time.Second
-	sweepInterval = time.Second
-	minBurst      = 64 << 10
-	// MaxLaneSources is the most lane ports of a session: lanes 1 and up.
-	MaxLaneSources = keys.MaxLanes - 1
-	// GrantLife is the life of a grant. An agent sends a grant in the first
-	// third of it, so a reader clock can be two thirds of it ahead.
-	GrantLife = 15 * time.Minute
+	// tickInterval is the time between two ticks of the key engine.
+	tickInterval = time.Second
+	// maxPacketIns is the most PacketIns that wait for the root. The data plane drops the others.
+	maxPacketIns = 4096
+	// maxCells and maxMeters are the sizes of the index pools: the cells counter has two indices
+	// for each cell, and the port meter has one index for each port.
+	maxCells  = 1 << 20
+	maxMeters = 1 << 16
 )
 
-// VPCKey is the key of a routing domain: one VPC of one project. The VPC
-// name and the network ID are not part of it.
-type VPCKey struct {
-	Project string
-	UID     string
+// bg is the context of the entry writes. A process writes and deletes its entries also while the
+// relay stops.
+var bg = context.Background()
+
+// desiredState is what the host wants the relay to serve. It is immutable.
+type desiredState struct {
+	tenants map[string]struct{}
+	vpcs    map[VPCKey]Network
 }
 
-// KeyOf returns the key of ref.
-func KeyOf(ref *dp.VPCRef) (VPCKey, error) {
-	if ref.GetProjectId() == "" || ref.GetVpcUid() == "" {
-		return VPCKey{}, rpc.Errorf(rpc.InvalidArgument, "vpc needs project_id and vpc_uid")
-	}
-	return VPCKey{Project: ref.GetProjectId(), UID: ref.GetVpcUid()}, nil
-}
-
-// Identity is the authenticated identity of a relay session.
-type Identity struct {
-	VPC VPCKey
-	// ID is the SPIFFE ID in the agent certificate.
-	ID string
-}
-
-// Permit tells if a sender in srcVPC with identity srcID can reach dst in dstVPC.
-type Permit func(srcVPC VPCKey, srcID string, dstVPC VPCKey, dst netip.Addr) bool
-
-// SameVPC is the MVP Permit rule: the source and the destination are in one VPC.
-func SameVPC(srcVPC VPCKey, _ string, dstVPC VPCKey, _ netip.Addr) bool { return srcVPC == dstVPC }
-
-// Config sets the meter of each lane (SPI row), the limit of each tunnel and
-// the lane ports.
-type Config struct {
-	// LaneRate is the meter rate in bytes per second. Zero means no limit.
-	LaneRate float64
-	// LaneBurst is the meter burst in bytes. Zero means 100 ms of LaneRate.
-	// It is at least 64 KiB.
-	LaneBurst int
-	// TunnelRate limits all data that one agent session sends through the
-	// relay, in bytes per second. Zero means no limit.
-	TunnelRate float64
-	// TunnelBurst is the burst of the tunnel limit in bytes. Zero means 100 ms
-	// of TunnelRate. It is at least 64 KiB.
-	TunnelBurst int
-	// LaneSources limits the lane ports of a session, 0 to MaxLaneSources. Set
-	// it only when all flows of an agent address come to this relay.
-	LaneSources int
-}
-
-// Verdict is the result of a forward lookup.
-type Verdict uint8
-
-const (
-	// Pass sends the packet to the returned address.
-	Pass Verdict = iota
-	// DropUnknownSource drops a packet from an address of no sender.
-	DropUnknownSource
-	// DropUnknownSPI drops a packet with an SPI that the sender did not register.
-	DropUnknownSPI
-	// DropMeter drops a packet above the meter of its lane.
-	DropMeter
-	// DropTunnelLimit drops a packet above the limit of the sender's tunnel.
-	DropTunnelLimit
-	// DropTrunkMTU drops a packet for another relay that is too large for the
-	// trunk to that relay.
-	DropTrunkMTU
-	// DropTrunkKeys drops a packet for another relay when the relay has no trunk
-	// to it now, or no SA of it for a clear packet.
-	DropTrunkKeys
-)
-
-// Router holds the routing domains, sessions and SPI rows of one relay.
+// Router is the root process of the relay control plane. The host calls its methods from any
+// goroutine; Run runs the process.
 type Router struct {
-	cfg    Config
-	trust  Trust
-	ver    *dp.Version // Protocol version of the relay. Nil is revision 0.
-	drops  [numDropReasons]atomic.Uint64
-	sends  sendStats
-	bridge atomic.Pointer[bridge]
-	trunk  atomic.Pointer[trunk] // Trunk keys of the mesh members. Nil with no mesh.
-	// name is the relay name of this relay in the mesh. It is empty with no
-	// mesh. Router.mu guards it.
-	name  string
-	peers peerTable // Counters of the packets to and from each mesh member.
-	onEnd atomic.Pointer[func(AttachmentStats)]
-	// epoch goes up at each change of a route, of Permit or of the attachments
-	// of a member. The rows of the members do their checks again then.
-	epoch atomic.Uint64
-	// refusals counts the rows that the relay refused or ended for an SPI that
-	// the relay of the receiver has in use.
-	refusals [numRowRefusals]atomic.Uint64
-	// socket counts the PSP packets that the socket path took, by class.
-	socket [numSocketClasses]atomic.Uint64
-	// stateChanges counts the state changes of the sessions of this relay, by
-	// the new state.
+	cfg  Config
+	ver  *dpv1.Version
+	box  *mailbox
+	pins *mailbox
+	// stateChanges counts the state changes of the connections with routes, by the new state.
 	stateChanges [numAnnouncerStates]atomic.Uint64
+	onEnd        atomic.Pointer[func(AttachmentStats)]
 
-	mu       sync.RWMutex
-	permit   Permit
-	domains  map[VPCKey]*domain
-	sessions map[*Session]struct{}
-	byConn   map[*rpc.Conn]*Session
-	bySource map[netip.AddrPort]*Session
-	probes   map[[8]byte]*Session
-	attaches uint64 // Attach counter for Attachment.seq.
-	xdp      *xdpSync
-	xdpBase  xdpStats      // Counters of the XDP programs that stopped.
-	xdpWake  chan struct{} // Has room for 1: XDP rows are marked.
-	// inDirty is set when the XDP rows of the mesh members need a sync.
-	inDirty atomic.Bool
+	desiredMu sync.Mutex
+	desired   atomic.Pointer[desiredState]
 
-	// What the mesh gets of the attachments, and what it gives. mu guards
-	// these fields.
-	gen      uint64                 // Last presence generation.
-	tag      uint32                 // Last trunk tag that a session got.
-	tags     map[uint32]struct{}    // Trunk tags of the sessions.
-	presence func(*dp.Presence)     // Gets each new and each gone attachment.
-	remotes  map[remoteKey]*Session // Records of the sessions of other relays that have routes.
-	in       map[string]*inRows     // Rows that each member gave for its senders, by relay name.
-
-	// draining is true from the start of the drain of the relay. mu guards it.
+	// The fields below belong to the goroutine of Run.
+	keys     *keyEngine
+	vs       map[VPCKey]*vChild
+	conns    map[uint64]*rootConn
+	sids     map[[8]byte]uint64
+	lastPort uint64
+	tag      uint32
+	tags     map[uint32]struct{}
+	cells    pool
+	meters   pool
+	attaches uint64
+	hooks    []hookTask
+	hookOn   bool
+	asks     map[uint64]*statsRun
+	lastAsk  uint64
+	trust    map[string]*trustGen
 	draining bool
-	// holds has the pending ends of hold times, the first one first, and
-	// holdTimer runs at the first one. mu guards the two fields.
-	holds     []holdEnd
-	holdTimer *time.Timer
-
-	// statsMu guards attCount.last. Take it after mu.
-	statsMu sync.Mutex
+	alts     []*dpv1.RelayRef
+	stopping bool
+	turns    turns
 }
 
-// NewRouter returns a Router with the SameVPC Permit rule. New sessions
-// are checked with trust.
-func NewRouter(trust Trust, cfg Config) *Router {
+// vChild is the root side of one V.
+type vChild struct {
+	key    VPCKey
+	net    Network
+	box    *mailbox
+	down   *valueMap
+	ending bool
+}
+
+// rootConn is the root side of one access port.
+type rootConn struct {
+	port  uint64
+	v     *vChild
+	l     *link
+	tag   uint32
+	cell  uint32
+	meter uint32
+	atts  map[string]rootAtt // Assigned attachments that did not end.
+	hooks int                // Hook tasks of the port that did not end.
+	ended bool
+	// rx is the sum of the receive counts that V has for the port, or -1 for none.
+	rx int64
+}
+
+type rootAtt struct {
+	att  *Attachment
+	cell uint32
+}
+
+// hookTask is one call of a host hook. port is 0 for a task of no connection.
+type hookTask struct {
+	port uint64
+	run  func()
+}
+
+// statsRun is one AttachmentStats ask that waits for the answers of the V processes.
+type statsRun struct {
+	reply chan []AttachmentStats
+	wait  map[*vChild]struct{}
+	out   []AttachmentStats
+}
+
+// NewRouter returns the root of a relay with cfg. Run starts it.
+func NewRouter(cfg Config) (*Router, error) {
+	if cfg.Relay.GetId() == "" {
+		return nil, errors.New("relay config needs a relay ID")
+	}
+	if cfg.Target == nil {
+		return nil, errors.New("relay config needs a data plane target")
+	}
+	if cfg.Addresses == nil {
+		return nil, errors.New("relay config needs an address source")
+	}
 	if cfg.LaneRate > 0 && cfg.LaneBurst == 0 {
 		cfg.LaneBurst = int(cfg.LaneRate / 10)
 	}
@@ -181,657 +143,669 @@ func NewRouter(trust Trust, cfg Config) *Router {
 	}
 	cfg.TunnelBurst = max(cfg.TunnelBurst, minBurst)
 	cfg.LaneSources = min(max(cfg.LaneSources, 0), MaxLaneSources)
-	return &Router{
-		cfg:      cfg,
-		trust:    trust,
-		ver:      dp.LocalVersion(build.BuildVersion),
-		permit:   SameVPC,
-		domains:  map[VPCKey]*domain{},
-		sessions: map[*Session]struct{}{},
-		byConn:   map[*rpc.Conn]*Session{},
-		bySource: map[netip.AddrPort]*Session{},
-		probes:   map[[8]byte]*Session{},
-		tags:     map[uint32]struct{}{},
-		remotes:  map[remoteKey]*Session{},
-		in:       map[string]*inRows{},
-		xdpWake:  make(chan struct{}, 1),
-	}
-}
-
-// Session is the relay side of one authenticated relay session. It is one
-// sender: its rows are keyed on SPI.
-type Session struct {
-	id           Identity
-	conn         *rpc.Conn
-	remote       func() netip.AddrPort
-	chain        []*x509.Certificate // Agent cert chain, leaf first.
-	verified     time.Time           // Time of the cert check of the handshake.
-	close        func(code dp.RelayCloseCode, msg string)
-	sendDatagram func([]byte) error
-	wake         chan struct{}               // Has room for 1: the sync queue changed.
-	sources      func(netip.Addr) bool       // Allows the inner sources that route to s.
-	udpAddr      atomic.Pointer[net.UDPAddr] // Last address that the bridge sent to.
-	probe        *prober
-	check        *pathCheck    // BFD session of the PSP path in PSP mode, or nil. Router.mu guards it.
-	meter        *rate.Limiter // Tunnel limit. Nil means no limit. Shards use the meter of the owner.
-	rtt          *atomic.Int64 // Smoothed RTT of the connection in nanoseconds. Nil with no trace.
-	live         liveness      // What the liveness check knows of the agent.
-
-	probeCounter atomic.Uint64 // Largest counter of a valid path probe.
-
-	// Guarded by Router.mu.
-	addr        netip.AddrPort // PSP address: the source of the newest path probe. Zero before one.
-	prev        netip.AddrPort // Valid until prevUntil after a change of addr.
-	prevUntil   time.Time
-	lanes       []netip.AddrPort  // Lane sources: lane i sends from lanes[i-1].
-	receive     bool              // The agent reads its lane ports.
-	laneSeen    uint32            // Bit i-1 is set after a keepalive from lanes[i-1].
-	rows        map[uint32]*row   // Rows of this sender.
-	inbound     map[*row]struct{} // Rows of senders to this session.
-	routes      []netip.Prefix    // Prefix of each entry of s in the route table.
-	attachments []*Attachment
-	state       dp.AnnouncerState // State of each entry of s in the route table.
-	closed      bool
-	version     *dp.Version // Version of the agent, from Hello. Nil is revision 0.
-	name        string      // Name of the agent, from Hello. Empty before revision 2.
-	instance    uint64      // Instance of the agent process, from Hello. Zero before revision 16.
-	tag         uint32      // Trunk tag, from the first attach to the removal. Zero is no tag.
-	home        string      // Relay name of the mesh member that has the session. Empty for a session of this relay.
-	sync        syncState
-	visit       atomic.Pointer[visitor]     // Visits of s, or nil. Router.mu guards each write.
-	shardOf     *Session                    // The owner session of a shard.
-	twin        *Session                    // Older session of the agent socket. Forward also uses its rows.
-	shards      [peerconn.MaxConns]*Session // Shards 1 and up of an owner.
-	rx          *keys.Peer                  // Relay SAs for PSP packets from s.
-	tx          *keys.TxPeer                // SAs of s for PSP packets from the relay.
-	relaySAs    map[uint32]time.Time        // End of each relay SA of s.
-	rxRows      tally                       // Counts of the rows of s that ended.
-	rxBase      counts                      // RX of s that its oldest attachment does not get.
-
-	dropUnknownSPI, dropMeter, dropTunnel atomic.Uint64
-	dropTrunk                             atomic.Uint64 // Packets that a trunk did not carry.
-	dataSent, dataDrops                   atomic.Uint64
-	// framePackets and frameBytes count the inner packets of the data frames
-	// of s that the relay sent on.
-	framePackets, frameBytes atomic.Uint64
-}
-
-// Identity returns the identity of s.
-func (s *Session) Identity() Identity { return s.id }
-
-// row forwards the packets of one sender lane (SPI) to one receiver.
-type row struct {
-	sender, receiver *Session
-	spi              uint32
-	vpc              VPCKey
-	dst              netip.Addr
-	lane             int       // Source of the sender: 0 is its address. Guarded by Router.mu.
-	saLane           int       // SA lane at the receiver. Guarded by Router.mu.
-	expires          time.Time // Guarded by Router.mu.
-	meter            *rate.Limiter
-	lastUsed         atomic.Int64 // Unix nanoseconds.
-	att              *Attachment  // Attachment of dst at the receiver, or nil. Guarded by Router.mu.
-	trunk            *trunkMember // Place of the relay that has the receiver, or nil. Guarded by Router.mu.
-	done             tally        // Counts that the totals of the sender and of att have. Guarded by Router.mu.
-	removed          bool         // The row ended. Guarded by Router.mu.
-
-	packets, bytes, dropMeter, icvFailures atomic.Uint64
-}
-
-// route is one prefix in a domain and the attachment that a session gets as
-// its origin in RouteDelta: the active announcer of the prefix.
-type route struct {
-	prefix netip.Prefix
-	origin string
-}
-
-type domain struct {
-	// routes is the route table: the announcers of each exact prefix. The
-	// attachments of this relay and those of other relays are entries of one set.
-	routes  map[netip.Prefix]*routeSet
-	lens    []int                    // Prefix lengths in use, longest first.
-	fast    engine.Routes[*routeSet] // The same sets, for source checks with no lock.
-	members map[*Session]struct{}
-	// claims has the attachments of other relays that list each prefix, also
-	// those that are not in routes.
-	claims map[netip.Prefix][]*presenceEntry
-	// visits has the visitor sessions: they are not in routes.
-	visits visits
-	// networkID is the network ID of the VPC, from a Session call on this
-	// relay. It is valid when known is true.
-	networkID uint32
-	known     bool
-}
-
-func (d *domain) usesLen(n int) bool {
-	for p := range d.routes {
-		if p.Bits() == n {
-			return true
-		}
-	}
-	return false
-}
-
-// AddSession checks the agent cert of conn and adds a relay session with its
-// identity. The session ends when conn closes. On error, the caller closes conn.
-func (r *Router) AddSession(conn *rpc.Conn) (*Session, error) {
-	qc := conn.QUIC()
-	tc := qc.ConnectionState().TLS
-	if tc.NegotiatedProtocol != dp.ALPNRelay {
-		return nil, fmt.Errorf("ALPN %q is not %s", tc.NegotiatedProtocol, dp.ALPNRelay)
-	}
-	now := time.Now()
-	id, err := r.checkCert(tc.PeerCertificates, now)
+	k, err := newKeyEngine(cfg.Target)
 	if err != nil {
-		return nil, fmt.Errorf("agent cert rejected: %w", err)
-	}
-	s := newSession(Identity{VPC: VPCKey{Project: id.Project, UID: id.VPC}, ID: id.String()},
-		func() netip.AddrPort { return addrPort(qc.RemoteAddr()) })
-	s.conn = conn
-	s.chain = tc.PeerCertificates
-	s.verified = now
-	s.close = func(code dp.RelayCloseCode, msg string) {
-		_ = qc.CloseWithError(quic.ApplicationErrorCode(code), msg)
-	}
-	s.sendDatagram = qc.SendDatagram
-	if tr := traceOf(qc.Context()); tr != nil {
-		s.rtt, s.live.heard = &tr.rtt, &tr.heard
-	}
-	if s.probe, err = newProber(tc); err != nil {
 		return nil, err
 	}
-	r.addSession(s, now)
-	context.AfterFunc(qc.Context(), func() { r.removeSession(s) })
-	return s, nil
+	r := &Router{
+		cfg:    cfg,
+		ver:    dpv1.LocalVersion(build.BuildVersion),
+		box:    newMailbox(0),
+		pins:   newMailbox(maxPacketIns),
+		keys:   k,
+		vs:     map[VPCKey]*vChild{},
+		conns:  map[uint64]*rootConn{},
+		sids:   map[[8]byte]uint64{},
+		tags:   map[uint32]struct{}{},
+		cells:  pool{max: maxCells},
+		meters: pool{max: maxMeters},
+		asks:   map[uint64]*statsRun{},
+		trust:  map[string]*trustGen{},
+	}
+	r.desired.Store(&desiredState{tenants: map[string]struct{}{}, vpcs: map[VPCKey]Network{}})
+	return r, nil
 }
 
-func newSession(id Identity, remote func() netip.AddrPort) *Session {
-	return &Session{
-		id:           id,
-		remote:       remote,
-		close:        func(dp.RelayCloseCode, string) {},
-		sendDatagram: func([]byte) error { return errNoDatagrams },
-		wake:         make(chan struct{}, 1),
-		rows:         map[uint32]*row{},
-		inbound:      map[*row]struct{}{},
-		sync: syncState{
-			routes:  map[route]bool{},
-			standby: map[netip.Prefix]struct{}{},
-			noRoute: map[netip.Addr]time.Time{},
-		},
-	}
+// AddTenant tells the relay to serve the VPCs of project. It does not block.
+func (r *Router) AddTenant(project string) {
+	r.change(project, func(d *desiredState) { d.tenants[project] = struct{}{} })
 }
 
-// addSession adds s to the router and to the domain of its VPC. The
-// routes of the domain go to the sync queue of s.
-func (r *Router) addSession(s *Session, now time.Time) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sessions[s] = struct{}{}
-	s.live.last, s.live.since = now, now
-	s.state = r.entryState(s)
-	if r.cfg.TunnelRate > 0 {
-		s.meter = rate.NewLimiter(rate.Limit(r.cfg.TunnelRate), r.cfg.TunnelBurst)
-	}
-	if s.conn != nil {
-		r.byConn[s.conn] = s
-	}
-	r.addProber(s)
-	d := r.domain(s.id.VPC)
-	d.members[s] = struct{}{}
-	s.sources = func(a netip.Addr) bool {
-		if set, ok := d.fast.Lookup(a); ok && set.sends(s) {
-			return true
-		}
-		// A visitor sends from the prefix of its visit, which is not its route.
-		return s.visit.Load().of(a) != nil
-	}
+// RemoveTenant ends the VPCs of project and their connections. It does not block.
+func (r *Router) RemoveTenant(project string) {
+	r.change(project, func(d *desiredState) {
+		delete(d.tenants, project)
+		maps.DeleteFunc(d.vpcs, func(k VPCKey, _ Network) bool { return k.Project == project })
+	})
 }
 
-func (r *Router) removeSession(s *Session) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s.closed {
-		return
-	}
-	s.closed = true
-	r.stopCheck(s)
-	r.markXDP(s)
-	r.endVisit(s, "session closed", each)
-	// The entries go first: a prefix that gets another active announcer takes its rows.
-	r.removeAnnouncers(s)
-	// The attachments stay in s for their last counters, but they are gone.
-	for _, a := range s.attachments {
-		r.withdraw(a)
-	}
-	for _, w := range s.rows {
-		r.removeRow(w)
-	}
-	for w := range s.inbound {
-		r.removeRow(w)
-	}
-	// A later session can get the trunk tag of s. The other relays got the end
-	// of the rows of s with the tag.
-	delete(r.tags, s.tag)
-	s.tag = 0
-	for _, a := range []netip.AddrPort{s.addr, s.prev} {
-		if o := r.bySource[a]; o == s {
-			delete(r.bySource, a)
-			r.passSource(s, a)
-		} else if o != nil && o.twin == s {
-			o.twin = nil
-		}
-	}
-	r.dropLanes(s)
-	s.twin = nil
-	if d := r.domains[s.id.VPC]; d != nil {
-		delete(d.members, s)
-		r.dropDomain(s.id.VPC, d)
-	}
-	delete(r.sessions, s)
-	delete(r.byConn, s.conn)
-	r.removeProber(s)
+// AddVPC tells the relay to serve vpc with the data n. A later call with new data is a change; a
+// new network ID ends the connections of the VPC. It does not block.
+func (r *Router) AddVPC(vpc VPCKey, n Network) {
+	r.change(vpc, func(d *desiredState) { d.vpcs[vpc] = n })
 }
 
-// domain returns the domain of vpc and makes it if needed.
-func (r *Router) domain(vpc VPCKey) *domain {
-	d := r.domains[vpc]
-	if d == nil {
-		d = &domain{
-			routes:  map[netip.Prefix]*routeSet{},
-			members: map[*Session]struct{}{},
-			claims:  map[netip.Prefix][]*presenceEntry{},
-		}
-		r.domains[vpc] = d
-	}
-	return d
+// RemoveVPC ends vpc and its connections. It does not block.
+func (r *Router) RemoveVPC(vpc VPCKey) {
+	r.change(vpc, func(d *desiredState) { delete(d.vpcs, vpc) })
 }
 
-func (r *Router) dropDomain(vpc VPCKey, d *domain) {
-	if len(d.routes) == 0 && len(d.members) == 0 && len(d.claims) == 0 {
-		delete(r.domains, vpc)
-	}
+// change makes a new desired state with fn and tells the root.
+func (r *Router) change(key any, fn func(*desiredState)) {
+	r.desiredMu.Lock()
+	old := r.desired.Load()
+	d := &desiredState{tenants: maps.Clone(old.tenants), vpcs: maps.Clone(old.vpcs)}
+	fn(d)
+	r.desired.Store(d)
+	r.desiredMu.Unlock()
+	r.box.send(desiredChanged{key: key})
 }
 
-// setAddr moves s to PSP address a. The previous address stays valid
-// for rebindOverlap.
-func (r *Router) setAddr(s *Session, a netip.AddrPort, now time.Time) {
-	if !a.IsValid() || a == s.addr {
-		return
-	}
-	// The rows to s get a new next hop.
-	r.markXDP(s)
-	r.markIn()
-	for w := range s.inbound {
-		r.markXDP(w.sender)
-	}
-	if s.prev.IsValid() && r.bySource[s.prev] == s {
-		delete(r.bySource, s.prev)
-	}
-	if s.addr.IsValid() {
-		s.prev, s.prevUntil = s.addr, now.Add(rebindOverlap)
-	}
-	s.addr = a
-	// The lane ports were at the old address.
-	r.dropLanes(s)
-	r.takeSource(s)
-}
+// Recheck checks the agent certs of the open connections of project again, with the trust data of
+// now. A connection whose cert fails closes with CERT.
+func (r *Router) Recheck(project string) { r.box.send(recheckEv{project: project}) }
 
-// takeSource gives s its source address: from another session only after its
-// Session call. An older session of the same agent becomes its twin.
-func (r *Router) takeSource(s *Session) {
-	if !s.addr.IsValid() || s.shardOf != nil {
-		return
-	}
-	o := r.bySource[s.addr]
-	if o != nil && !s.sync.open {
-		return
-	}
-	if o != nil && o != s && o.id == s.id && o.sync.open {
-		s.twin = o
-	}
-	r.bySource[s.addr] = s
-	r.markXDP(s)
-}
+// OnAttachmentEnd sets the function that gets the final counters of each attachment that ends. It
+// runs as a hook task. Set it before Run.
+func (r *Router) OnAttachmentEnd(fn func(AttachmentStats)) { r.onEnd.Store(&fn) }
 
-// twinOf returns the other open session of the agent socket of c, or nil.
-// Router.mu must be held.
-func (r *Router) twinOf(c *Session) *Session {
-	o := r.bySource[c.addr]
-	if o == c {
-		o = c.twin
-	} else if o != nil && o.twin != c {
-		o = nil
-	}
-	if o == nil || o.closed || o.addr != c.addr {
+// AttachmentStats returns the counters of each live attachment, sorted by ID. It returns nil when
+// the router does not run.
+func (r *Router) AttachmentStats() []AttachmentStats {
+	reply := make(chan []AttachmentStats, 1)
+	if !r.box.send(statsAsk{reply: reply}) {
 		return nil
 	}
-	return o
+	return <-reply
 }
 
-// passSource gives source a of the closed session s to another session of the
-// VPC at a with a Session call. Router.mu must be held.
-func (r *Router) passSource(s *Session, a netip.AddrPort) {
-	d := r.domains[s.id.VPC]
-	if d == nil || !a.IsValid() {
-		return
-	}
-	for o := range d.members {
-		if o != s && !o.closed && o.shardOf == nil && o.sync.open && o.addr == a {
-			r.bySource[a] = o
-			r.markXDP(o)
-			return
-		}
-	}
-}
-
-// Addr returns the PSP address of s, or the zero address before a path probe.
-func (r *Router) Addr(s *Session) netip.AddrPort {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return s.addr
-}
-
-// activeOf returns the active announcer of the longest route to a in vpc as a
-// target, or the zero target. Router.mu must be held.
-func (r *Router) activeOf(vpc VPCKey, a netip.Addr) target {
-	if d := r.domains[vpc]; d != nil {
-		return d.activeOf(a)
-	}
-	return target{}
-}
-
-// localOf returns the first announcer of the longest route to a with a session
-// here, for packets from another relay. Router.mu must be held.
-func (r *Router) localOf(vpc VPCKey, a netip.Addr) target {
-	if d := r.domains[vpc]; d != nil {
-		if set := d.setOf(a); set != nil && set.local != nil {
-			return set.local.target
-		}
-	}
-	return target{}
-}
-
-// permitted returns the session that src reaches dst through, if Permit allows.
-// It can be a visitor, or the record of a session of another relay.
-func (r *Router) permitted(src *Session, dst netip.Addr) *Session {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if !r.permit(src.id.VPC, src.id.ID, src.id.VPC, dst) {
-		return nil
-	}
-	return r.reach(src, dst).s
-}
-
-// Route returns the session of this relay for packets from src to dst, if Permit
-// allows. With no route, src gets a NoRoute in Sync, at most once a second per address.
-func (r *Router) Route(src *Session, dst netip.Addr, now time.Time) *Session {
-	dst = dst.Unmap()
-	next := r.permitted(src, dst)
-	switch {
-	case next == nil:
-		r.noRoute(src, dst, "", now)
-		return nil
-	case next.home != "":
-		// The address has a route, so src gets a NoRoute only to visit that relay.
-		r.noRoute(src, dst, next.home, now)
-		return nil
-	}
-	return next
-}
-
-// removeRow removes w. Its counts go to the totals of its sender and of its
-// attachment. Router.mu must be held.
-func (r *Router) removeRow(w *row) {
-	r.fold(w)
-	w.removed = true
-	if w.sender.rows[w.spi] == w {
-		delete(w.sender.rows, w.spi)
-	}
-	delete(w.receiver.inbound, w)
-	r.untrunk(w)
-	r.markXDP(w.sender)
-}
-
-// SetPermit replaces the Permit rule and removes the rows that it denies. The
-// packets of a row of another relay that it denies drop.
-func (r *Router) SetPermit(p Permit) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.permit = p
-	r.newEpoch()
-	for s := range r.sessions {
-		for _, w := range s.rows {
-			if !p(s.id.VPC, s.id.ID, w.vpc, w.dst) {
-				r.removeRow(w)
-			}
-		}
-	}
-}
-
-// Forward returns Pass and where to send a PSP packet from src with spi, or a
-// drop verdict. A receiver on another relay gives that relay socket.
-func (r *Router) Forward(src netip.AddrPort, spi uint32, size int, now time.Time) (netip.AddrPort, Verdict) {
-	to, v, lost, home := r.forward(src, spi, size, now)
-	if lost != nil {
-		// The row stays, so only a NoRoute tells its sender to visit the relay of the receiver.
-		r.noRoute(lost.sender, lost.dst, home, now)
-	}
-	return to, v
-}
-
-// forward is Forward with no NoRoute. For a row that member home cannot get the
-// packets of now, it returns the row as lost.
-func (r *Router) forward(src netip.AddrPort, spi uint32, size int, now time.Time) (to netip.AddrPort, v Verdict, lost *row, home string) {
-	src = netip.AddrPortFrom(src.Addr().Unmap(), src.Port())
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	s := r.bySource[src]
-	if s == nil || !s.from(src, now) {
-		r.drops[dropUnknownSource].Add(1)
-		return netip.AddrPort{}, DropUnknownSource, nil, ""
-	}
-	w := s.rows[spi]
-	if t := s.twin; (w == nil || now.After(w.expires)) && t != nil && !t.closed {
-		// The older session keeps its rows until it closes.
-		if tw := t.rows[spi]; tw != nil && t.from(src, now) {
-			s, w = t, tw
-		}
-	}
-	if w == nil || now.After(w.expires) {
-		s.dropUnknownSPI.Add(1)
-		r.drops[dropUnknownSPI].Add(1)
-		return netip.AddrPort{}, DropUnknownSPI, nil, ""
-	}
-	var pair *trunkPair
-	if m := w.trunk; m != nil {
-		// The checks of the trunk come first: a packet that it cannot carry
-		// takes nothing from the meters.
-		pair = m.pair.Load()
-		switch v := r.trunkFits(s, m.name, pair, size); v {
-		case Pass:
-		case DropTrunkKeys:
-			return netip.AddrPort{}, v, w, m.name
-		default:
-			return netip.AddrPort{}, v, nil, ""
-		}
-	}
-	if w.meter != nil && !w.meter.AllowN(now, size) {
-		w.dropMeter.Add(1)
-		s.dropMeter.Add(1)
-		r.drops[dropLaneMeter].Add(1)
-		return netip.AddrPort{}, DropMeter, nil, ""
-	}
-	if !r.allow(s, size, now) {
-		return netip.AddrPort{}, DropTunnelLimit, nil, ""
-	}
-	w.lastUsed.Store(now.UnixNano())
-	w.packets.Add(1)
-	w.bytes.Add(uint64(size))
-	if pair != nil {
-		pair.stats.add(trunkTx, size)
-		return pair.addr, Pass, nil, ""
-	}
-	return w.receiver.dst(w.saLane), Pass, nil, ""
-}
-
-// allow reports whether the tunnel limit of s lets size bytes through now. It
-// counts the drop if not.
-func (r *Router) allow(s *Session, size int, now time.Time) bool {
-	if s.meter == nil || s.meter.AllowN(now, size) {
-		return true
-	}
-	s.dropTunnel.Add(1)
-	r.drops[dropTunnelLimit].Add(1)
-	return false
-}
-
-// ReportStatus counts the ICV failures that receiver s reports on the
-// lanes of the senders that registered those SPIs to s.
-func (r *Router) ReportStatus(s *Session, st *dp.Status) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for _, f := range st.GetIcvFailures() {
-		for w := range s.inbound {
-			if w.spi == f.GetSpi() {
-				w.icvFailures.Add(f.GetCount())
-			}
-		}
-	}
-}
-
-// Sweep ends old PSP addresses, and removes expired and idle rows. A session
-// does not end with its cert.
-func (r *Router) Sweep(now time.Time) {
-	idle := now.Add(-rowIdle).UnixNano()
-	r.mu.Lock()
-	for s := range r.sessions {
-		if s.prev.IsValid() && now.After(s.prevUntil) {
-			if r.bySource[s.prev] == s {
-				delete(r.bySource, s.prev)
-			}
-			s.prev = netip.AddrPort{}
-		}
-		for _, w := range s.rows {
-			if w.lastUsed.Load() < idle {
-				r.refreshUsedXDP(w)
-			}
-			if now.After(w.expires) || w.lastUsed.Load() < idle {
-				r.removeRow(w)
-			}
-		}
-		s.sweepNoRoute(now)
-	}
-	// The rows of the members have no idle time: the relay of the sender ends them.
-	r.sweepIn(now)
-	r.syncAllXDP(now)
-	r.mu.Unlock()
-}
-
-// Run sweeps the rows and rekeys the relay SAs each second, and checks the
-// liveness of the agents each livenessInterval, until ctx ends.
-func (r *Router) Run(ctx context.Context) {
-	t := time.NewTicker(sweepInterval)
-	defer t.Stop()
-	live := time.NewTicker(livenessInterval)
-	defer live.Stop()
+// Run runs the root until ctx ends, then ends each V and waits for them and for the hook tasks.
+func (r *Router) Run(ctx context.Context) error {
+	r.cfg.Target.OnPacketIn(func(p *p4.PacketIn) bool {
+		pin, ok := pinOf(p)
+		return !ok || r.pins.send(pin)
+	})
+	defer r.cfg.Target.OnPacketIn(nil)
+	tick := time.NewTicker(tickInterval)
+	defer tick.Stop()
+	done := ctx.Done()
 	for {
+		for _, e := range r.box.take() {
+			r.turns.add(r.keyOf(e), e)
+		}
+		for _, e := range r.pins.take() {
+			pin := e.(packetIn)
+			r.turns.add(r.pinKey(pin), pin)
+		}
+		for {
+			e, ok := r.turns.next()
+			if !ok {
+				break
+			}
+			r.handle(e)
+		}
+		if r.stopping && len(r.vs) == 0 && !r.hookOn && len(r.hooks) == 0 {
+			r.pins.close()
+			for _, e := range r.box.close() {
+				r.refuse(e)
+			}
+			return nil
+		}
 		select {
-		case <-ctx.Done():
-			return
-		case now := <-live.C:
-			r.checkLiveness(now)
-		case now := <-t.C:
-			r.Sweep(now)
-			r.tickBridge(now)
-			r.sweepPeers()
-		case <-r.xdpWake:
-			r.mu.Lock()
-			r.syncXDP(time.Now())
-			r.mu.Unlock()
+		case <-r.box.sig:
+		case <-r.pins.sig:
+		case now := <-tick.C:
+			if !r.stopping {
+				r.tick(now)
+			}
+		case <-done:
+			done = nil
+			r.stop()
 		}
 	}
 }
 
-// LaneStats are the counters of one SPI row.
-type LaneStats struct {
-	SPI         uint32
-	Destination netip.Addr
-	Packets     uint64
-	Bytes       uint64
-	DropMeter   uint64
-	ICVFailures uint64
-}
-
-// SenderStats are the counters of one sender.
-type SenderStats struct {
-	DropUnknownSPI uint64
-	DropMeter      uint64
-	// DropTunnelLimit counts the PSP packets, data frames and peer frames above
-	// the tunnel limit. DataDrops does not count them.
-	DropTunnelLimit uint64
-	// DropTrunk counts the PSP packets and the inner packets for another relay
-	// that the trunk to it did not carry: too large, no trunk now, or no SA.
-	DropTrunk uint64
-	Lanes     []LaneStats // Sorted by SPI.
-	// DataSent and DataDrops count the data frames and the decrypted PSP
-	// packets of the sender that the relay sent on or dropped.
-	DataSent  uint64
-	DataDrops uint64
-}
-
-// SenderStats returns the counters of sender s.
-func (r *Router) SenderStats(s *Session) SenderStats {
-	st := SenderStats{
-		DropUnknownSPI:  s.dropUnknownSPI.Load(),
-		DropMeter:       s.dropMeter.Load(),
-		DropTunnelLimit: s.dropTunnel.Load(),
-		DropTrunk:       s.dropTrunk.Load(),
-		DataSent:        s.dataSent.Load(),
-		DataDrops:       s.dataDrops.Load(),
+// keyOf returns the turn key of an event: its VPC, or nil for the host.
+func (r *Router) keyOf(e any) any {
+	switch e := e.(type) {
+	case accepted:
+		return e.l.vpc
+	case desiredChanged:
+		return e.key
+	case fromV:
+		return e.v.key
+	case assignDone:
+		return e.att.VPC
+	case slotLost:
+		if c := r.conns[e.port]; c != nil {
+			return c.v.key
+		}
 	}
-	r.mu.RLock()
-	for _, w := range s.rows {
-		x := r.xdpCountersOf(w)
-		st.DropMeter += x.drops
-		st.Lanes = append(st.Lanes, LaneStats{
-			SPI:         w.spi,
-			Destination: w.dst,
-			Packets:     w.packets.Load() + x.packets,
-			Bytes:       w.bytes.Load() + x.bytes,
-			DropMeter:   w.dropMeter.Load() + x.drops,
-			ICVFailures: w.icvFailures.Load(),
-		})
+	return nil
+}
+
+func (r *Router) pinKey(pin packetIn) any {
+	port := pin.md.port
+	if port == 0 {
+		if sid, ok := p2p.ProbeSID(pin.payload); ok {
+			port = r.sids[sid]
+		}
 	}
-	st.DropTunnelLimit += r.xdpTunnelDrops(s)
-	r.mu.RUnlock()
-	slices.SortFunc(st.Lanes, func(a, b LaneStats) int { return cmp.Compare(a.SPI, b.SPI) })
-	return st
+	if c := r.conns[port]; c != nil {
+		return c.v.key
+	}
+	return nil
 }
 
-// UnknownSourceDrops returns the number of packets from addresses of no sender.
-func (r *Router) UnknownSourceDrops() uint64 { return r.drops[dropUnknownSource].Load() }
-
-// MalformedDrops counts the non-QUIC packets that are not PSP and get no probe
-// reply, also Geneve packets and refused trunk packets.
-func (r *Router) MalformedDrops() uint64 { return r.drops[dropMalformed].Load() }
-
-// ForwardStats are the sendmmsg calls of the socket path, their messages, and
-// the packets that the socket took. A message is one packet or one GSO message.
-type ForwardStats struct {
-	Calls, Messages, Packets uint64
+// refuse answers an event that the root did not take, at its end.
+func (r *Router) refuse(e any) {
+	switch e := e.(type) {
+	case accepted:
+		e.res <- rpc.Errorf(rpc.Unavailable, "relay stopped")
+	case slotLost:
+		close(e.done)
+	case statsAsk:
+		e.reply <- nil
+	}
 }
 
-// ForwardStats returns the send counters of the socket path.
-func (r *Router) ForwardStats() ForwardStats {
-	return ForwardStats{r.sends.calls.Load(), r.sends.messages.Load(), r.sends.packets.Load()}
+func (r *Router) handle(e any) {
+	switch e := e.(type) {
+	case accepted:
+		r.accept(e)
+	case desiredChanged:
+		r.reconcileKey(e.key)
+	case recheckEv:
+		r.recheck(e.project)
+	case slotLost:
+		r.slotLost(e)
+	case drainEv:
+		r.draining, r.alts = true, e.alternates
+		for _, v := range r.vs {
+			v.box.send(toDrain{alternates: e.alternates})
+		}
+	case endAllEv:
+		for _, v := range r.vs {
+			v.box.send(toEndConn{code: e.code, msg: e.msg})
+		}
+	case statsAsk:
+		r.askStats(e)
+	case packetIn:
+		r.packetIn(e)
+	case hookDone:
+		r.hookOn = false
+		r.nextHook()
+	case hookPortDone:
+		r.hookOn = false
+		if c := r.conns[e.port]; c != nil {
+			c.hooks--
+			r.maybeForget(c)
+		}
+		r.nextHook()
+	case assignDone:
+		r.assigned(e)
+	case fromV:
+		r.fromV(e.v, e.msg)
+	}
 }
 
-func addrPort(a net.Addr) netip.AddrPort {
-	u, ok := a.(*net.UDPAddr)
+// hook queues a host hook call. The calls run one at a time, in order.
+func (r *Router) hook(port uint64, fn func()) {
+	if c := r.conns[port]; c != nil {
+		c.hooks++
+	}
+	r.hooks = append(r.hooks, hookTask{port: port, run: fn})
+	r.nextHook()
+}
+
+func (r *Router) nextHook() {
+	if r.hookOn || len(r.hooks) == 0 {
+		return
+	}
+	h := r.hooks[0]
+	r.hooks = r.hooks[1:]
+	r.hookOn = true
+	go func() {
+		h.run()
+		if h.port != 0 {
+			r.box.send(hookPortDone{port: h.port})
+		} else {
+			r.box.send(hookDone{})
+		}
+	}()
+}
+
+// network returns n with the MTU default and limit.
+func network(n Network) Network {
+	if n.MTU == 0 {
+		n.MTU = vpcv1alpha1.DefaultMTU
+	}
+	// The API server checks the MTU only when the spec changes, so a network can have more.
+	n.MTU = min(n.MTU, vpcv1alpha1.MaxMTU)
+	return n
+}
+
+// reconcileKey reconciles a VPC, or each VPC of a tenant.
+func (r *Router) reconcileKey(key any) {
+	switch k := key.(type) {
+	case VPCKey:
+		r.reconcile(k)
+	case string:
+		keys := map[VPCKey]struct{}{}
+		for vk := range r.vs {
+			if vk.Project == k {
+				keys[vk] = struct{}{}
+			}
+		}
+		for vk := range r.desired.Load().vpcs {
+			if vk.Project == k {
+				keys[vk] = struct{}{}
+			}
+		}
+		for vk := range keys {
+			r.reconcile(vk)
+		}
+	}
+}
+
+// reconcile starts, changes or ends the V of key to match the desired state.
+func (r *Router) reconcile(key VPCKey) {
+	d := r.desired.Load()
+	n, want := d.vpcs[key]
+	if _, ok := d.tenants[key.Project]; !ok || r.stopping {
+		want = false
+	}
+	n = network(n)
+	v := r.vs[key]
+	switch {
+	case v == nil && want:
+		r.startV(key, n)
+	case v == nil, v.ending:
+	case !want || n.ID != v.net.ID:
+		// A new network ID is a new VPC in the data plane: V ends, and a new one starts at its end.
+		v.ending = true
+		v.box.send(toEnd{})
+	case !equalNetwork(n, v.net):
+		v.net = n
+		store(v.down, keyNetwork, &n)
+	}
+}
+
+func equalNetwork(a, b Network) bool {
+	return a.ID == b.ID && a.Name == b.Name && a.MTU == b.MTU &&
+		slices.Equal(a.DNSServers, b.DNSServers) && slices.Equal(a.DNSSearchDomains, b.DNSSearchDomains)
+}
+
+func (r *Router) startV(key VPCKey, n Network) {
+	v := &vChild{key: key, net: n, box: newMailbox(0), down: &valueMap{}}
+	store(v.down, keyNetwork, &n)
+	store(v.down, keyTrust, r.trustOf(key.Project))
+	r.vs[key] = v
+	startVPC(r, v)
+	if r.draining {
+		v.box.send(toDrain{alternates: r.alts})
+	}
+}
+
+// trustOf returns the trust value of a tenant.
+func (r *Router) trustOf(project string) *trustGen {
+	t := r.trust[project]
+	if t == nil {
+		t = &trustGen{}
+		r.trust[project] = t
+	}
+	return t
+}
+
+func (r *Router) recheck(project string) {
+	t := &trustGen{n: r.trustOf(project).n + 1}
+	r.trust[project] = t
+	for key, v := range r.vs {
+		if key.Project == project {
+			store(v.down, keyTrust, t)
+		}
+	}
+}
+
+// stop ends each V. Run returns when they ended.
+func (r *Router) stop() {
+	r.stopping = true
+	for _, v := range r.vs {
+		if !v.ending {
+			v.ending = true
+			v.box.send(toEnd{})
+		}
+	}
+}
+
+// accept gives a Session call with its Hello to the V of its VPC: a new A, or an extra connection
+// of an A.
+func (r *Router) accept(e accepted) {
+	v := r.vs[e.l.vpc]
+	if v == nil || v.ending || r.stopping {
+		e.res <- rpc.Errorf(rpc.Unavailable, "relay does not serve VPC %s/%s", e.l.vpc.Project, e.l.vpc.UID)
+		return
+	}
+	if x := e.hello.GetShard(); x != nil {
+		e.l.extra.Store(true)
+		if !v.box.send(toExtra{l: e.l, st: e.st, extra: x, res: e.res}) {
+			e.res <- rpc.Errorf(rpc.Unavailable, "relay does not serve VPC %s/%s", e.l.vpc.Project, e.l.vpc.UID)
+		}
+		return
+	}
+	tag := r.newTag()
+	if tag == 0 {
+		e.res <- rpc.Errorf(rpc.ResourceExhausted, "relay has no free session tag")
+		return
+	}
+	cell, ok := r.cells.get()
 	if !ok {
-		return netip.AddrPort{}
+		delete(r.tags, tag)
+		e.res <- rpc.Errorf(rpc.ResourceExhausted, "relay has no free counter cell")
+		return
 	}
-	ap := u.AddrPort()
-	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+	meter, ok := r.meters.get()
+	if !ok {
+		delete(r.tags, tag)
+		r.cells.put(cell)
+		e.res <- rpc.Errorf(rpc.ResourceExhausted, "relay has no free meter")
+		return
+	}
+	r.lastPort++
+	c := &rootConn{port: r.lastPort, v: v, l: e.l, tag: tag, cell: cell, meter: meter, atts: map[string]rootAtt{}, rx: -1}
+	r.conns[c.port] = c
+	r.sids[e.l.probe.SID] = c.port
+	e.l.owned.Store(true)
+	// The calls of the agent wait in the mailbox of A until A starts.
+	box := newMailbox(0)
+	e.l.a.Store(box)
+	if !v.box.send(toConn{l: e.l, st: e.st, hello: e.hello, box: box, port: c.port, tag: tag, cell: cell, meter: meter}) {
+		c.ended = true
+		e.l.streamEnd()
+		r.maybeForget(c)
+		e.res <- rpc.Errorf(rpc.Unavailable, "relay does not serve VPC %s/%s", e.l.vpc.Project, e.l.vpc.UID)
+		return
+	}
+	e.res <- nil
+}
+
+// newTag returns a free 24-bit session tag, or 0 when none is free. A tag comes again only after
+// all the other tags.
+func (r *Router) newTag() uint32 {
+	// A tag goes in the VNI field of a trunk packet, and 0 there is no tag.
+	if len(r.tags) >= pspwire.MaxVNI {
+		return 0
+	}
+	for {
+		r.tag = r.tag%pspwire.MaxVNI + 1
+		if _, used := r.tags[r.tag]; !used {
+			r.tags[r.tag] = struct{}{}
+			return r.tag
+		}
+	}
+}
+
+// maybeForget frees the indices of an ended port when its hook tasks ended, and tells the host.
+func (r *Router) maybeForget(c *rootConn) {
+	if !c.ended || c.hooks > 0 || r.conns[c.port] != c {
+		return
+	}
+	delete(r.conns, c.port)
+	if r.sids[c.l.probe.SID] == c.port {
+		delete(r.sids, c.l.probe.SID)
+	}
+	delete(r.tags, c.tag)
+	r.cells.put(c.cell)
+	r.meters.put(c.meter)
+	c.l.done()
+}
+
+func (r *Router) slotLost(e slotLost) {
+	c := r.conns[e.port]
+	if c == nil || c.ended || !c.v.box.send(toSlotLost{port: e.port, done: e.done}) {
+		close(e.done)
+	}
+}
+
+func (r *Router) packetIn(pin packetIn) {
+	if pin.md.kind != dp.KindPunt && pin.md.kind != dp.KindMiss {
+		return
+	}
+	port := pin.md.port
+	if pin.md.kind == dp.KindPunt && port == 0 {
+		// A probe: the port of its SID.
+		sid, ok := p2p.ProbeSID(pin.payload)
+		if !ok {
+			return
+		}
+		port = r.sids[sid]
+	}
+	if c := r.conns[port]; c != nil && !c.ended {
+		c.v.box.send(toPacketIn{port: port, pin: pin})
+	}
+}
+
+func (r *Router) askStats(e statsAsk) {
+	if len(r.vs) == 0 {
+		e.reply <- nil
+		return
+	}
+	r.lastAsk++
+	run := &statsRun{reply: e.reply, wait: map[*vChild]struct{}{}}
+	r.asks[r.lastAsk] = run
+	for _, v := range r.vs {
+		if v.box.send(toStats{ask: r.lastAsk}) {
+			run.wait[v] = struct{}{}
+		}
+	}
+	r.answerStats(r.lastAsk)
+}
+
+// answerStats answers an ask when no V is left to answer it.
+func (r *Router) answerStats(ask uint64) {
+	run := r.asks[ask]
+	if run == nil || len(run.wait) > 0 {
+		return
+	}
+	delete(r.asks, ask)
+	slices.SortFunc(run.out, func(a, b AttachmentStats) int { return cmp.Compare(a.ID, b.ID) })
+	run.reply <- run.out
+}
+
+// tick runs the rekeys and the expiry of the key engine, and gives each V the receive counts of
+// its connections.
+func (r *Router) tick(now time.Time) {
+	rekeyed, rx := r.keys.tick(bg, now)
+	for port, req := range rekeyed {
+		if c := r.conns[port]; c != nil && !c.ended {
+			c.v.box.send(toRekeyed{port: port, req: req})
+		}
+	}
+	for port, v := range rx {
+		if c := r.conns[port]; c != nil && !c.ended && int64(v.packets) != c.rx {
+			c.rx = int64(v.packets)
+			store(c.v.down, rxKey(port), v)
+		}
+	}
+}
+
+func (r *Router) assigned(e assignDone) {
+	c := r.conns[e.port]
+	if e.err == nil && (c == nil || c.ended) {
+		// The connection ended before the result came.
+		r.hook(0, func() { r.cfg.Addresses.Release(e.att) })
+		return
+	}
+	if c == nil {
+		return
+	}
+	res := toAssigned{port: e.port, att: e.att.ID, err: e.err}
+	if e.err == nil {
+		cell, ok := r.cells.get()
+		if !ok {
+			r.hook(e.port, func() { r.cfg.Addresses.Release(e.att) })
+			res.err = rpc.Errorf(rpc.ResourceExhausted, "relay has no free counter cell")
+		} else {
+			r.attaches++
+			e.att.Addresses = e.addrs
+			c.atts[e.att.ID] = rootAtt{att: e.att, cell: cell}
+			res.addrs, res.cell, res.instance = e.addrs, cell, r.attaches
+		}
+	}
+	c.v.box.send(res)
+}
+
+func (r *Router) fromV(v *vChild, msg any) {
+	switch m := msg.(type) {
+	case vAssign:
+		r.assign(m)
+	case vKeys:
+		r.runKeys(v, m)
+	case vAttachmentStart:
+		r.hook(m.port, func() { r.cfg.Addresses.Attached(m.att) })
+	case vAttachmentEnd:
+		r.attachmentEnd(m)
+	case vConnEnded:
+		r.connEnded(m)
+	case vStatsAnswer:
+		if run := r.asks[m.ask]; run != nil {
+			delete(run.wait, v)
+			run.out = append(run.out, m.stats...)
+			r.answerStats(m.ask)
+		}
+	case vEnded:
+		if r.vs[v.key] == v {
+			delete(r.vs, v.key)
+		}
+		for ask, run := range r.asks {
+			if _, ok := run.wait[v]; ok {
+				delete(run.wait, v)
+				r.answerStats(ask)
+			}
+		}
+		r.reconcile(v.key)
+	}
+}
+
+// assign runs the Assign hook of a new attachment. onLost waits until the connection of the
+// attachment deleted its ports entry.
+func (r *Router) assign(m vAssign) {
+	c := r.conns[m.port]
+	if c == nil || c.ended {
+		return
+	}
+	port, att := m.port, m.att
+	// The call ends when the connection closes, so a held Assign does not hold the hook tasks.
+	ctx := c.l.qc.Context()
+	r.hook(port, func() {
+		addrs, err := r.cfg.Addresses.Assign(ctx, att, func() {
+			done := make(chan struct{})
+			if r.box.send(slotLost{port: port, att: att.ID, done: done}) {
+				<-done
+			}
+		})
+		if err != nil && rpc.CodeOf(err) == rpc.Unknown {
+			err = rpc.Errorf(rpc.Unavailable, "no addresses: %v", err)
+		}
+		r.box.send(assignDone{port: port, att: att, addrs: addrs, err: err})
+	})
+}
+
+// runKeys runs a key operation of an A, writes its keys entries and answers it.
+func (r *Router) runKeys(v *vChild, m vKeys) {
+	done := toKeysDone{port: m.port, op: m.op}
+	now := time.Now()
+	switch m.op {
+	case opOffer:
+		done.offer, done.refused, done.ok, done.err = r.keys.offer(bg, m.port, m.vni, m.mtu, m.req, now)
+	case opApply:
+		done.refused, done.err = r.keys.apply(bg, m.port, m.req, now)
+	case opRevoke, opClose:
+		if err := r.keys.close(bg, m.port); err != nil {
+			slog.Warn("Failed to delete the keys entries of a connection", "port", m.port, "error", err)
+		}
+		if c := r.conns[m.port]; c != nil && c.rx >= 0 {
+			c.rx = -1
+			v.down.Delete(rxKey(m.port))
+		}
+	}
+	v.box.send(done)
+}
+
+func (r *Router) attachmentEnd(m vAttachmentEnd) {
+	c := r.conns[m.port]
+	if c == nil {
+		return
+	}
+	delete(c.atts, m.att.ID)
+	r.cells.put(m.cell)
+	r.endHooks(m)
+}
+
+// endHooks queues the hook tasks of the end of an attachment: its final counts, then Release.
+func (r *Router) endHooks(m vAttachmentEnd) {
+	if st := m.stats; st != nil {
+		if fn := r.onEnd.Load(); fn != nil {
+			r.hook(m.port, func() { (*fn)(*st) })
+		}
+	}
+	r.hook(m.port, func() { r.cfg.Addresses.Release(m.att) })
+}
+
+// connEnded frees the attachments of an ended port, and then its indices.
+func (r *Router) connEnded(m vConnEnded) {
+	c := r.conns[m.port]
+	if c == nil {
+		return
+	}
+	c.ended = true
+	for _, end := range m.ends {
+		r.attachmentEnd(end)
+	}
+	// The assigned attachments that A did not take go back too.
+	for id, a := range c.atts {
+		delete(c.atts, id)
+		r.cells.put(a.cell)
+		r.endHooks(vAttachmentEnd{port: m.port, att: a.att})
+	}
+	if c.rx >= 0 {
+		c.rx = -1
+		c.v.down.Delete(rxKey(m.port))
+	}
+	r.maybeForget(c)
+}
+
+// turns has the events of the root in one queue for each key. A pass takes at most one event of
+// each key, so a burst of one VPC does not delay another.
+type turns struct {
+	q     map[any][]any
+	order []any
+}
+
+func (t *turns) add(key, e any) {
+	if t.q == nil {
+		t.q = map[any][]any{}
+	}
+	if len(t.q[key]) == 0 {
+		t.order = append(t.order, key)
+	}
+	t.q[key] = append(t.q[key], e)
+}
+
+// next returns the next event: the first event of the next key in turn.
+func (t *turns) next() (any, bool) {
+	if len(t.order) == 0 {
+		return nil, false
+	}
+	key := t.order[0]
+	t.order = t.order[1:]
+	q := t.q[key]
+	e := q[0]
+	if len(q) == 1 {
+		delete(t.q, key)
+	} else {
+		t.q[key] = q[1:]
+		t.order = append(t.order, key)
+	}
+	return e, true
 }

@@ -8,11 +8,10 @@ import (
 
 	"github.com/quic-go/quic-go"
 
-	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// ErrUpgrade is the error when this agent is too old for a relay or a grant.
+// ErrUpgrade is the error when this agent is too old for a relay.
 // Run returns it when a relay refuses the agent: the user must upgrade.
 var ErrUpgrade = errors.New("agent needs an upgrade")
 
@@ -23,12 +22,10 @@ func (e *upgradeError) Error() string { return ErrUpgrade.Error() + ": " + e.det
 func (e *upgradeError) Unwrap() error { return ErrUpgrade }
 
 // relayUpgrade returns err as an ErrUpgrade when the relay at addr closed the
-// session with UPGRADE, or when its grant needs a newer revision.
+// session with UPGRADE.
 func relayUpgrade(addr string, err error) error {
 	var ae *quic.ApplicationError
 	switch {
-	case errors.Is(err, relay.ErrGrantRevision):
-		return &upgradeError{fmt.Sprintf("relay %s: %v", addr, err)}
 	case errors.As(err, &ae) && ae.Remote && ae.ErrorCode == quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE):
 		return &upgradeError{fmt.Sprintf("relay %s: %s", addr, ae.ErrorMessage)}
 	}

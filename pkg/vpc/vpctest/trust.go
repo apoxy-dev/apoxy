@@ -36,6 +36,3 @@ func (t *Trust) AgentCA(string) (*x509.CertPool, error) {
 }
 
 func (t *Trust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) { return nil, nil }
-
-// RelayRoots returns no pool: the relay cert of a grant chains to the system roots.
-func (t *Trust) RelayRoots(string) (*x509.CertPool, error) { return nil, nil }

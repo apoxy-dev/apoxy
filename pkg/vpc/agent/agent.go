@@ -83,7 +83,7 @@ type Config struct {
 	// Relays are the relays to dial, in place of the relays of the agent cert.
 	// The agent attaches to the relays with the lowest round-trip times.
 	Relays []identity.Relay
-	// RelayRoots check relay certs and grants, in place of the roots of the
+	// RelayRoots check relay certs, in place of the roots of the
 	// agent cert. With neither, the agent uses the system roots.
 	RelayRoots *x509.CertPool
 	// Sessions is the number of attached relay sessions to keep, 1 to 3, each on
@@ -156,7 +156,6 @@ type Agent struct {
 	retryMin, retryMax, retryNext   time.Duration
 	relistMin, relistMax            time.Duration
 	rttBand, rttWaitMin, rttWaitMax time.Duration
-	visitCheck                      time.Duration // Interval of the visit checks.
 
 	snap atomic.Pointer[snapshot]
 	run  atomic.Pointer[runRef] // The root of the Run that runs, or nil.
@@ -184,7 +183,6 @@ func New(cfg Config) *Agent {
 	a.rttBand = cmp.Or(cfg.RTTBand, defaultRTTBand)
 	a.rttWaitMin = cmp.Or(cfg.RTTWaitMin, defaultRTTWaitMin)
 	a.rttWaitMax = cmp.Or(cfg.RTTWaitMax, defaultRTTWaitMax)
-	a.visitCheck = visitCheck
 	a.demux.Probe = a.probes.take
 	a.quicCfg = relayQUIC.Clone()
 	a.quicCfg.Tracer = a.traceLoss
@@ -327,13 +325,13 @@ func refEndpoints(refs []*dp.RelayRef) []endpoint {
 
 func parsePrefixes(ss []string) ([]netip.Prefix, error) {
 	if len(ss) == 0 {
-		return nil, errors.New("grant has no addresses")
+		return nil, errors.New("attachment has no addresses")
 	}
 	out := make([]netip.Prefix, len(ss))
 	for i, s := range ss {
 		p, err := netip.ParsePrefix(s)
 		if err != nil {
-			return nil, fmt.Errorf("grant address: %w", err)
+			return nil, fmt.Errorf("attachment address: %w", err)
 		}
 		out[i] = p.Masked()
 	}

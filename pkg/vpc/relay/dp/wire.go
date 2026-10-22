@@ -12,9 +12,10 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
-// The UDP ports of the relay on the dedicated interface.
+// The UDP ports of the relay on the dedicated interface. PortData carries PSP packets, probes and
+// lane keep-alives; agents get it in Welcome.
 const (
-	portData = 1000
+	PortData = 1000
 	portQUIC = 443
 )
 
@@ -91,7 +92,7 @@ func demux(frame []byte, own func(netip.Addr) bool) (int, datagram) {
 	}
 	d := datagram{from: netip.AddrPortFrom(src, udp.SourcePort()), ecn: ecn, payload: l4[header.UDPMinimumSize:udp.Length()]}
 	switch udp.DestinationPort() {
-	case portData:
+	case PortData:
 		return toPipeline, d
 	case portQUIC:
 		return toQUIC, d

@@ -2,15 +2,15 @@
 
 package datapathv1
 
-// Protocol revisions. One number covers the Relay, Peer and Mesh services and
+// Protocol revisions. One number covers the Relay and Mesh services and
 // the packet formats. README.md has the revision table and the change rules.
 const (
 	// Revision is the protocol revision of this build. Each change to the proto
 	// files or to a packet format adds 1.
-	Revision uint32 = 20
+	Revision uint32 = 21
 	// MinRevision is the oldest revision of the other side that this build
 	// works with.
-	MinRevision uint32 = 0
+	MinRevision uint32 = 21
 )
 
 // LocalVersion returns the Version of this build. build is the build string

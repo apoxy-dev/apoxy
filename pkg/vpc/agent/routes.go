@@ -5,7 +5,6 @@ package agent
 import (
 	"net/netip"
 
-	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -101,49 +100,4 @@ func prefixChanges(changes []routeChange) (add, remove []netip.Prefix) {
 		}
 	}
 	return add, remove
-}
-
-// peerAddr returns the overlay address that gets the packets to dst: the
-// origin of the longest route, or dst itself in the VPC network of self.
-func (t *routeTable) peerAddr(dst, self netip.Addr) (netip.Addr, bool) {
-	vpc := tunnet.NetworkPrefixOf(self)
-	if best := t.bestRoute(dst, vpc); best.IsValid() {
-		// The lowest prefix of the origin in the VPC network gives its address.
-		origin, own := t.origins[best], netip.Prefix{}
-		for p, o := range t.origins {
-			if o == origin && inNetwork(p, vpc) && (!own.IsValid() || p.Addr().Less(own.Addr())) {
-				own = p
-			}
-		}
-		if own.IsValid() {
-			return overlayAddr([]netip.Prefix{own}), true
-		}
-	}
-	return dst, vpc.Contains(dst)
-}
-
-// bestRoute returns the longest prefix of the table that covers dst, or none.
-func (t *routeTable) bestRoute(dst netip.Addr, vpc netip.Prefix) netip.Prefix {
-	best := netip.Prefix{}
-	for p := range t.origins {
-		if p.Contains(dst) && p.Bits() > best.Bits() && (Routable(p, vpc) || inNetwork(p, vpc)) {
-			best = p
-		}
-	}
-	return best
-}
-
-// routeOf returns the prefix of the route that covers dst, or else the prefix
-// of dst alone.
-func (t *routeTable) routeOf(dst, self netip.Addr) netip.Prefix {
-	if best := t.bestRoute(dst, tunnet.NetworkPrefixOf(self)); best.IsValid() {
-		return best
-	}
-	return netip.PrefixFrom(dst, dst.BitLen())
-}
-
-// inNetwork reports whether p is a part of the VPC network vpc, such as the
-// addresses of an attachment.
-func inNetwork(p, vpc netip.Prefix) bool {
-	return p.Bits() > vpc.Bits() && vpc.Contains(p.Addr())
 }

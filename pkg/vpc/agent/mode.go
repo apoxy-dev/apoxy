@@ -175,7 +175,6 @@ func (s *session) offer() {
 // rekeyMsg takes receive SAs from the root: for the attempt, or a renewal.
 func (s *session) rekeyMsg(m rekeyMsg) {
 	if m.peer != s.peer {
-		s.toVisit(m.peer, m)
 		return
 	}
 	if m.attempt == 0 {
@@ -267,7 +266,7 @@ func (s *session) advance() {
 	}
 	if !at.lanes {
 		at.lanes = true
-		if s.visitor() || !s.registerLanes() {
+		if !s.registerLanes() {
 			at.lanesOK = true
 		}
 	}
@@ -349,7 +348,6 @@ func (s *session) stopLanes() {
 // and the relay peer sends PSP.
 func (s *session) clamped(m clampedMsg) {
 	if m.peer != s.peer {
-		s.toVisit(m.peer, m)
 		return
 	}
 	if s.att == nil || m.attempt != s.att.n {

@@ -19,7 +19,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
-	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -93,8 +92,8 @@ func localOf(c net.Conn) netip.Addr {
 	return c.LocalAddr().(*net.TCPAddr).AddrPort().Addr()
 }
 
-// TestRoutesAfterAttach checks that routes from the relay before the end of the
-// Attach call reach OnRoutes only after OnAttach of the session.
+// TestRoutesAfterAttach checks that routes from the relays before the end of
+// the Attach call reach OnRoutes only after OnAttach of the session.
 func TestRoutesAfterAttach(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -105,14 +104,20 @@ func TestRoutesAfterAttach(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w, r1, r2 := meshRelays(t)
-			var want []netip.Prefix
-			for i, r := range []*testRelay{r1, r2, r1, r2} {
-				o := w.agent(t, fmt.Sprintf("other-%d", i), r, agentOptions{})
-				want = append(want, o.attached(t).prefixes...)
+			w := newWorld(t)
+			var relays []*testRelay
+			for i := range tc.sessions {
+				relays = append(relays, w.relay(t, fmt.Sprintf("relay-%d", i+1)))
 			}
-			a, _ := w.agentOn(t, "a", agentOptions{}, tc.sessions, r1, r2)
-			a.hasRoutes(t, want...)
+			byRelay := map[string][]netip.Prefix{}
+			for i := range 4 {
+				r := relays[i%len(relays)]
+				o := w.agent(t, fmt.Sprintf("other-%d", i), r, agentOptions{})
+				byRelay[r.addr] = append(byRelay[r.addr], o.attached(t).prefixes...)
+			}
+			a, rcs := w.agentOn(t, "a", agentOptions{}, tc.sessions, relays...)
+			// OnRoutes gets the routes of the primary session. The relays have no mesh.
+			a.hasRoutes(t, byRelay[rcs[0].addr]...)
 		})
 	}
 }
@@ -200,18 +205,15 @@ func TestSessions(t *testing.T) {
 // the source address, or else the session with the lowest rank that does not drain.
 func TestSendRule(t *testing.T) {
 	w := newWorld(t)
-	w.mesh = true
 	tap1, tap2 := &countConn{}, &countConn{}
 	r1 := w.relayOn(t, "relay-1", loopback(t), tap1.wrap(loopback(t)))
 	r2 := w.relayOn(t, "relay-2", loopback(t), tap2.wrap(loopback(t)))
-	joinMesh(t, r1, r2)
 	route, far := netip.MustParsePrefix("fd99::/64"), netip.MustParseAddr("fd99::5")
 	a, rcs := w.agentOn(t, "a", agentOptions{routes: []netip.Prefix{route}}, 2, r1, r2)
 	b := w.agent(t, "b", r1, agentOptions{})
 	eb := b.attached(t)
 	echo(t, b.stack, eb.addr, 9000)
 	a.netstack(t, a.binding(), far, false)
-	a.hasRoutes(t, eb.prefixes[0])
 	b.hasRoutes(t, route)
 	// The PSP socket of each relay counts the PSP packets that it gets from a.
 	from := unmap(a.tr.Conn.LocalAddr().(*net.UDPAddr).AddrPort())
@@ -232,9 +234,12 @@ func TestSendRule(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// The packets go one way only: a relay has no mesh, so the
+			// relay of the other session has no route to b.
 			before := sent[tc.want.addr]()
-			ping(t, a.stack, tc.src, eb.addr, 9000, tc.name)
-			assert.Greater(t, sent[tc.want.addr](), before, "the packet goes on the session")
+			send(t, a.stack, tc.src, eb.addr, 9000, tc.name)
+			require.Eventually(t, func() bool { return sent[tc.want.addr]() > before }, 5*time.Second, 10*time.Millisecond,
+				"the packet goes on the session")
 		})
 	}
 
@@ -243,55 +248,9 @@ func TestSendRule(t *testing.T) {
 	drain(t, w.relayAt(rcs[0].addr), nil)
 	require.Eventually(t, func() bool { return a.current() == rcs[1] }, 5*time.Second, 10*time.Millisecond)
 	before := sent[rcs[1].addr]()
-	ping(t, a.stack, far, eb.addr, 9000, "after the drain")
-	assert.Greater(t, sent[rcs[1].addr](), before, "the packet goes on the second session")
-}
-
-// TestDrainKeepsStream checks that a TCP stream carries data until its draining
-// relay closes the session, and a new one uses the new address.
-func TestDrainKeepsStream(t *testing.T) {
-	w, r1, r2 := meshRelays(t)
-	a := w.agent(t, "a", r1, agentOptions{tcp: true, relays: []identity.Relay{r1.ref(), r2.ref()}})
-	ea := a.attached(t)
-	// The agent shuffles its relays, so the first session can be on either. b
-	// stays on the relay that does not drain.
-	prev := a.current()
-	first, other := r1, r2
-	if prev.addr == r2.addr {
-		first, other = r2, r1
-	}
-	b := w.agent(t, "b", other, agentOptions{tcp: true})
-	eb := b.attached(t)
-	serveTCP(t, b.stack, eb.addr, 9000)
-	a.hasRoutes(t, eb.prefixes[0])
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	dial := func() net.Conn {
-		c, err := gonet.DialContextTCP(ctx, a.stack, *fullAddr(eb.addr, 9000), ipv6.ProtocolNumber)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = c.Close() })
-		return c
-	}
-	old := dial()
-	require.Equal(t, ea.addr, localOf(old))
-	roundTrip(t, old, "before the drain")
-
-	end := drain(t, first, nil)
-	moved := a.attached(t)
-	require.Equal(t, other.addr, a.current().addr)
-	roundTrip(t, old, "on the address of the draining relay")
-	next := dial()
-	assert.Equal(t, moved.addr, localOf(next), "a new connection uses the address of the relay that does not drain")
-	roundTrip(t, next, "on the address of the new session")
-	roundTrip(t, old, "on the address of the draining relay again")
-	require.Never(t, func() bool { return len(a.attach) > 0 }, 500*time.Millisecond, 20*time.Millisecond,
-		"the agent opens one session after the Drain")
-	assert.Equal(t, 2, len(a.a.Status().Connections))
-	roundTrip(t, old, "until the relay closes the session")
-
-	end()
-	closedByDrain(t, prev)
-	roundTrip(t, next, "after the drain")
+	send(t, a.stack, far, eb.addr, 9000, "after the drain")
+	require.Eventually(t, func() bool { return sent[rcs[1].addr]() > before }, 5*time.Second, 10*time.Millisecond,
+		"the packet goes on the second session")
 }
 
 // TestNextRank checks that the session that the agent opens after a drain or

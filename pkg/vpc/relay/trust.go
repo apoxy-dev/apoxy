@@ -7,32 +7,32 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
+	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// Trust is the agent trust data that the relay keeps locally. The cert check
-// makes no apiserver call.
+// Trust is the agent trust data that the relay keeps locally. The cert check makes no apiserver
+// call.
 type Trust interface {
-	// AgentCA returns the pool of the agent CA of a project. An error, for
-	// example for a project with no CA, rejects the cert.
+	// AgentCA returns the pool of the agent CA of a project. An error, for example for a project
+	// with no CA or for data that is too old, rejects the cert.
 	AgentCA(project string) (*x509.CertPool, error)
-	// Revoked returns the revocation list of a VPC. An error, for example
-	// for data that is too old, rejects the cert.
+	// Revoked returns the revocation list of a VPC. An error, for example for data that is too
+	// old, rejects the cert.
 	Revoked(project, vpcUID string) ([]vpcv1alpha1.RevokedAgent, error)
-	// RelayRoots returns the roots for the relay cert of a grant in a project.
-	// A nil pool with no error means the system roots. An error refuses the grant.
-	RelayRoots(project string) (*x509.CertPool, error)
 }
 
-// checkCert checks the agent cert chain (leaf first) of a new session: the
-// agent CA of the SAN project, an agent ID SAN, and no revocation.
-func (r *Router) checkCert(chain []*x509.Certificate, now time.Time) (identity.ID, error) {
-	if r.trust == nil {
+// trustGen is the trust data value of one tenant. A new value comes at each Recheck, and each A
+// of the tenant then checks its cert again.
+type trustGen struct{ n uint64 }
+
+// checkCert checks the agent cert chain (leaf first) at now: the agent CA of the SAN project, an
+// agent ID SAN, and no revocation.
+func checkCert(trust Trust, chain []*x509.Certificate, now time.Time) (identity.ID, error) {
+	if trust == nil {
 		return identity.ID{}, errors.New("relay has no trust data")
 	}
 	if len(chain) == 0 {
@@ -43,11 +43,11 @@ func (r *Router) checkCert(chain []*x509.Certificate, now time.Time) (identity.I
 	if err != nil {
 		return identity.ID{}, err
 	}
-	roots, err := r.trust.AgentCA(san.Project)
+	roots, err := trust.AgentCA(san.Project)
 	if err != nil {
 		return identity.ID{}, fmt.Errorf("no agent CA: %w", err)
 	}
-	revoked, err := r.trust.Revoked(san.Project, san.VPC)
+	revoked, err := trust.Revoked(san.Project, san.VPC)
 	if err != nil {
 		return identity.ID{}, fmt.Errorf("no revocation list: %w", err)
 	}
@@ -60,41 +60,19 @@ func (r *Router) checkCert(chain []*x509.Certificate, now time.Time) (identity.I
 	})
 }
 
-// TLSConfig returns a copy of base whose handshake fails for an agent cert
-// that fails the check.
+// TLSConfig returns a copy of base whose handshake fails for an agent cert that fails the check.
 func (r *Router) TLSConfig(base *tls.Config) *tls.Config {
 	c := base.Clone()
 	c.MinVersion = tls.VersionTLS13
-	c.NextProtos = []string{dp.ALPNRelay}
+	c.NextProtos = []string{dpv1.ALPNRelay}
 	// ClientCAs does not check the SAN or revocations, so the relay checks.
 	c.ClientAuth = tls.RequireAnyClientCert
-	c.VerifyConnection = r.verifyConnection
+	c.VerifyConnection = func(cs tls.ConnectionState) error {
+		if cs.NegotiatedProtocol != dpv1.ALPNRelay {
+			return nil
+		}
+		_, err := checkCert(r.cfg.Trust, cs.PeerCertificates, time.Now())
+		return err
+	}
 	return c
-}
-
-func (r *Router) verifyConnection(cs tls.ConnectionState) error {
-	if cs.NegotiatedProtocol != dp.ALPNRelay {
-		return nil
-	}
-	_, err := r.checkCert(cs.PeerCertificates, time.Now())
-	return err
-}
-
-// Recheck closes the sessions whose agent cert now fails. The check uses the
-// handshake time, because a session does not end with its cert.
-func (r *Router) Recheck() {
-	r.mu.RLock()
-	sessions := make([]*Session, 0, len(r.sessions))
-	for s := range r.sessions {
-		if s.chain != nil {
-			sessions = append(sessions, s)
-		}
-	}
-	r.mu.RUnlock()
-	for _, s := range sessions {
-		if _, err := r.checkCert(s.chain, s.verified); err != nil {
-			slog.Info("Closing relay session after a trust change", "agent", s.id.ID, "error", err)
-			s.close(dp.RelayCloseCode_RELAY_CLOSE_CODE_CERT, "agent cert rejected")
-		}
-	}
 }

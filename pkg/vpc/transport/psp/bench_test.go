@@ -292,26 +292,18 @@ func BenchmarkLaneQueue(b *testing.B) {
 	}
 }
 
-// BenchmarkThroughput sends TCP from one netstack to another, directly or
-// through the relay, on 1 or 4 flows.
+// BenchmarkThroughput sends TCP from one netstack to another, directly, on 1
+// or 4 flows.
 func BenchmarkThroughput(b *testing.B) {
-	for _, path := range []string{"direct", "relay"} {
-		for _, flows := range []int{1, 4} {
-			b.Run(fmt.Sprintf("%s/flows=%d", path, flows), func(b *testing.B) {
-				benchThroughput(b, path == "relay", flows)
-			})
-		}
+	for _, flows := range []int{1, 4} {
+		b.Run(fmt.Sprintf("direct/flows=%d", flows), func(b *testing.B) {
+			benchThroughput(b, flows)
+		})
 	}
 }
 
-func benchThroughput(b *testing.B, viaRelay bool, flows int) {
-	var x, y *node
-	var fr *fakeRelay
-	if viaRelay {
-		x, y, fr = newRelayPair(b)
-	} else {
-		x, y = newPair(b)
-	}
+func benchThroughput(b *testing.B, flows int) {
+	x, y := newPair(b)
 	offer(b, time.Now(), x, y)
 	sx, sy := startNetstack(b, x, 4<<20), startNetstack(b, y, 4<<20)
 
@@ -379,9 +371,6 @@ func benchThroughput(b *testing.B, viaRelay bool, flows int) {
 	}
 	if n := sy.NICInfo()[1].Stats.Rx.Packets.Value() - nicRx0; n > 0 {
 		b.ReportMetric(float64(rx)/float64(n), "rx/gro")
-	}
-	if fr != nil {
-		b.ReportMetric(float64(fr.drops.Load()), "relaydrops")
 	}
 }
 

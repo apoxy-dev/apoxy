@@ -39,7 +39,6 @@ type home struct {
 	held       map[string]heldX
 	pending    map[string]*AttachmentSpec
 	deprecated bool
-	visits     []Route
 }
 
 // heldX is an extra attachment on a home session.
@@ -87,7 +86,6 @@ type root struct {
 	reported   map[netip.Prefix]bool
 	routeWaits []routeWait
 
-	visitors map[*psp.Peer]*home
 	clamps   map[*psp.Peer]int
 	pspPeers map[*psp.Peer]bool
 
@@ -113,7 +111,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	r := &root{
 		a: a, mb: newMailbox(), retryWait: minBackoff,
 		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]bool{},
-		visitors: map[*psp.Peer]*home{}, clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
+		clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
 	}
 	r.ctx, r.cancel = context.WithCancel(ctx)
 	defer r.cancel()
@@ -354,14 +352,6 @@ func (r *root) handleLive(m any) {
 		r.peerMode(m.peer, m.mode)
 	case routesMsg:
 		r.routes(m)
-	case visitorPeer:
-		if r.homeOf(m.s) == nil {
-			r.removePeer(m.peer)
-			return
-		}
-		r.visitors[m.peer] = r.homeOf(m.s)
-	case visitorGone:
-		r.removePeer(m.peer)
 	case reportMsg:
 		m.peer.Report(now, m.sas)
 	case offerMsg:
@@ -373,10 +363,6 @@ func (r *root) handleLive(m any) {
 	case applyMsg:
 		refused, err := m.peer.Apply(m.req, now)
 		m.s.mb.send(appliedMsg{peer: m.peer, attempt: m.attempt, refused: refused, err: err})
-	case linkRoutes:
-		if h := r.homeOf(m.s); h != nil {
-			h.visits = m.routes
-		}
 	case drainedMsg:
 		r.drained(m)
 	}
@@ -394,29 +380,12 @@ func (r *root) homeOf(s *session) *home {
 
 // startHome starts a home session on the connection d with rank.
 func (r *root) startHome(d *dialed, rank uint32) {
-	key := d.ep.key()
-	// The agent does not visit a relay on which it has a home session.
-	for _, h := range r.homes {
-		h.s.mb.send(endVisit{key})
-	}
-	s := newSession(r.a, r.ctx, r.mb, d, rank, nil)
+	s := newSession(r.a, r.ctx, r.mb, d, rank)
 	r.homes = append(r.homes, &home{
 		s: s, ep: d.ep, rank: rank,
 		routes: map[netip.Prefix]bool{}, held: map[string]heldX{}, pending: map[string]*AttachmentSpec{},
 	})
 	go s.run()
-	r.sendHomes()
-}
-
-// sendHomes gives each home session the relays of the home sessions.
-func (r *root) sendHomes() {
-	keys := map[string]bool{}
-	for _, h := range r.homes {
-		keys[h.ep.key()] = true
-	}
-	for _, h := range r.homes {
-		h.s.mb.send(homesMsg{keys})
-	}
 }
 
 // live returns the attached and the draining home sessions in rank order.
@@ -512,11 +481,6 @@ func (r *root) sessEnded(m sessEnded) {
 	if m.peer != nil {
 		r.removePeer(m.peer)
 	}
-	for p, o := range r.visitors {
-		if o == h {
-			r.removePeer(p)
-		}
-	}
 	if r.routesOf == h {
 		r.routesOf = nil
 	}
@@ -540,13 +504,11 @@ func (r *root) sessEnded(m sessEnded) {
 	} else {
 		r.retry(1, fmt.Errorf("relay %s: %w", h.ep.addr, m.err))
 	}
-	r.sendHomes()
 	r.plan()
 }
 
 // removePeer removes a relay peer from the binding with its SAs and routes.
 func (r *root) removePeer(p *psp.Peer) {
-	delete(r.visitors, p)
 	delete(r.pspPeers, p)
 	if _, ok := r.clamps[p]; ok {
 		delete(r.clamps, p)
@@ -672,14 +634,14 @@ func (r *root) tick(now time.Time) {
 	}
 }
 
-// peerHome returns the home session whose relay peer or visitor peer is p, or nil.
+// peerHome returns the home session whose relay peer is p, or nil.
 func (r *root) peerHome(p *psp.Peer) *home {
 	for _, h := range r.homes {
 		if h.st.peer == p {
 			return h
 		}
 	}
-	return r.visitors[p]
+	return nil
 }
 
 // prefer queues OnDeprecated for the addresses of each session that is not the
@@ -855,7 +817,6 @@ func (r *root) publish(running bool) {
 		}
 		slices.SortFunc(c.extras, func(x, y Attachment) int { return cmp.Compare(x.Name, y.Name) })
 		s.conns = append(s.conns, c)
-		s.visits = append(s.visits, h.visits...)
 	}
 	r.a.snap.Store(s)
 }

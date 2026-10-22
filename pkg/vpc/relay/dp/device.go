@@ -67,7 +67,7 @@ func newDevice(ifc Interface, dev packetio.Device, mtu uint32) (*Device, error) 
 		return nil, err
 	}
 	d.ns = ns
-	d.p = New(func(to netip.AddrPort, b []byte) { d.sendUDP(portData, to, 0, b) })
+	d.p = New(func(to netip.AddrPort, b []byte) { d.sendUDP(PortData, to, 0, b) })
 	local := d.src4
 	if !local.IsValid() {
 		local = d.src6

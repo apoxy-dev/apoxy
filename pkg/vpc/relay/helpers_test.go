@@ -1,677 +1,620 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-package relay
+package relay_test
 
 import (
 	"context"
-	"crypto"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/big"
 	"net"
 	"net/netip"
-	"net/url"
-	"os"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
-	"github.com/apoxy-dev/softpsp/keys"
+	"github.com/apoxy-dev/softpsp/psp"
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp/keyproto"
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
+	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-func TestMain(m *testing.M) {
-	_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
-	os.Exit(m.Run())
+const (
+	project = "project-a"
+	vpcUID  = "vpc-a"
+	netID   = 0x1234
+	relayID = "relay-1"
+	// wait is the longest time that a test waits for one result of the relay.
+	wait = 10 * time.Second
+)
+
+var (
+	vpcKey = relay.VPCKey{Project: project, UID: vpcUID}
+	vpcRef = &dpv1.VPCRef{ProjectId: project, VpcUid: vpcUID}
+)
+
+// addresses gives each attachment the next /96 of the VPC network, and keeps the hooks that the
+// relay called.
+type addresses struct {
+	mu       sync.Mutex
+	next     int
+	lost     map[string]func()
+	attached []string
+	released []string
+	// holdNext makes the next Assign wait for the end of its ctx. held gets a value when it waits.
+	holdNext bool
+	held     chan struct{}
 }
 
-// testCA signs agent certs.
-type testCA struct {
-	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
+func (a *addresses) Assign(ctx context.Context, att *relay.Attachment, onLost func()) ([]netip.Prefix, error) {
+	a.mu.Lock()
+	if a.holdNext {
+		a.holdNext = false
+		a.mu.Unlock()
+		a.held <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	defer a.mu.Unlock()
+	a.next++
+	if a.lost == nil {
+		a.lost = map[string]func(){}
+	}
+	a.lost[att.ID] = onLost
+	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd61:706f:7879:12:3400:%x::/96", a.next))}, nil
 }
 
-func newKey(t *testing.T) *ecdsa.PrivateKey {
+func (a *addresses) Attached(att *relay.Attachment) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.attached = append(a.attached, att.ID)
+}
+
+func (a *addresses) Release(att *relay.Attachment) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.released = append(a.released, att.ID)
+}
+
+// holdOne makes the next Assign wait until its connection closes. The channel gets a value when
+// it waits.
+func (a *addresses) holdOne() <-chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.holdNext, a.held = true, make(chan struct{}, 1)
+	return a.held
+}
+
+// loseSlot ends the lease of the addresses of attachment id, as the host does.
+func (a *addresses) loseSlot(id string) {
+	a.mu.Lock()
+	f := a.lost[id]
+	a.mu.Unlock()
+	f()
+}
+
+func (a *addresses) isAttached(id string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Contains(a.attached, id)
+}
+
+func (a *addresses) isReleased(id string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Contains(a.released, id)
+}
+
+func (a *addresses) releases() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.released)
+}
+
+// trust trusts one agent CA and has a revocation list. A set err makes each call fail.
+type trust struct {
+	mu      sync.Mutex
+	pool    *x509.CertPool
+	revoked []vpcv1alpha1.RevokedAgent
+	err     error
+}
+
+func (t *trust) AgentCA(string) (*x509.CertPool, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.pool, t.err
+}
+
+func (t *trust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.revoked), t.err
+}
+
+func (t *trust) revoke(name string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.revoked = append(t.revoked, vpcv1alpha1.RevokedAgent{Name: name, RevokedAt: metav1.NewTime(time.Now())})
+}
+
+func (t *trust) setErr(err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.err = err
+}
+
+// env is a relay on a loopback data plane with the Relay service on real QUIC.
+type env struct {
+	ca    *vpctest.CA
+	r     *relay.Router
+	srv   *relay.Server
+	addrs *addresses
+	trust *trust
+	quic  *net.UDPAddr
+	data  *net.UDPAddr
+	ends  chan relay.AttachmentStats
+}
+
+func newEnv(t *testing.T) *env {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	ca, err := vpctest.NewCA()
 	require.NoError(t, err)
-	return key
-}
-
-func newCA(t *testing.T) *testCA {
-	t.Helper()
-	key := newKey(t)
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "agent CA"},
-		NotBefore:             time.Now().Add(-365 * 24 * time.Hour),
-		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	lo, err := vpctest.NewLoopback()
 	require.NoError(t, err)
-	cert, err := x509.ParseCertificate(der)
-	require.NoError(t, err)
-	return &testCA{cert: cert, key: key}
-}
-
-func (ca *testCA) pool() *x509.CertPool {
-	p := x509.NewCertPool()
-	p.AddCert(ca.cert)
-	return p
-}
-
-// issue signs an agent cert with URI SAN san, or none, from notBefore.
-func (ca *testCA) issue(t *testing.T, san string, notBefore time.Time) tls.Certificate {
-	t.Helper()
-	key := newKey(t)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
-		NotBefore:    notBefore,
-		NotAfter:     notBefore.Add(identity.CertLifetime),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	go func() { _ = lo.Run() }()
+	e := &env{
+		ca:    ca,
+		addrs: &addresses{},
+		trust: &trust{pool: ca.Pool()},
+		quic:  lo.QUIC.LocalAddr().(*net.UDPAddr),
+		data:  &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(lo.DataPort())},
+		ends:  make(chan relay.AttachmentStats, 64),
 	}
-	if san != "" {
-		u, err := url.Parse(san)
-		require.NoError(t, err)
-		tmpl.URIs = []*url.URL{u}
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
-	require.NoError(t, err)
-	leaf, err := x509.ParseCertificate(der)
-	require.NoError(t, err)
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
-}
-
-// agentCert issues a cert for agent name in vpc, valid since an hour ago.
-func (ca *testCA) agentCert(t *testing.T, vpc VPCKey, name string) tls.Certificate {
-	return ca.issue(t, agentID(vpc, name), time.Now().Add(-time.Hour))
-}
-
-// shortCert issues a cert for agent name in vpc that ends 1 to 2 seconds from
-// now. A cert time has a resolution of one second.
-func (ca *testCA) shortCert(t *testing.T, vpc VPCKey, name string) tls.Certificate {
-	end := time.Now().Truncate(time.Second).Add(2 * time.Second)
-	return ca.issue(t, agentID(vpc, name), end.Add(-identity.CertLifetime))
-}
-
-// waitExpired waits until each cert of certs is past its NotAfter.
-func waitExpired(certs ...tls.Certificate) {
-	for _, c := range certs {
-		time.Sleep(time.Until(c.Leaf.NotAfter) + 50*time.Millisecond)
-	}
-}
-
-func agentID(k VPCKey, name string) string {
-	return identity.ID{Project: k.Project, VPC: k.UID, Agent: name}.String()
-}
-
-// fakeTrust is the trust data of a test relay. A project in projectCA has
-// that CA, or no CA for nil. Each other project has ca.
-type fakeTrust struct {
-	mu        sync.Mutex
-	ca        *testCA
-	projectCA map[string]*testCA
-	revoked   map[VPCKey][]vpcv1alpha1.RevokedAgent
-	err       error
-	roots     *x509.CertPool // Relay roots of all projects. Nil is the system roots.
-	rootsErr  error
-}
-
-func (f *fakeTrust) AgentCA(project string) (*x509.CertPool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	ca, ok := f.projectCA[project]
-	if !ok {
-		ca = f.ca
-	}
-	if ca == nil {
-		return nil, errors.New("project has no agent CA")
-	}
-	return ca.pool(), nil
-}
-
-func (f *fakeTrust) Revoked(project, vpcUID string) ([]vpcv1alpha1.RevokedAgent, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.revoked[VPCKey{Project: project, UID: vpcUID}], f.err
-}
-
-func (f *fakeTrust) RelayRoots(string) (*x509.CertPool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.roots, f.rootsErr
-}
-
-func (f *fakeTrust) setCA(ca *testCA) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ca = ca
-}
-
-func (f *fakeTrust) revoke(k VPCKey, agent string, at time.Time) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.revoked == nil {
-		f.revoked = map[VPCKey][]vpcv1alpha1.RevokedAgent{}
-	}
-	f.revoked[k] = append(f.revoked[k], vpcv1alpha1.RevokedAgent{Name: agent, RevokedAt: metav1.NewTime(at)})
-}
-
-// fakeNetworks knows vpcA and vpcB, and fails for the VPCs in fail.
-type fakeNetworks struct {
-	mu   sync.Mutex
-	fail map[VPCKey]bool
-}
-
-func (f *fakeNetworks) Network(project, vpcUID string) (Network, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	k := VPCKey{project, vpcUID}
-	if f.fail[k] {
-		return Network{}, errors.New("snapshot too old")
-	}
-	switch k {
-	case vpcA:
-		return Network{ID: 0x0a0b0c, Name: "net-a", DNSServers: []string{"fd00::53"}}, nil
-	case vpcB:
-		return Network{ID: 0x0d0e0f, MTU: 1360}, nil
-	}
-	return Network{}, errors.New("unknown VPC")
-}
-
-func (f *fakeNetworks) failVPC(k VPCKey) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.fail = map[VPCKey]bool{k: true}
-}
-
-// fakeAddresses gives each attachment the next /96 in fd00:<n>::/96.
-type fakeAddresses struct {
-	mu           sync.Mutex
-	next         int
-	assigned     map[string]*Attachment
-	attached     []attachedCall    // The Attached calls, in order.
-	lost         map[string]func() // The onLost of each attachment.
-	loseOnAssign bool              // Assign calls onLost before it returns.
-	err          error
-}
-
-func (f *fakeAddresses) Assign(_ context.Context, a *Attachment, onLost func()) ([]netip.Prefix, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.err != nil {
-		return nil, f.err
-	}
-	f.next++
-	if f.assigned == nil {
-		f.assigned, f.lost = map[string]*Attachment{}, map[string]func(){}
-	}
-	f.assigned[a.ID], f.lost[a.ID] = a, onLost
-	if f.loseOnAssign {
-		onLost()
-	}
-	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd00:%x::/96", f.next))}, nil
-}
-
-// attachedCall is one Attached call: the attachment ID, and its addresses and
-// its routes then.
-type attachedCall struct {
-	id     string
-	addrs  []netip.Prefix
-	routes []netip.Prefix
-}
-
-func (f *fakeAddresses) Attached(a *Attachment) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.attached = append(f.attached, attachedCall{a.ID, slices.Clone(a.Addresses), slices.Clone(a.Routes)})
-}
-
-func (f *fakeAddresses) attachedCalls() []attachedCall {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.attached)
-}
-
-func (f *fakeAddresses) Release(a *Attachment) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.assigned, a.ID)
-	delete(f.lost, a.ID)
-}
-
-// onLost returns the onLost of attachment id.
-func (f *fakeAddresses) onLost(id string) func() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.lost[id]
-}
-
-func (f *fakeAddresses) fail(err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.err = err
-}
-
-func (f *fakeAddresses) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.assigned)
-}
-
-// harness is a relay that serves relay sessions on a loopback QUIC socket,
-// with a PSP socket.
-type harness struct {
-	srv        *Server
-	r          *Router
-	trust      *fakeTrust
-	nets       *fakeNetworks
-	addrs      *fakeAddresses
-	relayRoots *x509.CertPool // Roots of the relay cert.
-	ln         *quic.Listener
-	tr         *quic.Transport // QUIC socket.
-	psp        *quic.Transport // PSP socket.
-	pspAddr    net.Addr
-	mux        *rpc.Mux
-}
-
-// relayCert issues a relay TLS cert with key for 127.0.0.1 that names id,
-// from a new CA. It returns the cert and the CA pool.
-func relayCert(t *testing.T, id string, key crypto.Signer) (*tls.Certificate, *x509.CertPool) {
-	t.Helper()
-	ca := newCA(t)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(3),
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(48 * time.Hour),
-		DNSNames:     []string{id},
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, key.Public(), ca.key)
-	require.NoError(t, err)
-	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, ca.pool()
-}
-
-// relayChain issues a *.relay.example.net cert with key from an intermediate
-// CA. It returns the cert with the intermediate and the root pool.
-func relayChain(t *testing.T, key crypto.Signer) (*tls.Certificate, *x509.CertPool) {
-	t.Helper()
-	root := newCA(t)
-	ikey := newKey(t)
-	itmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(4),
-		Subject:               pkix.Name{CommonName: "relay intermediate"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(48 * time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign,
-	}
-	ider, err := x509.CreateCertificate(rand.Reader, itmpl, root.cert, &ikey.PublicKey, root.key)
-	require.NoError(t, err)
-	inter, err := x509.ParseCertificate(ider)
-	require.NoError(t, err)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(5),
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(48 * time.Hour),
-		DNSNames:     []string{"*.relay.example.net"},
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, inter, key.Public(), ikey)
-	require.NoError(t, err)
-	return &tls.Certificate{Certificate: [][]byte{der, ider}, PrivateKey: key}, root.pool()
-}
-
-// endHold lets the hold time of a new attachment end on the fake clock, so
-// that the attachment can replace a live active announcer.
-func endHold() {
-	time.Sleep(holdTime)
-	synctest.Wait()
-}
-
-// newHarness starts a relay. The options change its router before it serves.
-func newHarness(t *testing.T, ca *testCA, opts ...func(*Router)) *harness {
-	t.Helper()
-	cert, roots := relayCert(t, "relay-1", newKey(t))
-	trust := &fakeTrust{ca: ca}
-	r := NewRouter(trust, Config{})
-	for _, opt := range opts {
-		opt(r)
-	}
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
-	// The relay keeps the RTT of each session and sends the keep-alive of the
-	// liveness check, as a relay host does.
-	tr := &quic.Transport{Conn: udp, ConnContext: TraceContext, NonQUICPacketHandler: r.QUICSocketHandler()}
-	pspUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
-	psp := &quic.Transport{Conn: pspUDP}
-	psp.NonQUICPacketHandler, psp.NonQUICBatchEnd = r.PacketHandler(t.Context(), psp)
-	require.NoError(t, psp.Start())
-	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}),
-		&quic.Config{EnableDatagrams: true, Tracer: TraceRTT, KeepAlivePeriod: AgentKeepAlive})
-	require.NoError(t, err)
-	h := &harness{
-		r: r, trust: trust, nets: &fakeNetworks{}, addrs: &fakeAddresses{},
-		relayRoots: roots, ln: ln, tr: tr, psp: psp, pspAddr: pspUDP.LocalAddr(), mux: rpc.NewMux(),
-	}
-	h.srv = &Server{
-		R: r, Networks: h.nets, Addresses: h.addrs, RelayID: "relay-1",
-		Cert: func() (*tls.Certificate, error) { return cert, nil },
-	}
-	dp.RegisterRelayServer(h.mux, h.srv)
-	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-	wg.Go(func() { _ = h.srv.Serve(ctx, ln) })
-	t.Cleanup(func() {
-		cancel()
-		_ = ln.Close()
-		wg.Wait()
-		_ = tr.Close()
-		_ = psp.Close()
+	e.r, err = relay.NewRouter(relay.Config{
+		Relay:       &dpv1.RelayRef{Id: relayID, Addresses: []string{"192.0.2.1"}},
+		Trust:       e.trust,
+		Addresses:   e.addrs,
+		Target:      lo.Target,
+		LaneSources: 3,
 	})
-	return h
-}
-
-// agent is one agent connection to the relay. Its transport also carries
-// PSP, as on a real agent.
-type agent struct {
-	c   dp.RelayClient
-	qc  quic.Connection
-	tr  *quic.Transport
-	src netip.AddrPort // Source address as the relay sees it.
-	to  net.Addr       // PSP socket of the relay.
-}
-
-// dial connects an agent with cert on ALPN alpn (the relay ALPN if empty).
-func (h *harness) dial(t *testing.T, cert tls.Certificate, alpn ...string) (agent, error) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	// On macOS, replies to a wildcard socket can go to a 127.0.0.1 socket on
-	// the same port.
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
-	tr := &quic.Transport{Conn: udp}
-	t.Cleanup(func() { _ = tr.Close() })
-	// quic-go drops non-QUIC packets until the first ReadNonQUICPacket call.
-	done, stop := context.WithCancel(context.Background())
-	stop()
-	_, _, _ = tr.ReadNonQUICPacket(done, nil)
-	protos := []string{dp.ALPNRelay}
-	if len(alpn) > 0 {
-		protos = alpn
-	}
-	tc := &tls.Config{InsecureSkipVerify: true, NextProtos: protos}
-	if len(cert.Certificate) > 0 {
-		tc.Certificates = []tls.Certificate{cert}
-	}
-	qc, err := tr.Dial(ctx, h.ln.Addr(), tc, &quic.Config{EnableDatagrams: true})
-	if err != nil {
-		return agent{}, err
-	}
-	t.Cleanup(func() { _ = qc.CloseWithError(0, "") })
-	return agent{c: dp.NewRelayClient(rpc.NewConn(qc, nil)), qc: qc, tr: tr, src: netip.MustParseAddrPort(udp.LocalAddr().String()), to: h.pspAddr}, nil
+	e.r.OnAttachmentEnd(func(s relay.AttachmentStats) { e.ends <- s })
+	e.r.AddTenant(project)
+	e.r.AddVPC(vpcKey, relay.Network{ID: netID, Name: "net-a"})
+	runCtx, stopRun := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_ = e.r.Run(runCtx)
+	}()
+
+	cert, err := ca.RelayCert(relayID)
+	require.NoError(t, err)
+	tr := &quic.Transport{Conn: lo.QUIC, ConnContext: relay.TraceContext}
+	ln, err := tr.Listen(e.r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}),
+		&quic.Config{EnableDatagrams: true, Tracer: relay.TraceRTT, KeepAlivePeriod: relay.AgentKeepAlive})
+	require.NoError(t, err)
+	e.srv = &relay.Server{R: e.r}
+	serveCtx, stopServe := context.WithCancel(context.Background())
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = e.srv.Serve(serveCtx, ln)
+	}()
+	t.Cleanup(func() {
+		stopRun()
+		<-runDone
+		_ = ln.Close()
+		stopServe()
+		<-serveDone
+		_ = tr.Close()
+		_ = lo.Close()
+	})
+	return e
 }
 
-func (h *harness) mustDial(t *testing.T, cert tls.Certificate) agent {
+// agent is the agent end of one QUIC connection to the relay.
+type agent struct {
+	t    *testing.T
+	name string
+	qc   quic.Connection
+	rc   dpv1.RelayClient
+	keys p2p.ProbeKeys
+	st   rpc.BidiStreamClient[dpv1.SessionRequest, dpv1.SessionResponse]
+
+	mu      sync.Mutex
+	msgs    []*dpv1.SessionResponse
+	routes  map[string]*dpv1.Route
+	recvErr error
+
+	// PSP state of the agent.
+	probes uint64
+	seq    uint32
+	rxSPI  uint32 // The agent SA, which the relay sends with.
+	rxKey  []byte
+	txSPI  uint32 // The relay SA, which the agent sends with.
+	txKey  []byte
+}
+
+// dial opens a connection with a new cert of agent name in the VPC of the env.
+func (e *env) dial(t *testing.T, name string) *agent {
 	t.Helper()
-	a, err := h.dial(t, cert)
+	a, err := e.dialVPC(t, vpcUID, name)
 	require.NoError(t, err)
 	return a
 }
 
-// requireRefused checks that the relay refused the handshake. In TLS 1.3 the
-// refusal can come after the dial, as a close.
-func requireRefused(t *testing.T, a agent, err error) {
+func (e *env) dialVPC(t *testing.T, vpc, name string) (*agent, error) {
 	t.Helper()
-	if err == nil {
-		select {
-		case <-a.qc.Context().Done():
-		case <-time.After(5 * time.Second):
-			t.Fatal("relay did not refuse the connection in 5 s")
-		}
-		err = context.Cause(a.qc.Context())
-	}
-	var te *quic.TransportError
-	require.ErrorAs(t, err, &te)
-	require.True(t, te.ErrorCode.IsCryptoError(), "error: %v", err)
+	cred, err := e.ca.Credential(project, vpc, name, time.Hour)
+	require.NoError(t, err)
+	return e.dialCred(t, name, cred)
 }
 
-func (h *harness) session(t *testing.T, a agent) *Session {
+func (e *env) dialCred(t *testing.T, name string, cred *identity.Credential) (*agent, error) {
 	t.Helper()
-	var s *Session
-	require.Eventually(t, func() bool {
-		h.r.mu.RLock()
-		defer h.r.mu.RUnlock()
-		for o := range h.r.sessions {
-			if o.remote() == a.src {
-				s = o
+	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	tr := &quic.Transport{Conn: udp}
+	t.Cleanup(func() {
+		_ = tr.Close()
+		_ = udp.Close()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	qc, err := tr.Dial(ctx, e.quic, &tls.Config{
+		Certificates:       []tls.Certificate{*cred.TLSCertificate()},
+		NextProtos:         []string{dpv1.ALPNRelay},
+		InsecureSkipVerify: true,
+	}, &quic.Config{EnableDatagrams: true, KeepAlivePeriod: time.Second})
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() { _ = qc.CloseWithError(0, "") })
+	keys, err := p2p.NewProbeKeys(qc.ConnectionState().TLS)
+	require.NoError(t, err)
+	return &agent{t: t, name: name, qc: qc, rc: dpv1.NewRelayClient(rpc.NewConn(qc, nil)), keys: keys, routes: map[string]*dpv1.Route{}}, nil
+}
+
+func hello(mode dpv1.Mode) *dpv1.Hello {
+	return &dpv1.Hello{Mode: mode, Version: dpv1.LocalVersion("test"), Name: "agent"}
+}
+
+// session runs the Session call with h and returns the first message of the relay. Then a task
+// keeps the next messages.
+func (a *agent) session(h *dpv1.Hello) (*dpv1.SessionResponse, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	a.t.Cleanup(cancel)
+	st, err := a.rc.Session(ctx)
+	require.NoError(a.t, err)
+	require.NoError(a.t, st.Send(&dpv1.SessionRequest{Msg: &dpv1.SessionRequest_Hello{Hello: h}}))
+	m, err := st.Recv()
+	if err != nil {
+		return nil, err
+	}
+	a.st = st
+	go func() {
+		for {
+			m, err := st.Recv()
+			a.mu.Lock()
+			if err != nil {
+				a.recvErr = err
+				a.mu.Unlock()
+				return
+			}
+			a.msgs = append(a.msgs, m)
+			if d := m.GetRouteDelta(); d != nil {
+				for _, r := range d.GetRemove() {
+					delete(a.routes, r.GetPrefix())
+				}
+				for _, r := range d.GetAdd() {
+					a.routes[r.GetPrefix()] = r
+				}
+			}
+			a.mu.Unlock()
+		}
+	}()
+	return m, nil
+}
+
+// open runs the Session call in mode and returns Welcome.
+func (a *agent) open(mode dpv1.Mode) *dpv1.Welcome {
+	a.t.Helper()
+	m, err := a.session(hello(mode))
+	require.NoError(a.t, err)
+	require.NotNil(a.t, m.GetWelcome(), "first message: %v", m)
+	return m.GetWelcome()
+}
+
+// attach attaches the agent with routes and returns the answer.
+func (a *agent) attach(routes ...string) *dpv1.AttachResponse {
+	a.t.Helper()
+	res, err := a.rc.Attach(context.Background(), &dpv1.AttachRequest{Vpc: vpcRef, Name: a.name, Routes: routes})
+	require.NoError(a.t, err)
+	return res
+}
+
+// addr returns the overlay address of an attachment.
+func addr(t *testing.T, res *dpv1.AttachResponse) netip.Addr {
+	t.Helper()
+	require.NotEmpty(t, res.GetAddresses())
+	return relay.OverlayAddr(netip.MustParsePrefix(res.GetAddresses()[0]))
+}
+
+// all returns the messages of the relay that match f.
+func (a *agent) all(f func(*dpv1.SessionResponse) bool) []*dpv1.SessionResponse {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []*dpv1.SessionResponse
+	for _, m := range a.msgs {
+		if f(m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// waitMsg waits for n messages that match f and returns the last one.
+func (a *agent) waitMsg(n int, f func(*dpv1.SessionResponse) bool) *dpv1.SessionResponse {
+	a.t.Helper()
+	var got []*dpv1.SessionResponse
+	require.Eventually(a.t, func() bool {
+		got = a.all(f)
+		return len(got) >= n
+	}, wait, 10*time.Millisecond)
+	return got[len(got)-1]
+}
+
+func (a *agent) route(prefix string) *dpv1.Route {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.routes[prefix]
+}
+
+// waitRoute waits until the route table of the agent has prefix, or not.
+func (a *agent) waitRoute(prefix string, want bool) *dpv1.Route {
+	a.t.Helper()
+	require.Eventually(a.t, func() bool { return (a.route(prefix) != nil) == want }, wait, 10*time.Millisecond, prefix)
+	return a.route(prefix)
+}
+
+// closed waits for the end of the connection and returns the close code and message of the relay.
+func (a *agent) closed() (dpv1.RelayCloseCode, string) {
+	a.t.Helper()
+	select {
+	case <-a.qc.Context().Done():
+	case <-time.After(wait):
+		a.t.Fatal("connection did not close")
+	}
+	var ae *quic.ApplicationError
+	require.ErrorAs(a.t, context.Cause(a.qc.Context()), &ae)
+	return dpv1.RelayCloseCode(ae.ErrorCode), ae.ErrorMessage
+}
+
+// open reports whether the connection is open after d.
+func (a *agent) openAfter(d time.Duration) bool {
+	select {
+	case <-a.qc.Context().Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+// packet returns an IPv6 packet of n bytes from src to dst.
+func packet(src, dst netip.Addr, n int) []byte {
+	b := make([]byte, n)
+	b[0] = 0x60
+	binary.BigEndian.PutUint16(b[4:], uint16(n-40))
+	b[6], b[7] = 17, 64
+	s, d := src.As16(), dst.As16()
+	copy(b[8:], s[:])
+	copy(b[24:], d[:])
+	_, _ = rand.Read(b[40:])
+	return b
+}
+
+// sendFrame sends inner in a data frame on the connection.
+func (a *agent) sendFrame(inner []byte) {
+	a.t.Helper()
+	require.NoError(a.t, a.qc.SendDatagram(peerconn.EncodeData(nil, netID, inner)))
+}
+
+// recvFrame returns the inner packet of the next data frame in d, or nil.
+func (a *agent) recvFrame(d time.Duration) []byte {
+	a.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	b, err := a.qc.ReceiveDatagram(ctx)
+	if err != nil {
+		return nil
+	}
+	vni, inner, err := peerconn.DecodeData(b)
+	require.NoError(a.t, err)
+	require.EqualValues(a.t, netID, vni)
+	return inner
+}
+
+// noFrame checks that no data frame comes in d.
+func (a *agent) noFrame(d time.Duration) {
+	a.t.Helper()
+	if b := a.recvFrame(d); b != nil {
+		a.t.Fatalf("unexpected data frame of %d bytes", len(b))
+	}
+}
+
+// pspSocket returns a new UDP socket for probes and PSP packets.
+func pspSocket(t *testing.T) *net.UDPConn {
+	t.Helper()
+	c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// probe sends a path probe with counter from sock to the data port and returns the source
+// address that the reply saw.
+func (a *agent) probe(e *env, sock *net.UDPConn, counter uint64) netip.AddrPort {
+	a.t.Helper()
+	var txID [12]byte
+	_, _ = rand.Read(txID[:])
+	b := p2p.AppendProbe(nil, p2p.Probe{SID: a.keys.SID, TxID: txID, Counter: counter}, 0, &a.keys.Dialer)
+	_, err := sock.WriteToUDP(b, e.data)
+	require.NoError(a.t, err)
+	buf := make([]byte, 2048)
+	deadline := time.Now().Add(wait)
+	for {
+		require.NoError(a.t, sock.SetReadDeadline(deadline))
+		n, err := sock.Read(buf)
+		require.NoError(a.t, err, "no probe reply")
+		pr, err := p2p.OpenProbe(buf[:n], &a.keys.Listener)
+		if err == nil && pr.Reply && pr.TxID == txID {
+			return pr.Seen
+		}
+	}
+}
+
+// keepPath sends a BFD packet from sock each 500 ms, so that the PSP path check of the relay
+// stays up. It does not move the PSP address.
+func (a *agent) keepPath(e *env, sock *net.UDPConn) {
+	check := p2p.NewCheck(p2p.RoleAgent, time.Second)
+	counter := a.probes
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	a.t.Cleanup(func() {
+		close(stop)
+		<-done
+		check.Close()
+	})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(500 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			b := check.Append(nil, p2p.Probe{SID: a.keys.SID, Counter: counter}, &a.keys.Dialer)
+			_, _ = sock.WriteToUDP(b, e.data)
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
 			}
 		}
-		return s != nil
-	}, 5*time.Second, 5*time.Millisecond)
-	return s
+	}()
 }
 
-// testCounter gives each test probe a larger counter than the one before it.
-var testCounter atomic.Uint64
+// toPSP probes from sock and changes the connection to PSP mode with one agent SA. It returns the
+// relay offer.
+func (a *agent) toPSP(e *env, sock *net.UDPConn, generation uint64) *dpv1.KeysRequest {
+	a.t.Helper()
+	a.probes++
+	seen := a.probe(e, sock, a.probes)
+	require.Equal(a.t, sock.LocalAddr().(*net.UDPAddr).AddrPort(), seen)
+	if a.rxSPI == 0 {
+		a.rxSPI = 0x1001
+	}
+	a.rxKey = make([]byte, 16)
+	_, _ = rand.Read(a.rxKey)
+	before := len(a.all(isRekey))
+	res, err := a.rc.Rekey(context.Background(), offer(a.rxSPI, a.rxKey, netID, generation))
+	require.NoError(a.t, err)
+	require.Empty(a.t, res.GetRefusedSpis())
+	rk := a.waitMsg(before+1, isRekey).GetRekey()
+	sas := rk.GetOffer().GetSas()
+	require.Len(a.t, sas, 1)
+	a.txSPI, a.txKey = sas[0].GetSpi(), sas[0].GetKey()
+	return rk
+}
 
-// probeTo sends one path probe of a to the PSP socket at to, and waits for the
-// reply. The relay then has the socket of a as the PSP address of its session.
-func probeTo(t *testing.T, a agent, to net.Addr) {
-	t.Helper()
-	k, err := p2p.NewProbeKeys(a.qc.ConnectionState().TLS)
-	require.NoError(t, err)
-	_, err = a.tr.WriteTo(p2p.AppendProbe(nil, p2p.Probe{SID: k.SID, Counter: testCounter.Add(1)}, p2p.MinProbeLen, &k.Dialer), to)
-	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func offer(spi uint32, key []byte, vni uint32, generation uint64) *dpv1.KeysRequest {
+	return &dpv1.KeysRequest{
+		Op: &dpv1.KeysRequest_Offer{Offer: &dpv1.OfferSAs{Sas: []*dpv1.SA{{
+			Spi: spi, Key: key, Vni: vni, ExpiresIn: durationpb.New(time.Hour),
+		}}}},
+		Generation: generation,
+	}
+}
+
+func isRekey(m *dpv1.SessionResponse) bool { return m.GetRekey() != nil }
+
+// sendPSP seals inner with the relay SA and sends it from sock to the data port.
+func (a *agent) sendPSP(e *env, sock *net.UDPConn, inner []byte) {
+	a.t.Helper()
+	aead, err := psp.NewAEAD(a.txKey)
+	require.NoError(a.t, err)
+	a.seq++
+	h := psp.Header{Version: psp.AESGCM128, SPI: a.txSPI, IV: uint64(a.seq), VNI: netID, Flags: psp.FlagSeq, Seq: a.seq}
+	out := make([]byte, len(inner)+psp.Overhead)
+	n, err := psp.Seal(aead, h, out, inner)
+	require.NoError(a.t, err)
+	_, err = sock.WriteToUDP(out[:n], e.data)
+	require.NoError(a.t, err)
+}
+
+// recvPSP returns the inner packet of the next PSP packet on sock in d, or nil. It skips the
+// path probes of the relay.
+func (a *agent) recvPSP(sock *net.UDPConn, d time.Duration) []byte {
+	a.t.Helper()
 	buf := make([]byte, 2048)
-	n, _, err := a.tr.ReadNonQUICPacket(ctx, buf)
-	require.NoError(t, err, "no reply to the path probe")
-	_, err = p2p.OpenProbe(buf[:n], &k.Listener)
-	require.NoError(t, err)
+	deadline := time.Now().Add(d)
+	for {
+		require.NoError(a.t, sock.SetReadDeadline(deadline))
+		n, err := sock.Read(buf)
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return nil
+		}
+		require.NoError(a.t, err)
+		if n > 0 && buf[0] == p2p.TypeProbe {
+			continue
+		}
+		h, err := psp.ParseHeader(buf[:n])
+		require.NoError(a.t, err)
+		require.Equal(a.t, a.rxSPI, h.SPI)
+		require.EqualValues(a.t, netID, h.VNI)
+		aead, err := psp.NewAEAD(a.rxKey)
+		require.NoError(a.t, err)
+		inner, err := psp.OpenInPlace(aead, buf[:n])
+		require.NoError(a.t, err)
+		return slices.Clone(inner)
+	}
 }
 
-// offer gives s relay SAs, as the change to PSP mode does, for a test that
-// sets the mode of s itself. It returns nil if the relay has no bridge.
-func (r *Router) offer(s *Session, n Network, now time.Time) (*dp.SessionResponse, error) {
-	br := r.bridge.Load()
-	if br == nil {
-		return nil, nil
+// statsOf returns the stats of attachment id, or nil.
+func (e *env) statsOf(id string) *relay.AttachmentStats {
+	for _, s := range e.r.AttachmentStats() {
+		if s.ID == id {
+			return &s
+		}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s.closed {
-		return nil, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
-	}
-	return r.offerLocked(br, s, n, 0, now)
-}
-
-// addProbed adds s with the address of its QUIC connection as its PSP address,
-// as a path probe from the socket of the connection gives it.
-func (r *Router) addProbed(s *Session, now time.Time) {
-	r.addSession(s, now)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.setAddr(s, s.remote(), now)
-}
-
-// openIn opens the Session call of s and puts s in the data mode mode. It
-// gives s no SAs.
-func (r *Router) openIn(s *Session, mode dp.Mode, ref *dp.VPCRef, hello *dp.Hello) error {
-	if err := r.openSync(s, mode, ref, 1280, hello); err != nil {
-		return err
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	s.sync.mode = mode
 	return nil
 }
 
-// replayStream gives the messages in pending before the next ones of the stream.
-type replayStream struct {
-	syncStream
-	pending []*dp.SessionResponse
-}
-
-func (s *replayStream) Recv() (*dp.SessionResponse, error) {
-	if len(s.pending) > 0 {
-		m := s.pending[0]
-		s.pending = s.pending[1:]
-		return m, nil
-	}
-	return s.syncStream.Recv()
-}
-
-// syncStream is the agent side of a Session call.
-type syncStream = rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
-
-// open starts the Session call of a, changes the session to PSP mode, and
-// returns the stream after Welcome, Config and the relay SAs.
-func open(t *testing.T, a agent) (syncStream, *dp.Welcome, *dp.Config) {
+// waitEnd waits for the final stats of attachment id.
+func (e *env) waitEnd(t *testing.T, id string) relay.AttachmentStats {
 	t.Helper()
-	st, w, c, _ := openMode(t, a, dp.Mode_MODE_PSP)
-	return st, w, c
-}
-
-// openMode starts the Session call of a, for PSP mode with a probe and a Rekey
-// call. It returns the relay SAs; the test gives the agent SAs.
-func openMode(t *testing.T, a agent, mode dp.Mode) (syncStream, *dp.Welcome, *dp.Config, *dp.KeysRequest) {
-	t.Helper()
-	st, err := a.c.Session(context.Background())
-	require.NoError(t, err)
-	require.NoError(t, st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: mode}}}))
-	w, err := st.Recv()
-	require.NoError(t, err)
-	require.NotNil(t, w.GetWelcome(), "first message: %v", w)
-	c, err := st.Recv()
-	require.NoError(t, err)
-	require.NotNil(t, c.GetConfig(), "second message: %v", c)
-	if mode != dp.Mode_MODE_PSP {
-		return st, w.GetWelcome(), c.GetConfig(), nil
-	}
-	probeTo(t, a, a.to)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	first := newPSPReceiver(t, time.Now()).req
-	_, err = a.c.Rekey(ctx, keyproto.ToProto(first))
-	require.NoError(t, err)
-	// The messages before the relay SAs stay for the test.
-	rs := &replayStream{syncStream: st}
-	var k *dp.SessionResponse
+	timeout := time.After(wait)
 	for {
-		k, err = st.Recv()
-		require.NoError(t, err)
-		if k.GetRekey() != nil {
-			break
-		}
-		rs.pending = append(rs.pending, k)
-	}
-	spis := make([]uint32, len(first.SAs))
-	for i, sa := range first.SAs {
-		spis[i] = sa.SPI
-	}
-	_, err = a.c.Rekey(ctx, keyproto.ToProto(keys.Request{Op: keys.OpRevoke, SPIs: spis}))
-	require.NoError(t, err)
-	return rs, w.GetWelcome(), c.GetConfig(), k.GetRekey()
-}
-
-// sayHello starts the Session call of a in QUIC mode, for a test that needs
-// only the Hello that an Attach call needs.
-func sayHello(t *testing.T, a agent) {
-	t.Helper()
-	openMode(t, a, dp.Mode_MODE_QUIC)
-}
-
-// sayHelloAt is sayHello for an agent at the revision rev.
-func sayHelloAt(t *testing.T, a agent, rev uint32) {
-	t.Helper()
-	st := hello(t, a, &dp.Hello{Mode: dp.Mode_MODE_QUIC, Version: &dp.Version{Revision: rev}})
-	w, err := st.Recv()
-	require.NoError(t, err)
-	require.NotNil(t, w.GetWelcome(), "first message: %v", w)
-}
-
-// recv returns the next message of st within 5 s. It skips a RouteDelta with
-// no routes, such as the first one in a VPC with no routes.
-func recv(t *testing.T, st syncStream) *dp.SessionResponse {
-	t.Helper()
-	type res struct {
-		m   *dp.SessionResponse
-		err error
-	}
-	timeout := time.After(5 * time.Second)
-	for {
-		ch := make(chan res, 1)
-		go func() {
-			m, err := st.Recv()
-			ch <- res{m, err}
-		}()
 		select {
-		case r := <-ch:
-			require.NoError(t, r.err)
-			if d := r.m.GetRouteDelta(); d != nil && len(d.Add)+len(d.Remove) == 0 {
-				continue
+		case s := <-e.ends:
+			if s.ID == id {
+				return s
 			}
-			return r.m
 		case <-timeout:
-			t.Fatal("no Sync message in 5 s")
-			return nil
+			t.Fatalf("no end of attachment %s", id)
 		}
 	}
-}
-
-// closeCode waits until qc closes and returns its application error code.
-func closeCode(t *testing.T, qc quic.Connection) quic.ApplicationErrorCode {
-	t.Helper()
-	select {
-	case <-qc.Context().Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("connection did not close in 5 s")
-	}
-	var ae *quic.ApplicationError
-	require.ErrorAs(t, context.Cause(qc.Context()), &ae)
-	return ae.ErrorCode
-}
-
-// admitMember admits s as the session of the member name, as Open does. The
-// member has its PSP socket at its relay address with the PSP port of m, so
-// that a test with no socket of the member knows where the trunk packets go.
-func admitMember(m *Mesh, s *MeshSession, name string, v *dp.Version, ref *dp.RelayRef) error {
-	at := addrPort(s.qc.RemoteAddr())
-	if mem := m.member(name); mem != nil && mem.Addr.IsValid() {
-		at = mem.Addr
-	}
-	if port := m.pspPort(); port != 0 {
-		s.psp = netip.AddrPortFrom(at.Addr(), uint16(port))
-	}
-	return m.admit(s, name, nil, v, ref)
 }

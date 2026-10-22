@@ -3,13 +3,17 @@
 package relay
 
 import (
+	"context"
 	"strconv"
 	"sync"
+	"time"
 
+	p4 "github.com/p4lang/p4runtime/go/p4/v1"
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
+	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 var (
@@ -19,11 +23,11 @@ var (
 	}, []string{"mode", "reason"})
 	sessionVersions = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "apoxy_vpc_relay_session_versions_total",
-		Help: "Agent Session calls, by protocol revision and build of the agent. A build from before revisions has revision 0 and the build unknown.",
+		Help: "Agent Session calls, by protocol revision and build of the agent.",
 	}, []string{"revision", "build"})
 	modeChanges = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "apoxy_vpc_relay_mode_changes_total",
-		Help: "Open agent sessions that changed from QUIC mode to PSP mode.",
+		Help: "Open agent connections that changed from QUIC mode to PSP mode.",
 	})
 	connectSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "apoxy_vpc_relay_connect_seconds",
@@ -39,15 +43,15 @@ func init() {
 const (
 	// maxBuildLabel is the most characters of a build label.
 	maxBuildLabel = 40
-	// maxVersionLabels is the most pairs of revision and build that the session
-	// metric keeps. The other pairs count with the build otherLabel.
+	// maxVersionLabels is the most pairs of revision and build that the session metric keeps. The
+	// other pairs count with the build otherLabel.
 	maxVersionLabels = 64
 	otherLabel       = "other"
 	unknownLabel     = "unknown"
 )
 
-// versionLabelSet limits the label values of sessionVersions. The agent sets
-// the revision and the build, so the relay keeps a fixed number of pairs.
+// versionLabelSet limits the label values of sessionVersions. The agent sets the revision and the
+// build, so the relay keeps a fixed number of pairs.
 type versionLabelSet struct {
 	mu   sync.Mutex
 	seen map[[2]string]struct{}
@@ -55,9 +59,8 @@ type versionLabelSet struct {
 
 var versionLabels versionLabelSet
 
-// of returns the revision and build labels of the agent version v. Nil is
-// revision 0.
-func (l *versionLabelSet) of(v *dp.Version) []string {
+// of returns the revision and build labels of the agent version v.
+func (l *versionLabelSet) of(v *dpv1.Version) []string {
 	pair := [2]string{strconv.FormatUint(uint64(v.GetRevision()), 10), buildLabel(v.GetBuild())}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -72,15 +75,15 @@ func (l *versionLabelSet) of(v *dp.Version) []string {
 		return pair[:]
 	}
 	// The revisions that this relay knows are few, so they keep their label.
-	if v.GetRevision() > dp.Revision {
+	if v.GetRevision() > dpv1.Revision {
 		pair[0] = otherLabel
 	}
 	pair[1] = otherLabel
 	return pair[:]
 }
 
-// buildLabel returns the build string of an agent as a label value. It keeps
-// maxBuildLabel characters, and only letters, digits and "._+-" stay as they are.
+// buildLabel returns the build string of an agent as a label value. It keeps maxBuildLabel
+// characters, and only letters, digits and "._+-" stay as they are.
 func buildLabel(build string) string {
 	if build == "" {
 		return unknownLabel
@@ -97,124 +100,35 @@ func buildLabel(build string) string {
 	return string(b)
 }
 
-// dropReason is a reason that the relay drops a packet.
-type dropReason int
-
-const (
-	dropMalformed dropReason = iota
-	dropUnknownSource
-	dropUnknownSPI
-	dropLaneMeter
-	dropTunnelLimit
-	dropClosed    // The forward goroutines stopped.
-	dropSendQueue // The forward goroutine of the destination is too slow.
-	dropTrunkMTU  // The packet is too large for the trunk to another relay.
-	dropTrunkKeys // The relay has no trunk to another relay now, or no SA of it for a clear packet.
-	dropNotQUIC   // A packet on the QUIC socket that is not QUIC.
-	dropData      // The relay opened a data frame or a PSP packet of an agent and did not send it on.
-	// The reasons below are for a peer frame to or from a mesh member.
-	dropMeshNoSession  // The member of the destination has no open mesh session.
-	dropMeshOldMember  // The member of the destination does not know the frame.
-	dropMeshTooLarge   // The frame does not fit in a datagram of the mesh session.
-	dropMeshMalformed  // The datagram of a member is short or has an unknown type.
-	dropMeshUnknownTag // No entry of the member has the sender tag.
-	dropMeshOldSession // The session of the datagram ended, or only an older session sent the tag.
-	dropMeshSource     // The sender does not have the route of the source address.
-	dropMeshPermit     // Permit denies the destination.
-	dropMeshNotLocal   // No session of this relay has the route of the destination.
-	dropMeshNotSent    // The session of the destination did not take the frame.
-	// The reasons below are for the packet of a sender on another relay.
-	dropTrunkPayload  // The trunk packet of a sender has a PSP packet as payload.
-	dropTrunkNoRow    // The SPI is not of a trunk SA, and the other relay gave no row for it.
-	dropTrunkExpired  // The row of the other relay ended at its time.
-	dropTrunkSender   // No entry from the session of the row or of the trunk SA has the tag in the VPC.
-	dropTrunkPermit   // Permit denies the destination.
-	dropTrunkNotLocal // No session of this relay has the route of the destination.
-	dropTrunkReplay   // The replay window of the trunk SA refused the packet.
-	dropTrunkSource   // No entry with the tag has the route of the inner source address.
-	dropTrunkNotSent  // The session of the destination did not take the inner packet.
-	numDropReasons
-)
-
-// dropLabels are the reason labels of the drop metric.
-var dropLabels = [numDropReasons]string{
-	dropMalformed:      "malformed",
-	dropUnknownSource:  "unknown_source",
-	dropUnknownSPI:     "unknown_spi",
-	dropLaneMeter:      "lane_meter",
-	dropTunnelLimit:    "tunnel_limit",
-	dropClosed:         "closed",
-	dropSendQueue:      "send_queue",
-	dropTrunkMTU:       "trunk_mtu",
-	dropTrunkKeys:      "trunk_keys",
-	dropNotQUIC:        "not_quic",
-	dropData:           "data",
-	dropMeshNoSession:  "mesh_no_session",
-	dropMeshOldMember:  "mesh_old_member",
-	dropMeshTooLarge:   "mesh_too_large",
-	dropMeshMalformed:  "mesh_malformed",
-	dropMeshUnknownTag: "mesh_unknown_tag",
-	dropMeshOldSession: "mesh_old_session",
-	dropMeshSource:     "mesh_source",
-	dropMeshPermit:     "mesh_permit",
-	dropMeshNotLocal:   "mesh_not_local",
-	dropMeshNotSent:    "mesh_not_sent",
-	dropTrunkPayload:   "trunk_payload",
-	dropTrunkNoRow:     "trunk_no_row",
-	dropTrunkExpired:   "trunk_expired",
-	dropTrunkSender:    "trunk_sender",
-	dropTrunkPermit:    "trunk_permit",
-	dropTrunkNotLocal:  "trunk_not_local",
-	dropTrunkReplay:    "trunk_replay",
-	dropTrunkSource:    "trunk_source",
-	dropTrunkNotSent:   "trunk_not_sent",
+// dropLabels are the labels of the drop reasons of the data plane, by reason.
+var dropLabels = map[uint8]string{
+	dp.ReasonOldSession:    "old_session",
+	dp.ReasonNoContext:     "no_context",
+	dp.ReasonSource:        "source",
+	dp.ReasonDemux:         "demux",
+	dp.ReasonUnknownSPI:    "unknown_spi",
+	dp.ReasonUnknownSource: "unknown_source",
+	dp.ReasonMeter:         "meter",
+	dp.ReasonNoRoute:       "no_route",
+	dp.ReasonNoTarget:      "no_target",
+	dp.ReasonTrunkToTrunk:  "trunk_to_trunk",
+	dp.ReasonLocalOnly:     "local_only",
+	dp.ReasonMTU:           "mtu",
+	dp.ReasonNoKeys:        "no_keys",
+	dp.ReasonDatagramFull:  "datagram_full",
+	dp.ReasonNoNeighbor:    "no_neighbor",
+	dp.ReasonPuntFull:      "punt_full",
+	dp.ReasonMalformed:     "malformed",
+	dp.ReasonOpen:          "open",
+	dp.ReasonTXFull:        "tx_full",
+	dp.ReasonQUICFull:      "quic_full",
 }
 
 var dropsDesc = prometheus.NewDesc("apoxy_vpc_relay_dropped_packets_total",
-	"Packets that the relay dropped before it forwarded them, by reason.", []string{"reason"}, nil)
-
-// rowRefusal is what has the SPI of a row in use at the relay of its receiver.
-type rowRefusal int
-
-const (
-	refusedByRow     rowRefusal = iota // Another row to that relay.
-	refusedByTrunkSA                   // A trunk SA that that relay gave.
-	numRowRefusals
-)
-
-var rowRefusalLabels = [numRowRefusals]string{refusedByRow: "row", refusedByTrunkSA: "trunk_sa"}
-
-var refusalsDesc = prometheus.NewDesc("apoxy_vpc_relay_refused_rows_total",
-	"Rows that the relay refused or ended because the relay of the receiver has their SPI in use, by what has the SPI.",
-	[]string{"reason"}, nil)
-
-// socketClass is the class of a PSP packet on the socket path. With an XDP program,
-// these are the packets that the program counts as no_row.
-type socketClass int
-
-const (
-	socketAgentRow    socketClass = iota // Row of an agent, which XDP can forward.
-	socketAgentRelay                     // Row of an agent to the relay, which opens the packet.
-	socketMemberRow                      // Row that a mesh member gave, which XDP can forward.
-	socketMemberTrunk                    // Trunk packet that a mesh member sealed.
-	socketDropped                        // No session or no row for the source and the SPI.
-	numSocketClasses
-)
-
-var socketLabels = [numSocketClasses]string{
-	socketAgentRow:    "agent_row",
-	socketAgentRelay:  "agent_relay",
-	socketMemberRow:   "member_row",
-	socketMemberTrunk: "member_trunk",
-	socketDropped:     "dropped",
-}
-
-var socketDesc = prometheus.NewDesc("apoxy_vpc_relay_socket_packets_total",
-	"PSP packets that the socket path took, by class. The XDP program forwards only the classes agent_row and member_row.",
-	[]string{"class"}, nil)
+	"Packets that the relay data plane dropped, by reason.", []string{"reason"}, nil)
 
 // stateLabel returns the label of an announcer state in logs and metrics.
-func stateLabel(state dp.AnnouncerState) string {
+func stateLabel(state dpv1.AnnouncerState) string {
 	switch state {
 	case stateNormal:
 		return "normal"
@@ -227,90 +141,53 @@ func stateLabel(state dp.AnnouncerState) string {
 }
 
 var stateChangesDesc = prometheus.NewDesc("apoxy_vpc_relay_announcer_state_changes_total",
-	"State changes of the agent sessions of this relay that have routes, by the new state.", []string{"state"}, nil)
-
-var socketDropsDesc = prometheus.NewDesc("apoxy_vpc_relay_socket_receive_drops_total",
-	"Packets that the kernel dropped at the relay socket, for example with a full receive buffer. The relay did not see them.", nil, nil)
-
-var (
-	xdpPacketsDesc = prometheus.NewDesc("apoxy_vpc_relay_xdp_packets_total",
-		"PSP packets that the XDP program forwarded, or gave to the socket path, by result.", []string{"result"}, nil)
-	xdpBytesDesc = prometheus.NewDesc("apoxy_vpc_relay_xdp_forwarded_bytes_total",
-		"UDP payload bytes that the XDP program forwarded.", nil, nil)
-)
+	"State changes of the agent connections of this relay that have routes, by the new state.", []string{"state"}, nil)
 
 var _ prometheus.Collector = (*Router)(nil)
 
 // Describe implements prometheus.Collector.
 func (r *Router) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dropsDesc
-	ch <- refusalsDesc
-	ch <- socketDesc
-	ch <- socketDropsDesc
 	ch <- stateChangesDesc
-	ch <- xdpPacketsDesc
-	ch <- xdpBytesDesc
-	ch <- trunkPacketsDesc
-	ch <- trunkBytesDesc
-	ch <- trunkDropsDesc
-	ch <- meshRTTDesc
 }
 
-// Collect implements prometheus.Collector with the drop counters, the XDP
-// counters, and the counters and the RTT of each mesh member.
+// Collect implements prometheus.Collector with the drop counters of the data plane and the state
+// changes.
 func (r *Router) Collect(ch chan<- prometheus.Metric) {
-	r.collectTrunk(ch)
-	x := r.xdpStatsNow()
-	var drops [numDropReasons]uint64
-	for i := range r.drops {
-		drops[i] = r.drops[i].Load()
-	}
-	drops[dropLaneMeter] += x.laneDrops
-	drops[dropTunnelLimit] += x.tunnelDrops
-	for i, n := range drops {
-		ch <- prometheus.MustNewConstMetric(dropsDesc, prometheus.CounterValue, float64(n), dropLabels[i])
-	}
-	for i := range r.refusals {
-		ch <- prometheus.MustNewConstMetric(refusalsDesc, prometheus.CounterValue, float64(r.refusals[i].Load()), rowRefusalLabels[i])
-	}
-	for i := range r.socket {
-		ch <- prometheus.MustNewConstMetric(socketDesc, prometheus.CounterValue, float64(r.socket[i].Load()), socketLabels[i])
+	drops := map[uint8]uint64{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = r.cfg.Target.Read(ctx, &p4.ReadRequest{Entities: []*p4.Entity{{Entity: &p4.Entity_CounterEntry{CounterEntry: &p4.CounterEntry{
+		CounterId: dp.CounterDrops,
+	}}}}}, func(e *p4.Entity) {
+		ce := e.GetCounterEntry()
+		drops[uint8(ce.GetIndex().GetIndex())] = uint64(ce.GetData().GetPacketCount())
+	})
+	for reason, label := range dropLabels {
+		ch <- prometheus.MustNewConstMetric(dropsDesc, prometheus.CounterValue, float64(drops[reason]), label)
 	}
 	for i := range r.stateChanges {
-		ch <- prometheus.MustNewConstMetric(stateChangesDesc, prometheus.CounterValue, float64(r.stateChanges[i].Load()), stateLabel(dp.AnnouncerState(i)))
+		ch <- prometheus.MustNewConstMetric(stateChangesDesc, prometheus.CounterValue, float64(r.stateChanges[i].Load()), stateLabel(dpv1.AnnouncerState(i)))
 	}
-	if br := r.bridge.Load(); br != nil {
-		// A relay with no socket of its own has no series.
-		if n, ok := socketDrops(br.tr.Conn); ok {
-			ch <- prometheus.MustNewConstMetric(socketDropsDesc, prometheus.CounterValue, float64(n))
-		}
-	}
-	for _, c := range []struct {
-		result string
-		n      uint64
-	}{{"forwarded", x.packets}, {"no_row", x.noRow}, {"expired", x.expired}, {"no_route", x.noRoute}, {"malformed", x.malformed}, {"too_long", x.tooLong}} {
-		ch <- prometheus.MustNewConstMetric(xdpPacketsDesc, prometheus.CounterValue, float64(c.n), c.result)
-	}
-	ch <- prometheus.MustNewConstMetric(xdpBytesDesc, prometheus.CounterValue, float64(x.bytes))
 }
 
-func modeLabel(m dp.Mode) string {
+func modeLabel(m dpv1.Mode) string {
 	switch m {
-	case dp.Mode_MODE_PSP:
+	case dpv1.Mode_MODE_PSP:
 		return "psp"
-	case dp.Mode_MODE_QUIC:
+	case dpv1.Mode_MODE_QUIC:
 		return "quic"
 	}
 	return "unknown"
 }
 
-func reasonLabel(h *dp.Hello) string {
+func reasonLabel(h *dpv1.Hello) string {
 	switch h.GetFallbackReason() {
-	case dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED:
+	case dpv1.FallbackReason_FALLBACK_REASON_UNSPECIFIED:
 		return "none"
-	case dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT:
+	case dpv1.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT:
 		return "probe_timeout"
-	case dp.FallbackReason_FALLBACK_REASON_CONFIG:
+	case dpv1.FallbackReason_FALLBACK_REASON_CONFIG:
 		return "config"
 	}
 	return "unknown"

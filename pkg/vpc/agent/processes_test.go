@@ -101,7 +101,7 @@ func TestProcesses(t *testing.T) {
 			assert.True(t, released.Load(), "Attach returned before its OnAttachment")
 			assert.Equal(t, []string{"attach a-2 " + x.Address.String()}, a.events("a-2"))
 		}},
-		{name: "cancellation before admission", run: func(t *testing.T, w *world, r *testRelay) {
+		{name: "cancellation while calls wait", run: func(t *testing.T, w *world, r *testRelay) {
 			a := w.agent(t, "a", r, agentOptions{})
 			a.attached(t)
 			release := w.addrs.hold("x-")
@@ -109,7 +109,12 @@ func TestProcesses(t *testing.T) {
 			for i := range maxInFlight {
 				go func() { _, _ = a.a.Attach(context.Background(), AttachmentSpec{Name: fmt.Sprintf("x-%d", i)}) }()
 			}
-			require.Eventually(t, func() bool { now, _ := w.addrs.held(); return now == maxInFlight }, 10*time.Second, 10*time.Millisecond)
+			// The relay assigns addresses for one call at a time, so the others wait
+			// in the relay. The agent takes the specs in order, so y comes after them.
+			require.Eventually(t, func() bool {
+				now, _ := w.addrs.held()
+				return now == 1 && len(a.a.Attachments()) == 1+maxInFlight
+			}, 10*time.Second, 10*time.Millisecond)
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
 			start := time.Now()
@@ -117,7 +122,7 @@ func TestProcesses(t *testing.T) {
 			assert.ErrorIs(t, err, context.DeadlineExceeded)
 			assert.Less(t, time.Since(start), time.Second)
 			now, _ := w.addrs.held()
-			assert.Equal(t, maxInFlight, now, "the held calls stay")
+			assert.Equal(t, 1, now, "the held call stays")
 			assert.False(t, slices.ContainsFunc(r.r.AttachmentStats(), func(st relay.AttachmentStats) bool { return st.Name == "y" }), "the relay saw the Attach of y")
 			assert.False(t, slices.ContainsFunc(a.a.Attachments(), func(at Attachment) bool { return at.Name == "y" }))
 		}},

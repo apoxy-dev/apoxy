@@ -58,7 +58,7 @@ type (
 // startExtras starts extra connections 1 to quicConns-1 of a home session in
 // QUIC mode.
 func (s *session) startExtras() {
-	if s.visitor() || !s.attached || len(s.cur) > 0 || s.ending {
+	if !s.attached || len(s.cur) > 0 || s.ending {
 		return
 	}
 	for i := 1; i < quicConns; i++ {

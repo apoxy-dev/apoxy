@@ -113,69 +113,6 @@ func TestPSPPathLost(t *testing.T) {
 	}
 }
 
-// TestVisitPSPPathLost checks an agent with a visit when the PSP path of one
-// of its two sessions stops. The data of the visit stays.
-func TestVisitPSPPathLost(t *testing.T) {
-	retry := [3]time.Duration{0, 400 * time.Millisecond}
-	cases := []struct {
-		name string
-		home bool // The path of the attached session stops, not that of the visit.
-	}{
-		{name: "path of the visitor session"},
-		{name: "path of the attached session", home: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			w, r1, r2 := meshRelays(t)
-			block := &blockConn{relay: r2.psp}
-			if tc.home {
-				block.relay = r1.psp
-			}
-			a := w.agent(t, "a", r1, agentOptions{block: block, visitCheck: time.Hour, pspRetry: retry})
-			ea := a.attached(t)
-			b := w.agent(t, "b", r2, agentOptions{visitCheck: time.Hour})
-			eb := b.attached(t)
-			echo(t, b.stack, eb.addr, 9000)
-			a.hasRoutes(t, eb.prefixes[0])
-			b.hasRoutes(t, ea.prefixes[0])
-			t.Cleanup(cutMesh(r1, r2))
-			waitCut(t, r1, r2)
-			ping(t, a.stack, ea.addr, eb.addr, 9000, "on the visit")
-			require.NotEmpty(t, a.visitRoutes(), "a visits relay-2")
-			home := a.current()
-			same := func(msg string) {
-				t.Helper()
-				sameSession(t, home, a.current(), "%s: relay session of the agent", msg)
-				assert.Equal(t, ea.addr, home.self, "%s: address of the agent", msg)
-				assert.Empty(t, a.attach, "%s: the agent attached again", msg)
-				assert.NotEmpty(t, a.visitRoutes(), "%s: the visit stays", msg)
-			}
-
-			block.out.Store(true)
-			block.in.Store(true)
-			if tc.home {
-				require.Eventually(t, func() bool { return a.a.Status().Mode == dp.Mode_MODE_QUIC }, 15*time.Second, 10*time.Millisecond,
-					"the session did not change to QUIC mode")
-				assert.Equal(t, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT, a.a.Status().Reason)
-			}
-			// The session of the lost path changes to QUIC mode after the BFD detect time.
-			require.Eventually(t, func() bool { return answers(a.stack, ea.addr, eb.addr, 9000) }, 15*time.Second, 10*time.Millisecond,
-				"no data on the visit after the path stopped")
-			same("path lost")
-
-			block.out.Store(false)
-			block.in.Store(false)
-			if tc.home {
-				require.Eventually(t, func() bool { return a.a.Status().Mode == dp.Mode_MODE_PSP }, 45*time.Second, 10*time.Millisecond,
-					"the session did not go back to PSP mode")
-			}
-			ping(t, a.stack, ea.addr, eb.addr, 9000, "on the visit after the return")
-			same("path back")
-		})
-	}
-}
-
 // TestPathSizeLost lowers the path size under a session in PSP mode. The large
 // BFD packets drop, so the session changes to QUIC mode, and then back to PSP
 // mode with the TCP MSS clamp, where BFD stays Up.

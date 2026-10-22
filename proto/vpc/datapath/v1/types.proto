@@ -5,7 +5,6 @@ syntax = "proto3";
 package apoxy.vpc.datapath.v1;
 
 import "google/protobuf/duration.proto";
-import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1";
 
@@ -108,32 +107,4 @@ message SAStats {
 // The sender finds the loss from the changes: 1 - packets / seq.
 message RxReport {
   repeated SAStats sas = 1;
-}
-
-// AttachmentGrant is a relay-signed grant of addresses to an attachment.
-// Peers check it in Open.
-message AttachmentGrant {
-  // Encoded GrantClaims. The signature covers these bytes.
-  bytes claims = 1;
-  // Signature of the relay over claims.
-  bytes signature = 2;
-  // DER cert chain of the relay, leaf first. The leaf key made the signature
-  // and the leaf names relay_id.
-  repeated bytes relay_chain = 3;
-}
-
-// GrantClaims is the signed content of an AttachmentGrant.
-message GrantClaims {
-  VPCRef vpc = 1;
-  string attachment_id = 2;
-  // SPIFFE ID in the certificate of the agent.
-  string subject = 3;
-  // Overlay prefixes of the attachment.
-  repeated string addresses = 4;
-  // Relay that signed the grant.
-  string relay_id = 5;
-  google.protobuf.Timestamp not_after = 6;
-  // Oldest revision that can check the grant. A verifier with a lower
-  // revision refuses the grant.
-  uint32 min_revision = 7;
 }

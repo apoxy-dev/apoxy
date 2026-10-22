@@ -12,22 +12,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
-// Networks is a relay.Networks with one VPC.
-type Networks struct {
-	Project, VPC string
-	Net          relay.Network
-}
-
-var _ relay.Networks = Networks{}
-
-// Network returns Net, or an error for other VPCs.
-func (n Networks) Network(project, uid string) (relay.Network, error) {
-	if project != n.Project || uid != n.VPC {
-		return relay.Network{}, fmt.Errorf("unknown VPC %s/%s", project, uid)
-	}
-	return n.Net, nil
-}
-
 // Addresses is a relay.Addresses that gives each attachment the next /96 in
 // the VPC network fd61:706f:7879:12:3400::/72, and counts the live
 // attachments of each agent.

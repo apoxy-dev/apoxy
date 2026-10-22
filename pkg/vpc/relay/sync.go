@@ -5,341 +5,197 @@ package relay
 import (
 	"cmp"
 	"context"
-	"errors"
-	"io"
-	"log/slog"
 	"net/netip"
 	"slices"
-	"time"
+	"sync"
+
+	"google.golang.org/protobuf/proto"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
+	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 const (
-	// maxSyncQueue limits the messages that wait for the Session call.
+	// maxSyncQueue limits the messages that wait for the Session stream.
 	maxSyncQueue = 4096
-	// noRouteInterval is the minimum time between NoRoute messages for an address.
-	noRouteInterval = time.Second
+	// maxDeltaRoutes and maxDeltaBytes limit one RouteDelta. All changes of one prefix are in one
+	// RouteDelta, so a part can be larger.
+	maxDeltaRoutes = 256
+	maxDeltaBytes  = 1 << 20
 )
 
-// syncState is what the relay still has to send to the agent on Sync.
-type syncState struct {
-	open   bool           // A Session call runs.
-	mode   dp.Mode        // QUIC at Hello. A Rekey call changes it to PSP, and a lost PSP path to QUIC.
-	hello  dp.Mode        // The mode of Hello, for the metrics.
-	ref    *dp.VPCRef     // VPC of the session, with the network ID.
-	mtu    uint32         // MTU of the VPC at Hello, for the relay SAs.
-	routes map[route]bool // Route changes: true adds, false removes.
-	// standby has the prefixes whose route stays and whose standby list changed.
-	standby map[netip.Prefix]struct{}
-	out     []*dp.SessionResponse
-	noRoute map[netip.Addr]time.Time // Last NoRoute for each address.
-	rev     uint64                   // Revision of the last RouteDelta.
-	acked   uint64
+// sessionStream is the relay side of a Session call.
+type sessionStream = rpc.BidiStreamServer[dpv1.SessionRequest, dpv1.SessionResponse]
+
+// outbox has the messages for the agent that wait for the stream writer of A, apart from the
+// routes. A puts them in, and the writer takes them.
+type outbox struct {
+	mu      sync.Mutex
+	msgs    []*dpv1.SessionResponse
+	report  *dpv1.RxReport
 	dropped uint64
-	// connected is true after the agent reports its time to connect.
-	connected bool
-	// report is the last receive report of the relay SAs. A new one replaces it.
-	report *dp.RxReport
-	// meshRoutes is true when the agent gets the routes of the attachments of
-	// other relays: its revision has them, and its Hello did not refuse them.
-	meshRoutes bool
+	sig     chan struct{}
 }
 
-// queueRoute adds a change of the route rt to the sync queue. A change cancels
-// the opposite change. Router.mu must be held.
-func (s *Session) queueRoute(rt route, add bool) {
-	if was, ok := s.sync.routes[rt]; ok && was != add {
-		delete(s.sync.routes, rt)
-	} else {
-		s.sync.routes[rt] = add
+func newOutbox() *outbox { return &outbox{sig: make(chan struct{}, 1)} }
+
+// queue adds m. It reports false when the queue is full; then m drops.
+func (o *outbox) queue(m *dpv1.SessionResponse) bool {
+	o.mu.Lock()
+	if len(o.msgs) >= maxSyncQueue {
+		o.dropped++
+		o.mu.Unlock()
+		return false
 	}
-	s.notify()
+	o.msgs = append(o.msgs, m)
+	o.mu.Unlock()
+	o.poke()
+	return true
 }
 
-// queue adds m to the sync queue. Router.mu must be held.
-func (s *Session) queue(m *dp.SessionResponse) {
-	if len(s.sync.out) >= maxSyncQueue {
-		s.sync.dropped++
-		return
-	}
-	s.sync.out = append(s.sync.out, m)
-	s.notify()
+// room reports whether the queue can take one more message.
+func (o *outbox) room() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.msgs) < maxSyncQueue
 }
 
-func (s *Session) notify() {
+// setReport makes r the next receive report. A newer one replaces it.
+func (o *outbox) setReport(r *dpv1.RxReport) {
+	o.mu.Lock()
+	o.report = r
+	o.mu.Unlock()
+	o.poke()
+}
+
+func (o *outbox) poke() {
 	select {
-	case s.wake <- struct{}{}:
+	case o.sig <- struct{}{}:
 	default:
 	}
 }
 
-// noRoute tells s that the relay cannot reach dst, with the relay to visit if s
-// must visit one. home is the member that has the route of dst, or "".
-func (r *Router) noRoute(s *Session, dst netip.Addr, home string, now time.Time) {
-	visit, ok := r.noRouteVisit(s, dst, home, now)
-	if !ok {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s.closed || s.sync.ref == nil || now.Sub(s.sync.noRoute[dst]) < noRouteInterval {
-		return
-	}
-	s.sync.noRoute[dst] = now
-	s.queue(&dp.SessionResponse{Msg: &dp.SessionResponse_NoRoute{NoRoute: &dp.NoRoute{Vpc: s.sync.ref, Address: dst.String(), HomeRelay: visit}}})
+func (o *outbox) take() ([]*dpv1.SessionResponse, *dpv1.RxReport) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	msgs, rep := o.msgs, o.report
+	o.msgs, o.report = nil, nil
+	return msgs, rep
 }
 
-// noRouteVisit reports whether s gets a NoRoute for dst now, and the relay that s
-// must visit, or nil. It runs for each dropped packet, so it takes no write lock.
-func (r *Router) noRouteVisit(s *Session, dst netip.Addr, home string, now time.Time) (*dp.RelayRef, bool) {
-	// The address has a route. Its sender gets a NoRoute only to visit a member.
-	if t := r.trunk.Load(); home != "" && (t == nil || t.m.awayRef(home) == nil) {
-		return nil, false
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if now.Sub(s.sync.noRoute[dst]) < noRouteInterval {
-		return nil, false
-	}
-	// A sender that Permit denies does not learn the home of the address.
-	if home == "" && !r.permit(s.id.VPC, s.id.ID, s.id.VPC, dst) {
-		return nil, true
-	}
-	visit := r.visitRef(s, s.id.VPC, dst, home)
-	return visit, home == "" || visit != nil
+// writer is the stream writer task of A. It sends the route changes, in parts, from the route
+// table value of A, then the queued messages.
+type writer struct {
+	st     sessionStream
+	values *valueMap // The down map of A, with the route table.
+	s      session
+	out    *outbox
+	sent   map[netip.Prefix]*dpv1.Route
+	rev    uint64
 }
 
-// sweepNoRoute forgets old NoRoute times. Router.mu must be held.
-func (s *Session) sweepNoRoute(now time.Time) {
-	for a, t := range s.sync.noRoute {
-		if now.Sub(t) >= noRouteInterval {
-			delete(s.sync.noRoute, a)
+// run sends head, then the changes at each poke, until ctx ends or a send fails.
+func (w *writer) run(ctx context.Context, head []*dpv1.SessionResponse) error {
+	for _, m := range head {
+		if err := w.st.Send(m); err != nil {
+			return err
 		}
 	}
-}
-
-// takeSync returns the messages that wait for the agent, with the route changes
-// as one RouteDelta. The first one comes also with no routes.
-func (r *Router) takeSync(s *Session) []*dp.SessionResponse {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var msgs []*dp.SessionResponse
-	dom := r.domains[s.id.VPC]
-	// A route with a new standby list comes again as an add.
-	for p := range s.sync.standby {
-		if e := s.sees(dom.orderOf(p)); e != nil {
-			s.sync.routes[route{p, e.origin}] = true
-		}
-	}
-	clear(s.sync.standby)
-	if len(s.sync.routes) > 0 || s.sync.rev == 0 {
-		s.sync.rev++
-		d := &dp.RouteDelta{Rev: s.sync.rev}
-		for rt, add := range s.sync.routes {
-			m := &dp.Route{Vpc: s.sync.ref, Prefix: rt.prefix.String(), Origin: rt.origin}
-			if add {
-				// An agent of an older revision gets one announcer for each prefix.
-				if s.version.GetRevision() >= announcerRevision {
-					m.Standby = s.standby(dom.orderOf(rt.prefix))
-				}
-				d.Add = append(d.Add, m)
-			} else {
-				d.Remove = append(d.Remove, m)
-			}
-		}
-		sortRoutes(d.Add)
-		sortRoutes(d.Remove)
-		clear(s.sync.routes)
-		msgs = append(msgs, &dp.SessionResponse{Msg: &dp.SessionResponse_RouteDelta{RouteDelta: d}})
-	}
-	msgs = append(msgs, s.sync.out...)
-	s.sync.out = nil
-	if s.sync.report != nil {
-		msgs = append(msgs, &dp.SessionResponse{Msg: &dp.SessionResponse_RxReport{RxReport: s.sync.report}})
-		s.sync.report = nil
-	}
-	return msgs
-}
-
-func sortRoutes(rs []*dp.Route) {
-	slices.SortFunc(rs, func(a, b *dp.Route) int {
-		return cmp.Or(cmp.Compare(a.Prefix, b.Prefix), cmp.Compare(a.Origin, b.Origin))
-	})
-}
-
-// Session runs the Sync of a relay session: Hello, Welcome, Config, relay SAs,
-// routes, NoRoute and Drain to the agent, and Ack and Status from it.
-func (srv *Server) Session(ctx context.Context, st rpc.BidiStreamServer[dp.SessionRequest, dp.SessionResponse]) (err error) {
-	s, err := srv.R.caller(ctx)
-	if err != nil {
-		return err
-	}
-	first, err := st.Recv()
-	if err != nil {
-		return err
-	}
-	hello := first.GetHello()
-	if hello == nil {
-		return rpc.Errorf(rpc.InvalidArgument, "first message is not Hello")
-	}
-	if err := srv.R.checkRevision(s, hello.GetVersion()); err != nil {
-		return err
-	}
-	if sh := hello.GetShard(); sh != nil {
-		return srv.serveShard(ctx, s, sh, st)
-	}
-	mode := hello.GetMode()
-	if mode != dp.Mode_MODE_PSP && mode != dp.Mode_MODE_QUIC {
-		return rpc.Errorf(rpc.InvalidArgument, "Hello needs a mode")
-	}
-	n, err := srv.network(s.id.VPC)
-	if err != nil {
-		return err
-	}
-	ref := &dp.VPCRef{ProjectId: s.id.VPC.Project, VpcUid: s.id.VPC.UID, NetworkId: n.ID}
-	if err := srv.R.openSync(s, mode, ref, n.MTU, hello); err != nil {
-		return err
-	}
-	sessionsTotal.WithLabelValues(modeLabel(mode), reasonLabel(hello)).Inc()
-	sessionVersions.WithLabelValues(versionLabels.of(hello.GetVersion())...).Inc()
-	// The session ends with the call. The close carries the error.
-	defer func() {
-		msg := "Session call ended"
-		if err != nil {
-			msg = err.Error()
-		}
-		s.close(dp.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, msg)
-	}()
-	if err := st.Send(&dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{
-		ReflexiveAddress: s.remote().String(),
-		MaxLanes:         uint32(srv.R.cfg.LaneSources),
-		Version:          srv.R.ver,
-		// The host stays empty: the agent sends to the host that it dialed.
-		PspPort: srv.R.pspPort(),
-	}}}); err != nil {
-		return err
-	}
-	if err := st.Send(&dp.SessionResponse{Msg: &dp.SessionResponse_Config{Config: &dp.Config{
-		Vpc:              ref,
-		Mtu:              n.MTU,
-		DnsServers:       n.DNSServers,
-		DnsSearchDomains: n.DNSSearchDomains,
-	}}}); err != nil {
-		return err
-	}
-
-	recvDone := make(chan error, 1)
-	go func() { recvDone <- srv.R.recvSync(s, st) }()
+	w.out.poke()
 	for {
 		select {
-		case err := <-recvDone:
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-s.wake:
-			for _, m := range srv.R.takeSync(s) {
-				if err := st.Send(m); err != nil {
-					return err
-				}
+		case <-w.out.sig:
+		}
+		for _, m := range w.take() {
+			if err := w.st.Send(m); err != nil {
+				return err
 			}
 		}
 	}
 }
 
-// openSync marks the Session call of s as open, and gives s the agent name
-// and the instance of its Hello. A session has at most one Session call.
-func (r *Router) openSync(s *Session, mode dp.Mode, ref *dp.VPCRef, mtu uint32, hello *dp.Hello) error {
-	refused, err := r.startSync(s, mode, ref, mtu, hello)
-	if refused > 0 {
-		slog.Warn("Refused attachments of other relays with another network ID", "project", s.id.VPC.Project,
-			"vpc", s.id.VPC.UID, "network_id", ref.GetNetworkId(), "count", refused)
+// take returns the messages that wait: the route changes as RouteDelta parts, then the queued
+// messages and the receive report. The first take sends one more RouteDelta with no routes, which
+// ends the first table.
+func (w *writer) take() []*dpv1.SessionResponse {
+	first := w.rev == 0
+	var out []*dpv1.SessionResponse
+	for _, d := range w.parts(load[*routeTable](w.values, keyRoutes).view(w.s)) {
+		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RouteDelta{RouteDelta: d}})
 	}
-	return err
-}
-
-// startSync does the work of openSync. It returns the number of attachments
-// of other relays that have another network ID than ref.
-func (r *Router) startSync(s *Session, mode dp.Mode, ref *dp.VPCRef, mtu uint32, hello *dp.Hello) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s.closed {
-		return 0, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
-	}
-	if s.sync.open {
-		return 0, rpc.Errorf(rpc.FailedPrecondition, "session already has a Session call")
-	}
-	// Each session starts in QUIC mode. A Rekey call changes it to PSP.
-	s.sync.open, s.sync.mode, s.sync.hello, s.sync.ref, s.sync.mtu = true, dp.Mode_MODE_QUIC, mode, ref, mtu
-	s.name, s.instance = hello.GetName(), hello.GetInstance()
-	s.sync.meshRoutes = s.version.GetRevision() >= meshRoutesRevision && !hello.GetLocalRoutesOnly()
-	d := r.domain(s.id.VPC)
-	// The relay knows the network ID of the VPC from here on.
-	refused := r.know(d, ref.GetNetworkId())
-	// The routes that s gets depend on its agent and on meshRoutes, so its
-	// queue starts again with the values of the Hello.
-	d.queueRoutes(s)
-	r.takeSource(s)
-	return refused, nil
-}
-
-// hasHello reports whether the relay accepted the Hello of s. It stays true.
-func (r *Router) hasHello(s *Session) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return s.sync.open
-}
-
-func (r *Router) recvSync(s *Session, st rpc.BidiStreamServer[dp.SessionRequest, dp.SessionResponse]) error {
-	for {
-		m, err := st.Recv()
-		if err != nil {
-			return err
-		}
-		switch m := m.GetMsg().(type) {
-		case *dp.SessionRequest_Ack:
-			r.mu.Lock()
-			if m.Ack.GetRev() <= s.sync.rev {
-				s.sync.acked = max(s.sync.acked, m.Ack.GetRev())
-			}
-			r.mu.Unlock()
-		case *dp.SessionRequest_Status:
-			if d := m.Status.GetConnectTime(); d != nil {
-				r.reportConnect(s, d.AsDuration())
-			}
-			r.ReportStatus(s, m.Status)
-		case nil:
-			slog.Debug("Ignoring an unknown message on a Session call", "agent", s.id.ID)
-		default:
-			return rpc.Errorf(rpc.InvalidArgument, "unexpected message on Session")
-		}
-	}
-}
-
-// reportConnect records the time to connect of s. Only the first one counts.
-func (r *Router) reportConnect(s *Session, d time.Duration) {
-	r.mu.Lock()
-	first := !s.sync.connected
-	s.sync.connected = true
-	mode := s.sync.hello
-	r.mu.Unlock()
 	if first {
-		connectSeconds.WithLabelValues(modeLabel(mode)).Observe(d.Seconds())
+		w.rev++
+		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RouteDelta{RouteDelta: &dpv1.RouteDelta{Rev: w.rev}}})
 	}
+	msgs, rep := w.out.take()
+	out = append(out, msgs...)
+	if rep != nil {
+		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RxReport{RxReport: rep}})
+	}
+	return out
 }
 
-// SyncStats are the Sync counters of one session.
-type SyncStats struct {
-	Rev, Acked uint64
-	Dropped    uint64
+// change is the change of the route of one prefix.
+type change struct {
+	prefix      netip.Prefix
+	remove, add *dpv1.Route
 }
 
-func (r *Router) SyncStats(s *Session) SyncStats {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return SyncStats{Rev: s.sync.rev, Acked: s.sync.acked, Dropped: s.sync.dropped}
+// parts returns the changes from the routes that the agent has to want, in RouteDeltas. A part
+// closes before the changes of a prefix that would take it above maxDeltaRoutes routes or
+// maxDeltaBytes bytes.
+func (w *writer) parts(want map[netip.Prefix]*dpv1.Route) []*dpv1.RouteDelta {
+	if w.sent == nil {
+		w.sent = map[netip.Prefix]*dpv1.Route{}
+	}
+	var changes []change
+	for p, r := range want {
+		switch old := w.sent[p]; {
+		case old == nil:
+			changes = append(changes, change{prefix: p, add: r})
+		case old.GetOrigin() != r.GetOrigin():
+			changes = append(changes, change{prefix: p, remove: old, add: r})
+		case !proto.Equal(old, r):
+			// The route stays, with a new standby list or relay.
+			changes = append(changes, change{prefix: p, add: r})
+		}
+	}
+	for p, old := range w.sent {
+		if want[p] == nil {
+			changes = append(changes, change{prefix: p, remove: old})
+		}
+	}
+	slices.SortFunc(changes, func(a, b change) int {
+		return cmp.Or(a.prefix.Addr().Compare(b.prefix.Addr()), cmp.Compare(a.prefix.Bits(), b.prefix.Bits()))
+	})
+	var out []*dpv1.RouteDelta
+	var cur *dpv1.RouteDelta
+	n, size := 0, 0
+	for _, c := range changes {
+		cn, csize := 0, 0
+		for _, r := range []*dpv1.Route{c.remove, c.add} {
+			if r != nil {
+				cn++
+				csize += proto.Size(r)
+			}
+		}
+		if cur == nil || (n > 0 && (n+cn > maxDeltaRoutes || size+csize > maxDeltaBytes)) {
+			w.rev++
+			cur = &dpv1.RouteDelta{Rev: w.rev}
+			out = append(out, cur)
+			n, size = 0, 0
+		}
+		if c.remove != nil {
+			cur.Remove = append(cur.Remove, c.remove)
+			delete(w.sent, c.prefix)
+		}
+		if c.add != nil {
+			cur.Add = append(cur.Add, c.add)
+			w.sent[c.prefix] = c.add
+		}
+		n, size = n+cn, size+csize
+	}
+	return out
 }

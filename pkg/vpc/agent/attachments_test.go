@@ -136,8 +136,9 @@ func TestReadsOutsideRun(t *testing.T) {
 	}
 }
 
-// TestAttachInFlight checks that at most maxInFlight Attach calls of extra
-// attachments run at once on a relay session, and that all of them end.
+// TestAttachInFlight checks that many Attach calls of extra attachments on a
+// relay session all end while the relay holds the address source. The relay
+// calls the address source one attachment at a time.
 func TestAttachInFlight(t *testing.T) {
 	w := newWorld(t)
 	r := w.relay(t, "relay-1")
@@ -156,16 +157,15 @@ func TestAttachInFlight(t *testing.T) {
 	}
 	require.Eventually(t, func() bool {
 		now, _ := w.addrs.held()
-		return now == maxInFlight
+		return now == 1
 	}, 5*time.Second, 10*time.Millisecond)
-	// With no limit, all calls get to the relay in this time.
 	time.Sleep(200 * time.Millisecond)
 	release()
 	for range n {
 		require.NoError(t, <-errs)
 	}
 	_, most := w.addrs.held()
-	assert.Equal(t, maxInFlight, most)
+	assert.Equal(t, 1, most)
 	assert.Len(t, a.a.Attachments(), n+1)
 }
 

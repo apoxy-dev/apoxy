@@ -15,8 +15,7 @@ import (
 )
 
 // The messages between the processes of the agent. A message up from a session
-// names the home session that gives it to the root in s; a home session sets
-// s when it forwards a message of its visitor session.
+// names the session in s.
 
 // endMsg is the last message from a parent to a child: the child ends.
 type endMsg struct{}
@@ -66,10 +65,6 @@ type (
 		refused []uint32
 		err     error
 	}
-	// homesMsg has the relays of the home sessions. A session visits none of them.
-	homesMsg struct{ keys map[string]bool }
-	// endVisit ends the visit of a relay: the agent attached to it.
-	endVisit struct{ key string }
 )
 
 // A session to its parent.
@@ -106,14 +101,6 @@ type (
 		delta       bool
 		rev         uint64
 	}
-	visitorPeer struct {
-		s    *session
-		peer *psp.Peer
-	}
-	visitorGone struct {
-		s    *session
-		peer *psp.Peer
-	}
 	reportMsg struct {
 		s    *session
 		peer *psp.Peer
@@ -135,11 +122,6 @@ type (
 		peer    *psp.Peer
 		attempt uint64
 		req     keys.Request
-	}
-	// linkRoutes has the routes of the visits of a home session.
-	linkRoutes struct {
-		s      *session
-		routes []Route
 	}
 	// attachedX is the result of an attachX.
 	attachedX struct {

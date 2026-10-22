@@ -13,10 +13,8 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -150,42 +148,6 @@ func TestRelayRevisions(t *testing.T) {
 	}
 }
 
-// TestAttachGrant checks the attach errors for a grant that the agent refuses.
-// A grant that needs a newer revision gives an ErrUpgrade.
-func TestAttachGrant(t *testing.T) {
-	cases := []struct {
-		name    string
-		claims  func(*dp.GrantClaims)
-		upgrade bool
-		want    string
-	}{
-		{
-			name:    "grant needs a newer revision",
-			claims:  func(c *dp.GrantClaims) { c.MinRevision = dp.Revision + 1 },
-			upgrade: true,
-			want:    fmt.Sprintf("relay 192.0.2.1:443: grant needs a newer protocol revision: the grant needs revision %d, and the verifier has revision %d", dp.Revision+1, dp.Revision),
-		},
-		{
-			name:   "grant ended",
-			claims: func(c *dp.GrantClaims) { c.NotAfter = timestamppb.New(time.Now().Add(-time.Minute)) },
-			want:   "grant has ended",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			const addr = "192.0.2.1:443"
-			w := newWorld(t)
-			grant := extraGrant(t, w.relayCA.relayCert(t, "relay-1"), "a", "attachment-a", "fd00:a::/96", tc.claims)
-			_, err := verifyOwn(addr, w.relayCA.Pool(), grant)
-			err = relayUpgrade(addr, err)
-			require.ErrorContains(t, err, tc.want)
-			var ue *upgradeError
-			assert.Equal(t, tc.upgrade, errors.As(err, &ue), "error: %v", err)
-			assert.Equal(t, tc.upgrade, errors.Is(err, ErrUpgrade), "error: %v", err)
-		})
-	}
-}
-
 func TestRelayUpgrade(t *testing.T) {
 	const addr = "192.0.2.1:443"
 	upgrade := quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE)
@@ -206,12 +168,7 @@ func TestRelayUpgrade(t *testing.T) {
 		{name: "local close UPGRADE", err: &quic.ApplicationError{ErrorCode: upgrade, ErrorMessage: reason}},
 		{name: "remote close DRAIN", err: &quic.ApplicationError{Remote: true, ErrorCode: drain}},
 		{name: "status FailedPrecondition", err: rpc.Errorf(rpc.FailedPrecondition, "%s", reason)},
-		{
-			name: "grant needs a newer revision",
-			err:  fmt.Errorf("%w: the grant needs revision 2, and the verifier has revision 1", relay.ErrGrantRevision),
-			want: "agent needs an upgrade: relay 192.0.2.1:443: grant needs a newer protocol revision: the grant needs revision 2, and the verifier has revision 1",
-		},
-		{name: "other grant error", err: errors.New("grant has ended")},
+		{name: "other error", err: errors.New("attach: deadline exceeded")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

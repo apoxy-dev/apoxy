@@ -16,14 +16,12 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
 // mark is the counters of one side at one time. Each side sets its fields.
 type mark struct {
 	Nanos int64 `json:"nanos"` // Time since the side started.
-	// CPU is the CPU time of the process, and of the relay XDP program. The
-	// kernel work around the program is not in it.
+	// CPU is the CPU time of the process.
 	CPU float64 `json:"cpu_s"`
 	// HostCPU is the busy CPU time of the host of the side, or -1.
 	HostCPU float64 `json:"host_cpu_s,omitempty"`
@@ -47,22 +45,8 @@ type mark struct {
 	// LinkDrops are the packets that the overlay of the client or the server
 	// dropped before its driver got them, or -1.
 	LinkDrops int64 `json:"link_drops,omitempty"`
-	// XDPPackets are the PSP packets that the relay forwarded in XDP.
-	XDPPackets uint64 `json:"xdp_packets,omitempty"`
-	// XDPPassed are the PSP packets that the XDP program gave to the socket path, by result.
-	XDPPassed map[string]uint64 `json:"xdp_passed,omitempty"`
-	// XDPSeconds is the run time of the XDP program, and XDPMode its attach mode.
-	XDPSeconds float64 `json:"xdp_s,omitempty"`
-	XDPMode    string  `json:"xdp_mode,omitempty"`
-	// Trunk are the packets between a relay and the other relays of its mesh. It
-	// is nil for a relay with no mesh.
-	Trunk *trunkCount `json:"trunk,omitempty"`
-	// Socket are the PSP packets that the socket path of a relay took, by class.
-	Socket map[string]uint64 `json:"socket,omitempty"`
 	// TCP are the loss recovery counters of the TCP stack of an agent.
 	TCP map[string]uint64 `json:"tcp,omitempty"`
-	// Sends are the sendmmsg counters of the relay socket path.
-	Sends relay.ForwardStats `json:"sends,omitzero"`
 	// CPUs are the ticks of each CPU of the host of the side.
 	CPUs []bench.CPUTicks `json:"cpus,omitempty"`
 	// Queue is the bytes in the queues of the agent socket and the lane sockets
@@ -73,15 +57,6 @@ type mark struct {
 	// RxLanes are the PSP packets that the side read on the agent socket and on
 	// each lane socket.
 	RxLanes []uint64 `json:"rx_lanes,omitempty"`
-}
-
-// trunkCount are the packets of agents that a relay sent to the other relays of
-// its mesh (tx), got from them and sent on (rx), and the packets of the trunks
-// that it dropped.
-type trunkCount struct {
-	TxPackets uint64 `json:"tx_packets"`
-	RxPackets uint64 `json:"rx_packets"`
-	Drops     uint64 `json:"drops"`
 }
 
 // sockQueue is the mean and the most bytes in the receive queue of a socket,
@@ -311,25 +286,6 @@ type result struct {
 	// RelayDropReasons are the drops of the relay in the measured window that
 	// are not 0, by reason. RelayDrops is their sum.
 	RelayDropReasons map[string]uint64 `json:"relay_drop_reasons,omitempty"`
-	// RelayXDPPackets are the PSP packets that the relay forwarded in XDP in
-	// the measured window.
-	RelayXDPPackets uint64 `json:"relay_xdp_packets"`
-	// RelayXDPPassed are the PSP packets that the XDP program gave to the socket
-	// path in the measured window, by result.
-	RelayXDPPassed map[string]uint64 `json:"relay_xdp_passed,omitempty"`
-	// RelayXDPSeconds is the run time of the XDP program in the measured window.
-	// RelayCores includes it. RelayXDPMode is the attach mode: driver or generic.
-	RelayXDPSeconds float64 `json:"relay_xdp_seconds"`
-	RelayXDPMode    string  `json:"relay_xdp_mode,omitempty"`
-	// The sendmmsg calls of the relay socket path in the measured window, their
-	// messages and their packets. A message is one packet or one GSO message.
-	RelaySendCalls    uint64 `json:"relay_send_calls"`
-	RelaySendMessages uint64 `json:"relay_send_messages"`
-	RelaySendPackets  uint64 `json:"relay_send_packets"`
-
-	// Relays are the two relays of a run with two relays: the relay of the client,
-	// then the relay of the server. The relay_ fields are of the relay of the client.
-	Relays []relayPart `json:"relays,omitempty"`
 	// ClientTCP and ServerTCP are the loss recovery counters of the TCP stack of
 	// each agent in the window. dsack are segments that the peer got two times.
 	ClientTCP map[string]uint64 `json:"client_tcp,omitempty"`
@@ -341,60 +297,6 @@ type result struct {
 	FlowStartUnixMS   int64 `json:"flow_start_unix_ms"`
 	WindowStartUnixMS int64 `json:"window_start_unix_ms"`
 	WindowEndUnixMS   int64 `json:"window_end_unix_ms"`
-}
-
-// relayPart is one relay of a run with two relays in the measured window.
-type relayPart struct {
-	// Of is the agent of the relay: client or server.
-	Of        string  `json:"of"`
-	Cores     float64 `json:"cores"`
-	HostCores float64 `json:"host_cores"`
-	Drops     uint64  `json:"drops"`
-	// DropReasons are the drops that are not 0, by reason.
-	DropReasons map[string]uint64 `json:"drop_reasons,omitempty"`
-	XDPMode     string            `json:"xdp_mode,omitempty"`
-	// SocketPackets are the PSP packets that the socket path took, by class, and
-	// SockDrops the datagrams that the relay socket dropped, or -1.
-	SocketPackets map[string]uint64 `json:"socket_packets,omitempty"`
-	SockDrops     int64             `json:"sock_drops"`
-	// TopCPUs are the busiest CPUs of the relay host and HostCPU its CPU time by kind.
-	TopCPUs []cpuUse  `json:"top_cpus,omitempty"`
-	HostCPU *cpuKinds `json:"host_cpu,omitempty"`
-	// Start and End are the counters at the start and at the end of the window.
-	Start relayCount `json:"start"`
-	End   relayCount `json:"end"`
-}
-
-// relayCount are the XDP and trunk counters of a relay at one time.
-type relayCount struct {
-	// XDPForwarded are the PSP packets that the XDP program forwarded, and
-	// XDPNoRow the packets with no row, which it gave to the socket path.
-	XDPForwarded uint64 `json:"xdp_forwarded"`
-	XDPNoRow     uint64 `json:"xdp_no_row"`
-	// The packets of agents that the relay sent to the other relay, got from it
-	// and sent on, and the packets of the trunk that it dropped.
-	TrunkTx    uint64 `json:"trunk_tx_packets"`
-	TrunkRx    uint64 `json:"trunk_rx_packets"`
-	TrunkDrops uint64 `json:"trunk_drops"`
-}
-
-// newRelayPart computes the part of the relay of the agent of from its marks at
-// the start and at the end of the measured window.
-func newRelayPart(of string, m [2]mark) relayPart {
-	count := func(m mark) relayCount {
-		c := relayCount{XDPForwarded: m.XDPPackets, XDPNoRow: m.XDPPassed["no_row"]}
-		if t := m.Trunk; t != nil {
-			c.TrunkTx, c.TrunkRx, c.TrunkDrops = t.TxPackets, t.RxPackets, t.Drops
-		}
-		return c
-	}
-	return relayPart{
-		Of: of, Cores: cores(m[0], m[1]), HostCores: hostCores(m[0], m[1]),
-		Drops: m[1].Drops - m[0].Drops, DropReasons: counterDelta(m[0].DropReasons, m[1].DropReasons),
-		XDPMode: m[1].XDPMode, Start: count(m[0]), End: count(m[1]),
-		SocketPackets: counterDelta(m[0].Socket, m[1].Socket), SockDrops: delta(m[0].SockDrops, m[1].SockDrops),
-		TopCPUs: busiestCPUs(m[0], m[1], topCPUs), HostCPU: hostKinds(m[0], m[1]),
-	}
 }
 
 // period is the rate, the loss and the drops of a part of the run.
@@ -470,12 +372,6 @@ func newResult(client, server, relay [2]mark) result {
 	r.ServerSockDrops = delta(server[0].SockDrops, server[1].SockDrops)
 	r.ClientLinkDrops = delta(client[0].LinkDrops, client[1].LinkDrops)
 	r.ServerLinkDrops = delta(server[0].LinkDrops, server[1].LinkDrops)
-	r.RelayXDPPackets = relay[1].XDPPackets - relay[0].XDPPackets
-	r.RelayXDPPassed = counterDelta(relay[0].XDPPassed, relay[1].XDPPassed)
-	r.RelayXDPSeconds, r.RelayXDPMode = relay[1].XDPSeconds-relay[0].XDPSeconds, relay[1].XDPMode
-	r.RelaySendCalls = relay[1].Sends.Calls - relay[0].Sends.Calls
-	r.RelaySendMessages = relay[1].Sends.Messages - relay[0].Sends.Messages
-	r.RelaySendPackets = relay[1].Sends.Packets - relay[0].Sends.Packets
 	return r
 }
 

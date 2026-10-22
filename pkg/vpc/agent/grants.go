@@ -4,82 +4,29 @@ package agent
 
 import (
 	"context"
-	"crypto/x509"
-	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/netip"
 	"slices"
-	"time"
 
-	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
-
-// grantRefreshAge is the age of a stored grant from which the agent gets a
-// new one before it sends a grant. See relay.GrantLife for the clock difference.
-const grantRefreshAge = relay.GrantLife / 3
-
-// ownGrant is the grant of one attachment of this agent. The agent sends it
-// to visited relays, which check it one time.
-type ownGrant struct {
-	id  string
-	cur *dp.AttachmentGrant
-	got time.Time // When the agent got cur.
-}
-
-func newOwnGrant(g *dp.AttachmentGrant, id string) ownGrant {
-	return ownGrant{id: id, cur: g, got: time.Now()}
-}
-
-// get returns the stored grant while its age is below grantRefreshAge, else a
-// new one from the relay of c at addr. The age is elapsed time of this host,
-// so no clock matters.
-func (g ownGrant) get(ctx context.Context, c dp.RelayClient, addr string, roots *x509.CertPool) (*dp.AttachmentGrant, error) {
-	if time.Since(g.got) < grantRefreshAge {
-		return g.cur, nil
-	}
-	res, err := c.Grant(ctx, &dp.GrantRequest{AttachmentId: g.id})
-	if err != nil {
-		return nil, fmt.Errorf("new grant of attachment %s: %w", g.id, err)
-	}
-	if _, err := verifyOwn(addr, roots, res.GetGrant()); err != nil {
-		return nil, fmt.Errorf("new grant of attachment %s: %w", g.id, err)
-	}
-	return res.GetGrant(), nil
-}
-
-// verifyOwn checks a grant that the relay at addr signed for this agent now.
-// It has ended only if the clock of this host or of the relay is wrong.
-func verifyOwn(addr string, roots *x509.CertPool, g *dp.AttachmentGrant) (*dp.GrantClaims, error) {
-	now := time.Now()
-	claims, err := relay.VerifyGrant(g, roots, now)
-	if errors.Is(err, relay.ErrGrantEnded) {
-		slog.Error("A grant that the relay signed in this moment has ended; the clock of this host or of the relay is wrong",
-			"relay", addr, "host_time", now.UTC().Format(time.RFC3339), "error", err)
-	}
-	return claims, err
-}
 
 // extra is an attachment of this agent on a relay session, other than the
 // attachment of Config.
 type extra struct {
 	spec     *AttachmentSpec
 	id       string
-	grant    ownGrant
 	prefixes []netip.Prefix
 }
 
-// xjob is an attachX in a home session: queued, in its Attach call, or
-// waiting for the joins of the visits.
+// xjob is an attachX in a session: queued or in its Attach call.
 type xjob struct {
 	spec     *AttachmentSpec
 	ctx      context.Context
 	x        *extra
 	detached bool // A detachX came during the Attach call.
-	joins    map[*visit]bool
 }
 
 // djob is a detachX in a home session after its Detach call started.
@@ -87,7 +34,6 @@ type djob struct {
 	spec    *AttachmentSpec
 	id      string
 	running bool
-	leaves  map[*visit]bool
 }
 
 // xattached is the result of the Attach call of an xjob.
@@ -105,7 +51,7 @@ type xdetached struct {
 	err error
 }
 
-// handleExtras takes the messages of the extra attachments and the visits.
+// handleExtras takes the messages of the extra attachments.
 func (s *session) handleExtras(m any) {
 	switch m := m.(type) {
 	case attachX:
@@ -129,8 +75,6 @@ func (s *session) handleExtras(m any) {
 		s.xattached(m)
 	case xdetached:
 		s.xdetached(m)
-	default:
-		s.handleVisits(m)
 	}
 }
 
@@ -153,7 +97,7 @@ func (s *session) admit() {
 // openTimeout, not under the context of the caller.
 func (s *session) attachCall(j *xjob) {
 	sp := j.spec
-	c, qc, addr, roots, ctx := s.d.client, s.d.qc, s.addr(), s.d.roots, s.ctx
+	c, qc, addr, ctx := s.d.client, s.d.qc, s.addr(), s.ctx
 	req := &dp.AttachRequest{Vpc: s.d.config.GetVpc(), Name: sp.Name, Labels: sp.Labels, Routes: prefixStrings(sp.Routes), Rank: s.rank}
 	s.task(func() any {
 		ctx, cancel := context.WithTimeout(ctx, openTimeout)
@@ -163,16 +107,11 @@ func (s *session) attachCall(j *xjob) {
 			return xattached{j: j, err: attachError(qc, fmt.Errorf("attach: %w", err))}
 		}
 		logRefused(addr, sp.Name, res.GetRoutes())
-		claims, err := verifyOwn(addr, roots, res.GetGrant())
+		prefixes, err := parsePrefixes(res.GetAddresses())
 		if err != nil {
 			return xattached{j: j, err: err}
 		}
-		prefixes, err := parsePrefixes(claims.GetAddresses())
-		if err != nil {
-			return xattached{j: j, err: err}
-		}
-		id := claims.GetAttachmentId()
-		return xattached{j: j, x: &extra{spec: sp, id: id, grant: newOwnGrant(res.GetGrant(), id), prefixes: prefixes}}
+		return xattached{j: j, x: &extra{spec: sp, id: res.GetAttachmentId(), prefixes: prefixes}}
 	})
 }
 
@@ -201,18 +140,6 @@ func (s *session) xattached(m xattached) {
 		}
 	}
 	s.extras[x.spec.Name], s.byID[x.id] = x, x
-	// The visits take the new attachment too.
-	j.joins = map[*visit]bool{}
-	for _, rec := range s.visits {
-		if rec.up && rec.extras {
-			rec.v.mb.send(joinMsg{x: *x})
-			j.joins[rec.v] = true
-		}
-	}
-	if len(j.joins) > 0 {
-		s.joining[j] = true
-		return
-	}
 	s.attachedOK(j)
 }
 
@@ -245,12 +172,6 @@ func (s *session) detachExtra(m detachX) {
 			return
 		}
 	}
-	for j := range s.joining {
-		if j.spec == m.spec {
-			delete(s.joining, j)
-			s.attachedOK(j)
-		}
-	}
 	x := s.extras[name]
 	if x == nil || x.spec != m.spec {
 		s.up.send(detachedX{s, m.spec})
@@ -261,14 +182,7 @@ func (s *session) detachExtra(m detachX) {
 	for _, pfx := range x.prefixes {
 		s.link.RemoveSource(pfx)
 	}
-	dj := &djob{spec: m.spec, id: x.id, running: true, leaves: map[*visit]bool{}}
-	for _, rec := range s.visits {
-		if rec.joined[x.id] {
-			delete(rec.joined, x.id)
-			rec.v.mb.send(leaveMsg{x.id})
-			dj.leaves[rec.v] = true
-		}
-	}
+	dj := &djob{spec: m.spec, id: x.id, running: true}
 	s.detaching = append(s.detaching, dj)
 	s.detachCall(x.id, m.ctx, xdetached{dj: dj})
 }
@@ -311,32 +225,13 @@ func (s *session) xdetached(m xdetached) {
 	s.detachProgress()
 }
 
-// detachProgress answers each djob whose call and leaves ended.
+// detachProgress answers each djob whose call ended.
 func (s *session) detachProgress() {
 	s.detaching = slices.DeleteFunc(s.detaching, func(dj *djob) bool {
-		if dj.running || len(dj.leaves) > 0 {
+		if dj.running {
 			return false
 		}
 		s.up.send(detachedX{s, dj.spec})
 		return true
 	})
-}
-
-// joinProgress answers each xjob whose joins ended.
-func (s *session) joinProgress() {
-	for j := range s.joining {
-		if len(j.joins) == 0 {
-			delete(s.joining, j)
-			s.attachedOK(j)
-		}
-	}
-}
-
-// extrasCopy returns copies of the extra attachments of s.
-func (s *session) extrasCopy() []extra {
-	var out []extra
-	for _, x := range slices.Collect(maps.Values(s.extras)) {
-		out = append(out, *x)
-	}
-	return out
 }

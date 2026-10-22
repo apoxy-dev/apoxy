@@ -7,21 +7,19 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"io"
-	"net"
 	"net/netip"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 func TestParseFlags(t *testing.T) {
@@ -36,26 +34,15 @@ func TestParseFlags(t *testing.T) {
 		{
 			name: "relay", cmd: "relay", args: []string{"-listen", ":4443"},
 			want: func(o options) bool {
-				return o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources &&
-					o.XDP == "" && o.XDPMode == "generic" && o.XDPHop == 0
+				return o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources
 			},
 		},
-		{
-			name: "relay with XDP in driver mode", cmd: "relay", args: []string{"-listen", ":4443", "-xdp", "ens5", "-xdp-mode", "driver"},
-			want: func(o options) bool { return o.XDP == "ens5" && o.XDPMode == "driver" },
-		},
-		{name: "relay with an unknown XDP mode", cmd: "relay", args: []string{"-listen", ":4443", "-xdp-mode", "native"}, wantErr: `unknown -xdp-mode "native"`},
-		{name: "server has no XDP mode", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-xdp-mode", "driver"}, wantErr: "flag provided but not defined: -xdp-mode"},
-		{
-			name: "relay with a next hop cache", cmd: "relay", args: []string{"-listen", ":4443", "-xdp", "ens5", "-xdp-hop", "1s"},
-			want: func(o options) bool { return o.XDPHop == time.Second },
-		},
-		{name: "relay with a negative next hop cache", cmd: "relay", args: []string{"-listen", ":4443", "-xdp-hop", "-1s"}, wantErr: "-xdp-hop must not be negative"},
+		{name: "relay has no XDP", cmd: "relay", args: []string{"-listen", ":4443", "-xdp", "ens5"}, wantErr: "flag provided but not defined: -xdp"},
 		{
 			name: "relay with no lanes", cmd: "relay", args: []string{"-listen", ":4443", "-lanes", "0"},
 			want: func(o options) bool { return o.Lanes == 0 },
 		},
-		{name: "relay with too many lanes", cmd: "relay", args: []string{"-listen", ":4443", "-lanes", "16"}, wantErr: "-lanes must be 0 to 15"},
+		{name: "relay with too many lanes", cmd: "relay", args: []string{"-listen", ":4443", "-lanes", "4"}, wantErr: "-lanes must be 0 to 3"},
 		{name: "relay with no listen", cmd: "relay", wantErr: "-listen is required"},
 		{
 			name: "relay needs no work dir", cmd: "relay", args: []string{"-listen", ":4443", "-work-dir", ""},
@@ -64,19 +51,8 @@ func TestParseFlags(t *testing.T) {
 		{name: "server with no work dir", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-work-dir", ""}, wantErr: "set -work-dir or WORK_DIR"},
 		{name: "no start timeout", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-start-timeout", "0s"}, wantErr: "-start-timeout must be positive"},
 		{name: "relay has no driver", cmd: "relay", args: []string{"-listen", ":4443", "-driver", "tun"}, wantErr: "flag provided but not defined: -driver"},
-		{
-			name: "second relay of a mesh", cmd: "relay", args: []string{"-listen", ":4443", "-mesh", "b", "-join", "10.0.0.1:4443", "-start-timeout", "5m"},
-			want: func(o options) bool {
-				return o.Mesh == "b" && o.Join == "10.0.0.1:4443" && o.StartTimeout == 5*time.Minute
-			},
-		},
-		{name: "join with no mesh name", cmd: "relay", args: []string{"-listen", ":4443", "-join", "10.0.0.1:4443"}, wantErr: "-join needs -mesh"},
-		{name: "relay with no start timeout", cmd: "relay", args: []string{"-listen", ":4443", "-start-timeout", "0s"}, wantErr: "-start-timeout must be positive"},
-		{
-			name: "client with the relay of the server", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "-server-relay", "r2:1"},
-			want: func(o options) bool { return o.ServerRelay == "r2:1" },
-		},
-		{name: "direct client with the relay of the server", cmd: "client", args: []string{"-server", "s:1", "-via", "direct", "-server-relay", "r2:1"}, wantErr: "-server-relay needs -via relay"},
+		{name: "relay has no mesh", cmd: "relay", args: []string{"-listen", ":4443", "-mesh", "b"}, wantErr: "flag provided but not defined: -mesh"},
+		{name: "client has no relay of the server", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "-server-relay", "r2:1"}, wantErr: "flag provided but not defined: -server-relay"},
 		{
 			name: "server defaults", cmd: "server", args: []string{"-listen", ":4433", "-relay", "10.0.0.1:4443"},
 			want: func(o options) bool {
@@ -134,40 +110,6 @@ func TestParseFlags(t *testing.T) {
 	}
 }
 
-func TestNewRelayPart(t *testing.T) {
-	sec := int64(time.Second)
-	cases := []struct {
-		name string
-		m    [2]mark
-		want relayPart
-	}{
-		{
-			name: "socket path",
-			m: [2]mark{
-				{SockDrops: 1, Socket: map[string]uint64{"agent_row": 10, "member_row": 4, "dropped": 0}},
-				{Nanos: sec, CPU: 0.5, SockDrops: 4, Socket: map[string]uint64{"agent_row": 110, "member_row": 4, "dropped": 0}},
-			},
-			want: relayPart{Of: "client", Cores: 0.5, SocketPackets: map[string]uint64{"agent_row": 100}, SockDrops: 3},
-		},
-		{
-			name: "XDP path with one busy CPU",
-			m: [2]mark{
-				{XDPMode: "generic", XDPPackets: 5, CPUs: []bench.CPUTicks{{Idle: 100}, {Idle: 100}}},
-				{Nanos: sec, XDPMode: "generic", XDPPackets: 25, CPUs: []bench.CPUTicks{{Idle: 200}, {IRQ: 80, Idle: 120}}},
-			},
-			want: relayPart{
-				Of: "client", XDPMode: "generic", Start: relayCount{XDPForwarded: 5}, End: relayCount{XDPForwarded: 25},
-				TopCPUs: []cpuUse{{CPU: 1, IRQ: 80}, {CPU: 0}}, HostCPU: &cpuKinds{IRQ: 0.8},
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, newRelayPart("client", tc.m))
-		})
-	}
-}
-
 func TestNewResult(t *testing.T) {
 	sec := int64(time.Second)
 	cases := []struct {
@@ -190,16 +132,14 @@ func TestNewResult(t *testing.T) {
 			},
 			relay: [2]mark{
 				{
-					Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2, XDPPackets: 10, XDPSeconds: 0.5, XDPMode: "driver",
+					Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2,
 					DropReasons: map[string]uint64{"malformed": 1},
-					XDPPassed:   map[string]uint64{"no_row": 3, "expired": 1}, Sends: relay.ForwardStats{Calls: 1, Messages: 2, Packets: 30},
-					CPUs: []bench.CPUTicks{{User: 10, Idle: 90}, {Idle: 100}},
+					CPUs:        []bench.CPUTicks{{User: 10, Idle: 90}, {Idle: 100}},
 				},
 				{
-					Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9, XDPPackets: 30, XDPSeconds: 0.75, XDPMode: "driver",
-					DropReasons: map[string]uint64{"malformed": 1, "send_queue": 3, "unknown_spi": 1},
-					XDPPassed:   map[string]uint64{"no_row": 8, "expired": 1, "no_route": 2}, Sends: relay.ForwardStats{Calls: 11, Messages: 42, Packets: 930},
-					CPUs: []bench.CPUTicks{{User: 30, System: 40, Idle: 230}, {IRQ: 150, Idle: 150}},
+					Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9,
+					DropReasons: map[string]uint64{"malformed": 1, "tx_full": 3, "unknown_spi": 1},
+					CPUs:        []bench.CPUTicks{{User: 30, System: 40, Idle: 230}, {IRQ: 150, Idle: 150}},
 				},
 			},
 			want: result{
@@ -208,11 +148,9 @@ func TestNewResult(t *testing.T) {
 				ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 1, RelayCoresPerGbps: 0.25,
 				ClientHostCores: 3, ServerHostCores: 4, RelayHostCores: 1,
 				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, RelayRcvbufDrops: 7, ServerRcvbufErrors: 12, ServerSockDrops: 3,
-				ClientLinkDrops: 5, ServerLinkDrops: 2, RelayXDPPackets: 20,
-				RelayDropReasons: map[string]uint64{"send_queue": 3, "unknown_spi": 1},
-				RelayXDPPassed:   map[string]uint64{"no_row": 5, "no_route": 2}, RelayXDPSeconds: 0.25, RelayXDPMode: "driver",
-				RelayHostCPU: &cpuKinds{User: 0.1, System: 0.2, IRQ: 0.75}, RelayTopCPUs: []cpuUse{{CPU: 1, IRQ: 75}, {CPU: 0, User: 10, System: 20}},
-				RelaySendCalls: 10, RelaySendMessages: 40, RelaySendPackets: 900,
+				ClientLinkDrops: 5, ServerLinkDrops: 2,
+				RelayDropReasons: map[string]uint64{"tx_full": 3, "unknown_spi": 1},
+				RelayHostCPU:     &cpuKinds{User: 0.1, System: 0.2, IRQ: 0.75}, RelayTopCPUs: []cpuUse{{CPU: 1, IRQ: 75}, {CPU: 0, User: 10, System: 20}},
 				ClientLanePackets: []uint64{500, 400, 100}, ServerLanePackets: []uint64{30},
 				ServerRxLanePackets: []uint64{1000, 0, 1000},
 				ClientTCP:           map[string]uint64{"sack_recovery": 3},
@@ -332,8 +270,10 @@ func TestCounterDelta(t *testing.T) {
 	}
 }
 
-func TestRelayCounters(t *testing.T) {
-	// A PSP packet from a source that has no session.
+// TestRelayDrops checks the drop counters that a relay mark reads from the
+// data plane of the relay.
+func TestRelayDrops(t *testing.T) {
+	// A PSP packet with an SPI that has no SA.
 	psp := make([]byte, 64)
 	psp[0], psp[1], psp[2], psp[3] = 4, 2, 2, 0x03
 	binary.BigEndian.PutUint32(psp[4:8], 7)
@@ -347,30 +287,27 @@ func TestRelayCounters(t *testing.T) {
 		{name: "one reason", packets: [][]byte{{1, 2, 3}, {9, 9}}, drops: 2, reasons: map[string]uint64{"malformed": 2}},
 		{
 			name: "two reasons", packets: [][]byte{psp, {1, 2, 3}, psp, psp}, drops: 4,
-			reasons: map[string]uint64{"malformed": 1, "unknown_source": 3},
+			reasons: map[string]uint64{"malformed": 1, "unknown_spi": 3},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ca, err := vpctest.NewCA()
 			require.NoError(t, err)
-			r := relay.NewRouter(vpctest.NewTrust(ca), relay.Config{})
-			uc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			plane, err := vpctest.NewLoopback()
 			require.NoError(t, err)
-			tr := &quic.Transport{Conn: uc}
-			t.Cleanup(func() {
-				_ = tr.Close()
-				_ = uc.Close()
+			t.Cleanup(func() { _ = plane.Close() })
+			r, err := relay.NewRouter(relay.Config{
+				Relay: &dp.RelayRef{Id: relayID}, Trust: vpctest.NewTrust(ca), Addresses: &addresses{}, Target: plane.Target,
 			})
-			handle, _ := r.PacketHandler(t.Context(), tr)
+			require.NoError(t, err)
+			from := netip.MustParseAddrPort("127.0.0.1:4000")
 			for _, p := range tc.packets {
-				handle(p, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4000})
+				plane.Target.Receive(from, p)
 			}
-			drops, reasons, xdp, passed := relayCounters(r)
+			drops, reasons := relayDrops(r)
 			assert.Equal(t, tc.drops, drops)
 			assert.Equal(t, tc.reasons, reasons)
-			assert.Zero(t, xdp)
-			assert.Nil(t, passed)
 		})
 	}
 }
@@ -455,8 +392,7 @@ func TestResultJSON(t *testing.T) {
 		"client_host_cores", "server_host_cores", "relay_host_cores",
 		"driver", "transport", "via", "cc", "streams", "device_mtu",
 		"server_retransmits", "client_tx_drops", "server_rx_drops", "relay_drops", "relay_rcvbuf_drops",
-		"server_rcvbuf_errors", "server_sock_drops", "client_link_drops", "server_link_drops", "relay_xdp_packets",
-		"relay_xdp_seconds", "relay_send_calls", "relay_send_messages", "relay_send_packets",
+		"server_rcvbuf_errors", "server_sock_drops", "client_link_drops", "server_link_drops",
 		"omit", "flow_start_unix_ms", "window_start_unix_ms", "window_end_unix_ms",
 	} {
 		assert.Contains(t, fields, f)
@@ -526,40 +462,28 @@ func TestLoopback(t *testing.T) {
 	}
 	cases := []struct {
 		via, transport string
-		// relays is the number of relays: the client and the server have one relay
-		// each when it is 2.
-		relays int
 	}{
-		{"relay", "psp", 1},
-		{"relay", "quic", 1},
-		{"direct", "psp", 0},
-		{"relay", "psp", 2},
+		{"relay", "psp"},
+		{"relay", "quic"},
+		{"direct", "psp"},
 	}
 	for _, tc := range cases {
-		t.Run(fmt.Sprintf("%s %s %d relays", tc.via, tc.transport, tc.relays), func(t *testing.T) {
+		t.Run(tc.via+" "+tc.transport, func(t *testing.T) {
 			var wg sync.WaitGroup
 			defer wg.Wait()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 
 			o := options{WorkDir: t.TempDir(), Driver: "netstack", Transport: tc.transport, Via: tc.via, StartTimeout: 30 * time.Second}
-			// The second relay joins the first, and the server attaches at it.
-			var relays []string
-			for i := range tc.relays {
+			if tc.via == "relay" {
 				ro := o
 				ro.Listen, ro.PSPListen = "127.0.0.1:0", "127.0.0.1:0"
-				if tc.relays > 1 {
-					ro.Mesh = fmt.Sprintf("relay-%d", i+1)
-				}
-				if i > 0 {
-					ro.Join = relays[0]
-				}
 				addr := make(chan netip.AddrPort, 1)
 				relayErr := make(chan error, 1)
 				wg.Go(func() { relayErr <- runRelay(ctx, ro, func(a netip.AddrPort) { addr <- a }) })
 				select {
 				case a := <-addr:
-					relays = append(relays, a.String())
+					o.Relay = a.String()
 				case err := <-relayErr:
 					t.Fatalf("relay stopped: %v", err)
 				}
@@ -568,9 +492,6 @@ func TestLoopback(t *testing.T) {
 
 			so := o
 			so.Listen = "127.0.0.1:0"
-			if tc.relays > 0 {
-				o.Relay, so.Relay = relays[0], relays[len(relays)-1]
-			}
 			addr := make(chan netip.AddrPort, 1)
 			serverErr := make(chan error, 1)
 			wg.Go(func() { serverErr <- runServer(ctx, so, func(a netip.AddrPort) { addr <- a }) })
@@ -583,11 +504,8 @@ func TestLoopback(t *testing.T) {
 			}
 			co.Streams, co.Omit, co.Duration = 2, 200*time.Millisecond, time.Second
 			co.Idle, co.ProbeInterval = 200*time.Millisecond, 10*time.Millisecond
-			// The client stops the relays, as "perfrig node" does.
+			// The client stops the relay, as "perfrig node" does.
 			co.StopRelay = tc.via == "relay"
-			if tc.relays > 1 {
-				co.ServerRelay = relays[1]
-			}
 
 			var out bytes.Buffer
 			require.NoError(t, runClient(ctx, co, &out))
@@ -622,20 +540,6 @@ func TestLoopback(t *testing.T) {
 			} else {
 				assert.Zero(t, res.RelayCores)
 			}
-			if tc.relays < 2 {
-				assert.Empty(t, res.Relays)
-				return
-			}
-			// All data of the window went from the relay of the client to the relay of the server.
-			require.Len(t, res.Relays, 2)
-			sent, got := res.Relays[0], res.Relays[1]
-			assert.Equal(t, "client", sent.Of)
-			assert.Equal(t, "server", got.Of)
-			// The relays take their marks a short time after the server, so the counts are not equal.
-			packets := uint64(res.PacketsPerSecond * res.Seconds)
-			assert.Greater(t, sent.End.TrunkTx-sent.Start.TrunkTx, packets/2)
-			assert.Greater(t, got.End.TrunkRx-got.Start.TrunkRx, packets/2)
-			assert.Positive(t, got.End.TrunkTx-got.Start.TrunkTx, "the ACKs of the server go to the relay of the client")
 		})
 	}
 }

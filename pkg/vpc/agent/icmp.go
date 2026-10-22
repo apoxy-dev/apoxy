@@ -12,17 +12,17 @@ import (
 
 // unreachable returns an ICMP unreachable error for pkt, or nil for none.
 // ICMPv6 comes from the address from, ICMPv4 from the destination of pkt.
-func unreachable(pkt []byte, from netip.Addr, denied bool) []byte {
+func unreachable(pkt []byte, from netip.Addr) []byte {
 	switch {
 	case len(pkt) >= header.IPv4MinimumSize && pkt[0]>>4 == 4:
-		return unreachable4(pkt, denied)
+		return unreachable4(pkt)
 	case len(pkt) >= header.IPv6MinimumSize && pkt[0]>>4 == 6 && from.Is6():
-		return unreachable6(pkt, from, denied)
+		return unreachable6(pkt, from)
 	}
 	return nil
 }
 
-func unreachable6(pkt []byte, from netip.Addr, denied bool) []byte {
+func unreachable6(pkt []byte, from netip.Addr) []byte {
 	src, dst := netip.AddrFrom16([16]byte(pkt[8:24])), netip.AddrFrom16([16]byte(pkt[24:40]))
 	if !src.IsGlobalUnicast() || !dst.IsGlobalUnicast() {
 		return nil
@@ -32,14 +32,10 @@ func unreachable6(pkt []byte, from netip.Addr, denied bool) []byte {
 		(len(pkt) == header.IPv6MinimumSize || pkt[header.IPv6MinimumSize] < 128) {
 		return nil
 	}
-	code := header.ICMPv6AddressUnreachable
-	if denied {
-		code = header.ICMPv6Prohibited
-	}
-	return psp.ICMPv6Error(pkt, from, header.ICMPv6DstUnreachable, code, 0)
+	return psp.ICMPv6Error(pkt, from, header.ICMPv6DstUnreachable, header.ICMPv6AddressUnreachable, 0)
 }
 
-func unreachable4(pkt []byte, denied bool) []byte {
+func unreachable4(pkt []byte) []byte {
 	ip := header.IPv4(pkt)
 	n := int(ip.HeaderLength())
 	src, dst := netip.AddrFrom4([4]byte(pkt[12:16])), netip.AddrFrom4([4]byte(pkt[16:20]))
@@ -50,9 +46,5 @@ func unreachable4(pkt []byte, denied bool) []byte {
 	if ip.Protocol() == uint8(header.ICMPv4ProtocolNumber) && (len(pkt) == n || pkt[n] != uint8(header.ICMPv4Echo)) {
 		return nil
 	}
-	code := header.ICMPv4HostUnreachable
-	if denied {
-		code = header.ICMPv4AdminProhibited
-	}
-	return psp.ICMPv4Error(pkt, header.ICMPv4DstUnreachable, code, 0)
+	return psp.ICMPv4Error(pkt, header.ICMPv4DstUnreachable, header.ICMPv4HostUnreachable, 0)
 }

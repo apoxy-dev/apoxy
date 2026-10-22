@@ -18,14 +18,12 @@ import (
 	"net/netip"
 	"os"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/apoxy-dev/softpsp/keys"
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/durationpb"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
@@ -34,13 +32,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
-
-	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 func TestMain(m *testing.M) {
@@ -48,11 +39,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-const (
-	testProject = "project-a"
-	testVPC     = "vpc-a"
-	testVNI     = 0x1234
-)
+const testVNI = 0x1234
 
 // newTransport returns a QUIC transport on a loopback UDP socket, with h as
 // its NonQUICPacketHandler.
@@ -88,10 +75,6 @@ type node struct {
 	peer   *Peer
 	v4, v6 netip.Addr
 	other  *node
-
-	// Set when the node sends through a relay.
-	rc   dp.RelayClient
-	sess *relay.Session
 }
 
 // newPair returns two nodes. Each one routes the addresses of the other to
@@ -162,28 +145,8 @@ func offer(t testing.TB, now time.Time, nodes ...*node) {
 	}
 }
 
-// give sends a key change to the sender node. With a relay, it registers the
-// SPIs first, so that the relay knows each SPI before its first packet.
+// give sends a key change to the sender node.
 func give(sender *node, req keys.Request, now time.Time) error {
-	if sender.rc != nil && len(req.SAs) > 0 {
-		spis, lanes, saLanes := make([]uint32, len(req.SAs)), make([]uint32, len(req.SAs)), make([]uint32, len(req.SAs))
-		for i, sa := range req.SAs {
-			spis[i], lanes[i], saLanes[i] = sa.SPI, uint32(sender.peer.SendLane(sa.Lane)), uint32(sa.Lane)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, err := sender.rc.RegisterSPI(ctx, &dp.RegisterSPIRequest{
-			Vpc:         &dp.VPCRef{ProjectId: testProject, VpcUid: testVPC},
-			Destination: sender.other.v4.String(),
-			Spis:        spis,
-			ExpiresIn:   durationpb.New(req.SAs[0].ExpiresIn),
-			Lanes:       lanes,
-			SaLanes:     saLanes,
-		})
-		if err != nil {
-			return err
-		}
-	}
 	refused, err := sender.peer.Apply(req, now)
 	if err == nil && len(refused) > 0 {
 		err = fmt.Errorf("refused SPIs %x", refused)
@@ -275,215 +238,6 @@ func packet(src, dst netip.Addr, proto byte, sport, dport uint16, size int) []by
 	binary.BigEndian.PutUint16(p[40:], sport)
 	binary.BigEndian.PutUint16(p[42:], dport)
 	return p
-}
-
-// fakeRelay is a relay on loopback: relay.Router for sessions, SPI rows and
-// path probes, and a forward loop. One socket has QUIC and PSP.
-type fakeRelay struct {
-	r        *relay.Router
-	probe    func([]byte, net.Addr) // Packet handler of the router. It answers the path probes.
-	probeEnd func()
-	tr       *quic.Transport
-	ln       *quic.Listener
-	ca       *vpctest.CA
-	accepted chan *relay.Session
-	q        chan relayPkt
-	drops    atomic.Uint64
-
-	keepalives atomic.Uint64
-}
-
-type relayPkt struct {
-	b    []byte
-	from netip.AddrPort
-}
-
-func newFakeRelay(t testing.TB) *fakeRelay {
-	t.Helper()
-	return newFakeRelayLanes(t, 0)
-}
-
-// newFakeRelayLanes returns a fake relay that takes up to lanes lane ports
-// from each session.
-func newFakeRelayLanes(t testing.TB, lanes int) *fakeRelay {
-	t.Helper()
-	ca, err := vpctest.NewCA()
-	require.NoError(t, err)
-	fr := &fakeRelay{
-		r:        relay.NewRouter(vpctest.NewTrust(ca), relay.Config{LaneSources: lanes}),
-		ca:       ca,
-		accepted: make(chan *relay.Session, 1),
-		q:        make(chan relayPkt, 1024),
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	fr.tr = newTransport(t, fr.handle)
-	fr.probe, fr.probeEnd = fr.r.PacketHandler(ctx, fr.tr)
-	fr.ln, err = fr.tr.Listen(fr.r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{selfSigned(t)}}), nil)
-	require.NoError(t, err)
-
-	mux := rpc.NewMux()
-	dp.RegisterRelayServer(mux, &relay.Server{R: fr.r})
-	done := make(chan struct{}, 2)
-	go func() {
-		defer func() { done <- struct{}{} }()
-		for {
-			qc, err := fr.ln.Accept(ctx)
-			if err != nil {
-				return
-			}
-			conn := rpc.NewConn(qc, mux)
-			s, err := fr.r.AddSession(conn)
-			if err != nil {
-				_ = qc.CloseWithError(1, err.Error())
-				continue
-			}
-			go func() { _ = conn.Serve(ctx) }()
-			select {
-			case fr.accepted <- s:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	go func() {
-		defer func() { done <- struct{}{} }()
-		fr.forward(ctx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		_ = fr.ln.Close()
-		<-done
-		<-done
-	})
-	return fr
-}
-
-// handle queues a non-QUIC packet for forward without blocking.
-func (fr *fakeRelay) handle(b []byte, from net.Addr) {
-	if _, ok := p2p.ProbeSID(b); ok {
-		fr.probe(b, from)
-		fr.probeEnd()
-		return
-	}
-	select {
-	case fr.q <- relayPkt{bytes.Clone(b), from.(*net.UDPAddr).AddrPort()}:
-	default:
-		fr.drops.Add(1)
-	}
-}
-
-// forward sends each PSP packet to the receiver of its SPI row.
-func (fr *fakeRelay) forward(ctx context.Context) {
-	for {
-		var p relayPkt
-		select {
-		case p = <-fr.q:
-		case <-ctx.Done():
-			return
-		}
-		if fr.r.Keepalive(p.b, p.from) {
-			fr.keepalives.Add(1)
-			continue
-		}
-		if len(p.b) < 8 {
-			fr.drops.Add(1)
-			continue
-		}
-		dst, v := fr.r.Forward(p.from, binary.BigEndian.Uint32(p.b[4:8]), len(p.b), time.Now())
-		if v != relay.Pass {
-			fr.drops.Add(1)
-			continue
-		}
-		if _, err := fr.tr.WriteTo(p.b, net.UDPAddrFromAddrPort(dst)); err != nil {
-			fr.drops.Add(1)
-		}
-	}
-}
-
-// attach dials the relay session of n on the transport of n, and routes the
-// addresses of n to it.
-func (fr *fakeRelay) attach(t testing.TB, n *node, name string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cred, err := fr.ca.Credential(testProject, testVPC, name, identity.CertLifetime)
-	require.NoError(t, err)
-	qc, err := n.tr.Dial(ctx, net.UDPAddrFromAddrPort(addrOf(fr.tr)), &tls.Config{
-		Certificates:       []tls.Certificate{*cred.TLSCertificate()},
-		InsecureSkipVerify: true,
-		NextProtos:         []string{dp.ALPNRelay},
-	}, &quic.Config{KeepAlivePeriod: 5 * time.Second})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = qc.CloseWithError(0, "") })
-	select {
-	case n.sess = <-fr.accepted:
-	case <-ctx.Done():
-		t.Fatal("relay did not accept the session")
-	}
-	n.rc = dp.NewRelayClient(rpc.NewConn(qc, nil))
-	// The relay has the PSP address of a session only from a path probe.
-	keys, err := p2p.NewProbeKeys(qc.ConnectionState().TLS)
-	require.NoError(t, err)
-	var counter uint64
-	require.Eventually(t, func() bool {
-		counter++
-		pkt := p2p.AppendProbe(nil, p2p.Probe{SID: keys.SID, Counter: counter}, p2p.MinProbeLen, &keys.Dialer)
-		_, _ = n.tr.WriteTo(pkt, net.UDPAddrFromAddrPort(addrOf(fr.tr)))
-		return fr.r.Addr(n.sess).IsValid()
-	}, 5*time.Second, 200*time.Millisecond, "relay did not learn the PSP address")
-	require.NoError(t, fr.r.AddRoute(n.sess, netip.PrefixFrom(n.v4, 32), name))
-	require.NoError(t, fr.r.AddRoute(n.sess, netip.PrefixFrom(n.v6, 128), name))
-}
-
-// newRelayPair returns two nodes whose peers are at the relay.
-func newRelayPair(t testing.TB) (*node, *node, *fakeRelay) {
-	t.Helper()
-	return newRelayPairLanes(t, 1, 0)
-}
-
-// newRelayPairLanes returns two nodes at a relay that takes up to relayLanes
-// lane ports. Each node receives on lanes SAs.
-func newRelayPairLanes(t testing.TB, lanes, relayLanes int) (*node, *node, *fakeRelay) {
-	t.Helper()
-	return newRelayPairRecv(t, lanes, relayLanes, lanes-1, false)
-}
-
-// newRelayPairRecv is newRelayPairLanes with nports lane ports on each node.
-// With receive, each node reads them and sends keepalives.
-func newRelayPairRecv(t testing.TB, lanes, relayLanes, nports int, receive bool) (*node, *node, *fakeRelay) {
-	t.Helper()
-	fr := newFakeRelayLanes(t, relayLanes)
-	a, b := newPairLanes(t, 0, lanes)
-	for _, n := range []*node{a, b} {
-		name := "a"
-		if n == b {
-			name = "b"
-		}
-		fr.attach(t, n, name)
-		n.peer.SetAddr(addrOf(fr.tr))
-		n.peer.SetLaneSockets(1)
-		ports := n.b.OpenLanes(nports + 1)
-		if len(ports) == 0 {
-			continue
-		}
-		req := &dp.RegisterLanesRequest{Receive: receive}
-		for _, p := range ports {
-			req.Ports = append(req.Ports, uint32(p))
-		}
-		if receive {
-			require.NoError(t, n.b.ReadLanes())
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := n.rc.RegisterLanes(ctx, req)
-		cancel()
-		if err == nil {
-			n.peer.SetLaneSockets(len(ports) + 1)
-			if receive {
-				n.b.KeepLanes(addrOf(fr.tr))
-			}
-		}
-	}
-	return a, b, fr
 }
 
 // selfSigned returns a cert for 127.0.0.1 that signs itself.

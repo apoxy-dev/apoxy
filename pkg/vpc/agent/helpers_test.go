@@ -7,7 +7,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -167,7 +166,6 @@ type world struct {
 	mtu              uint32 // VPC MTU of the relays.
 	dns, search      []string
 	relayCfg         relay.Config // Meters of the relays.
-	mesh             bool         // Each relay has a mesh. joinMesh makes the members.
 	// refuse gives the close reason of each relay that refuses all agents as
 	// too old, by the relay ID. Such a relay opens no session.
 	refuse map[string]string
@@ -207,30 +205,17 @@ func newWorld(t testing.TB) *world {
 	return w
 }
 
-// relayTrust is a vpctest.Trust with the relay CA of the world as the relay roots.
-type relayTrust struct {
-	*vpctest.Trust
-	roots *x509.CertPool
-}
-
-func (t relayTrust) RelayRoots(string) (*x509.CertPool, error) { return t.roots, nil }
-
-// testRelay is a relay that forwards PSP packets and peer frames.
+// testRelay is a relay with its data plane on a UDP socket.
 type testRelay struct {
 	id   string
 	srv  *relay.Server
 	r    *relay.Router
-	mesh *relay.Mesh // Nil without world.mesh.
-	addr string      // Address of the QUIC socket.
-	psp  string      // Address of the PSP socket.
+	addr string // Address of the QUIC socket.
+	psp  string // Address of the data socket.
 	// stopAccept stops the Accept calls, as a relay host in its lame duck. The
 	// listener still completes handshakes, and no session serves them.
 	stopAccept func()
 	refused    atomic.Int32 // Connections that the relay refused as too old.
-
-	meshMu    sync.Mutex
-	meshConns map[string][]quic.Connection // Mesh sessions that other relays dialed, by their address.
-	cut       map[string]bool              // Addresses of the relays whose mesh sessions r refuses.
 
 	connsMu sync.Mutex
 	conns   []acceptedConn // Agent connections that the relay accepted, in order.
@@ -270,48 +255,6 @@ func (r *testRelay) agentConns(from net.Addr, open bool) []quic.Connection {
 	return out
 }
 
-// takeMesh keeps the mesh session qc of another relay, or closes it when the
-// mesh path to that relay is cut.
-func (r *testRelay) takeMesh(qc quic.Connection) bool {
-	from := qc.RemoteAddr().String()
-	r.meshMu.Lock()
-	defer r.meshMu.Unlock()
-	if r.cut[from] {
-		_ = qc.CloseWithError(0, "mesh path is cut")
-		return false
-	}
-	if r.meshConns == nil {
-		r.meshConns = map[string][]quic.Connection{}
-	}
-	r.meshConns[from] = append(r.meshConns[from], qc)
-	return true
-}
-
-// cutMesh ends the mesh path between x and y as a lost path: no close code, and
-// the next sessions are refused. heal opens the path again.
-func cutMesh(x, y *testRelay) (heal func()) {
-	// The relay with the lower name dials.
-	dialer, taker := x, y
-	if x.id > y.id {
-		dialer, taker = y, x
-	}
-	taker.meshMu.Lock()
-	defer taker.meshMu.Unlock()
-	if taker.cut == nil {
-		taker.cut = map[string]bool{}
-	}
-	taker.cut[dialer.addr] = true
-	for _, qc := range taker.meshConns[dialer.addr] {
-		_ = qc.CloseWithError(0, "mesh path is cut")
-	}
-	delete(taker.meshConns, dialer.addr)
-	return func() {
-		taker.meshMu.Lock()
-		defer taker.meshMu.Unlock()
-		delete(taker.cut, dialer.addr)
-	}
-}
-
 // refuse closes qc with UPGRADE and reason, as a relay that needs a newer
 // agent. It waits for the first stream, so that the Session call is open.
 func (r *testRelay) refuse(ctx context.Context, qc quic.Connection, reason string) {
@@ -349,79 +292,61 @@ func (w *world) relay(t testing.TB, id string) *testRelay {
 	return w.relayOn(t, id, loopback(t), loopback(t))
 }
 
-// relayOn starts a relay with the QUIC socket quicSock and the PSP socket
+// relayOn starts a relay with the QUIC socket quicSock and the data plane on
 // pspSock, and closes them at the end of the test.
 func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketConn) *testRelay {
 	t.Helper()
 	cert := w.relayCA.relayCert(t, id)
-	udp, pspUDP := quicSock, pspSock
+	plane := vpctest.NewSocketTarget(pspSock)
 	cfg := w.relayCfg
-	// A relay checks the grant of a Visit call with the relay roots of the project.
-	r := relay.NewRouter(relayTrust{w.trust, w.relayCA.Pool()}, cfg)
-	tr := &quic.Transport{Conn: udp, NonQUICPacketHandler: r.QUICSocketHandler()}
-	pspTr := &quic.Transport{Conn: pspUDP}
-	pspTr.NonQUICPacketHandler, pspTr.NonQUICBatchEnd = r.PacketHandler(t.Context(), pspTr)
-	require.NoError(t, pspTr.Start())
+	cfg.Relay = &dp.RelayRef{Id: id, Addresses: []string{quicSock.LocalAddr().String()}}
+	cfg.Trust, cfg.Addresses, cfg.Target = w.trust, w.addrs, plane
+	r, err := relay.NewRouter(cfg)
+	require.NoError(t, err)
+	r.AddTenant(testProject)
+	r.AddVPC(relay.VPCKey{Project: testProject, UID: testVPC}, relay.Network{
+		ID: testVNI, Name: testVPC, MTU: w.mtu, DNSServers: w.dns, DNSSearchDomains: w.search,
+	})
+	tr := &quic.Transport{Conn: quicSock, ConnContext: relay.TraceContext}
 	// As at a real relay, the packets are Not-ECT, and the stream limit takes
 	// the Attach calls of extra attachments.
-	tlsConf := r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}})
-	quicConf := &quic.Config{EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512}
-	listenConf := quicConf
-	var mesh *relay.Mesh
-	if w.mesh {
-		// As at a real relay, the mesh sessions use the socket of the agents.
-		var err error
-		mesh, err = relay.NewMesh(id, relay.MeshConfig{
-			Relay:  &dp.RelayRef{Id: id, Addresses: []string{udp.LocalAddr().String()}},
-			TLS:    &tls.Config{Certificates: []tls.Certificate{*cert}, InsecureSkipVerify: true},
-			Verify: func([]*x509.Certificate, string, netip.AddrPort) error { return nil },
-		})
-		require.NoError(t, err)
-		mesh.SetRouter(r)
-		agents, members := tlsConf, mesh.TLSConfig()
-		tlsConf = &tls.Config{GetConfigForClient: func(h *tls.ClientHelloInfo) (*tls.Config, error) {
-			if slices.Contains(h.SupportedProtos, dp.ALPNMesh) {
-				return members, nil
-			}
-			return agents, nil
-		}}
-		listenConf = mesh.ListenConfig(quicConf)
+	quicConf := &quic.Config{
+		EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512,
+		Tracer: relay.TraceRTT, KeepAlivePeriod: relay.AgentKeepAlive,
 	}
-	ln, err := tr.Listen(tlsConf, listenConf)
+	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), quicConf)
 	require.NoError(t, err)
-	srv := &relay.Server{
-		R: r, Addresses: w.addrs, RelayID: id,
-		Networks: vpctest.Networks{Project: testProject, VPC: testVPC, Net: relay.Network{
-			ID: testVNI, MTU: w.mtu, DNSServers: w.dns, DNSSearchDomains: w.search,
-		}},
-		Cert: func() (*tls.Certificate, error) { return cert, nil },
-	}
+	srv := &relay.Server{R: r}
 	ctx, cancel := context.WithCancel(context.Background())
 	// As Serve, but stopAccept ends only the Accept calls. The end of the ctx
 	// of Serve also closes the sessions.
 	actx, stopAccept := context.WithCancel(ctx)
 	out := &testRelay{
-		id: id, srv: srv, r: r, mesh: mesh, addr: udp.LocalAddr().String(), psp: pspUDP.LocalAddr().String(), stopAccept: stopAccept,
+		id: id, srv: srv, r: r, addr: quicSock.LocalAddr().String(), psp: pspSock.LocalAddr().String(), stopAccept: stopAccept,
 	}
 	reason, refuse := w.refuse[id]
 	w.mu.Lock()
 	w.relays = append(w.relays, out)
 	w.mu.Unlock()
 	var wg sync.WaitGroup
-	if mesh != nil {
-		wg.Go(func() { mesh.Run(ctx, tr, quicConf) })
-	}
+	wg.Go(func() { _ = r.Run(ctx) })
+	wg.Go(func() {
+		buf := make([]byte, 65535)
+		for {
+			n, from, err := pspSock.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if ua, ok := from.(*net.UDPAddr); ok {
+				plane.Receive(unmap(ua.AddrPort()), buf[:n])
+			}
+		}
+	})
 	wg.Go(func() {
 		for {
 			qc, err := ln.Accept(actx)
 			if err != nil {
 				return
-			}
-			if mesh != nil && qc.ConnectionState().TLS.NegotiatedProtocol == dp.ALPNMesh {
-				if out.takeMesh(qc) {
-					wg.Go(func() { mesh.ServeConn(ctx, qc) })
-				}
-				continue
 			}
 			if refuse {
 				wg.Go(func() { out.refuse(ctx, qc, reason) })
@@ -434,11 +359,10 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 	t.Cleanup(func() {
 		cancel()
 		_ = ln.Close()
-		wg.Wait()
 		_ = tr.Close()
-		_ = udp.Close()
-		_ = pspTr.Close()
-		_ = pspUDP.Close()
+		_ = quicSock.Close()
+		_ = pspSock.Close()
+		wg.Wait()
 	})
 	return out
 }
@@ -474,39 +398,6 @@ func (c *countConn) got(from netip.AddrPort) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.psp[from]
-}
-
-// waitCut waits until the relays x and y of a mesh see that their mesh path is
-// down. Then each relay sends its agents to the other as visitors.
-func waitCut(t *testing.T, x, y *testRelay) {
-	t.Helper()
-	require.Eventually(t, func() bool { return !x.mesh.Up(y.id) && !y.mesh.Up(x.id) }, 15*time.Second, 20*time.Millisecond,
-		"the relays see the cut")
-}
-
-// joinMesh makes each relay a member of the mesh of the others, and waits for
-// their sessions. The relays are from a world with mesh.
-func joinMesh(t *testing.T, relays ...*testRelay) {
-	t.Helper()
-	for _, r := range relays {
-		var members []relay.MeshMember
-		for _, o := range relays {
-			if o != r {
-				members = append(members, relay.MeshMember{Name: o.id, Addr: netip.MustParseAddrPort(o.addr)})
-			}
-		}
-		r.mesh.SetMembers(members)
-	}
-	require.Eventually(t, func() bool {
-		for _, r := range relays {
-			for _, o := range relays {
-				if o != r && !r.mesh.Up(o.id) {
-					return false
-				}
-			}
-		}
-		return true
-	}, 10*time.Second, 10*time.Millisecond, "mesh sessions")
 }
 
 // attachEvent is one OnAttach call.
@@ -589,8 +480,6 @@ type agentOptions struct {
 	runErr chan error
 	// localRoutesOnly sets Config.LocalRoutesOnly.
 	localRoutesOnly bool
-	// visitCheck sets the interval of the visit checks. Zero keeps it.
-	visitCheck time.Duration
 	// rttChoice keeps the band and the wait of the relay choice. Else the relays
 	// that answer in testWindow are equal, so the first relay of the list wins.
 	rttChoice bool
@@ -879,10 +768,6 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	}
 	ta.ids = ids
 	ta.a = New(cfg)
-	if opts.visitCheck != 0 {
-		// The visits stay as they are until they move to the standby set-up.
-		ta.a.visitCheck = opts.visitCheck
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ta.cancel = cancel
 	go func() {
@@ -976,17 +861,6 @@ func (ta *testAgent) reconnect() {
 	if qc := ta.current().qc; qc != nil {
 		_ = qc.CloseWithError(0, "next session")
 	}
-}
-
-// visitRoutes returns the routes of the visits of ta.
-func (ta *testAgent) visitRoutes() []Route {
-	var out []Route
-	for _, r := range ta.a.Routes() {
-		if r.Dst != "default" {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 // extraAddr returns the address of the extra attachment name from OnAttachment.
@@ -1217,6 +1091,14 @@ func send(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16, msg st
 	defer c.Close()
 	_, err = c.Write([]byte(msg))
 	require.NoError(t, err)
+}
+
+// pspPackets returns the sum of the PSP packet counts of the lanes of a binding.
+func pspPackets(lanes []uint64) (n uint64) {
+	for _, c := range lanes {
+		n += c
+	}
+	return n
 }
 
 // unreachableIn returns the ICMPv6 destination unreachable errors that the
