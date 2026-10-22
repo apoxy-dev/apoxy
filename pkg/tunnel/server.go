@@ -529,6 +529,7 @@ func (t *TunnelServer) Start(ctx context.Context) error {
 			// cancelled by the server shutdown — drain controls their lifetime.
 			oneShotSrv := &http3.Server{
 				EnableDatagrams: true,
+				MaxHeaderBytes:  maxHeaderBytes,
 				Handler:         t.makeSingleConnectHandler(ctx, conn),
 			}
 

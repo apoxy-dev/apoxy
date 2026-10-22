@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"net/netip"
@@ -98,6 +99,50 @@ func TestRelay_StatelessResetAfterRestart(t *testing.T) {
 				var idle *quic.IdleTimeoutError
 				require.ErrorAs(t, cause, &idle)
 			}
+		})
+	}
+}
+
+// TestRelay_HeaderSizeLimit checks that the relay refuses a request with large
+// headers before it decodes them (CVE-2025-64702).
+func TestRelay_HeaderSizeLimit(t *testing.T) {
+	cases := []struct {
+		name       string
+		headerSize int
+		wantErr    bool
+	}{
+		{name: "small headers", headerSize: 1 << 10},
+		{name: "headers over the limit", headerSize: 32 << 10, wantErr: true},
+	}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	caCert := startRelayWithSecret(t, pc, "relay-a", "relay-id-secret")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			conn, err := quic.DialAddr(ctx, pc.LocalAddr().String(), &tls.Config{
+				RootCAs:    cryptoutils.CertPoolForCertificate(caCert),
+				ServerName: "localhost",
+				NextProtos: []string{http3.NextProtoH3},
+			}, nil)
+			require.NoError(t, err)
+			defer conn.CloseWithError(0, "")
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://localhost/ping", nil)
+			require.NoError(t, err)
+			// Random bytes stay large after Huffman coding.
+			pad := make([]byte, tc.headerSize/2)
+			_, err = rand.Read(pad)
+			require.NoError(t, err)
+			req.Header.Set("X-Pad", hex.EncodeToString(pad))
+			resp, err := (&http3.Transport{}).NewClientConn(conn).RoundTrip(req)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			require.Equal(t, http.StatusOK, resp.StatusCode)
 		})
 	}
 }

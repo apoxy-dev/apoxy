@@ -553,7 +553,8 @@ func (r *Relay) Start(ctx context.Context) error {
 	mux.GET("/v1/tunnel/:name/routes", r.withAuth(r.handleRoutes))
 
 	srv := http3.Server{
-		Handler: mux,
+		Handler:        mux,
+		MaxHeaderBytes: maxHeaderBytes,
 	}
 	// stop closes h3, then the listeners. Close refuses the handshakes in flight.
 	stop := func() error {
