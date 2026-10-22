@@ -375,7 +375,7 @@ func TestSessionAfterCertExpiry(t *testing.T) {
 	require.Eventually(t, func() bool { return time.Now().After(first) }, 10*time.Second, 50*time.Millisecond)
 	roundTrip(t, c, "after the expiry")
 	ping(t, a.stack, ea.addr, eb.addr, 9000, "to a new destination")
-	assert.Equal(t, old, a.current(), "the agent has the same relay session")
+	sameSession(t, old, a.current(), "the agent has the same relay session")
 	assert.Equal(t, []string{"attach a " + ea.addr.String()}, a.events("a"))
 }
 

@@ -107,8 +107,8 @@ func TestUnreachable(t *testing.T) {
 }
 
 // TestNoRouteError checks that packets to a destination that the relay cannot
-// reach get an ICMP error after the NoRoute of the relay. A destination keeps
-// one error a second.
+// reach get an ICMP error, address unreachable, after the NoRoute of the relay.
+// A destination keeps one error a second.
 func TestNoRouteError(t *testing.T) {
 	absent := func(attachEvent) netip.Addr { return netip.MustParseAddr("fd61:706f:7879:12:3400:99::1") }
 	cases := []struct {

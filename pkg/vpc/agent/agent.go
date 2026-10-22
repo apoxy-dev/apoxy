@@ -86,8 +86,10 @@ type Config struct {
 	// RelayRoots check relay certs, in place of the roots of the
 	// agent cert. With neither, the agent uses the system roots.
 	RelayRoots *x509.CertPool
-	// Sessions is the number of attached relay sessions to keep, 1 to 3, each on
-	// its own relay. Each session has its own overlay address. Zero means 2.
+	// Sessions is the number of attached relay sessions to keep on the relays of
+	// Relays or of the agent cert, 1 to 3, each on its own relay. Each session
+	// has its own overlay address. Zero means 2. The agent also keeps a session
+	// on each other relay that a route of its lowest-rank session names.
 	Sessions int
 	// Transport is the agent socket. New sets its packet handlers, so it must
 	// not be in use yet, and its port must not have an XDP program. At the end
@@ -95,9 +97,12 @@ type Config struct {
 	Transport *quic.Transport
 	// TransportMode picks how data goes to the relays. The zero value is auto.
 	TransportMode TransportMode
-	// Name, labels and advertised routes of the attachment.
+	// Name and labels of the attachment.
 	Name   string
 	Labels map[string]string
+	// Routes are the prefixes of the attachment. The agent advertises the IPv6
+	// prefixes and does not send an IPv4 prefix; a netstack host dials the IPv4
+	// addresses of an IPv4 prefix for its /96.
 	Routes []netip.Prefix
 	// OnAttach gets the binding, and the overlay address and the prefixes of a
 	// relay session after it attaches: the agent has one more address.

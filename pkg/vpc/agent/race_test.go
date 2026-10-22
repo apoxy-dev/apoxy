@@ -17,23 +17,26 @@ import (
 const ms = time.Millisecond
 
 // TestOneEach checks that entries with one name, or one address and no name,
-// count as one relay.
+// or one relay ID in the Welcome at their addresses, count as one relay.
 func TestOneEach(t *testing.T) {
 	a1, a2, b1 := endpoint{"a", "10.0.0.1:1"}, endpoint{"a", "10.0.0.2:1"}, endpoint{"b", "10.0.0.3:1"}
 	n1, n2 := endpoint{"", "10.0.0.4:1"}, endpoint{"", "10.0.0.5:1"}
 	cases := []struct {
 		name     string
 		in, want []endpoint
+		welcome  map[string]string // Relay ID of the Welcome at each address.
 	}{
-		{"no relay", nil, nil},
-		{"two relays", []endpoint{a1, b1}, []endpoint{a1, b1}},
-		{"two entries with one name and address", []endpoint{a1, a1, b1}, []endpoint{a1, b1}},
-		{"two addresses of one relay", []endpoint{a1, b1, a2}, []endpoint{a1, b1}},
-		{"no name", []endpoint{n1, n2, n1}, []endpoint{n1, n2}},
+		{"no relay", nil, nil, nil},
+		{"two relays", []endpoint{a1, b1}, []endpoint{a1, b1}, nil},
+		{"two entries with one name and address", []endpoint{a1, a1, b1}, []endpoint{a1, b1}, nil},
+		{"two addresses of one relay", []endpoint{a1, b1, a2}, []endpoint{a1, b1}, nil},
+		{"no name", []endpoint{n1, n2, n1}, []endpoint{n1, n2}, nil},
+		{"two addresses with one Welcome ID", []endpoint{n1, n2, b1}, []endpoint{n1, b1}, map[string]string{n1.addr: "c", n2.addr: "c"}},
+		{"a Welcome ID of a named relay", []endpoint{n1, b1}, []endpoint{n1}, map[string]string{n1.addr: "b"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, oneEach(tc.in))
+			assert.Equal(t, tc.want, (&root{welcome: tc.welcome}).oneEach(tc.in))
 		})
 	}
 }

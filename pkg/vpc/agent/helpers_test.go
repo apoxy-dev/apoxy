@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -219,28 +221,169 @@ type testRelay struct {
 
 	connsMu sync.Mutex
 	conns   []acceptedConn // Agent connections that the relay accepted, in order.
+
+	callsMu          sync.Mutex
+	calls, mostCalls int // Open calls after the Session call of each connection, now and the most at once.
+}
+
+// openCalls returns the calls that are open at the relay now and the most at once.
+func (r *testRelay) openCalls() (now, most int) {
+	r.callsMu.Lock()
+	defer r.callsMu.Unlock()
+	return r.calls, r.mostCalls
+}
+
+func (r *testRelay) addCall(n int) {
+	r.callsMu.Lock()
+	defer r.callsMu.Unlock()
+	r.calls += n
+	r.mostCalls = max(r.mostCalls, r.calls)
 }
 
 // acceptedConn is an agent connection and its remote address at the accept.
 type acceptedConn struct {
 	qc   quic.Connection
 	from netip.AddrPort
+	kind *atomic.Int32 // connUnknown until the relay reads the Hello.
 }
 
-// keep records the agent connection qc.
-func (r *testRelay) keep(qc quic.Connection) {
+// Kinds of an agent connection, from its Hello.
+const (
+	connUnknown int32 = iota
+	connSession
+	connExtra
+)
+
+// keep records the agent connection qc. The relay serves the connection
+// that keep returns, which finds the kind of qc in its Hello.
+func (r *testRelay) keep(qc quic.Connection) quic.Connection {
 	r.connsMu.Lock()
 	defer r.connsMu.Unlock()
-	r.conns = append(r.conns, acceptedConn{qc, unmap(qc.RemoteAddr().(*net.UDPAddr).AddrPort())})
+	c := acceptedConn{qc, unmap(qc.RemoteAddr().(*net.UDPAddr).AddrPort()), new(atomic.Int32)}
+	r.conns = append(r.conns, c)
+	return &helloConn{Connection: qc, r: r, kind: c.kind}
+}
+
+// helloConn reads the Hello of the Session call on the first stream, and
+// counts the open calls on the other streams.
+type helloConn struct {
+	quic.Connection
+	r     *testRelay
+	kind  *atomic.Int32
+	first atomic.Bool
+}
+
+func (c *helloConn) AcceptStream(ctx context.Context) (quic.Stream, error) {
+	st, err := c.Connection.AcceptStream(ctx)
+	if err != nil {
+		return st, err
+	}
+	if c.first.Swap(true) {
+		c.r.addCall(1)
+		return &callStream{Stream: st, r: c.r}, nil
+	}
+	return &helloStream{Stream: st, kind: c.kind}, nil
+}
+
+// callStream is a call stream that the relay ends with Close or CancelWrite.
+type callStream struct {
+	quic.Stream
+	r     *testRelay
+	ended atomic.Bool
+}
+
+func (s *callStream) end() {
+	if !s.ended.Swap(true) {
+		s.r.addCall(-1)
+	}
+}
+
+func (s *callStream) Close() error {
+	s.end()
+	return s.Stream.Close()
+}
+
+func (s *callStream) CancelWrite(code quic.StreamErrorCode) {
+	s.end()
+	s.Stream.CancelWrite(code)
+}
+
+// helloStream keeps the bytes that the relay reads until they have the Hello.
+type helloStream struct {
+	quic.Stream
+	kind *atomic.Int32
+	buf  []byte
+}
+
+func (s *helloStream) Read(p []byte) (int, error) {
+	n, err := s.Stream.Read(p)
+	if s.buf != nil || s.kind.Load() == connUnknown {
+		s.buf = append(s.buf, p[:n]...)
+		if h, ok := readHello(s.buf); ok {
+			s.buf = nil
+			kind := connSession
+			if h.GetShard() != nil {
+				kind = connExtra
+			}
+			s.kind.Store(kind)
+		}
+	}
+	return n, err
+}
+
+// readHello reads the Hello in the first bytes of a Session call: the call
+// type and version, a header frame, and a message frame. Each frame is a
+// kind, a length varint, and the message.
+func readHello(b []byte) (*dp.Hello, bool) {
+	if len(b) < 2 {
+		return nil, false
+	}
+	b = b[2:]
+	var msg []byte
+	for range 2 {
+		if len(b) < 1 {
+			return nil, false
+		}
+		n, w := binary.Uvarint(b[1:])
+		if w <= 0 || uint64(len(b)-1-w) < n {
+			return nil, false
+		}
+		msg, b = b[1+w:1+w+int(n)], b[1+w+int(n):]
+	}
+	var req dp.SessionRequest
+	if proto.Unmarshal(msg, &req) != nil {
+		return nil, false
+	}
+	return req.GetHello(), true
+}
+
+// sessionConns returns the connections from the address from with a Session
+// call that is not of an extra connection, in the order that the relay accepted them.
+func (r *testRelay) sessionConns(from net.Addr) []quic.Connection {
+	r.connsMu.Lock()
+	defer r.connsMu.Unlock()
+	var out []quic.Connection
+	for _, qc := range r.agentConnsLocked(from, false) {
+		for _, c := range r.conns {
+			if c.qc == qc && c.kind.Load() == connSession {
+				out = append(out, qc)
+			}
+		}
+	}
+	return out
 }
 
 // agentConns returns the agent connections from the address from, at the
 // accept or now, in the order that the relay accepted them. With open, only
 // the ones that did not close.
 func (r *testRelay) agentConns(from net.Addr, open bool) []quic.Connection {
-	want := unmap(from.(*net.UDPAddr).AddrPort())
 	r.connsMu.Lock()
 	defer r.connsMu.Unlock()
+	return r.agentConnsLocked(from, open)
+}
+
+func (r *testRelay) agentConnsLocked(from net.Addr, open bool) []quic.Connection {
+	want := unmap(from.(*net.UDPAddr).AddrPort())
 	var out []quic.Connection
 	// An agent socket on the unspecified address has the port only.
 	match := func(ap netip.AddrPort) bool {
@@ -352,8 +495,8 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 				wg.Go(func() { out.refuse(ctx, qc, reason) })
 				continue
 			}
-			out.keep(qc)
-			wg.Go(func() { srv.ServeConn(ctx, qc) })
+			sc := out.keep(qc)
+			wg.Go(func() { srv.ServeConn(ctx, sc) })
 		}
 	})
 	t.Cleanup(func() {
@@ -398,6 +541,19 @@ func (c *countConn) got(from netip.AddrPort) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.psp[from]
+}
+
+// gotPort returns the PSP packets that c got from the port, from each address.
+func (c *countConn) gotPort(port uint16) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for from, k := range c.psp {
+		if from.Port() == port {
+			n += k
+		}
+	}
+	return n
 }
 
 // attachEvent is one OnAttach call.

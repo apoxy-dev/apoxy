@@ -4,6 +4,7 @@ package agent
 
 import (
 	"net/netip"
+	"slices"
 
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -15,31 +16,49 @@ func Routable(p, vpc netip.Prefix) bool {
 }
 
 // routeTable is the prefixes of the other attachments on one relay session,
-// to their origin. A prefix has one origin in a VPC.
+// to their origin and the relay of the origin. A prefix has one origin in a VPC.
 type routeTable struct {
-	origins map[netip.Prefix]string
-	synced  bool // A RouteDelta came.
+	routes map[netip.Prefix]routeInfo
+	// synced is set at the empty RouteDelta that ends the first table.
+	synced bool
+}
+
+// routeInfo is the origin of a route and the relay that has the origin.
+type routeInfo struct {
+	origin string
+	relay  string   // Relay ID from Route.relay. Empty when the Route names none.
+	addrs  []string // Addresses of the relay. Empty when the Route gives none.
+}
+
+// same reports whether i and o have the same origin and relay.
+func (i routeInfo) same(o routeInfo) bool {
+	return i.origin == o.origin && i.relay == o.relay && slices.Equal(i.addrs, o.addrs)
 }
 
 // routeChange is a prefix that an origin gets or loses.
 type routeChange struct {
 	prefix netip.Prefix
-	origin string
-	add    bool
+	routeInfo
+	add bool
 }
 
 // apply applies d, skips the routes of the attachments of this agent, and
-// returns the changes. A prefix that moves to a new origin is a remove and an add.
+// returns the changes. A prefix that moves to a new origin or relay is a
+// remove and an add. An empty delta ends the first table.
 func (t *routeTable) apply(d *dp.RouteDelta, own func(origin string) bool) []routeChange {
-	if t.origins == nil {
-		t.origins = map[netip.Prefix]string{}
+	if t.routes == nil {
+		t.routes = map[netip.Prefix]routeInfo{}
 	}
-	t.synced = true
+	if len(d.GetAdd())+len(d.GetRemove()) == 0 {
+		t.synced = true
+	}
 	var out []routeChange
 	for _, r := range d.GetRemove() {
-		if p, ok := parseRoute(r, own); ok && t.origins[p] == r.GetOrigin() {
-			delete(t.origins, p)
-			out = append(out, routeChange{p, r.GetOrigin(), false})
+		if p, ok := parseRoute(r, own); ok {
+			if old, had := t.routes[p]; had && old.origin == r.GetOrigin() {
+				delete(t.routes, p)
+				out = append(out, routeChange{p, old, false})
+			}
 		}
 	}
 	for _, r := range d.GetAdd() {
@@ -47,26 +66,30 @@ func (t *routeTable) apply(d *dp.RouteDelta, own func(origin string) bool) []rou
 		if !ok {
 			continue
 		}
-		old, had := t.origins[p]
-		if had && old == r.GetOrigin() {
+		info := routeInfo{origin: r.GetOrigin(), relay: r.GetRelay().GetId()}
+		if info.relay != "" {
+			info.addrs = slices.Clone(r.GetRelay().GetAddresses())
+		}
+		old, had := t.routes[p]
+		if had && old.same(info) {
 			continue
 		}
 		if had {
 			out = append(out, routeChange{p, old, false})
 		}
-		t.origins[p] = r.GetOrigin()
-		out = append(out, routeChange{p, r.GetOrigin(), true})
+		t.routes[p] = info
+		out = append(out, routeChange{p, info, true})
 	}
 	return out
 }
 
-// drop removes the routes of origin and returns their prefixes.
-func (t *routeTable) drop(origin string) []netip.Prefix {
-	var out []netip.Prefix
-	for p, o := range t.origins {
-		if o == origin {
-			delete(t.origins, p)
-			out = append(out, p)
+// drop removes the routes of origin and returns the changes.
+func (t *routeTable) drop(origin string) []routeChange {
+	var out []routeChange
+	for p, info := range t.routes {
+		if info.origin == origin {
+			delete(t.routes, p)
+			out = append(out, routeChange{p, info, false})
 		}
 	}
 	return out

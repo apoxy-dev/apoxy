@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,7 +26,8 @@ const writerQueue = 64
 
 var errNoDataPath = errors.New("no data path")
 
-// session is one relay session, which has the attachment of Config.
+// session is one relay session with the attachment of Config and the extra
+// attachments of the agent.
 type session struct {
 	a      *Agent
 	mb, up *mailbox
@@ -82,11 +82,10 @@ type session struct {
 	cur           []*extraConn
 	extraConns    map[*extraConn]bool
 
-	extras    map[string]*extra // By name.
-	byID      map[string]*extra
-	queue     []*xjob
-	running   map[*xjob]bool
-	detaching []*djob
+	extras  map[string]*extra // By name.
+	byID    map[string]*extra
+	queue   []*xjob
+	running map[*xjob]bool
 }
 
 // newSession returns the session on the connection d. The session ends with ctx.
@@ -225,8 +224,8 @@ type (
 	ackSent struct{ rev uint64 }
 )
 
-// writeStream sends the Acks on the Session stream until end or the end of
-// the connection.
+// writeStream sends the Acks and the remote addresses on the Session stream
+// until end or the end of the connection.
 func writeStream(st interface {
 	Send(*dp.SessionRequest) error
 }, mb, up *mailbox) {
@@ -240,6 +239,11 @@ func writeStream(st interface {
 					return
 				}
 				up.send(ackSent{m.rev})
+			case remoteMsg:
+				if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Remote{Remote: m.m}}); err != nil {
+					slog.Warn("Failed to send the attachments on the other relays", "attachment", m.m.GetAttachmentId(), "error", err)
+					return
+				}
 			}
 		}
 	}
@@ -325,6 +329,8 @@ func (s *session) handle(m any) {
 		s.baseAttached(m)
 	case bindingMsg:
 		s.bound(m)
+	case remoteMsg:
+		s.sw.send(m)
 	case probeDone:
 		s.probeDone(m)
 	case rekeyMsg:
@@ -389,15 +395,14 @@ func (s *session) stream(m *dp.SessionResponse) {
 }
 
 // routeDelta applies a RouteDelta to the route table. The reader reads on
-// after the Ack went out and the callback of the change returned.
+// after the Ack went out and the callback of the change returned. The first
+// table comes in parts and ends with an empty RouteDelta.
 func (s *session) routeDelta(d *dp.RouteDelta) {
-	first := !s.routes.synced
+	synced := s.routes.synced
 	changes := s.routes.apply(d, s.ownOrigin)
-	s.waitRev, s.waiting, s.ackOK, s.routesOK = d.GetRev(), true, false, true
+	s.waitRev, s.waiting, s.ackOK, s.routesOK = d.GetRev(), true, false, false
 	s.sw.send(ackMsg{d.GetRev()})
-	add, remove := prefixChanges(changes)
-	s.routesOK = false
-	s.up.send(routesMsg{s: s, add: add, remove: remove, first: first, delta: true, rev: d.GetRev()})
+	s.up.send(routesMsg{s: s, changes: changes, first: !synced && s.routes.synced, delta: true, rev: d.GetRev()})
 }
 
 // noRoute sends an ICMP error to the sender of a packet to the address of a
@@ -459,7 +464,7 @@ type baseAttached struct {
 // attachBase starts the Attach call of the attachment of Config.
 func (s *session) attachBase() {
 	cfg, c, qc, ref, rank, addr := &s.a.cfg, s.d.client, s.d.qc, s.d.config.GetVpc(), s.rank, s.addr()
-	req := &dp.AttachRequest{Vpc: ref, Name: cfg.Name, Labels: cfg.Labels, Routes: prefixStrings(cfg.Routes), Rank: rank}
+	req := &dp.AttachRequest{Vpc: ref, Name: cfg.Name, Labels: cfg.Labels, Routes: advertised(cfg.Routes), Rank: rank}
 	ctx := s.ctx
 	s.task(func() any {
 		ctx, cancel := context.WithTimeout(ctx, openTimeout)
@@ -488,7 +493,7 @@ func (s *session) baseAttached(m baseAttached) {
 	s.id, s.prefixes, s.self = m.id, m.prefixes, overlayAddr(m.prefixes)
 	// The routes that came for the attachment before the attach leave the table.
 	if removed := s.routes.drop(m.id); len(removed) > 0 {
-		s.up.send(routesMsg{s: s, remove: removed})
+		s.up.send(routesMsg{s: s, changes: removed})
 	}
 	s.up.send(bindMsg{s, s.d.config})
 }
@@ -646,9 +651,4 @@ func attachError(qc quic.Connection, err error) error {
 		return fmt.Errorf("%w (connection: %w)", err, cause)
 	}
 	return err
-}
-
-// rootsOf returns the relay roots of the cert in use.
-func (a *Agent) rootsOf() *x509.CertPool {
-	return a.relayRoots(a.cfg.Identity.Current())
 }

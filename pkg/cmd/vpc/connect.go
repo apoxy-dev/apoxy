@@ -109,9 +109,8 @@ func (o *connectOptions) addFlags(cmd *cobra.Command) {
 	f.StringVar(&o.name, "name", "", "Attachment name, a DNS label (default: the host name).")
 	f.StringVar(&o.transport, "transport", "auto", "Data transport: auto or quic. Auto starts on quic, and changes to psp when the path to the relay carries psp.")
 	f.StringVar(&o.driver, "driver", "auto", "Data path: auto, netstack or tun. Auto uses tun when the process has NET_ADMIN, else netstack.")
-	f.StringArrayVar(&o.routes, "route", nil, "CIDR that this host advertises into the VPC. Repeatable. The VPC is IPv6 only. "+
-		"To reach an IPv4 address behind a netstack host, use that host's VPC /96 with the IPv4 address in the last 32 bits. "+
-		"Plain IPv4 works only between tun hosts whose source address is in a CIDR that they advertise.")
+	f.StringArrayVar(&o.routes, "route", nil, "CIDR behind this host. Repeatable. The VPC is IPv6 only: the host advertises each IPv6 CIDR into the VPC and does not send an IPv4 CIDR. "+
+		"On a netstack host an IPv4 CIDR names the IPv4 addresses that the host dials for a packet to its VPC /96 with the IPv4 address in the last 32 bits.")
 	f.StringToStringVar(&o.labels, "label", nil, "Attachment label (key=value) for VPCService selection. Repeatable.")
 	f.StringVar(&o.socksAddr, "socks-addr", "localhost:1080", "SOCKS5 listen address of the netstack driver. Empty disables the proxy.")
 	f.StringVar(&o.tunIfname, "tun-ifname", "apoxy0", "Name of the TUN device of the tun driver.")

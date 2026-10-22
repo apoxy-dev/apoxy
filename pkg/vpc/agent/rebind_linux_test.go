@@ -19,6 +19,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 	vnetns "github.com/vishvananda/netns"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
 // roamChild is set in the process that runs a row of TestRoamNetns.
@@ -80,14 +82,26 @@ func roam(t *testing.T, noRoute time.Duration) {
 
 	udp := listenIn(t, agentNS, nil)
 	newAddr := netip.AddrPortFrom(netip.MustParseAddr("10.98.0.2"), uint16(udp.LocalAddr().(*net.UDPAddr).Port))
-	tap := &tapConn{PacketConn: listenIn(t, relayNS, relayIP), to: newAddr}
+	count := &countConn{}
+	tap := &tapConn{PacketConn: count.wrap(listenIn(t, relayNS, relayIP)), to: newAddr}
 	w := newWorld(t)
+	// The relay takes lane ports, and drops them when the agent moves.
+	w.relayCfg.LaneSources = relay.MaxLaneSources
 	r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP), tap)
 	b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), mode: TransportAuto})
-	a := w.agent(t, "a", r, agentOptions{udp: udp, mode: TransportAuto})
+	a := w.agent(t, "a", r, agentOptions{udp: udp, mode: TransportAuto, lanes: 4})
 	ea, eb := a.attached(t), b.attached(t)
 	echo(t, b.stack, eb.addr, 7)
 	ping(t, a.stack, ea.addr, eb.addr, 7, "before the move")
+	// The lane sockets send keepalives to the relay from each address of the agent.
+	keepalives := func() int {
+		n := 0
+		for _, c := range a.binding().LaneConns() {
+			n += count.gotPort(uint16(c.LocalAddr().(*net.UDPAddr).Port))
+		}
+		return n
+	}
+	require.Eventually(t, func() bool { return keepalives() > 0 }, 2*relayQUIC.KeepAlivePeriod+time.Second, 10*time.Millisecond, "lane keepalives")
 	rc := a.current()
 	a0, err := ah.LinkByName("a0")
 	require.NoError(t, err)
@@ -128,6 +142,11 @@ func roam(t *testing.T, noRoute time.Duration) {
 	t.Logf("Roam: relay data to the new address %v, data works %v after the move", rows, data)
 	// The next BFD packet of the agent gives the relay the new address.
 	assert.Less(t, data, checkTx+500*time.Millisecond)
+	// The reply to that BFD packet has the new address, and the lanes stop.
+	time.Sleep(100 * time.Millisecond)
+	n := keepalives()
+	require.Never(t, func() bool { return keepalives() > n }, 2*relayQUIC.KeepAlivePeriod, 50*time.Millisecond, "lane keepalives after the move")
+	ping(t, a.stack, ea.addr, eb.addr, 7, "after the lanes stopped")
 }
 
 // delay adds netem with delay d to the link name.

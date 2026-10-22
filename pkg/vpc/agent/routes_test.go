@@ -24,46 +24,86 @@ func pfx(ss ...string) []netip.Prefix {
 
 func TestRouteTable(t *testing.T) {
 	rt := func(prefix, origin string) *dp.Route { return &dp.Route{Prefix: prefix, Origin: origin} }
+	// via is a route whose relay is id at addrs.
+	via := func(prefix, origin, id string, addrs ...string) *dp.Route {
+		return &dp.Route{Prefix: prefix, Origin: origin, Relay: &dp.RelayRef{Id: id, Addresses: addrs}}
+	}
 	add := func(prefix, origin string) routeChange {
-		return routeChange{netip.MustParsePrefix(prefix), origin, true}
+		return routeChange{netip.MustParsePrefix(prefix), routeInfo{origin: origin}, true}
 	}
 	rm := func(prefix, origin string) routeChange {
-		return routeChange{netip.MustParsePrefix(prefix), origin, false}
+		return routeChange{netip.MustParsePrefix(prefix), routeInfo{origin: origin}, false}
+	}
+	// on is c with the relay id at addrs.
+	on := func(c routeChange, id string, addrs ...string) routeChange {
+		c.relay, c.addrs = id, addrs
+		return c
 	}
 	type step struct {
-		delta *dp.RouteDelta
-		want  []routeChange
+		delta  *dp.RouteDelta
+		want   []routeChange
+		synced bool // The table is synced after the step.
 	}
 	cases := []struct {
 		name  string
 		steps []step
 	}{
 		{name: "add and remove", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "b"), rt("fd00:2::/96", "b")}}, []routeChange{add("10.0.0.0/8", "b"), add("fd00:2::/96", "b")}},
-			{&dp.RouteDelta{Remove: []*dp.Route{rt("10.0.0.0/8", "b")}}, []routeChange{rm("10.0.0.0/8", "b")}},
+			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "b"), rt("fd00:2::/96", "b")}}, []routeChange{add("10.0.0.0/8", "b"), add("fd00:2::/96", "b")}, false},
+			{&dp.RouteDelta{Remove: []*dp.Route{rt("10.0.0.0/8", "b")}}, []routeChange{rm("10.0.0.0/8", "b")}, false},
 		}},
 		{name: "routes of self", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{rt("fd00:1::/96", "self"), rt("10.1.0.0/16", "self")}}, nil},
-			{&dp.RouteDelta{Remove: []*dp.Route{rt("fd00:1::/96", "self")}}, nil},
+			{&dp.RouteDelta{Add: []*dp.Route{rt("fd00:1::/96", "self"), rt("10.1.0.0/16", "self")}}, nil, false},
+			{&dp.RouteDelta{Remove: []*dp.Route{rt("fd00:1::/96", "self")}}, nil, false},
 		}},
 		{name: "routes of another attachment of self", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{rt("fd00:3::/96", "self-2"), rt("10.2.0.0/16", "self-2"), rt("fd00:2::/96", "b")}}, []routeChange{add("fd00:2::/96", "b")}},
-			{&dp.RouteDelta{Remove: []*dp.Route{rt("fd00:3::/96", "self-2"), rt("fd00:2::/96", "b")}}, []routeChange{rm("fd00:2::/96", "b")}},
+			{&dp.RouteDelta{Add: []*dp.Route{rt("fd00:3::/96", "self-2"), rt("10.2.0.0/16", "self-2"), rt("fd00:2::/96", "b")}}, []routeChange{add("fd00:2::/96", "b")}, false},
+			{&dp.RouteDelta{Remove: []*dp.Route{rt("fd00:3::/96", "self-2"), rt("fd00:2::/96", "b")}}, []routeChange{rm("fd00:2::/96", "b")}, false},
 		}},
 		{name: "new origin", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "b")}}, []routeChange{add("10.0.0.0/8", "b")}},
-			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "c")}}, []routeChange{rm("10.0.0.0/8", "b"), add("10.0.0.0/8", "c")}},
-			{&dp.RouteDelta{Remove: []*dp.Route{rt("10.0.0.0/8", "b")}}, nil},
-			{&dp.RouteDelta{Remove: []*dp.Route{rt("10.0.0.0/8", "c")}}, []routeChange{rm("10.0.0.0/8", "c")}},
+			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "b")}}, []routeChange{add("10.0.0.0/8", "b")}, false},
+			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "c")}}, []routeChange{rm("10.0.0.0/8", "b"), add("10.0.0.0/8", "c")}, false},
+			{&dp.RouteDelta{Remove: []*dp.Route{rt("10.0.0.0/8", "b")}}, nil, false},
+			{&dp.RouteDelta{Remove: []*dp.Route{rt("10.0.0.0/8", "c")}}, []routeChange{rm("10.0.0.0/8", "c")}, false},
 		}},
 		{name: "new origin in one delta", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "b")}}, []routeChange{add("10.0.0.0/8", "b")}},
+			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "b")}}, []routeChange{add("10.0.0.0/8", "b")}, false},
 			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.0/8", "c")}, Remove: []*dp.Route{rt("10.0.0.0/8", "b")}},
-				[]routeChange{rm("10.0.0.0/8", "b"), add("10.0.0.0/8", "c")}},
+				[]routeChange{rm("10.0.0.0/8", "b"), add("10.0.0.0/8", "c")}, false},
 		}},
 		{name: "repeated and unknown routes", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.1/8", "b"), rt("10.0.0.0/8", "b"), rt("bad", "b")}}, []routeChange{add("10.0.0.0/8", "b")}},
-			{&dp.RouteDelta{Remove: []*dp.Route{rt("10.0.0.0/8", "c"), rt("192.0.2.0/24", "b")}}, nil},
+			{&dp.RouteDelta{Add: []*dp.Route{rt("10.0.0.1/8", "b"), rt("10.0.0.0/8", "b"), rt("bad", "b")}}, []routeChange{add("10.0.0.0/8", "b")}, false},
+			{&dp.RouteDelta{Remove: []*dp.Route{rt("10.0.0.0/8", "c"), rt("192.0.2.0/24", "b")}}, nil, false},
+		}},
+		{name: "first table in parts", steps: []step{
+			{&dp.RouteDelta{Rev: 1, Add: []*dp.Route{rt("2001:db8:1::/64", "b")}}, []routeChange{add("2001:db8:1::/64", "b")}, false},
+			{&dp.RouteDelta{Rev: 2, Add: []*dp.Route{rt("2001:db8:2::/64", "c")}}, []routeChange{add("2001:db8:2::/64", "c")}, false},
+			{&dp.RouteDelta{Rev: 3}, nil, true},
+			{&dp.RouteDelta{Rev: 4, Remove: []*dp.Route{rt("2001:db8:1::/64", "b")}}, []routeChange{rm("2001:db8:1::/64", "b")}, true},
+		}},
+		{name: "empty first table", steps: []step{
+			{&dp.RouteDelta{Rev: 1}, nil, true},
+		}},
+		{name: "slot route and its relay", steps: []step{
+			{&dp.RouteDelta{Add: []*dp.Route{via("fd61:706f:7879:1:200::/88", "rb", "rb", "192.0.2.2:443")}},
+				[]routeChange{on(add("fd61:706f:7879:1:200::/88", "rb"), "rb", "192.0.2.2:443")}, false},
+			{&dp.RouteDelta{Add: []*dp.Route{via("fd61:706f:7879:1:200::/88", "rb", "rb", "192.0.2.2:443")}}, nil, false},
+		}},
+		{name: "same origin and another relay", steps: []step{
+			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rb", "192.0.2.2:443")}},
+				[]routeChange{on(add("2001:db8:1::/64", "b"), "rb", "192.0.2.2:443")}, false},
+			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rc", "192.0.2.3:443")}},
+				[]routeChange{on(rm("2001:db8:1::/64", "b"), "rb", "192.0.2.2:443"), on(add("2001:db8:1::/64", "b"), "rc", "192.0.2.3:443")}, false},
+		}},
+		{name: "same relay at other addresses", steps: []step{
+			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rb", "192.0.2.2:443")}},
+				[]routeChange{on(add("2001:db8:1::/64", "b"), "rb", "192.0.2.2:443")}, false},
+			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rb", "192.0.2.9:443")}},
+				[]routeChange{on(rm("2001:db8:1::/64", "b"), "rb", "192.0.2.2:443"), on(add("2001:db8:1::/64", "b"), "rb", "192.0.2.9:443")}, false},
+		}},
+		{name: "remove with no relay", steps: []step{
+			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rb")}}, []routeChange{on(add("2001:db8:1::/64", "b"), "rb")}, false},
+			{&dp.RouteDelta{Remove: []*dp.Route{rt("2001:db8:1::/64", "b")}}, []routeChange{on(rm("2001:db8:1::/64", "b"), "rb")}, false},
 		}},
 	}
 	for _, tc := range cases {
@@ -72,6 +112,7 @@ func TestRouteTable(t *testing.T) {
 			for i, s := range tc.steps {
 				own := func(origin string) bool { return origin == "self" || origin == "self-2" }
 				assert.Equal(t, s.want, tbl.apply(s.delta, own), "step %d", i)
+				assert.Equal(t, s.synced, tbl.synced, "step %d: synced", i)
 			}
 		})
 	}
@@ -84,9 +125,10 @@ func TestPrefixChanges(t *testing.T) {
 		changes     []routeChange
 		add, remove []netip.Prefix
 	}{
-		{"add", []routeChange{{p, "b", true}}, pfx("10.0.0.0/8"), nil},
-		{"remove", []routeChange{{p, "b", false}}, nil, pfx("10.0.0.0/8")},
-		{"new origin", []routeChange{{p, "b", false}, {p, "c", true}}, nil, nil},
+		{"add", []routeChange{{p, routeInfo{origin: "b"}, true}}, pfx("10.0.0.0/8"), nil},
+		{"remove", []routeChange{{p, routeInfo{origin: "b"}, false}}, nil, pfx("10.0.0.0/8")},
+		{"new origin", []routeChange{{p, routeInfo{origin: "b"}, false}, {p, routeInfo{origin: "c"}, true}}, nil, nil},
+		{"new relay", []routeChange{{p, routeInfo{origin: "b", relay: "rb"}, false}, {p, routeInfo{origin: "b", relay: "rc"}, true}}, nil, nil},
 		{"none", nil, nil, nil},
 	}
 	for _, tc := range cases {

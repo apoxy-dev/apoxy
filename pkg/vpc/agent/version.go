@@ -25,8 +25,7 @@ func (e *upgradeError) Unwrap() error { return ErrUpgrade }
 // session with UPGRADE.
 func relayUpgrade(addr string, err error) error {
 	var ae *quic.ApplicationError
-	switch {
-	case errors.As(err, &ae) && ae.Remote && ae.ErrorCode == quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE):
+	if errors.As(err, &ae) && ae.Remote && ae.ErrorCode == quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE) {
 		return &upgradeError{fmt.Sprintf("relay %s: %s", addr, ae.ErrorMessage)}
 	}
 	return err
@@ -39,10 +38,4 @@ func relayRevision(relay, agent *dp.Version) error {
 		return fmt.Errorf("relay revision %d is below the agent minimum %d", got, least)
 	}
 	return nil
-}
-
-// relayAtLeast reports whether the relay of d is at revision n or later. The
-// agent knows the revision from Welcome, before it makes another call.
-func (d *dialed) relayAtLeast(n uint32) bool {
-	return d.version.GetRevision() >= n
 }

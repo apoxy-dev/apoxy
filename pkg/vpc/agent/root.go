@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
@@ -23,22 +24,29 @@ var (
 	errAgentStopped  = errors.New("agent stopped")
 )
 
-// home is the record of a home session in the root.
+// home is the record of a relay session in the root.
 type home struct {
-	s          *session
-	ep         endpoint
+	s  *session
+	ep endpoint
+	// id is the relay ID from the Welcome. The session holds it from the dial
+	// result until it ends, so no other connection to that relay attaches.
+	id         string
+	wanted     bool // Dialed for the wanted set, not for Config.Sessions.
 	rank       uint32
 	st         sessState
+	since      time.Time // The attach.
 	draining   bool
 	alternates []endpoint
 	// routes is the copy of the route table of the session.
-	routes map[netip.Prefix]bool
-	synced bool // The first RouteDelta came.
+	routes map[netip.Prefix]routeInfo
+	synced bool // The first table ended.
 	// held are the extra attachments of the session, by name. pending are the
 	// specs of an attachX with no attachedX yet.
 	held       map[string]heldX
 	pending    map[string]*AttachmentSpec
 	deprecated bool
+	// remotes is the last remote set sent for each attachment ID of the session.
+	remotes map[string]string
 }
 
 // heldX is an extra attachment on a home session.
@@ -82,9 +90,24 @@ type root struct {
 	attachRetry *time.Timer
 	retryWait   time.Duration
 
+	// reported are the routes of the primary that OnRoutes has. They stay
+	// while no session is live, and the wanted set comes from them.
 	routesOf   *home
-	reported   map[netip.Prefix]bool
+	reported   map[netip.Prefix]routeInfo
+	relayRefs  map[string]int // Count of the reported routes of each relay ID.
 	routeWaits []routeWait
+	// primaryID is the relay of the last primary, and primaryAddr the address
+	// that the agent dialed for it. They stay while no session is live.
+	primaryID, primaryAddr string
+	// relayAddrs are the newest addresses that a route gave for each relay ID
+	// that is wanted or that a session holds.
+	relayAddrs map[string][]string
+	// welcome is the relay ID of the newest Welcome at each dialed address.
+	welcome map[string]string
+	wanted  map[string]bool // The last wanted set.
+	// remoteDirty tells that the attachments of a session changed, so the
+	// remote sets go again.
+	remoteDirty bool
 
 	clamps   map[*psp.Peer]int
 	pspPeers map[*psp.Peer]bool
@@ -110,7 +133,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	r := &root{
 		a: a, mb: newMailbox(), retryWait: minBackoff,
-		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]bool{},
+		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]routeInfo{}, relayRefs: map[string]int{},
+		relayAddrs: map[string][]string{}, welcome: map[string]string{}, wanted: map[string]bool{},
 		clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
 	}
 	r.ctx, r.cancel = context.WithCancel(ctx)
@@ -159,6 +183,7 @@ func (r *root) run() error {
 	report := time.NewTicker(reportInterval)
 	defer report.Stop()
 	for {
+		r.sendRemotes()
 		r.flush()
 		if r.ending && r.idle() {
 			if !r.cbRunning {
@@ -193,6 +218,9 @@ func (r *root) run() error {
 			r.closeRound()
 		case <-r.keep.waitTimer():
 			r.keep.wait = nil
+			r.plan()
+		case <-timerC(r.keep.wake):
+			r.keep.wake = nil
 			r.plan()
 		case <-timerC(r.attachRetry):
 			r.attachRetry = nil
@@ -256,6 +284,10 @@ func (r *root) shutdown() {
 		k.wait.Stop()
 		k.wait = nil
 	}
+	if k.wake != nil {
+		k.wake.Stop()
+		k.wake = nil
+	}
 	if r.attachRetry != nil {
 		r.attachRetry.Stop()
 		r.attachRetry = nil
@@ -294,6 +326,8 @@ func (r *root) handle(m any) {
 			return
 		}
 		r.dialDone(m)
+	case wantDialed:
+		r.wantDone(m)
 	case relisted:
 		r.relistDone(m)
 		r.plan()
@@ -378,14 +412,35 @@ func (r *root) homeOf(s *session) *home {
 	return nil
 }
 
-// startHome starts a home session on the connection d with rank.
-func (r *root) startHome(d *dialed, rank uint32) {
-	s := newSession(r.a, r.ctx, r.mb, d, rank)
+// take starts a session on the connection d, which holds the relay ID of its
+// Welcome from now on. When another session holds that ID, d ends before its
+// Attach, and take returns false.
+func (r *root) take(d *dialed, wanted bool) bool {
+	if o := r.holder(d.relayID); o != nil {
+		slog.Warn("Closed a second connection to a relay before its attach", "relay", d.relayID, "address", d.ep.addr, "other_address", o.ep.addr)
+		d.close("agent has a connection to this relay")
+		r.failRelay(d.relayID)
+		return false
+	}
+	k := &r.keep
+	s := newSession(r.a, r.ctx, r.mb, d, k.rank)
 	r.homes = append(r.homes, &home{
-		s: s, ep: d.ep, rank: rank,
-		routes: map[netip.Prefix]bool{}, held: map[string]heldX{}, pending: map[string]*AttachmentSpec{},
+		s: s, ep: d.ep, id: d.relayID, wanted: wanted, rank: k.rank,
+		routes: map[netip.Prefix]routeInfo{}, held: map[string]heldX{}, pending: map[string]*AttachmentSpec{}, remotes: map[string]string{},
 	})
+	k.rank++
 	go s.run()
+	return true
+}
+
+// holder returns the session that holds the relay ID id, or nil.
+func (r *root) holder(id string) *home {
+	for _, h := range r.homes {
+		if h.id == id {
+			return h
+		}
+	}
+	return nil
 }
 
 // live returns the attached and the draining home sessions in rank order.
@@ -431,9 +486,11 @@ func (r *root) status(m statusMsg) {
 		return
 	}
 	k := &r.keep
-	k.failed, k.refused, k.since = 0, nil, time.Now()
+	k.failed, k.refused = 0, nil
+	h.since = time.Now()
+	r.remoteDirty = true
 	st := &h.st
-	slog.Info("Attached to the VPC", "relay", h.ep.addr, "address", st.base.Address, "prefixes", st.base.Prefixes, "rank", h.rank,
+	slog.Info("Attached to the VPC", "relay", h.ep.addr, "relay_id", h.id, "address", st.base.Address, "prefixes", st.base.Prefixes, "rank", h.rank,
 		"transport", transportName(st.mode), "fallback", st.reason, "connect", st.connect, "setup", st.setup)
 	if f := r.a.cfg.OnAttach; f != nil {
 		b, addr, prefixes := r.b, st.base.Address, slices.Clone(st.base.Prefixes)
@@ -499,10 +556,15 @@ func (r *root) sessEnded(m sessEnded) {
 		r.renew()
 	}
 	if h.st.attached {
+		r.remoteDirty = true
+		// After a session of this age, the next failed dial of its relay waits minBackoff.
+		if time.Since(h.since) > stableSession {
+			delete(r.keep.waits, h.id)
+		}
 		r.prefer()
 		r.usePrimary()
 	} else {
-		r.retry(1, fmt.Errorf("relay %s: %w", h.ep.addr, m.err))
+		r.retry([]string{h.id}, fmt.Errorf("relay %s: %w", h.ep.addr, m.err))
 	}
 	r.plan()
 }
@@ -684,7 +746,8 @@ func (r *root) attachmentsOf(h *home) []Attachment {
 }
 
 // usePrimary gives the primary session the packets with no session source, and
-// OnRoutes its routes. Run it after the callbacks of the change.
+// OnRoutes its routes. The relay of the primary replaces the kept one. Run it
+// after the callbacks of the change.
 func (r *root) usePrimary() {
 	p := r.primary()
 	if p == nil || r.routesOf == p {
@@ -692,23 +755,26 @@ func (r *root) usePrimary() {
 	}
 	r.b.SetDefault(p.st.link)
 	r.routesOf = p
+	r.primaryID, r.primaryAddr = p.id, p.ep.addr
 	if p.synced {
 		r.syncRoutes()
 	}
 }
 
-// routes takes a change of the route table of a home session. The routes of
-// the primary go to OnRoutes; the first delta of a session is a sync.
+// routes takes a change of the route table of a session. The routes of the
+// primary go to OnRoutes; the end of the first table of a session is a sync.
+// The wanted set follows the reported routes.
 func (r *root) routes(m routesMsg) {
 	h := r.homeOf(m.s)
 	if h == nil {
 		return
 	}
-	for _, p := range m.remove {
-		delete(h.routes, p)
-	}
-	for _, p := range m.add {
-		h.routes[p] = true
+	for _, c := range m.changes {
+		if c.add {
+			h.routes[c.prefix] = c.routeInfo
+		} else {
+			delete(h.routes, c.prefix)
+		}
 	}
 	if m.first {
 		h.synced = true
@@ -719,7 +785,10 @@ func (r *root) routes(m routesMsg) {
 	case m.first:
 		queued = r.syncRoutes()
 	default:
-		queued = r.report(m.add, m.remove)
+		queued = r.report(m.changes)
+	}
+	if r.routesOf == h {
+		r.plan()
 	}
 	if !m.delta {
 		return
@@ -731,37 +800,85 @@ func (r *root) routes(m routesMsg) {
 	m.s.mb.send(routesDone{m.rev})
 }
 
-// syncRoutes queues the change from the reported prefixes to the routes of the
-// primary. It reports whether it queued an event.
+// syncRoutes makes the reported routes the routes of the primary and queues
+// the change of their prefixes. It reports whether it queued an event.
 func (r *root) syncRoutes() bool {
 	want := r.routesOf.routes
 	var add, remove []netip.Prefix
-	for p := range want {
-		if !r.reported[p] {
+	for p, info := range want {
+		if _, ok := r.reported[p]; !ok {
 			add = append(add, p)
 		}
+		r.setReported(p, info)
 	}
 	for p := range r.reported {
-		if !want[p] {
+		if _, ok := want[p]; !ok {
+			remove = append(remove, p)
+			r.unsetReported(p)
+		}
+	}
+	return r.onRoutes(add, remove)
+}
+
+// report applies changes of the routes of the primary to the reported routes
+// and queues the change of their prefixes. It reports whether it queued an event.
+func (r *root) report(changes []routeChange) bool {
+	had := map[netip.Prefix]bool{}
+	for _, c := range changes {
+		if _, seen := had[c.prefix]; !seen {
+			_, had[c.prefix] = r.reported[c.prefix]
+		}
+		if c.add {
+			r.setReported(c.prefix, c.routeInfo)
+		} else {
+			r.unsetReported(c.prefix)
+		}
+	}
+	var add, remove []netip.Prefix
+	for p, was := range had {
+		switch _, is := r.reported[p]; {
+		case is && !was:
+			add = append(add, p)
+		case was && !is:
 			remove = append(remove, p)
 		}
 	}
-	return r.report(add, remove)
+	return r.onRoutes(add, remove)
 }
 
-// report queues a change of the reported prefixes for OnRoutes. It reports
+// setReported sets the reported route of p. A route with the addresses of its
+// relay gives the newest addresses of that relay.
+func (r *root) setReported(p netip.Prefix, info routeInfo) {
+	r.unsetReported(p)
+	r.reported[p] = info
+	if info.relay != "" {
+		r.relayRefs[info.relay]++
+		if len(info.addrs) > 0 {
+			r.relayAddrs[info.relay] = info.addrs
+		}
+	}
+}
+
+// unsetReported removes the reported route of p.
+func (r *root) unsetReported(p netip.Prefix) {
+	old, ok := r.reported[p]
+	if !ok {
+		return
+	}
+	delete(r.reported, p)
+	if old.relay == "" {
+		return
+	}
+	if r.relayRefs[old.relay]--; r.relayRefs[old.relay] <= 0 {
+		delete(r.relayRefs, old.relay)
+	}
+}
+
+// onRoutes queues OnRoutes for a change of the reported prefixes. It reports
 // whether it queued an event.
-func (r *root) report(add, remove []netip.Prefix) bool {
-	add = slices.DeleteFunc(slices.Clone(add), func(p netip.Prefix) bool { return r.reported[p] })
-	remove = slices.DeleteFunc(slices.Clone(remove), func(p netip.Prefix) bool { return !r.reported[p] })
+func (r *root) onRoutes(add, remove []netip.Prefix) bool {
 	if len(add)+len(remove) == 0 {
 		return false
-	}
-	for _, p := range remove {
-		delete(r.reported, p)
-	}
-	for _, p := range add {
-		r.reported[p] = true
 	}
 	f := r.a.cfg.OnRoutes
 	if f == nil {
@@ -835,5 +952,44 @@ func runCallbacks(mb, up *mailbox) {
 				return
 			}
 		}
+	}
+}
+
+// sendRemotes gives each live session, for each of its attachments, the
+// attachments of the same name on the other live sessions when that set
+// changed. The relay keeps the last set of each attachment.
+func (r *root) sendRemotes() {
+	if !r.remoteDirty || r.ending {
+		return
+	}
+	r.remoteDirty = false
+	live := r.live()
+	for _, h := range live {
+		ids := map[string]bool{}
+		for _, at := range r.attachmentsOf(h) {
+			ids[at.ID] = true
+			var others []*dp.RemoteAttachment
+			for _, o := range live {
+				if o == h {
+					continue
+				}
+				for _, oat := range r.attachmentsOf(o) {
+					if oat.Name == at.Name {
+						others = append(others, &dp.RemoteAttachment{RelayId: o.id, AttachmentId: oat.ID, Addresses: prefixStrings(oat.Prefixes)})
+					}
+				}
+			}
+			slices.SortFunc(others, func(x, y *dp.RemoteAttachment) int { return cmp.Compare(x.RelayId, y.RelayId) })
+			var key strings.Builder
+			for _, o := range others {
+				fmt.Fprintf(&key, "%s %s %v;", o.RelayId, o.AttachmentId, o.Addresses)
+			}
+			if h.remotes[at.ID] == key.String() {
+				continue
+			}
+			h.remotes[at.ID] = key.String()
+			h.s.mb.send(remoteMsg{&dp.RemoteAddresses{AttachmentId: at.ID, Attachments: others}})
+		}
+		maps.DeleteFunc(h.remotes, func(id string, _ string) bool { return !ids[id] })
 	}
 }

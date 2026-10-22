@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -35,6 +36,7 @@ type dialed struct {
 	relayAddr netip.AddrPort // Where PSP packets, path probes and lane keep-alives go. See pspAddr.
 	maxLanes  uint32         // Most lane ports that the relay takes.
 	version   *dp.Version    // Version of the relay, from Welcome.
+	relayID   string         // ID of the relay, from Welcome.
 	config    *dp.Config     // The first Config.
 	begin     time.Time      // Start of the dial.
 	connect   time.Duration  // From the start of the dial to the first Config.
@@ -62,8 +64,7 @@ func (d *dialed) choiceRTT() time.Duration {
 }
 
 // dial runs the handshake with the relay at e and the Session call up to
-// Config. ctx ends the dial;
-// the Session call of the result lives until its cancel.
+// Config. ctx ends the dial; the Session call of the result lives until its cancel.
 func (a *Agent) dial(ctx context.Context, e endpoint, roots *x509.CertPool) (*dialed, error) {
 	host, _, err := net.SplitHostPort(e.addr)
 	if err != nil {
@@ -144,6 +145,10 @@ func (a *Agent) hello(d *dialed) error {
 	// The dial fails for a relay that is too old, so the agent dials the next relay.
 	if err := relayRevision(d.version, a.ver); err != nil {
 		return err
+	}
+	// The connection has the key of its relay from the Welcome.
+	if d.relayID = w.GetRelayId(); d.relayID == "" {
+		return errors.New("relay sent no relay ID")
 	}
 	if m, err = st.Recv(); err != nil {
 		return err

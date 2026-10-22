@@ -19,29 +19,6 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// TestRelayAtLeast checks the relay revision that the agent has from Welcome.
-// A relay from before revisions sends no Version and is at revision 0.
-func TestRelayAtLeast(t *testing.T) {
-	cases := []struct {
-		name    string
-		version *dp.Version // Version in Welcome.
-		n       uint32
-		want    bool
-	}{
-		{name: "no version at revision 0", n: 0, want: true},
-		{name: "no version below revision 1", n: 1},
-		{name: "this revision", version: &dp.Version{Revision: dp.Revision}, n: dp.Revision, want: true},
-		{name: "this revision below the next", version: &dp.Version{Revision: dp.Revision}, n: dp.Revision + 1},
-		{name: "later revision", version: &dp.Version{Revision: dp.Revision + 1}, n: dp.Revision, want: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			d := &dialed{version: tc.version}
-			assert.Equal(t, tc.want, d.relayAtLeast(tc.n))
-		})
-	}
-}
-
 // TestRelayRevision checks the relay revision against the minimum of the agent.
 func TestRelayRevision(t *testing.T) {
 	cases := []struct {

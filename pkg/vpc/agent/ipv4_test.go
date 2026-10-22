@@ -4,6 +4,7 @@ package agent
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -17,27 +18,27 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-// TestIPv4Sources checks that the relay refuses IPv4 routes and drops IPv4 that
-// is not in a /96, and that IPv4 in the /96 of the peer gets an answer.
-func TestIPv4Sources(t *testing.T) {
+// TestIPv4 checks that IPv4 goes only in the /96 of an attachment: the agent
+// sends no IPv4 route, so a plain IPv4 packet to an IPv4 CIDR of the peer has no route.
+func TestIPv4(t *testing.T) {
 	lan, far := netip.MustParsePrefix("10.1.0.0/24"), netip.MustParseAddr("10.1.0.5")
 	src := netip.MustParseAddr("192.0.2.10")
 	cases := []struct {
 		name     string
 		mode     TransportMode
 		embedded bool // To far in the /96 of the peer, from the overlay address of the sender.
-		answer   bool
 	}{
-		{name: "PSP IPv4 source", mode: TransportAuto},
-		{name: "PSP IPv4 in the /96 of the peer", mode: TransportAuto, embedded: true, answer: true},
-		{name: "QUIC IPv4 source", mode: TransportQUIC},
-		{name: "QUIC IPv4 in the /96 of the peer", mode: TransportQUIC, embedded: true, answer: true},
+		{name: "PSP plain IPv4", mode: TransportAuto},
+		{name: "PSP IPv4 in the /96 of the peer", mode: TransportAuto, embedded: true},
+		{name: "QUIC plain IPv4", mode: TransportQUIC},
+		{name: "QUIC IPv4 in the /96 of the peer", mode: TransportQUIC, embedded: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a := w.agent(t, "a", r, agentOptions{mode: tc.mode})
+			own := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
+			a := w.agent(t, "a", r, agentOptions{mode: tc.mode, routes: own})
 			b := w.agent(t, "b", r, agentOptions{mode: tc.mode, routes: []netip.Prefix{lan}})
 			ea, eb := a.attached(t), b.attached(t)
 			a.hasRoutes(t, eb.prefixes...)
@@ -51,11 +52,14 @@ func TestIPv4Sources(t *testing.T) {
 			} else {
 				addIPv4(t, a.stack, from)
 				addIPv4(t, b.stack, to)
+				// The route of a to b comes after the attach of b.
+				require.Eventually(t, func() bool { return slices.Contains(a.routeSet(), eb.prefixes[0]) },
+					5*time.Second, 10*time.Millisecond)
+				assert.NotContains(t, a.routeSet(), lan, "IPv4 route of b")
 			}
 			echo(t, b.stack, to, 9000)
-			require.Equal(t, tc.answer, answers(a.stack, from, to, 9000))
-			if !tc.answer {
-				// All data goes through the relay, which drops it in each mode.
+			require.Equal(t, tc.embedded, answers(a.stack, from, to, 9000))
+			if !tc.embedded {
 				assert.Zero(t, b.binding().Stats().RxPackets)
 			}
 		})

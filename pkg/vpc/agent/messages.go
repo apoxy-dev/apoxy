@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"net/netip"
 	"sync/atomic"
 	"time"
 
@@ -65,6 +64,9 @@ type (
 		refused []uint32
 		err     error
 	}
+	// remoteMsg has the attachments of the same name on the other relays of
+	// the agent, for one attachment of the session.
+	remoteMsg struct{ m *dp.RemoteAddresses }
 )
 
 // A session to its parent.
@@ -93,13 +95,14 @@ type (
 		mode dp.Mode
 	}
 	// routesMsg is a change of the route table of a home session. A change
-	// from a RouteDelta has delta set, and the root answers routesDone.
+	// from a RouteDelta has delta set, and the root answers routesDone. first
+	// is set at the end of the first table.
 	routesMsg struct {
-		s           *session
-		add, remove []netip.Prefix
-		first       bool
-		delta       bool
-		rev         uint64
+		s       *session
+		changes []routeChange
+		first   bool
+		delta   bool
+		rev     uint64
 	}
 	reportMsg struct {
 		s    *session
