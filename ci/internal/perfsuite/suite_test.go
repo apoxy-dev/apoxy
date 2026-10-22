@@ -47,8 +47,7 @@ func TestPlan(t *testing.T) {
 		{
 			name: "vpc on a host", suite: VPC, opts: Options{Duration: "30s", Reps: 3, MinCPUs: 16, Host: true},
 			wantIDs: []string{"netstack-psp-relay", "netstack-quic-relay", "tun-psp-relay-cubic", "netstack-psp-relay-loss0.1",
-				"netstack-psp-direct", "netstack-psp-relay-cubic", "netstack-psp-relay-rate1000mbit",
-				"netstack-psp-relay-netns", "netstack-psp-relay-xdp", "netstack-psp-direct-1flow"},
+				"netstack-psp-direct", "netstack-psp-relay-cubic", "netstack-psp-relay-rate1000mbit", "netstack-psp-direct-1flow"},
 			wantHost: true, wantTun: true,
 		},
 		{
@@ -106,12 +105,19 @@ func TestVPCRowArgs(t *testing.T) {
 		{
 			id: "netstack-psp-relay", wantGroup: "floor",
 			want: []string{
-				"-name=vpc-netstack-psp-relay", "-reps=3", "-baseline=baseline.json", "-min-cpus=16", "-duration=30s",
-				`-sidecar-argv=["vpcbench","relay","-listen","$SERVER_IP:4443"]`,
-				`-server-argv=["vpcbench","server","-relay","$SERVER_IP:4443","-listen","$SERVER_IP:4433"]`,
-				`-client-argv=["vpcbench","client","-relay","$SERVER_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]`,
+				"-name=vpc-netstack-psp-relay", "-reps=3", "-baseline=baseline.json", "-min-cpus=16", "-duration=30s", "-relay-netns",
+				`-sidecar-argv=["vpcbench","relay","-iface","perf-r","-listen","$RELAY_CTL_IP:4443"]`,
+				`-server-argv=["vpcbench","server","-relay","$RELAY_CTL_IP:4443","-listen","$SERVER_IP:4433"]`,
+				`-client-argv=["vpcbench","client","-relay","$RELAY_CTL_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]`,
 			},
-			notWant: []string{"-relay-netns"},
+		},
+		{
+			id: "netstack-quic-relay", wantGroup: "info",
+			want: []string{
+				"-reps=1", "-relay-netns",
+				`-sidecar-argv=["vpcbench","relay","-iface","perf-r","-listen","$RELAY_CTL_IP:4443"]`,
+				`-server-argv=["vpcbench","server","-relay","$RELAY_CTL_IP:4443","-listen","$SERVER_IP:4433","-transport","quic"]`,
+			},
 		},
 		{
 			id: "netstack-psp-direct", wantGroup: "info",
@@ -126,19 +132,6 @@ func TestVPCRowArgs(t *testing.T) {
 		{
 			id: "netstack-psp-relay-rate1000mbit", wantGroup: "info",
 			want: []string{"-rate=1000mbit", "-queue-limit=2640"},
-		},
-		{
-			id: "netstack-psp-relay-netns", wantGroup: "info",
-			want: []string{
-				"-relay-netns",
-				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443"]`,
-				`-server-argv=["vpcbench","server","-relay","$RELAY_IP:4443","-listen","$SERVER_IP:4433"]`,
-				`-client-argv=["vpcbench","client","-relay","$RELAY_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]`,
-			},
-		},
-		{
-			id: "netstack-psp-relay-xdp", wantGroup: "info",
-			want: []string{"-name=vpc-netstack-psp-relay-xdp", "-relay-netns", `-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","perf-r"]`},
 		},
 	}
 	for _, tc := range cases {
@@ -170,7 +163,6 @@ func TestNodePlans(t *testing.T) {
 		wantEmpty bool
 		// wantNetem tells that the rows add a netem delay on each host.
 		wantNetem bool
-		wantErr   string
 	}{
 		{name: "rig rows only", only: []string{"netstack-psp-relay"}, wantEmpty: true},
 		{name: "no rows named", wantEmpty: true},
@@ -193,46 +185,11 @@ func TestNodePlans(t *testing.T) {
 			},
 			wantNetem: true,
 		},
-		{
-			name: "both node rows", only: []string{"netstack-psp-direct-2node", "netstack-psp-relay-3node"},
-			wantRoles: map[string][]string{
-				"client": {"netstack-psp-direct-2node", "netstack-psp-relay-3node"},
-				"server": {"netstack-psp-direct-2node", "netstack-psp-relay-3node"},
-				"relay":  {"netstack-psp-relay-3node"},
-			},
-		},
-		{
-			name: "relay rows with and without XDP", only: []string{"netstack-psp-relay-3node", "netstack-psp-relay-3node-xdp"},
-			wantRoles: map[string][]string{
-				"client": {"netstack-psp-relay-3node", "netstack-psp-relay-3node-xdp"},
-				"server": {"netstack-psp-relay-3node", "netstack-psp-relay-3node-xdp"},
-				"relay":  {"netstack-psp-relay-3node", "netstack-psp-relay-3node-xdp"},
-			},
-		},
-		{
-			name: "rows with two relays", only: []string{"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
-			wantRoles: map[string][]string{
-				"client": {"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
-				"server": {"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
-				"relay":  {"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
-				"relay2": {"netstack-psp-relay-4node", "netstack-psp-relay-4node-p16-xdp-generic"},
-			},
-		},
-		{
-			name: "a row with two relays and a row with one", only: []string{"netstack-psp-relay-4node", "netstack-psp-relay-3node"},
-			wantErr: "run in separate calls",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			o.Only = tc.only
 			data, err := VPC.NodePlans(o)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("err = %v, want %q", err, tc.wantErr)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -275,145 +232,25 @@ func TestNodePlans(t *testing.T) {
 			}
 		})
 	}
-	// The row is an info row with no floor. The node argv waits for the other
-	// hosts and stops the relay at the end.
+	// The row is an info row with no floor and no relay. The node argv waits for the other host.
 	rows := VPC.rows(o)
-	i := slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-relay-3node" })
+	i := slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-direct-2node" })
 	r := rows[i]
-	if r.Group != "info" || r.Hosts() != 3 || r.Cmd != "node" {
+	if r.Group != "info" || r.Hosts() != 2 || r.Cmd != "node" || slices.ContainsFunc(r.Args, func(a string) bool { return strings.HasPrefix(a, "-sidecar") }) {
 		t.Errorf("row = %+v", r)
 	}
 	for _, w := range []string{
-		"-name=vpc-netstack-psp-relay-3node", "-duration=30s", "-min-cpus=16",
-		`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443"]`,
-		`-server-argv=["vpcbench","server","-relay","$RELAY_IP:4443","-listen","$SERVER_IP:4433","-start-timeout","5m"]`,
-		`-client-argv=["vpcbench","client","-relay","$RELAY_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-start-timeout","5m","-stop-relay"]`,
+		"-name=vpc-netstack-psp-direct-2node", "-duration=30s", "-min-cpus=16",
+		`-server-argv=["vpcbench","server","-via","direct","-listen","$SERVER_IP:4433","-start-timeout","5m"]`,
+		`-client-argv=["vpcbench","client","-via","direct","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-start-timeout","5m"]`,
 	} {
 		if !slices.Contains(r.Args, w) {
 			t.Errorf("args have no %s:\n%s", w, strings.Join(r.Args, "\n"))
 		}
 	}
-	i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-direct-2node" })
-	if r := rows[i]; r.Hosts() != 2 || slices.ContainsFunc(r.Args, func(a string) bool { return strings.Contains(a, "stop-relay") || strings.HasPrefix(a, "-sidecar") }) {
-		t.Errorf("direct row = %+v", r)
-	}
 	i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == "netstack-psp-direct-2node-1flow" })
 	if r := rows[i]; r.Hosts() != 2 || r.Group != "info" || !slices.Contains(r.Args, "-streams=1") || !slices.Contains(r.Args, "-name=vpc-netstack-psp-direct-2node") {
 		t.Errorf("direct row with one flow = %+v", r)
-	}
-	// A row with no lanes gives the relay its flags. Only the XDP rows set the
-	// NIC of the relay host.
-	wantArgs := []struct {
-		id      string
-		want    []string
-		notWant string
-	}{
-		{
-			id: "netstack-psp-relay-3node-p16-nolanes",
-			want: []string{
-				"-name=vpc-netstack-psp-relay-3node-nolanes", "-streams=16",
-				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-lanes","0"]`,
-			},
-			notWant: "-relay-xdp",
-		},
-		{
-			id: "netstack-psp-relay-3node-xdp",
-			want: []string{
-				"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=4", "-relay-xdp",
-				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","driver"]`,
-			},
-		},
-		{
-			id:   "netstack-psp-relay-3node-p16-xdp",
-			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=16", "-relay-xdp"},
-		},
-		{
-			id:   "netstack-psp-relay-3node-p8-xdp",
-			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=8", "-relay-xdp"},
-		},
-		{
-			id:   "netstack-psp-relay-3node-p32-xdp",
-			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp", "-streams=32", "-relay-xdp"},
-		},
-		{
-			id:   "netstack-psp-relay-3node-p16-xdp-q1",
-			want: []string{"-name=vpc-netstack-psp-relay-3node-xdp-q1", "-streams=16", "-relay-xdp", "-relay-channels=1"},
-		},
-		{
-			id: "netstack-psp-relay-3node-p16-xdp-generic",
-			want: []string{
-				"-name=vpc-netstack-psp-relay-3node-xdp-generic", "-streams=16", "-relay-xdp", "-relay-xdp-generic",
-				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","generic"]`,
-			},
-		},
-		// The second relay joins the first. The server attaches at the second relay,
-		// and the client takes the marks of the two relays.
-		{
-			id: "netstack-psp-relay-4node-1flow",
-			want: []string{
-				"-name=vpc-netstack-psp-relay-4node", "-streams=1",
-				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-mesh","relay-1"]`,
-				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
-				`-server-argv=["vpcbench","server","-relay","$RELAY2_IP:4443","-listen","$SERVER_IP:4433","-start-timeout","5m"]`,
-				`-client-argv=["vpcbench","client","-relay","$RELAY_IP:4443","-server","$SERVER_IP:4433","-server-relay","$RELAY2_IP:4443","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-start-timeout","5m","-stop-relay"]`,
-			},
-			notWant: "-relay-xdp",
-		},
-		{
-			id: "netstack-psp-relay-4node-p16-xdp-generic",
-			want: []string{
-				"-name=vpc-netstack-psp-relay-4node-xdp-generic", "-streams=16", "-relay-xdp", "-relay-xdp-generic",
-				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","generic","-mesh","relay-1"]`,
-				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-xdp","$DEV","-xdp-mode","generic","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
-			},
-		},
-		// Only one relay of the row forwards in XDP. The other relay uses its socket.
-		{
-			id: "netstack-psp-relay-4node-1flow-xdp-generic-relay1",
-			want: []string{
-				"-name=vpc-netstack-psp-relay-4node-xdp-generic-relay1", "-streams=1", "-relay-xdp", "-relay-xdp-generic",
-				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","generic","-mesh","relay-1"]`,
-				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
-			},
-		},
-		{
-			id: "netstack-psp-relay-4node-1flow-xdp-generic-relay2",
-			want: []string{
-				"-name=vpc-netstack-psp-relay-4node-xdp-generic-relay2", "-streams=1", "-relay-xdp", "-relay-xdp-generic",
-				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-mesh","relay-1"]`,
-				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-xdp","$DEV","-xdp-mode","generic","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
-			},
-		},
-		{
-			id: "netstack-psp-relay-4node-1flow-xdp",
-			want: []string{
-				"-name=vpc-netstack-psp-relay-4node-xdp", "-streams=1", "-relay-xdp",
-				`-sidecar-argv=["vpcbench","relay","-listen","$RELAY_IP:4443","-xdp","$DEV","-xdp-mode","driver","-mesh","relay-1"]`,
-				`-sidecar2-argv=["vpcbench","relay","-listen","$RELAY2_IP:4443","-xdp","$DEV","-xdp-mode","driver","-mesh","relay-2","-join","$RELAY_IP:4443","-start-timeout","5m"]`,
-			},
-			notWant: "-relay-xdp-generic",
-		},
-	}
-	for _, tc := range wantArgs {
-		i = slices.IndexFunc(rows, func(r Row) bool { return r.ID == tc.id })
-		if i < 0 {
-			t.Fatalf("no row %s", tc.id)
-		}
-		wantHosts := 3
-		if strings.Contains(tc.id, "-4node") {
-			wantHosts = 4
-		}
-		if rows[i].Hosts() != wantHosts {
-			t.Errorf("%s: hosts = %d, want %d", tc.id, rows[i].Hosts(), wantHosts)
-		}
-		for _, w := range tc.want {
-			if !slices.Contains(rows[i].Args, w) {
-				t.Errorf("%s: args have no %s:\n%s", tc.id, w, strings.Join(rows[i].Args, "\n"))
-			}
-		}
-		if tc.notWant != "" && slices.Contains(rows[i].Args, tc.notWant) {
-			t.Errorf("%s: args have %s", tc.id, tc.notWant)
-		}
 	}
 }
 
@@ -427,9 +264,9 @@ func TestVPCProfileArgs(t *testing.T) {
 		{
 			name: "on", profile: true,
 			want: []string{
-				`-sidecar-argv=["vpcbench","relay","-listen","$SERVER_IP:4443","-cpuprofile","$WORK_DIR/relay-cpu.pprof","-blockprofile","$WORK_DIR/relay-block.pprof","-mutexprofile","$WORK_DIR/relay-mutex.pprof","-trace","$WORK_DIR/relay.trace","-kernel","$WORK_DIR/relay-kernel"]`,
-				`-server-argv=["vpcbench","server","-relay","$SERVER_IP:4443","-listen","$SERVER_IP:4433","-cpuprofile","$WORK_DIR/server-cpu.pprof","-blockprofile","$WORK_DIR/server-block.pprof","-mutexprofile","$WORK_DIR/server-mutex.pprof","-trace","$WORK_DIR/server.trace","-kernel","$WORK_DIR/server-kernel"]`,
-				`-client-argv=["vpcbench","client","-relay","$SERVER_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-cpuprofile","$WORK_DIR/client-cpu.pprof","-blockprofile","$WORK_DIR/client-block.pprof","-mutexprofile","$WORK_DIR/client-mutex.pprof","-trace","$WORK_DIR/client.trace","-kernel","$WORK_DIR/client-kernel"]`,
+				`-sidecar-argv=["vpcbench","relay","-iface","perf-r","-listen","$RELAY_CTL_IP:4443","-cpuprofile","$WORK_DIR/relay-cpu.pprof","-blockprofile","$WORK_DIR/relay-block.pprof","-mutexprofile","$WORK_DIR/relay-mutex.pprof","-trace","$WORK_DIR/relay.trace","-kernel","$WORK_DIR/relay-kernel"]`,
+				`-server-argv=["vpcbench","server","-relay","$RELAY_CTL_IP:4443","-listen","$SERVER_IP:4433","-cpuprofile","$WORK_DIR/server-cpu.pprof","-blockprofile","$WORK_DIR/server-block.pprof","-mutexprofile","$WORK_DIR/server-mutex.pprof","-trace","$WORK_DIR/server.trace","-kernel","$WORK_DIR/server-kernel"]`,
+				`-client-argv=["vpcbench","client","-relay","$RELAY_CTL_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-cpuprofile","$WORK_DIR/client-cpu.pprof","-blockprofile","$WORK_DIR/client-block.pprof","-mutexprofile","$WORK_DIR/client-mutex.pprof","-trace","$WORK_DIR/client.trace","-kernel","$WORK_DIR/client-kernel"]`,
 			},
 		},
 	}

@@ -79,7 +79,7 @@ func (e *env) reach(t *testing.T, c *net.UDPConn, to netip.AddrPort) {
 }
 
 func TestImpair(t *testing.T) {
-	e := newEnv(t)
+	e := newEnv(t, 1)
 	im := openImpair(t)
 
 	from4 := netip.AddrPortFrom(peer4.Addr(), 7101)

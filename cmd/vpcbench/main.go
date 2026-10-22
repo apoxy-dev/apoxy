@@ -2,15 +2,17 @@
 
 // Command vpcbench measures TCP flows between two VPC agents, through a v2
 // relay or directly. The relay makes a CA and serves relay sessions with test
-// fakes, with no apiserver. The server and the client get the CA on the
-// control port of the relay. The client prints one JSON line that "perfrig run
-// -workload exec" reads. The relay is the sidecar of the server. perfrig stops
-// it after the server exits:
+// fakes, with no apiserver. Its data plane and QUIC run on the relay device of
+// a link (-iface), which takes all packets of the link, so its control port is
+// on another link. The server and the client get the CA and the QUIC address
+// of the relay on the control port. The client prints one JSON line that
+// "perfrig run -workload exec" reads. The relay is the sidecar of the server.
+// perfrig stops it after the server exits:
 //
-//	perfrig run -workload exec -name vpc-netstack-psp -ready tcp:4433 -streams 4 -omit 5s -duration 30s \
-//	  -sidecar-argv '["vpcbench","relay","-listen","$RELAY_IP:4443"]' \
-//	  -server-argv '["vpcbench","server","-relay","$RELAY_IP:4443","-listen","$SERVER_IP:4433"]' \
-//	  -client-argv '["vpcbench","client","-relay","$RELAY_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]'
+//	perfrig run -workload exec -name vpc-netstack-psp -relay-netns -ready tcp:4433 -streams 4 -omit 5s -duration 30s \
+//	  -sidecar-argv '["vpcbench","relay","-iface","perf-r","-listen","$RELAY_CTL_IP:4443"]' \
+//	  -server-argv '["vpcbench","server","-relay","$RELAY_CTL_IP:4443","-listen","$SERVER_IP:4433"]' \
+//	  -client-argv '["vpcbench","client","-relay","$RELAY_CTL_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s"]'
 //
 // With -stop-relay, the client stops the relay at the end. "perfrig node" uses
 // it when the relay runs on its own host.
@@ -75,7 +77,7 @@ func main() {
 		os.Exit(floodMain(os.Args[1], os.Args[2:]))
 	}
 	if len(os.Args) < 2 || (os.Args[1] != "relay" && os.Args[1] != "server" && os.Args[1] != "client") {
-		fmt.Fprintln(os.Stderr, "usage: vpcbench relay -listen HOST:PORT [flags]\n"+
+		fmt.Fprintln(os.Stderr, "usage: vpcbench relay -iface LINK -listen HOST:PORT [flags]\n"+
 			"       vpcbench server -listen HOST:PORT -relay HOST:PORT [flags]\n"+
 			"       vpcbench client -server HOST:PORT -relay HOST:PORT [flags]\n"+
 			"       vpcbench flood-relay -id ROW -listen HOST:PORT -xdp LINK [flags]\n"+
@@ -119,11 +121,11 @@ func main() {
 
 // options are the flags of all commands.
 type options struct {
-	Listen, PSPListen, Relay, Server, WorkDir string
-	Driver, Transport, Via, CC                string
-	MTU, Streams, Lanes                       int
-	Omit, Duration                            time.Duration
-	Idle, ProbeInterval                       time.Duration
+	Listen, Iface, Relay, Server, WorkDir string
+	Driver, Transport, Via, CC            string
+	MTU, Streams, Lanes                   int
+	Omit, Duration                        time.Duration
+	Idle, ProbeInterval                   time.Duration
 	// StartTimeout limits each wait for the relay, an attach or PSP mode.
 	StartTimeout time.Duration
 	// StopRelay makes the client stop the relay at the end.
@@ -149,14 +151,14 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 	fs.IntVar(&o.MTU, "mtu", 0, "relay: VPC MTU; agents: device MTU (0 means the default)")
 	o.Profiles.AddFlags(fs)
 	if cmd != "client" {
-		fs.StringVar(&o.Listen, "listen", "", "relay: UDP and TCP control address; server: TCP control address, and UDP with -via direct")
+		fs.StringVar(&o.Listen, "listen", "", "TCP control address; server: also UDP with -via direct")
 	}
 	if cmd == "relay" {
-		fs.StringVar(&o.PSPListen, "psp-listen", "", "UDP address of the PSP socket, which the agents get from the relay (default: the IP address of -listen with port 1000)")
+		fs.StringVar(&o.Iface, "iface", "", "link of the relay device, which takes all packets of the link (AF_XDP, Linux only)")
 		fs.IntVar(&o.Lanes, "lanes", relay.MaxLaneSources, "most lane ports that the relay takes from a session; 0 makes agents send on one port")
 	}
 	if cmd != "relay" {
-		fs.StringVar(&o.Relay, "relay", "", "relay address host:port")
+		fs.StringVar(&o.Relay, "relay", "", "control address host:port of the relay")
 		fs.StringVar(&o.Driver, "driver", "netstack", "data path driver: netstack or tun")
 		fs.StringVar(&o.Transport, "transport", "psp", "data transport through the relay: psp or quic")
 		fs.StringVar(&o.Via, "via", "relay", "data path: relay, or direct with no relay and no agent")
@@ -194,6 +196,8 @@ func (o options) check(cmd string) error {
 		return errors.New("-via direct sends only PSP")
 	case cmd != "client" && o.Listen == "":
 		return errors.New("-listen is required")
+	case cmd == "relay" && o.Iface == "":
+		return errors.New("-iface is required")
 	case cmd == "client" && o.Server == "":
 		return errors.New("-server is required")
 	case o.Via == "relay" && o.Relay == "":
@@ -268,15 +272,15 @@ func (s *side) startNet(ctx context.Context, fail context.CancelCauseFunc, o opt
 	return nil
 }
 
-// startAgent runs an agent that attaches at the relay of o with a cert from
-// ca, and starts its driver.
-func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, name string, ca *vpctest.CA) (*side, error) {
+// startAgent runs an agent that attaches at the relay with the QUIC address
+// relayAddr with a cert from ca, and starts its driver.
+func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, name string, ca *vpctest.CA, relayAddr string) (*side, error) {
 	cred := filepath.Join(o.WorkDir, name+"-cred.json")
 	// A cert from the CA of an earlier run does not work.
 	if err := os.Remove(cred); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	uc, err := listenUDPFor(o.Relay)
+	uc, err := listenUDPFor(relayAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +299,7 @@ func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, na
 		Identity: identity.NewManager(cred, func(context.Context) (*identity.Credential, error) {
 			return ca.Credential(project, vpcName, name, 24*time.Hour)
 		}),
-		Relays:        []identity.Relay{{ID: relayID, Addresses: []string{o.Relay}}},
+		Relays:        []identity.Relay{{ID: relayID, Addresses: []string{relayAddr}}},
 		RelayRoots:    ca.Pool(),
 		Sessions:      1,
 		Transport:     tr,
@@ -445,8 +449,10 @@ type request struct {
 
 // reply answers a request.
 type reply struct {
-	CA    []byte `json:"ca,omitempty"`   // Ca: the CA cert and key in PEM.
-	Addr  string `json:"addr,omitempty"` // Hello: overlay address of the server.
+	CA []byte `json:"ca,omitempty"` // Ca: the CA cert and key in PEM.
+	// Addr is the QUIC address of the relay in a ca reply, and the overlay address of the server in
+	// a hello reply.
+	Addr  string `json:"addr,omitempty"`
 	Keys  []byte `json:"keys,omitempty"`
 	Mark  mark   `json:"mark"`
 	Error string `json:"error,omitempty"`
@@ -527,29 +533,33 @@ func serveCtl(c net.Conn, handle func(request) (reply, error)) error {
 }
 
 // relayCA waits until the relay of o serves its control port, then gets the
-// CA from it. It tries again while the relay of the run before stops.
-func relayCA(ctx context.Context, o options) (*vpctest.CA, *ctl, error) {
+// CA and the QUIC address of the relay from it. It tries again while the relay
+// of the run before stops.
+func relayCA(ctx context.Context, o options) (ca *vpctest.CA, addr string, c *ctl, err error) {
 	deadline := time.Now().Add(o.StartTimeout)
 	for {
-		c, err := dialCtl(ctx, o.Relay, max(time.Until(deadline), time.Second))
+		c, err = dialCtl(ctx, o.Relay, max(time.Until(deadline), time.Second))
 		if err != nil {
-			return nil, nil, err
+			return nil, "", nil, err
 		}
-		rep, err := c.call(request{Op: "ca"})
-		var ca *vpctest.CA
+		var rep reply
+		rep, err = c.call(request{Op: "ca"})
 		if err == nil {
 			ca, err = decodeCA(rep.CA)
 		}
+		if err == nil && rep.Addr == "" {
+			err = errors.New("the relay sent no QUIC address")
+		}
 		if err == nil {
-			return ca, c, nil
+			return ca, rep.Addr, c, nil
 		}
 		_ = c.c.Close()
 		if time.Now().After(deadline) {
-			return nil, nil, err
+			return nil, "", nil, err
 		}
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, "", nil, ctx.Err()
 		case <-time.After(ctlRetry):
 		}
 	}
@@ -585,12 +595,12 @@ func runServer(parent context.Context, o options, ready func(netip.AddrPort)) er
 		}
 	}()
 	if o.Via == "relay" {
-		ca, c, err := relayCA(ctx, o)
+		ca, addr, c, err := relayCA(ctx, o)
 		if err != nil {
 			return err
 		}
 		_ = c.c.Close()
-		if s, err = startAgent(ctx, fail, o, "server", ca); err != nil {
+		if s, err = startAgent(ctx, fail, o, "server", ca, addr); err != nil {
 			return serverErr(parent, ctx, err)
 		}
 		if err := serveSinks(s, &got); err != nil {
@@ -750,11 +760,12 @@ func runClient(parent context.Context, o options, out io.Writer) error {
 	}()
 	if o.Via == "relay" {
 		var ca *vpctest.CA
+		var addr string
 		var err error
-		if ca, relay, err = relayCA(ctx, o); err != nil {
+		if ca, addr, relay, err = relayCA(ctx, o); err != nil {
 			return err
 		}
-		if s, err = startAgent(ctx, fail, o, "client", ca); err != nil {
+		if s, err = startAgent(ctx, fail, o, "client", ca, addr); err != nil {
 			return runErr(ctx, err)
 		}
 	}

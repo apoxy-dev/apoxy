@@ -96,7 +96,7 @@ func runCmd(ctx context.Context, args []string) error {
 	fs.IntVar(&cfg.MinCPUs, "min-cpus", 0, "infra error when the host has fewer CPUs (0: no check)")
 	fs.Float64Var(&cfg.MaxSteal, "max-steal", -1, "infra error when the CPU steal of a run is above this percent (negative: no check)")
 	fs.StringVar(&cfg.NetnsPrefix, "netns-prefix", "perf", "prefix of the netns names")
-	fs.BoolVar(&cfg.RelayNetns, "relay-netns", false, "run the sidecar in a relay netns ($RELAY_IP), with a bridge that joins it to the client and the server")
+	fs.BoolVar(&cfg.RelayNetns, "relay-netns", false, "run the sidecar in a relay netns with bpffs ($RELAY_IP, and $RELAY_CTL_IP on its control link), with a bridge that joins it to the client and the server")
 	fs.StringVar(&cfg.HostClass, "host-class", "", "first word of the result key, for example the EC2 instance type (default: the arch)")
 	fs.StringVar(&cfg.OutDir, "out-dir", "", "keep the workload files and raw output in this directory")
 	fs.StringVar(&cfg.AppCPUs, "app-cpus", "", "pin the workload processes to this CPU list, for example 16-31 (empty: no pin)")

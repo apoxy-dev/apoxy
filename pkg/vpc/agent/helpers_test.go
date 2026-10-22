@@ -43,6 +43,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	relaydp "github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -509,13 +510,16 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 	wg.Go(func() { _ = r.Run(ctx) })
 	wg.Go(func() {
 		buf := make([]byte, 65535)
+		rx := make([]relaydp.RxPacket, 1)
+		var tx relaydp.TxBatch
 		for {
 			n, from, err := pspSock.ReadFrom(buf)
 			if err != nil {
 				return
 			}
 			if ua, ok := from.(*net.UDPAddr); ok {
-				plane.Receive(unmap(ua.AddrPort()), buf[:n])
+				rx[0] = relaydp.RxPacket{From: unmap(ua.AddrPort()), Payload: buf[:n]}
+				plane.Receive(rx, &tx)
 			}
 		}
 	})

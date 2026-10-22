@@ -41,55 +41,6 @@
       "server_cores_per_gbps": 0.172972,
       "info": true,
       "source": "median of 3 nightly runs: 2026-10-05 run 37355919915, 2026-10-06 run 37491625847, 2026-10-07 run 37652127228; kernel 7.0.0-1012-aws"
-    },
-    "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=1000mbit queue=2640 mtu=1500 bitrate=none window=none": {
-      "gbps": 0.871,
-      "packets_per_second": 92599.61682400107,
-      "client_cores_per_gbps": 0.457397,
-      "server_cores_per_gbps": 0.859685,
-      "info": true,
-      "source": "median of 3 nightly runs: 2026-10-05 run 37355919915, 2026-10-06 run 37491625847, 2026-10-07 run 37652127228; kernel 7.0.0-1012-aws"
-    },
-    "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 10.407,
-      "packets_per_second": 1115279.2566587373,
-      "client_cores_per_gbps": 0.279726,
-      "server_cores_per_gbps": 0.344268,
-      "min_gbps": 2,
-      "tolerance": 0.1,
-      "source": "median of 3 nightly runs: 2026-10-05 run 37355919915, 2026-10-06 run 37491625847, 2026-10-07 run 37652127228; kernel 7.0.0-1012-aws"
-    },
-    "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0.1% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 10.075,
-      "packets_per_second": 1078918.8010935094,
-      "client_cores_per_gbps": 0.264955,
-      "server_cores_per_gbps": 0.347393,
-      "info": true,
-      "source": "median of 3 nightly runs: 2026-10-05 run 37355919915, 2026-10-06 run 37491625847, 2026-10-07 run 37652127228; kernel 7.0.0-1012-aws"
-    },
-    "c7a.8xlarge vpc-netstack-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 9.395,
-      "packets_per_second": 1005955.1090567106,
-      "client_cores_per_gbps": 0.314947,
-      "server_cores_per_gbps": 0.336546,
-      "info": true,
-      "source": "median of 3 nightly runs: 2026-10-05 run 37355919915, 2026-10-06 run 37491625847, 2026-10-07 run 37652127228; kernel 7.0.0-1012-aws"
-    },
-    "c7a.8xlarge vpc-netstack-quic-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 2.329,
-      "packets_per_second": 247744.41174929644,
-      "client_cores_per_gbps": 0.615312,
-      "server_cores_per_gbps": 1.801941,
-      "info": true,
-      "source": "median of 3 nightly runs: 2026-10-05 run 37355919915, 2026-10-06 run 37491625847, 2026-10-07 run 37652127228; kernel 7.0.0-1012-aws"
-    },
-    "c7a.8xlarge vpc-tun-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 6.257,
-      "packets_per_second": 647570.8878780737,
-      "client_cores_per_gbps": 0.227583,
-      "server_cores_per_gbps": 0.572106,
-      "info": true,
-      "source": "median of 3 nightly runs: 2026-10-05 run 37355919915, 2026-10-06 run 37491625847, 2026-10-07 run 37652127228; kernel 7.0.0-1012-aws"
     }
   }
 }

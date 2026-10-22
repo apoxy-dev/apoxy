@@ -60,9 +60,7 @@ type config struct {
 	ServerArgv  []string
 	ClientArgv  []string
 	SidecarArgv []string
-	// Sidecar2Argv is the argv of the second relay of "perfrig node".
-	Sidecar2Argv []string
-	Ready        string
+	Ready       string
 }
 
 func (c config) settings() Settings {
@@ -168,18 +166,19 @@ func execute(ctx context.Context, cfg config, w Workload) (*Result, error) {
 	slog.Info("Measured RTT", "avg_ms", rtt.Avg, "min_ms", rtt.Min, "max_ms", rtt.Max)
 
 	env := Env{
-		ServerIP: serverIP,
-		ClientIP: clientIP,
-		RelayIP:  serverIP,
-		Duration: cfg.Duration,
-		Omit:     cfg.Omit,
-		Streams:  cfg.Streams,
-		Bitrate:  cfg.Bitrate,
-		Window:   cfg.Window,
-		Dir:      dir,
+		ServerIP:   serverIP,
+		ClientIP:   clientIP,
+		RelayIP:    serverIP,
+		RelayCtlIP: serverIP,
+		Duration:   cfg.Duration,
+		Omit:       cfg.Omit,
+		Streams:    cfg.Streams,
+		Bitrate:    cfg.Bitrate,
+		Window:     cfg.Window,
+		Dir:        dir,
 	}
 	if cfg.RelayNetns {
-		env.RelayIP = relayIP
+		env.RelayIP, env.RelayCtlIP = relayIP, relayCtlIP
 	}
 	slog.Info("Starting workload", "workload", w.Name, "key", res.Key, "reps", cfg.Reps)
 	runReps := func(from, to int) error {
@@ -227,7 +226,7 @@ func runRep(ctx context.Context, cfg config, w Workload, r *rig, env Env, rep in
 		prefix = []string{"taskset", "-c", cfg.AppCPUs}
 	}
 	if w.Sidecar != nil {
-		sidecar, err := startProc("sidecar", r.sidecarNetns(), w.Sidecar(env), env.vars(), prefix)
+		sidecar, err := startProc("sidecar", r.sidecarNetns(), r.sidecarArgv(w.Sidecar(env)), env.vars(), prefix)
 		if err != nil {
 			return Run{}, err
 		}

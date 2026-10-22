@@ -22,6 +22,11 @@ const (
 	relayDev  = "perf-r"
 	bridgeDev = "perf-br"
 
+	// The control link of the relay netns. The relay device takes all packets of relayDev, so
+	// the TCP control port of the relay is on this link, as on the node link of a relay.
+	relayCtlIP  = "10.200.0.4"
+	relayCtlDev = "perf-rc"
+
 	// bufMax is the socket buffer limit: 128 MiB holds 20 ms of data at 50 Gbps.
 	bufMax = "134217728"
 
@@ -69,6 +74,15 @@ func (r *rig) sidecarNetns() string {
 		return r.relay
 	}
 	return r.server
+}
+
+// sidecarArgv mounts bpffs for argv in the relay netns, as a relay node has it: "ip netns exec"
+// mounts a new /sys, which hides the bpffs of the host.
+func (r *rig) sidecarArgv(argv []string) []string {
+	if r.relay == "" {
+		return argv
+	}
+	return append([]string{"sh", "-c", `mount -t bpf bpf /sys/fs/bpf && exec "$@"`, "sh"}, argv...)
 }
 
 func (r *rig) setup(ctx context.Context) error {
@@ -134,9 +148,19 @@ func (r *rig) links() [][]string {
 					"type", "veth", "peer", "name", e.dev, "numtxqueues", queues, "numrxqueues", queues, "netns", e.ns},
 				[]string{"ip", "-n", r.bridge, "link", "set", "dev", e.dev, "master", bridgeDev, "up"})
 		}
+		steps = append(steps,
+			[]string{"ip", "-n", r.bridge, "link", "add", relayCtlDev, "mtu", mtu, "type", "veth", "peer", "name", relayCtlDev, "netns", r.relay},
+			[]string{"ip", "-n", r.bridge, "link", "set", "dev", relayCtlDev, "master", bridgeDev, "up"},
+			[]string{"ip", "-n", r.relay, "addr", "add", relayCtlIP + "/24", "dev", relayCtlDev},
+			[]string{"ip", "-n", r.relay, "link", "set", "dev", relayCtlDev, "mtu", mtu, "up"})
 	}
 	for _, e := range ends {
-		steps = append(steps, []string{"ip", "-n", e.ns, "addr", "add", e.ip + "/24", "dev", e.dev})
+		add := []string{"ip", "-n", e.ns, "addr", "add", e.ip + "/24", "dev", e.dev}
+		if e.dev == relayDev {
+			// The kernel sends no packet on the relay device: the routes go on the control link.
+			add = append(add, "noprefixroute")
+		}
+		steps = append(steps, add)
 	}
 	for _, e := range ends {
 		steps = append(steps, []string{"ip", "-n", e.ns, "link", "set", "dev", e.dev, "mtu", mtu, "up"})
@@ -151,6 +175,10 @@ func (r *rig) links() [][]string {
 // forwards, so that XDP can send packets on.
 func (r *rig) tuneRelay(ctx context.Context) error {
 	if err := writeIn(ctx, r.relay, "/proc/sys/net/ipv4/ip_forward", "1"); err != nil {
+		return err
+	}
+	// The control link answers ARP only for its own address, not for the relay device.
+	if err := writeIn(ctx, r.relay, "/proc/sys/net/ipv4/conf/all/arp_ignore", "1"); err != nil {
 		return err
 	}
 	for _, s := range r.relaySteps() {
@@ -210,6 +238,15 @@ func (r *rig) steering(cpus int) []sysfsWrite {
 		switch {
 		case r.relay == "":
 			writes = append(writes, sysfsWrite{e.ns, queues + "rx-*/rps_cpus", rps})
+		case e.dev == relayDev:
+			// XPS is off on both ends of the relay link: the TX queue of the bridge port, by the flow
+			// hash, is the RX queue of the relay device.
+			if e.ns == r.bridge {
+				writes = append(writes, sysfsWrite{e.ns, queues + "rx-*/rps_cpus", ring})
+			} else {
+				writes = append(writes, sysfsWrite{e.ns, queues + "rx-*/rps_cpus", rps})
+			}
+			writes = append(writes, sysfsWrite{e.ns, queues + "tx-*/xps_cpus", "0"})
 		case e.ns == r.bridge:
 			// A port has one CPU for each TX queue, and the flow hash selects the two, so one
 			// CPU sends into each veth ring. More CPUs fill the ring of 256 packets, and it drops.

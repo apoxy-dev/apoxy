@@ -23,32 +23,37 @@ import (
 	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	relaydp "github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// relaySockBuf is the socket buffer size of the PSP socket, as in the relay.
-const relaySockBuf = 16 << 20
-
 // runRelay serves relay sessions of one VPC with the vpctest fakes until ctx
 // ends or a client sends stop. The CA signs the relay cert and the agent
-// certs; the control port gives it to the server and the client. The data
-// plane of the relay runs on the PSP socket.
+// certs; the control port at -listen gives it and the QUIC address of the
+// relay to the server and the client. The data plane and QUIC of the relay
+// run on the relay device of -iface. ready gets the control address.
 func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error {
 	start := time.Now()
-	uc, err := listenUDP(o.Listen)
+	ifc, err := linkInterface(o.Iface)
 	if err != nil {
 		return err
 	}
-	defer uc.Close()
-	addr := uc.LocalAddr().(*net.UDPAddr).AddrPort()
-	pc, err := listenPSP(o, addr)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	d, err := relaydp.OpenDevice(ifc)
 	if err != nil {
 		return err
 	}
-	defer pc.Close()
-	pspAddr := pc.LocalAddr().(*net.UDPAddr).AddrPort()
-	slog.Info("Relay sockets are ready", "address", addr, "psp_address", pspAddr, "rcvbuf", sockRcvbuf(pc))
+	wg.Go(func() {
+		if err := d.Run(ctx); err != nil {
+			cancel(fmt.Errorf("relay device: %w", err))
+		}
+	})
+	quicAddr := d.PacketConn().LocalAddr().(*net.UDPAddr).AddrPort()
+	slog.Info("Relay device is open", "link", ifc.Name, "own", ifc.Own, "quic_address", quicAddr)
 
 	ca, err := vpctest.NewCA()
 	if err != nil {
@@ -58,19 +63,18 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	if err != nil {
 		return err
 	}
-	cl, err := net.Listen("tcp", addr.String())
+	cl, err := net.Listen("tcp", o.Listen)
 	if err != nil {
 		return err
 	}
 	defer cl.Close()
+	addr := cl.Addr().(*net.TCPAddr).AddrPort()
 
-	plane := vpctest.NewSockets(pc, uc)
-	go func() { _ = plane.Run() }()
 	r, err := relay.NewRouter(relay.Config{
-		Relay:       &dp.RelayRef{Id: relayID, Addresses: []string{addr.String()}},
+		Relay:       &dp.RelayRef{Id: relayID, Addresses: []string{quicAddr.String()}},
 		Trust:       vpctest.NewTrust(ca),
 		Addresses:   &addresses{},
-		Target:      plane.Target,
+		Target:      d.Target(),
 		LaneSources: o.Lanes,
 	})
 	if err != nil {
@@ -78,7 +82,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	}
 	r.AddTenant(project)
 	r.AddVPC(relay.VPCKey{Project: project, UID: vpcName}, relay.Network{ID: vni, MTU: uint32(o.MTU)})
-	tr := &quic.Transport{Conn: uc, ConnContext: relay.TraceContext}
+	tr := &quic.Transport{Conn: d.PacketConn(), ConnContext: relay.TraceContext}
 	defer tr.Close()
 	quicConf := tunnel.RelayQUICConfig()
 	quicConf.Tracer, quicConf.KeepAlivePeriod = relay.TraceRTT, relay.AgentKeepAlive
@@ -93,12 +97,8 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	if ready != nil {
 		ready(addr)
 	}
-	slog.Info("Serving relay sessions", "address", addr)
+	slog.Info("Serving relay sessions", "control_address", addr, "quic_address", quicAddr)
 
-	var wg sync.WaitGroup
-	defer wg.Wait()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	wg.Go(func() { _ = r.Run(ctx) })
 	wg.Go(func() {
 		serveMarks(ctx, cl, func(_ net.Addr, req request) (reply, error) {
@@ -108,57 +108,61 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 			}
 			switch req.Op {
 			case "ca":
-				return reply{CA: caPEM}, nil
+				return reply{CA: caPEM, Addr: quicAddr.String()}, nil
 			case "mark":
 				drops, reasons := relayDrops(r)
 				m := mark{
 					Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(),
-					Drops: drops, DropReasons: reasons, SockDrops: sockDrops(pc), CPUs: bench.PerCPU(),
+					Drops: drops, DropReasons: reasons, CPUs: bench.PerCPU(),
 				}
 				o.marked(req.Index, req.Window)
 				return reply{Mark: m}, nil
 			case "stop":
 				slog.Info("A client stopped the relay")
-				cancel()
+				cancel(nil)
 				return reply{}, nil
 			}
 			return reply{}, fmt.Errorf("unknown op %q", req.Op)
 		})
 	})
 	err = srv.Serve(ctx, ln)
-	if ctx.Err() != nil {
-		return nil
+	if cause := context.Cause(ctx); cause != nil {
+		if errors.Is(cause, context.Canceled) {
+			return nil
+		}
+		return cause
 	}
 	return err
 }
 
-// defaultPSPPort is the PSP port of a relay with no -psp-listen.
-const defaultPSPPort = 1000
-
-// listenPSP opens the PSP socket of the relay: at -psp-listen, or at the IP
-// address of the QUIC socket with the default PSP port.
-func listenPSP(o options, quicAddr netip.AddrPort) (*net.UDPConn, error) {
-	addr := o.PSPListen
-	if addr == "" {
-		addr = netip.AddrPortFrom(quicAddr.Addr(), defaultPSPPort).String()
-	}
-	pc, err := listenUDP(addr)
+// linkInterface returns the relay interface of the link name: its MAC and its
+// addresses that are not link-local, as the kernel has them.
+func linkInterface(name string) (relaydp.Interface, error) {
+	link, err := net.InterfaceByName(name)
 	if err != nil {
-		return nil, err
+		return relaydp.Interface{}, fmt.Errorf("failed to find the relay link: %w", err)
 	}
-	if err := errors.Join(pc.SetReadBuffer(relaySockBuf), pc.SetWriteBuffer(relaySockBuf)); err != nil {
-		slog.Warn("Failed to set the PSP socket buffers", "bytes", relaySockBuf, "error", err)
-	}
-	return pc, nil
-}
-
-// listenUDP opens the UDP socket of a relay at addr.
-func listenUDP(addr string) (*net.UDPConn, error) {
-	ua, err := net.ResolveUDPAddr("udp", addr)
+	addrs, err := link.Addrs()
 	if err != nil {
-		return nil, err
+		return relaydp.Interface{}, fmt.Errorf("failed to read the addresses of %s: %w", name, err)
 	}
-	return net.ListenUDP("udp", ua)
+	ifc := relaydp.Interface{Name: name, MAC: link.HardwareAddr}
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip, ok := netip.AddrFromSlice(ipn.IP)
+		if !ok || ip.Unmap().IsLinkLocalUnicast() {
+			continue
+		}
+		bits, _ := ipn.Mask.Size()
+		ifc.Own = append(ifc.Own, netip.PrefixFrom(ip.Unmap(), bits))
+	}
+	if len(ifc.Own) == 0 {
+		return relaydp.Interface{}, fmt.Errorf("the relay link %s has no address", name)
+	}
+	return ifc, nil
 }
 
 // ctlRetry is the time between two tries of a control call.

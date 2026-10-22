@@ -176,10 +176,10 @@ func TestWrite(t *testing.T) {
 func TestFinalCount(t *testing.T) {
 	r := newRelay(t)
 	for seq := uint32(1); seq <= 2; seq++ {
-		r.Receive(addrA1, seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "100.64.2.5", 100)))
+		r.receive(addrA1, seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "100.64.2.5", 100)))
 	}
 	require.NoError(t, write(t.Context(), r, remove(dp.PortsKey{Port: 1}.Entry(nil)), remove(dp.ClassifyKey{Port: 1, Session: 1}.Entry(nil))))
-	r.Receive(addrA1, seal(spiA1In, vniA, 3, ipv4("100.64.1.5", "100.64.2.5", 100)))
+	r.receive(addrA1, seal(spiA1In, vniA, 3, ipv4("100.64.1.5", "100.64.2.5", 100)))
 
 	cell := &p4.CounterEntry{CounterId: dp.CounterCells, Index: &p4.Index{Index: 2}}
 	var got *p4.CounterData
@@ -235,7 +235,7 @@ func TestRxRekey(t *testing.T) {
 		if s.del {
 			require.NoError(t, write(t.Context(), r, keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_RX, Spi: spiA1In})))
 		}
-		r.Receive(addrA1, pkt(s.spi, s.seq))
+		r.receive(addrA1, pkt(s.spi, s.seq))
 		assert.Len(t, r.sent, s.sent, s.name)
 		assert.Equal(t, s.drops, counts(t, r, dp.CounterDrops), s.name)
 		assert.Equal(t, s.rx, readRx(t, r), s.name)
@@ -263,7 +263,7 @@ func TestRxCount(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRelay(t, tc.extra...)
-			r.Receive(tc.from, seal(spiA1In, vniA, 3, ipv4("100.64.1.5", tc.dst, 100)))
+			r.receive(tc.from, seal(spiA1In, vniA, 3, ipv4("100.64.1.5", tc.dst, 100)))
 			want := map[int64]int64{}
 			if tc.drop != 0 {
 				want[int64(tc.drop)] = 1
@@ -324,7 +324,7 @@ func TestParallelWriters(t *testing.T) {
 		})
 	}
 	for seq := uint32(1); seq <= packets; seq++ {
-		r.Receive(addrA1, seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "100.64.2.5", 100)))
+		r.receive(addrA1, seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "100.64.2.5", 100)))
 	}
 	wg.Wait()
 	close(errs)

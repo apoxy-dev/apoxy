@@ -81,8 +81,6 @@ func TestParseNodePlans(t *testing.T) {
 	}{
 		{name: "client and server", in: `{"client": ` + row + `, "server": ` + row + `}`, wantRoles: 2},
 		{name: "with a relay", in: `{"client": ` + row + `, "server": ` + row + `, "relay": ` + row + `}`, wantRoles: 3},
-		{name: "with two relays", in: `{"client": ` + row + `, "server": ` + row + `, "relay": ` + row + `, "relay2": ` + row + `}`, wantRoles: 4},
-		{name: "second relay only", in: `{"client": ` + row + `, "server": ` + row + `, "relay2": ` + row + `}`, wantErr: "a second relay and no relay"},
 		{name: "no server", in: `{"client": ` + row + `}`, wantErr: "no server"},
 		{name: "no client", in: `{"server": ` + row + `}`, wantErr: "no client"},
 		{name: "unknown role", in: `{"client": ` + row + `, "server": ` + row + `, "proxy": ` + row + `}`, wantErr: "unknown node role"},

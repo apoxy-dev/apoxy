@@ -33,11 +33,32 @@ type meta struct {
 	size    int  // The bytes that the meters and the drops count.
 }
 
-// Receive runs the pipeline on one UDP payload b of port 1000 from the outer address from. It
-// changes b. Probes and keepalives go to the root.
-func (p *Pipeline) Receive(from netip.AddrPort, b []byte) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// Receive runs the pipeline on all packets of rx, and changes their payloads. Then it gives the
+// sealed PSP and RAW packets to one Send(tx), and resets tx. Probes and keepalives go to the root.
+func (p *Pipeline) Receive(rx []RxPacket, tx *TxBatch) {
+	// Each packet sends at most one packet, so a part of rxBatch packets keeps tx to rxBatch.
+	for len(rx) > 0 {
+		n := min(len(rx), rxBatch)
+		p.mu.RLock()
+		for _, pkt := range rx[:n] {
+			p.receive(pkt.From, pkt.Payload, tx)
+		}
+		p.mu.RUnlock()
+		p.flush(tx)
+		rx = rx[n:]
+	}
+}
+
+// flush gives tx to the Sender when it has packets, and resets it.
+func (p *Pipeline) flush(tx *TxBatch) {
+	if tx.Len() > 0 {
+		p.send.Send(tx)
+	}
+	tx.reset()
+}
+
+// receive runs the pipeline on one UDP payload b of port 1000 from the outer address from.
+func (p *Pipeline) receive(from netip.AddrPort, b []byte, tx *TxBatch) {
 	if _, ok := p2p.ProbeSID(b); ok || (len(b) == 1 && b[0] == p2p.TypeKeepalive) {
 		p.toRoot(PacketInMeta{Kind: KindPunt, From: from}, 0, len(b), b)
 		return
@@ -58,19 +79,26 @@ func (p *Pipeline) Receive(from netip.AddrPort, b []byte) {
 		p.drop(ReasonOpen, len(b))
 		return
 	}
-	p.apply(&meta{port: sa.port, session: sa.session, spi: sa.spi, lane: sa.lane, vni: h.VNI, from: from, psp: true, size: len(b)}, payload)
+	p.apply(&meta{port: sa.port, session: sa.session, spi: sa.spi, lane: sa.lane, vni: h.VNI, from: from, psp: true, size: len(b)}, payload, tx)
 }
 
-// PacketOut takes FRAME in, SEAL and RAW. An error is only for a bad request; a packet that the
-// pipeline drops is counted in drops.
+// PacketOut takes FRAME in, SEAL and RAW, and sends its packet in a batch of one. An error is only
+// for a bad request; a packet that the pipeline drops is counted in drops.
 func (p *Pipeline) PacketOut(po *p4.PacketOut) error {
 	md, err := DecodePacketOutMeta(po.GetMetadata())
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
-	b := po.GetPayload()
+	tx := p.batches.Get().(*TxBatch)
+	defer p.batches.Put(tx)
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	err = p.packetOut(md, po.GetPayload(), tx)
+	p.mu.RUnlock()
+	p.flush(tx)
+	return err
+}
+
+func (p *Pipeline) packetOut(md PacketOutMeta, b []byte, tx *TxBatch) error {
 	switch md.Kind {
 	case KindFrame:
 		vni, inner, err := peerconn.DecodeData(b)
@@ -78,7 +106,7 @@ func (p *Pipeline) PacketOut(po *p4.PacketOut) error {
 			p.drop(ReasonMalformed, len(b))
 			return nil
 		}
-		p.apply(&meta{port: md.Port, session: md.Session, vni: vni, size: len(b)}, inner)
+		p.apply(&meta{port: md.Port, session: md.Session, vni: vni, size: len(b)}, inner, tx)
 	case KindSeal:
 		// SEAL skips apply: M's trunk messages and probes, with tag 0.
 		o, ok := p.port(md.Port)
@@ -90,12 +118,12 @@ func (p *Pipeline) PacketOut(po *p4.PacketOut) error {
 			p.drop(ReasonOldSession, len(b))
 			return nil
 		}
-		p.seal(md.Port, o, 0, 0, b, 0)
+		p.seal(md.Port, o, 0, 0, b, 0, tx)
 	case KindRaw:
 		if !md.To.IsValid() {
 			return status.Error(codes.InvalidArgument, "RAW has no outer address")
 		}
-		p.send(md.To, b)
+		tx.add(md.To, copy(tx.room(len(b)), b))
 	default:
 		return status.Errorf(codes.InvalidArgument, "packet_out kind %d is not FRAME, SEAL or RAW", md.Kind)
 	}
@@ -112,7 +140,7 @@ func (p *Pipeline) port(id uint64) (PortAction, bool) {
 }
 
 // apply is the apply block of the Relay control, from ports to send_out.
-func (p *Pipeline) apply(m *meta, pkt []byte) {
+func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 	// ports.
 	var act Action = p.defaults[TablePorts]
 	if e := p.st.ports[m.port]; e != nil {
@@ -252,7 +280,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 		if o.Trunk {
 			vni = pa.Tag
 		}
-		if !p.seal(out, o, vni, hash, pkt, mo) {
+		if !p.seal(out, o, vni, hash, pkt, mo, tx) {
 			return
 		}
 	} else {
@@ -276,15 +304,13 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 // the address of that lane. Lane i of 1 to 3 goes to the port address until bit i-1 of seen is set
 // (a keepalive from the lane port). It counts the drop when it fails, also in port_drops at the
 // meter index mi (0: none).
-func (p *Pipeline) seal(port uint64, o PortAction, vni, hash uint32, payload []byte, mi uint32) bool {
+func (p *Pipeline) seal(port uint64, o PortAction, vni, hash uint32, payload []byte, mi uint32, tx *TxBatch) bool {
 	sa := p.st.tx[portSession{port, o.Session}].pick(hash)
 	if sa == nil || len(payload)+psp.Overhead > maxPacket {
 		p.dropIn(mi, ReasonNoKeys, len(payload))
 		return false
 	}
-	bp := p.bufs.Get().(*[]byte)
-	defer p.bufs.Put(bp)
-	n, err := sa.seal(*bp, vni, payload)
+	n, err := sa.seal(tx.room(len(payload)+psp.Overhead), vni, payload)
 	if err != nil {
 		p.dropIn(mi, ReasonNoKeys, len(payload))
 		return false
@@ -293,7 +319,7 @@ func (p *Pipeline) seal(port uint64, o PortAction, vni, hash uint32, payload []b
 	if sa.lane > 0 && o.Seen&(1<<(sa.lane-1)) != 0 {
 		to = laneAddr(o, sa.lane)
 	}
-	p.send(to, (*bp)[:n])
+	tx.add(to, n)
 	return true
 }
 

@@ -3,12 +3,15 @@
 package dp
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	xdp "github.com/atoonk/go-afxdp"
 	"github.com/atoonk/packetio/afxdp"
 	"github.com/cilium/ebpf"
+	"golang.org/x/sys/unix"
 )
 
 // OpenDevice opens the dedicated interface ifc with AF_XDP on all its queues. It takes all packets:
@@ -23,9 +26,17 @@ func OpenDevice(ifc Interface) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	dev, err := afxdp.Open(ifc.Name, afxdp.WithXDP(xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
+	xdpOpt := afxdp.WithXDP(xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
 		return loadRelayXDP(sockets, queues, impair)
-	})))
+	}))
+	// The kernel frees the queues of a stopped relay some milliseconds later, so a relay that
+	// restarts can get EBUSY. It tries again with a backoff of 10 ms to 1 s, for at most 30 s.
+	dev, err := afxdp.Open(ifc.Name, xdpOpt)
+	deadline := time.Now().Add(30 * time.Second)
+	for wait := 10 * time.Millisecond; errors.Is(err, unix.EBUSY) && time.Now().Add(wait).Before(deadline); wait = min(2*wait, time.Second) {
+		time.Sleep(wait)
+		dev, err = afxdp.Open(ifc.Name, xdpOpt)
+	}
 	if err != nil {
 		impair.Close()
 		return nil, fmt.Errorf("failed to open %s with AF_XDP: %w", ifc.Name, err)

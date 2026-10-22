@@ -18,6 +18,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	relaydp "github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -32,26 +33,29 @@ func TestParseFlags(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "relay", cmd: "relay", args: []string{"-listen", ":4443"},
+			name: "relay", cmd: "relay", args: []string{"-iface", "perf-r", "-listen", ":4443"},
 			want: func(o options) bool {
-				return o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources
+				return o.Iface == "perf-r" && o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources
 			},
 		},
-		{name: "relay has no XDP", cmd: "relay", args: []string{"-listen", ":4443", "-xdp", "ens5"}, wantErr: "flag provided but not defined: -xdp"},
+		{name: "relay has no XDP", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-xdp", "ens5"}, wantErr: "flag provided but not defined: -xdp"},
+		{name: "relay has no PSP socket", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-psp-listen", ":1000"}, wantErr: "flag provided but not defined: -psp-listen"},
 		{
-			name: "relay with no lanes", cmd: "relay", args: []string{"-listen", ":4443", "-lanes", "0"},
+			name: "relay with no lanes", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-lanes", "0"},
 			want: func(o options) bool { return o.Lanes == 0 },
 		},
-		{name: "relay with too many lanes", cmd: "relay", args: []string{"-listen", ":4443", "-lanes", "4"}, wantErr: "-lanes must be 0 to 3"},
-		{name: "relay with no listen", cmd: "relay", wantErr: "-listen is required"},
+		{name: "relay with too many lanes", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-lanes", "4"}, wantErr: "-lanes must be 0 to 3"},
+		{name: "relay with no listen", cmd: "relay", args: []string{"-iface", "r"}, wantErr: "-listen is required"},
+		{name: "relay with no iface", cmd: "relay", args: []string{"-listen", ":4443"}, wantErr: "-iface is required"},
 		{
-			name: "relay needs no work dir", cmd: "relay", args: []string{"-listen", ":4443", "-work-dir", ""},
+			name: "relay needs no work dir", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-work-dir", ""},
 			want: func(o options) bool { return o.WorkDir == "" },
 		},
 		{name: "server with no work dir", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-work-dir", ""}, wantErr: "set -work-dir or WORK_DIR"},
 		{name: "no start timeout", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-start-timeout", "0s"}, wantErr: "-start-timeout must be positive"},
-		{name: "relay has no driver", cmd: "relay", args: []string{"-listen", ":4443", "-driver", "tun"}, wantErr: "flag provided but not defined: -driver"},
-		{name: "relay has no mesh", cmd: "relay", args: []string{"-listen", ":4443", "-mesh", "b"}, wantErr: "flag provided but not defined: -mesh"},
+		{name: "relay has no driver", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-driver", "tun"}, wantErr: "flag provided but not defined: -driver"},
+		{name: "relay has no mesh", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-mesh", "b"}, wantErr: "flag provided but not defined: -mesh"},
+		{name: "server has no iface", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-iface", "r"}, wantErr: "flag provided but not defined: -iface"},
 		{name: "client has no relay of the server", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "-server-relay", "r2:1"}, wantErr: "flag provided but not defined: -server-relay"},
 		{
 			name: "server defaults", cmd: "server", args: []string{"-listen", ":4433", "-relay", "10.0.0.1:4443"},
@@ -91,7 +95,7 @@ func TestParseFlags(t *testing.T) {
 		{name: "negative mtu", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "-mtu", "-1"}, wantErr: "-mtu must not be negative"},
 		{name: "extra argument", cmd: "client", args: []string{"-server", "s:1", "-relay", "r:1", "extra"}, wantErr: "unexpected arguments"},
 		{
-			name: "profiles", cmd: "relay", args: []string{"-listen", ":4443", "-cpuprofile", "c.pprof", "-blockprofile", "b.pprof", "-mutexprofile", "m.pprof", "-trace", "r.trace", "-kernel", "k"},
+			name: "profiles", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-cpuprofile", "c.pprof", "-blockprofile", "b.pprof", "-mutexprofile", "m.pprof", "-trace", "r.trace", "-kernel", "k"},
 			want: func(o options) bool {
 				return o.Profiles == bench.Profiles{CPU: "c.pprof", Block: "b.pprof", Mutex: "m.pprof", Trace: "r.trace", TraceTime: 3 * time.Second, Kernel: "k"}
 			},
@@ -132,12 +136,12 @@ func TestNewResult(t *testing.T) {
 			},
 			relay: [2]mark{
 				{
-					Nanos: 0, HostCPU: 5, Drops: 1, SockDrops: 2,
+					Nanos: 0, HostCPU: 5, Drops: 1,
 					DropReasons: map[string]uint64{"malformed": 1},
 					CPUs:        []bench.CPUTicks{{User: 10, Idle: 90}, {Idle: 100}},
 				},
 				{
-					Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5, SockDrops: 9,
+					Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5,
 					DropReasons: map[string]uint64{"malformed": 1, "tx_full": 3, "unknown_spi": 1},
 					CPUs:        []bench.CPUTicks{{User: 30, System: 40, Idle: 230}, {IRQ: 150, Idle: 150}},
 				},
@@ -147,7 +151,7 @@ func TestNewResult(t *testing.T) {
 				ServerRetransmits: 2, ClientCores: 0.5, ServerCores: 1, RelayCores: 0.25,
 				ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 1, RelayCoresPerGbps: 0.25,
 				ClientHostCores: 3, ServerHostCores: 4, RelayHostCores: 1,
-				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, RelayRcvbufDrops: 7, ServerRcvbufErrors: 12, ServerSockDrops: 3,
+				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, ServerRcvbufErrors: 12, ServerSockDrops: 3,
 				ClientLinkDrops: 5, ServerLinkDrops: 2,
 				RelayDropReasons: map[string]uint64{"tx_full": 3, "unknown_spi": 1},
 				RelayHostCPU:     &cpuKinds{User: 0.1, System: 0.2, IRQ: 0.75}, RelayTopCPUs: []cpuUse{{CPU: 1, IRQ: 75}, {CPU: 0, User: 10, System: 20}},
@@ -301,10 +305,11 @@ func TestRelayDrops(t *testing.T) {
 				Relay: &dp.RelayRef{Id: relayID}, Trust: vpctest.NewTrust(ca), Addresses: &addresses{}, Target: plane.Target,
 			})
 			require.NoError(t, err)
-			from := netip.MustParseAddrPort("127.0.0.1:4000")
+			var rx []relaydp.RxPacket
 			for _, p := range tc.packets {
-				plane.Target.Receive(from, p)
+				rx = append(rx, relaydp.RxPacket{From: netip.MustParseAddrPort("127.0.0.1:4000"), Payload: p})
 			}
+			plane.Target.Receive(rx, &relaydp.TxBatch{})
 			drops, reasons := relayDrops(r)
 			assert.Equal(t, tc.drops, drops)
 			assert.Equal(t, tc.reasons, reasons)
@@ -349,11 +354,11 @@ func TestNewPeriod(t *testing.T) {
 			server: [2]mark{{RcvbufErrors: 1}, {Nanos: sec, Retrans: 1, Bytes: 50e6, Drops: 3, RcvbufErrors: 4, SockDrops: 1, LinkDrops: 1}},
 			relay: [2]mark{
 				{Drops: 1, DropReasons: map[string]uint64{"closed": 1}},
-				{Nanos: sec, Drops: 2, SockDrops: 2, DropReasons: map[string]uint64{"closed": 1, "send_queue": 1}},
+				{Nanos: sec, Drops: 2, DropReasons: map[string]uint64{"closed": 1, "send_queue": 1}},
 			},
 			want: period{
 				Seconds: 1, BitsPerSecond: 400e6, Retransmits: 4, RetransPercent: 2, ServerRetransmits: 1,
-				ClientTxDrops: 2, ServerRxDrops: 3, RelayDrops: 1, RelayRcvbufDrops: 2, ServerRcvbufErrors: 3, ServerSockDrops: 1,
+				ClientTxDrops: 2, ServerRxDrops: 3, RelayDrops: 1, ServerRcvbufErrors: 3, ServerSockDrops: 1,
 				ClientLinkDrops: 5, ServerLinkDrops: 1, RelayDropReasons: map[string]uint64{"send_queue": 1},
 			},
 		},
@@ -391,8 +396,8 @@ func TestResultJSON(t *testing.T) {
 		"client_cores_per_gbps", "server_cores_per_gbps", "relay_cores_per_gbps",
 		"client_host_cores", "server_host_cores", "relay_host_cores",
 		"driver", "transport", "via", "cc", "streams", "device_mtu",
-		"server_retransmits", "client_tx_drops", "server_rx_drops", "relay_drops", "relay_rcvbuf_drops",
-		"server_rcvbuf_errors", "server_sock_drops", "client_link_drops", "server_link_drops",
+		"server_retransmits", "client_tx_drops", "server_rx_drops", "relay_drops", "server_rcvbuf_errors",
+		"server_sock_drops", "client_link_drops", "server_link_drops",
 		"omit", "flow_start_unix_ms", "window_start_unix_ms", "window_end_unix_ms",
 	} {
 		assert.Contains(t, fields, f)
@@ -402,8 +407,8 @@ func TestResultJSON(t *testing.T) {
 	}
 	for _, f := range []string{
 		"seconds", "bits_per_second", "retransmits", "retrans_percent", "server_retransmits", "rtt_ms",
-		"client_tx_drops", "server_rx_drops", "relay_drops", "relay_rcvbuf_drops",
-		"server_rcvbuf_errors", "server_sock_drops", "client_link_drops", "server_link_drops",
+		"client_tx_drops", "server_rx_drops", "relay_drops", "server_rcvbuf_errors",
+		"server_sock_drops", "client_link_drops", "server_link_drops",
 	} {
 		assert.Contains(t, fields["omit"], f)
 	}
@@ -454,92 +459,72 @@ func TestCAEncoding(t *testing.T) {
 	}
 }
 
-// TestLoopback runs the relay, the server and the client in this process on
-// loopback, with the netstack driver, for one second.
+// TestLoopback runs the server and the client with -via direct on loopback, for
+// one second. TestRelay runs the relay cases, which need a relay device.
 func TestLoopback(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the agents for a few seconds")
 	}
-	cases := []struct {
-		via, transport string
-	}{
-		{"relay", "psp"},
-		{"relay", "quic"},
-		{"direct", "psp"},
+	runPair(t, options{WorkDir: t.TempDir(), Driver: "netstack", Transport: "psp", Via: "direct", StartTimeout: 30 * time.Second})
+}
+
+// runPair runs the server and the client of o in this process and checks the result. With -via
+// relay, o.Relay is the control address of a relay, which the client stops at the end.
+func runPair(t *testing.T, o options) {
+	t.Helper()
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	so := o
+	so.Listen = "127.0.0.1:0"
+	addr := make(chan netip.AddrPort, 1)
+	serverErr := make(chan error, 1)
+	wg.Go(func() { serverErr <- runServer(ctx, so, func(a netip.AddrPort) { addr <- a }) })
+	co := o
+	select {
+	case a := <-addr:
+		co.Server = a.String()
+	case err := <-serverErr:
+		t.Fatalf("server stopped: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.via+" "+tc.transport, func(t *testing.T) {
-			var wg sync.WaitGroup
-			defer wg.Wait()
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			defer cancel()
+	co.Streams, co.Omit, co.Duration = 2, 200*time.Millisecond, time.Second
+	co.Idle, co.ProbeInterval = 200*time.Millisecond, 10*time.Millisecond
+	// The client stops the relay, as "perfrig node" does.
+	co.StopRelay = o.Via == "relay"
 
-			o := options{WorkDir: t.TempDir(), Driver: "netstack", Transport: tc.transport, Via: tc.via, StartTimeout: 30 * time.Second}
-			if tc.via == "relay" {
-				ro := o
-				ro.Listen, ro.PSPListen = "127.0.0.1:0", "127.0.0.1:0"
-				addr := make(chan netip.AddrPort, 1)
-				relayErr := make(chan error, 1)
-				wg.Go(func() { relayErr <- runRelay(ctx, ro, func(a netip.AddrPort) { addr <- a }) })
-				select {
-				case a := <-addr:
-					o.Relay = a.String()
-				case err := <-relayErr:
-					t.Fatalf("relay stopped: %v", err)
-				}
-				t.Cleanup(func() { assert.NoError(t, <-relayErr) })
-			}
+	var out bytes.Buffer
+	require.NoError(t, runClient(ctx, co, &out))
+	require.NoError(t, <-serverErr, "the server returns when the client disconnects")
 
-			so := o
-			so.Listen = "127.0.0.1:0"
-			addr := make(chan netip.AddrPort, 1)
-			serverErr := make(chan error, 1)
-			wg.Go(func() { serverErr <- runServer(ctx, so, func(a netip.AddrPort) { addr <- a }) })
-			co := o
-			select {
-			case a := <-addr:
-				co.Server = a.String()
-			case err := <-serverErr:
-				t.Fatalf("server stopped: %v", err)
-			}
-			co.Streams, co.Omit, co.Duration = 2, 200*time.Millisecond, time.Second
-			co.Idle, co.ProbeInterval = 200*time.Millisecond, 10*time.Millisecond
-			// The client stops the relay, as "perfrig node" does.
-			co.StopRelay = tc.via == "relay"
-
-			var out bytes.Buffer
-			require.NoError(t, runClient(ctx, co, &out))
-			require.NoError(t, <-serverErr, "the server returns when the client disconnects")
-
-			var res result
-			require.NoError(t, json.Unmarshal(out.Bytes(), &res))
-			t.Logf("result: %s", out.Bytes())
-			// With -via relay the agents send only to the relay, so data at the server went through it.
-			assert.Greater(t, res.BitsPerSecond, 0.0)
-			assert.Greater(t, res.PacketsPerSecond, 0.0)
-			// A loaded host can delay the marks and the idle probes, so there is no upper limit here.
-			assert.GreaterOrEqual(t, res.Seconds, 0.8)
-			assert.Greater(t, res.LoadRTT.Probes, 0)
-			assert.Less(t, res.LoadRTT.Lost, res.LoadRTT.Probes)
-			assert.GreaterOrEqual(t, res.Omit.Seconds, 0.15)
-			assert.Greater(t, res.Omit.RTT.Probes, 0)
-			assert.LessOrEqual(t, res.FlowStartUnixMS, res.WindowStartUnixMS)
-			assert.GreaterOrEqual(t, res.WindowEndUnixMS-res.WindowStartUnixMS, int64(800))
-			assert.GreaterOrEqual(t, res.RetransPercent, 0.0)
-			assert.Equal(t, tc.via, res.Via)
-			assert.Equal(t, tc.transport, res.Transport)
-			assert.Equal(t, "netstack", res.Driver)
-			assert.NotEmpty(t, res.CC)
-			assert.Positive(t, res.DeviceMTU)
-			assert.Positive(t, res.ServerCores)
-			// The netstack can read its link counters.
-			assert.GreaterOrEqual(t, res.ClientLinkDrops, int64(0))
-			assert.GreaterOrEqual(t, res.ServerLinkDrops, int64(0))
-			if tc.via == "relay" {
-				assert.Positive(t, res.RelayCores, "the relay answered the marks")
-			} else {
-				assert.Zero(t, res.RelayCores)
-			}
-		})
+	var res result
+	require.NoError(t, json.Unmarshal(out.Bytes(), &res))
+	t.Logf("result: %s", out.Bytes())
+	// With -via relay the agents send only to the relay, so data at the server went through it.
+	assert.Greater(t, res.BitsPerSecond, 0.0)
+	assert.Greater(t, res.PacketsPerSecond, 0.0)
+	// A loaded host can delay the marks and the idle probes, so there is no upper limit here.
+	assert.GreaterOrEqual(t, res.Seconds, 0.8)
+	assert.Greater(t, res.LoadRTT.Probes, 0)
+	assert.Less(t, res.LoadRTT.Lost, res.LoadRTT.Probes)
+	assert.GreaterOrEqual(t, res.Omit.Seconds, 0.15)
+	assert.Greater(t, res.Omit.RTT.Probes, 0)
+	assert.LessOrEqual(t, res.FlowStartUnixMS, res.WindowStartUnixMS)
+	assert.GreaterOrEqual(t, res.WindowEndUnixMS-res.WindowStartUnixMS, int64(800))
+	assert.GreaterOrEqual(t, res.RetransPercent, 0.0)
+	assert.Equal(t, o.Via, res.Via)
+	assert.Equal(t, o.Transport, res.Transport)
+	assert.Equal(t, "netstack", res.Driver)
+	assert.NotEmpty(t, res.CC)
+	assert.Positive(t, res.DeviceMTU)
+	assert.Positive(t, res.ServerCores)
+	// The netstack can read its link counters.
+	assert.GreaterOrEqual(t, res.ClientLinkDrops, int64(0))
+	assert.GreaterOrEqual(t, res.ServerLinkDrops, int64(0))
+	if o.Via == "relay" {
+		assert.Positive(t, res.RelayCores, "the relay answered the marks")
+	} else {
+		assert.Zero(t, res.RelayCores)
 	}
 }

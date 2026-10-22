@@ -26,8 +26,13 @@ import (
 
 const slot = "fd61:706f:7879:12:3400::/88"
 
+// noSend is a Sender that drops all packets.
+type noSend struct{}
+
+func (noSend) Send(*dp.TxBatch) {}
+
 func TestNewRouter(t *testing.T) {
-	target := dp.New(func(netip.AddrPort, []byte) {})
+	target := dp.New(noSend{})
 	ref := &dpv1.RelayRef{Id: relayID}
 	cases := []struct {
 		name    string

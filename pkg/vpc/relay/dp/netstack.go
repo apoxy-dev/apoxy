@@ -73,18 +73,22 @@ func protocol(a netip.Addr) tcpip.NetworkProtocolNumber {
 	return ipv6.ProtocolNumber
 }
 
-// neighbor returns the MAC of the next hop to dst. A miss starts ARP or NDP and returns false.
-func (n *netstack) neighbor(dst netip.Addr) (tcpip.LinkAddress, bool) {
-	hop := n.gw4
-	if dst.Is6() {
-		hop = n.gw6
-	}
+// nextHop returns the next hop to dst: dst in an own subnet, else the gateway. It is not valid
+// when there is no gateway.
+func (n *netstack) nextHop(dst netip.Addr) netip.Addr {
 	for _, p := range n.own {
 		if p.Masked().Contains(dst) {
-			hop = dst
-			break
+			return dst
 		}
 	}
+	if dst.Is6() {
+		return n.gw6
+	}
+	return n.gw4
+}
+
+// neighbor returns the MAC of hop. A miss starts ARP or NDP and returns false.
+func (n *netstack) neighbor(hop netip.Addr) (tcpip.LinkAddress, bool) {
 	if !hop.IsValid() {
 		return "", false
 	}

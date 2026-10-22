@@ -211,16 +211,31 @@ func opened(t *testing.T, b []byte) (spi, vni uint32, payload []byte) {
 type relay struct {
 	*dp.Pipeline
 	sent    []sent
+	batches []int // The length of each batch that the pipeline sent.
 	in      []*p4.PacketIn
 	frames  map[uint64][][]byte
 	full    bool
 	dgramEr error
 }
 
+// Send keeps a copy of each packet of b.
+func (r *relay) Send(b *dp.TxBatch) {
+	r.batches = append(r.batches, b.Len())
+	for i := range b.Len() {
+		to, p := b.Packet(i)
+		r.sent = append(r.sent, sent{to, bytes.Clone(p)})
+	}
+}
+
+// receive runs the pipeline on one packet.
+func (r *relay) receive(from netip.AddrPort, b []byte) {
+	r.Receive([]dp.RxPacket{{From: from, Payload: b}}, &dp.TxBatch{})
+}
+
 func newRelay(t *testing.T, extra ...*p4.Update) *relay {
 	t.Helper()
 	r := &relay{frames: map[uint64][][]byte{}}
-	r.Pipeline = dp.New(func(to netip.AddrPort, b []byte) { r.sent = append(r.sent, sent{to, bytes.Clone(b)}) })
+	r.Pipeline = dp.New(r)
 	r.OnPacketIn(func(p *p4.PacketIn) bool {
 		if r.full {
 			return false
@@ -442,7 +457,7 @@ func TestPipeline(t *testing.T) {
 			if tc.po != nil {
 				require.NoError(t, r.PacketOut(tc.po))
 			} else {
-				r.Receive(tc.from, bytes.Clone(tc.wire))
+				r.receive(tc.from, bytes.Clone(tc.wire))
 			}
 
 			drops := counts(t, r, dp.CounterDrops)
@@ -460,6 +475,7 @@ func TestPipeline(t *testing.T) {
 			if tc.out == nil {
 				assert.Empty(t, r.sent)
 			} else if assert.Len(t, r.sent, 1) {
+				assert.Equal(t, []int{1}, r.batches, "one batch of one packet")
 				s := r.sent[0]
 				assert.Equal(t, tc.out.to, s.to)
 				if tc.out.spi == 0 {
@@ -487,6 +503,78 @@ func TestPipeline(t *testing.T) {
 			}
 			if tc.cells != nil {
 				assert.Equal(t, tc.cells, counts(t, r, dp.CounterCells))
+			}
+		})
+	}
+}
+
+func TestReceiveBatch(t *testing.T) {
+	toA2 := func(seq uint32) dp.RxPacket {
+		return dp.RxPacket{From: addrA1, Payload: seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "100.64.2.5", 100+int(seq)))}
+	}
+	type out struct {
+		to    netip.AddrPort
+		inner []byte
+	}
+	a2 := func(seq uint32) out { return out{addrA2, ipv4("100.64.1.5", "100.64.2.5", 100+int(seq))} }
+	many := func(n uint32) ([]dp.RxPacket, []out) {
+		var rx []dp.RxPacket
+		var want []out
+		for seq := uint32(1); seq <= n; seq++ {
+			rx, want = append(rx, toA2(seq)), append(want, a2(seq))
+		}
+		return rx, want
+	}
+	rx100, want100 := many(100)
+	cases := []struct {
+		name    string
+		rx      []dp.RxPacket
+		want    []out
+		batches []int // nil: each batch has at most 64 packets.
+	}{
+		{
+			name: "all packets in order in one batch",
+			rx: []dp.RxPacket{
+				toA2(1),
+				{From: addrA1, Payload: seal(spiA1In, vniA, 2, ipv4("100.64.1.5", "100.64.9.5", 100))},
+				toA2(3),
+			},
+			want:    []out{a2(1), {addrT, ipv4("100.64.1.5", "100.64.9.5", 100)}, a2(3)},
+			batches: []int{3},
+		},
+		{
+			name: "drops and punts are not in the batch",
+			rx: []dp.RxPacket{
+				toA2(1),
+				{From: addrA1, Payload: []byte("not a packet of the relay")},
+				{From: addrA1, Payload: []byte{p2p.TypeKeepalive}},
+				toA2(2),
+			},
+			want:    []out{a2(1), a2(2)},
+			batches: []int{2},
+		},
+		{name: "more than 64 packets", rx: rx100, want: want100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRelay(t)
+			tx := &dp.TxBatch{}
+			r.Receive(tc.rx, tx)
+			assert.Zero(t, tx.Len(), "the batch is reset")
+			if tc.batches != nil {
+				assert.Equal(t, tc.batches, r.batches)
+			}
+			total := 0
+			for _, n := range r.batches {
+				assert.LessOrEqual(t, n, 64)
+				total += n
+			}
+			assert.Equal(t, len(tc.want), total)
+			require.Len(t, r.sent, len(tc.want))
+			for i, w := range tc.want {
+				assert.Equal(t, w.to, r.sent[i].to)
+				_, _, inner := opened(t, r.sent[i].b)
+				assert.Equal(t, w.inner, inner, "packet %d", i)
 			}
 		})
 	}

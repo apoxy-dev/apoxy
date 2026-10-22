@@ -86,9 +86,7 @@ func (m *ApoxyCli) PerfNetns(
 // RTT): one floor row and info rows that run one time. It returns the results
 // with summary.md and floor-exit: 0 pass or no floor row selected, 1 regression
 // or no floor result, 3 infra error. A failed row does not fail it. The node
-// rows (-2node, -3node, -4node) run on their own EC2 hosts only when rows names
-// them. The -4node rows have two relays: the client and its relay are in region,
-// the server and its relay in peerRegion.
+// rows (-2node, -3node) run on their own EC2 hosts only when rows names them.
 func (m *ApoxyCli) PerfVpc(
 	ctx context.Context,
 	src *dagger.Directory,
@@ -130,24 +128,16 @@ func (m *ApoxyCli) PerfVpc(
 	// ec2: the instance type of the hosts. The baseline has c7a.8xlarge only.
 	// +default="c7a.8xlarge"
 	instanceType string,
-	// ec2: the region of the server and the second relay of the -4node rows.
-	// +optional
-	peerRegion string,
-	// ec2: the image of the hosts in peerRegion, with the OS of the hosts in region.
-	// +optional
-	peerImage string,
 ) (*dagger.Directory, error) {
 	o := perfsuite.Options{Duration: duration, Reps: reps, MinCPUs: minCpus, Only: rows, Profile: profile}
-	e := perfEC2{runTag: runTag, bucket: bucket, region: region, instanceType: instanceType, peerRegion: peerRegion, peerImage: peerImage,
-		id: awsAccessKeyId, secret: awsSecretAccessKey, token: awsSessionToken}
+	e := perfEC2{runTag: runTag, bucket: bucket, region: region, instanceType: instanceType, id: awsAccessKeyId, secret: awsSecretAccessKey, token: awsSessionToken}
 	return m.perfRun(ctx, src, perfsuite.VPC, where, o, e)
 }
 
 // PerfCleanup terminates the instances of a PerfNetns or PerfVpc run on EC2
-// and deletes its placement groups, its security groups and its inputs in S3.
-// Run it after the run step in all cases: a cancel stops the run before its own
-// cleanup. With nothing left, it does nothing. The result lists what the run
-// still has in each region.
+// and deletes its placement group and its inputs in S3. Run it after the run
+// step in all cases: a cancel stops the run before its own cleanup. With
+// nothing left, it does nothing.
 func (m *ApoxyCli) PerfCleanup(
 	ctx context.Context,
 	// The run tag of the run.
@@ -160,23 +150,17 @@ func (m *ApoxyCli) PerfCleanup(
 	awsSecretAccessKey *dagger.Secret,
 	// +optional
 	awsSessionToken *dagger.Secret,
-	// The second region of a run of -4node rows.
-	// +optional
-	peerRegion string,
 ) (string, error) {
 	return dag.Perf().Ec2Cleanup(ctx, runTag, bucket, awsAccessKeyId, awsSecretAccessKey, dagger.PerfEc2CleanupOpts{
 		Region:       region,
 		SessionToken: awsSessionToken,
-		PeerRegion:   peerRegion,
 	})
 }
 
 // perfEC2 has the EC2 arguments of a perf run.
 type perfEC2 struct {
 	runTag, bucket, region, instanceType string
-	// peerRegion and peerImage are for the rows with two relays.
-	peerRegion, peerImage string
-	id, secret, token     *dagger.Secret
+	id, secret, token                    *dagger.Secret
 }
 
 func (m *ApoxyCli) perfRun(ctx context.Context, src *dagger.Directory, s perfsuite.Suite, where string, o perfsuite.Options, e perfEC2) (*dagger.Directory, error) {
@@ -223,8 +207,6 @@ func (m *ApoxyCli) perfRun(ctx context.Context, src *dagger.Directory, s perfsui
 			Region:       e.region,
 			SessionToken: e.token,
 			InstanceType: e.instanceType,
-			PeerRegion:   e.peerRegion,
-			PeerImage:    e.peerImage,
 		})
 	default:
 		out = dag.Perf().Ec2(bins, plan, e.runTag, e.bucket, e.id, e.secret, dagger.PerfEc2Opts{

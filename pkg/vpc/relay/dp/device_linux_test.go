@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,8 +45,10 @@ var (
 // env is a device on one end of a veth pair. The other end is in the netns peer, with the kernel.
 type env struct {
 	d       *dp.Device
+	ifc     dp.Interface
 	peer    netns.NsHandle
 	packets chan *p4.PacketIn
+	stop    func() // Stops the device and waits for Run.
 }
 
 // inNS runs fn on a thread in ns. The thread ends with fn, so it never runs other code in ns.
@@ -64,7 +67,8 @@ func inNS(t *testing.T, ns netns.NsHandle, fn func()) {
 	<-done
 }
 
-func newEnv(t *testing.T) *env {
+// newEnv opens a device on a veth pair with the given number of queues on each end.
+func newEnv(t *testing.T, queues int) *env {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("needs root for netns, veth and AF_XDP")
@@ -81,7 +85,10 @@ func newEnv(t *testing.T) *env {
 	require.NoError(t, err)
 	t.Cleanup(func() { e.peer.Close() })
 
-	veth := &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: "rl0", MTU: 1500}, PeerName: "pe0"}
+	veth := &netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{Name: "rl0", MTU: 1500, NumTxQueues: queues, NumRxQueues: queues},
+		PeerName:  "pe0", PeerNumTxQueues: uint32(queues), PeerNumRxQueues: uint32(queues),
+	}
 	require.NoError(t, netlink.LinkAdd(veth))
 	t.Cleanup(func() { _ = netlink.LinkDel(veth) })
 	pe, err := netlink.LinkByName("pe0")
@@ -106,7 +113,8 @@ func newEnv(t *testing.T) *env {
 		require.NoError(t, h.AddrAdd(pe, a))
 	}
 
-	e.d, err = dp.OpenDevice(dp.Interface{Name: "rl0", MAC: rl.Attrs().HardwareAddr, Own: []netip.Prefix{relay4, relay6}})
+	e.ifc = dp.Interface{Name: "rl0", MAC: rl.Attrs().HardwareAddr, Own: []netip.Prefix{relay4, relay6}}
+	e.d, err = dp.OpenDevice(e.ifc)
 	require.NoError(t, err)
 	e.d.Target().OnPacketIn(func(p *p4.PacketIn) bool {
 		select {
@@ -119,10 +127,11 @@ func newEnv(t *testing.T) *env {
 	ctx, cancel := context.WithCancel(context.Background())
 	ran := make(chan error, 1)
 	go func() { ran <- e.d.Run(ctx) }()
-	t.Cleanup(func() {
+	e.stop = sync.OnceFunc(func() {
 		cancel()
 		assert.NoError(t, <-ran)
 	})
+	t.Cleanup(e.stop)
 	return e
 }
 
@@ -179,7 +188,7 @@ func (e *env) ping(t *testing.T, dst netip.Addr) {
 }
 
 func TestDevice(t *testing.T) {
-	e := newEnv(t)
+	e := newEnv(t, 1)
 
 	// The first sends run before the peer sends anything, so the relay has no neighbor entry.
 	t.Run("ARP and NDP before the first send", func(t *testing.T) {
@@ -371,6 +380,159 @@ func TestDevice(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestDeviceReopen opens the link again right after the device stopped, as a relay that restarts.
+// The kernel frees the AF_XDP queues of the stopped device a short time later.
+func TestDeviceReopen(t *testing.T) {
+	e := newEnv(t, 4)
+	e.stop()
+	d, err := dp.OpenDevice(e.ifc)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.NoError(t, d.Run(ctx))
+}
+
+// fwd is agent A1 on the peer, at port 9001 and its lane ports, and the socket of agent A2 on the
+// peer. The device forwards the PSP packets of A1 to A2.
+type fwd struct {
+	socks []*net.UDPConn // A1, then its lane ports.
+	dst   *net.UDPConn
+	buf   []byte
+	seq   int // The last packet that send sent.
+}
+
+// forward writes the entries of A1 with the given number of lanes and of A2, which the device
+// reaches at a2.
+func (e *env) forward(t *testing.T, lanes int, a2 netip.AddrPort) *fwd {
+	a1 := netip.AddrPortFrom(peer4.Addr(), 9001)
+	var lanePorts uint64
+	for lane := 1; lane < lanes; lane++ {
+		lanePorts |= uint64(9010+lane) << (16 * (3 - lane))
+	}
+	updates := []*p4.Update{
+		insert(access(1, a1, 7, lanePorts)),
+		insert(access(2, a2, 8, 0)),
+		insert(context_(1, 1, 0, vpcA, vniA, 1)),
+		insert(context_(2, 1, 0, vpcA, vniA, 2)),
+		insert(source(1, 1, 0, "100.64.1.0/24", dp.NoAction{})),
+		insert(route(vpcA, "100.64.2.0/24", 2, 32, 2, 32)),
+		tx(spiA2Out, 2, 1, 0),
+	}
+	f := &fwd{buf: make([]byte, 1500)}
+	for lane := range lanes {
+		updates = append(updates, rx(spiA1In+uint32(lane), 1, 1, uint32(lane)))
+		from := a1
+		if lane > 0 {
+			from = netip.AddrPortFrom(a1.Addr(), uint16(9010+lane))
+		}
+		f.socks = append(f.socks, e.listen(t, from))
+	}
+	require.NoError(t, write(t.Context(), e.d.Target(), updates...))
+	f.dst = e.listen(t, netip.AddrPortFrom(peer4.Addr(), 9002))
+	require.NoError(t, f.dst.SetReadBuffer(1<<20))
+	return f
+}
+
+// inner is packet seq of lane, with the lane and seq in its UDP payload.
+func inner(lane, seq int) []byte {
+	b := ipv4("100.64.1.5", "100.64.2.5", 100)
+	b[28], b[29] = byte(lane), byte(seq)
+	return b
+}
+
+func (f *fwd) send(t *testing.T, lane, seq int) {
+	_, err := f.socks[lane].WriteToUDPAddrPort(seal(spiA1In+uint32(lane), vniA, uint32(seq), inner(lane, seq)), netip.AddrPortFrom(relay4.Addr(), 1000))
+	require.NoError(t, err)
+	f.seq = seq
+}
+
+// recv returns the inner packet of the next datagram to A2, or nil after wait.
+func (f *fwd) recv(t *testing.T, wait time.Duration) []byte {
+	require.NoError(t, f.dst.SetReadDeadline(time.Now().Add(wait)))
+	n, from, err := f.dst.ReadFromUDPAddrPort(f.buf)
+	if err != nil {
+		return nil
+	}
+	assert.Equal(t, netip.AddrPortFrom(relay4.Addr(), 1000), netip.AddrPortFrom(from.Addr().Unmap(), from.Port()))
+	spi, vni, payload := opened(t, f.buf[:n])
+	assert.Equal(t, uint32(spiA2Out), spi)
+	assert.Equal(t, uint32(vniA), vni)
+	return payload
+}
+
+// arrive sends packets of A1 until one arrives at A2, for at most wait, and then reads all that
+// arrive. It returns false when no packet arrived.
+func (f *fwd) arrive(t *testing.T, wait time.Duration) bool {
+	for end := time.Now().Add(wait); time.Now().Before(end); {
+		f.send(t, 0, f.seq+1)
+		if f.recv(t, 50*time.Millisecond) != nil {
+			for f.recv(t, 100*time.Millisecond) != nil {
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// TestDeviceForward sends PSP packets of four lanes of an agent through a device with four queues.
+// Each packet arrives at the target, sealed with the key of the target.
+func TestDeviceForward(t *testing.T) {
+	const flows, packets = 4, 50
+	e := newEnv(t, flows)
+	f := e.forward(t, flows, netip.AddrPortFrom(peer4.Addr(), 9002))
+	require.True(t, f.arrive(t, 2*time.Second), "no packet after ARP")
+
+	first := f.seq + 1
+	want := map[string]bool{}
+	for i := range packets {
+		for lane := range flows {
+			f.send(t, lane, first+i)
+			want[string(inner(lane, first+i))] = true
+		}
+	}
+	for len(want) > 0 {
+		got := f.recv(t, 5*time.Second)
+		require.NotNil(t, got, "%d packets did not arrive", len(want))
+		delete(want, string(got))
+	}
+}
+
+// TestDeviceNextHop forwards packets to the MAC of the next hop. The device asks gVisor for a MAC
+// again after at most 1 s, so a new MAC of the peer applies, and a next hop with no MAC drops.
+func TestDeviceNextHop(t *testing.T) {
+	cases := []struct {
+		name   string
+		a2     netip.AddrPort
+		newMAC bool // The peer takes a new MAC after the first packets arrive.
+		want   bool // The packets arrive at A2, else they drop (no_neighbor).
+	}{
+		{name: "MAC of the peer", a2: netip.AddrPortFrom(peer4.Addr(), 9002), want: true},
+		{name: "new MAC of the peer", a2: netip.AddrPortFrom(peer4.Addr(), 9002), newMAC: true, want: true},
+		{name: "no neighbor", a2: netip.MustParseAddrPort("10.99.0.99:9002")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, 1)
+			f := e.forward(t, 1, tc.a2)
+			if tc.newMAC {
+				require.True(t, f.arrive(t, 2*time.Second), "no packet with the first MAC")
+				// The kernel of the peer then resolves the relay again, which gives gVisor the new MAC.
+				h, err := netlink.NewHandleAt(e.peer)
+				require.NoError(t, err)
+				defer h.Close()
+				pe, err := h.LinkByName("pe0")
+				require.NoError(t, err)
+				require.NoError(t, h.LinkSetHardwareAddr(pe, net.HardwareAddr{0x02, 0, 0, 0, 0x99, 0x01}))
+			}
+			before := e.drops(t, dp.ReasonNoNeighbor)
+			assert.Equal(t, tc.want, f.arrive(t, 3*time.Second))
+			if !tc.want {
+				assert.Greater(t, e.drops(t, dp.ReasonNoNeighbor), before)
+			}
+		})
+	}
 }
 
 func serverTLS(t *testing.T) *tls.Config {

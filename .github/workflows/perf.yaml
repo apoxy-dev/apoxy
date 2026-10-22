@@ -18,21 +18,13 @@ on:
         type: boolean
         default: false
       vpc_rows:
-        description: "VPC rows to run, comma-separated, for example netstack-psp-relay (default: all rows of the netns rig). Name the node rows (-2node, -3node, -4node) to run them, in a run of their own. The -4node rows need vpc_peer_region and vpc_peer_image, and a run with no other rows"
+        description: "VPC rows to run, comma-separated, for example netstack-psp-relay (default: all rows of the netns rig). Name the node rows (-2node, -3node) to run them, in a run of their own"
         type: string
         default: ""
       vpc_instance_type:
         description: "EC2 instance type of the VPC hosts (the baseline has c7a.8xlarge only)"
         type: string
         default: "c7a.8xlarge"
-      vpc_peer_region:
-        description: "Region of the server and the second relay of the -4node rows, for example us-east-1. The AWS role must allow EC2 there, and security groups in the two regions"
-        type: string
-        default: ""
-      vpc_peer_image:
-        description: "AMI of the hosts in vpc_peer_region, with the OS of the hosts in the bench region"
-        type: string
-        default: ""
       vpc_profile:
         description: "Write pprof profiles of the VPC rows (slower; do not compare to the baseline)"
         type: boolean
@@ -123,8 +115,6 @@ jobs:
       ROWS: ${{ inputs.vpc_rows }}
       PROFILE: ${{ inputs.vpc_profile || false }}
       INSTANCE_TYPE: ${{ inputs.vpc_instance_type || 'c7a.8xlarge' }}
-      PEER_REGION: ${{ inputs.vpc_peer_region }}
-      PEER_IMAGE: ${{ inputs.vpc_peer_image }}
       RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}-vpc
       PERF_BUCKET: ${{ vars.PERF_BUCKET }}
       PERF_AWS_REGION: ${{ vars.PERF_AWS_REGION }}
@@ -143,7 +133,7 @@ jobs:
         timeout-minutes: 55
         run: >-
           dagger call -v perf-vpc --src=. --where=ec2 --duration="$DURATION" --rows="$ROWS" --profile="$PROFILE"
-          --instance-type="$INSTANCE_TYPE" --peer-region="$PEER_REGION" --peer-image="$PEER_IMAGE"
+          --instance-type="$INSTANCE_TYPE"
           --run-tag="$RUN_TAG" --bucket="$PERF_BUCKET" --region="$PERF_AWS_REGION"
           --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
           --aws-session-token=env:AWS_SESSION_TOKEN
@@ -153,7 +143,6 @@ jobs:
         if: always()
         run: >-
           dagger call perf-cleanup --run-tag="$RUN_TAG" --bucket="$PERF_BUCKET" --region="$PERF_AWS_REGION"
-          --peer-region="$PEER_REGION"
           --aws-access-key-id=env:AWS_ACCESS_KEY_ID --aws-secret-access-key=env:AWS_SECRET_ACCESS_KEY
           --aws-session-token=env:AWS_SESSION_TOKEN
       - name: Write the job summary

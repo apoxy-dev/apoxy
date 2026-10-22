@@ -87,9 +87,13 @@ func TestRigLinks(t *testing.T) {
 				{"ip", "-n", "p-bridge", "link", "add", "perf-r", "mtu", "9000", "numtxqueues", "8", "numrxqueues", "8",
 					"type", "veth", "peer", "name", "perf-r", "numtxqueues", "8", "numrxqueues", "8", "netns", "p-relay"},
 				{"ip", "-n", "p-bridge", "link", "set", "dev", "perf-r", "master", "perf-br", "up"},
+				{"ip", "-n", "p-bridge", "link", "add", "perf-rc", "mtu", "9000", "type", "veth", "peer", "name", "perf-rc", "netns", "p-relay"},
+				{"ip", "-n", "p-bridge", "link", "set", "dev", "perf-rc", "master", "perf-br", "up"},
+				{"ip", "-n", "p-relay", "addr", "add", "10.200.0.4/24", "dev", "perf-rc"},
+				{"ip", "-n", "p-relay", "link", "set", "dev", "perf-rc", "mtu", "9000", "up"},
 				{"ip", "-n", "p-client", "addr", "add", "10.200.0.1/24", "dev", "perf-c"},
 				{"ip", "-n", "p-server", "addr", "add", "10.200.0.2/24", "dev", "perf-s"},
-				{"ip", "-n", "p-relay", "addr", "add", "10.200.0.3/24", "dev", "perf-r"},
+				{"ip", "-n", "p-relay", "addr", "add", "10.200.0.3/24", "dev", "perf-r", "noprefixroute"},
 				{"ip", "-n", "p-client", "link", "set", "dev", "perf-c", "mtu", "9000", "up"},
 				{"ip", "-n", "p-server", "link", "set", "dev", "perf-s", "mtu", "9000", "up"},
 				{"ip", "-n", "p-relay", "link", "set", "dev", "perf-r", "mtu", "9000", "up"},
@@ -182,12 +186,14 @@ func TestCPUListMask(t *testing.T) {
 func TestSteering(t *testing.T) {
 	rx := func(dev string) string { return "/sys/class/net/" + dev + "/queues/rx-*/rps_cpus" }
 	tx := func(dev string) string { return "/sys/class/net/" + dev + "/queues/tx-0/xps_cpus" }
+	noXPS := "/sys/class/net/perf-r/queues/tx-*/xps_cpus"
 	relayRig := func(rps, ring, all string) []sysfsWrite {
 		return []sysfsWrite{
 			{"p-client", rx("perf-c"), rps}, {"p-client", tx("perf-c"), all},
 			{"p-server", rx("perf-s"), rps}, {"p-server", tx("perf-s"), all},
-			{"p-relay", rx("perf-r"), rps}, {"p-relay", tx("perf-r"), all},
-			{"p-bridge", rx("perf-c"), ring}, {"p-bridge", rx("perf-s"), ring}, {"p-bridge", rx("perf-r"), ring},
+			{"p-relay", rx("perf-r"), rps}, {"p-relay", noXPS, "0"},
+			{"p-bridge", rx("perf-c"), ring}, {"p-bridge", rx("perf-s"), ring},
+			{"p-bridge", rx("perf-r"), ring}, {"p-bridge", noXPS, "0"},
 		}
 	}
 	cases := []struct {

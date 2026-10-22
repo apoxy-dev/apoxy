@@ -58,7 +58,7 @@ func writeSummary(w io.Writer, outcomes []outcome) {
 			infoCell(r.Info, "%.2f", "retrans_percent"),
 			infoCell(r.Info, "%.1f", "load_rtt_ms.p50", "load_rtt_ms.p99"),
 			infoCell(r.Info, "%.1f", "omit.rtt_ms.p90", "load_rtt_ms.p90"),
-			dropsCell(r.Info, r.Role != ""))
+			dropsCell(r.Info))
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "<details><summary>Keys and checks</summary>")
@@ -119,14 +119,13 @@ func infoCell(info map[string]float64, format string, keys ...string) string {
 
 // dropPlaces are the drop counters of a vpcbench result, in the order of the
 // path from the client to the server. server rcvbuf counts all sockets of the server
-// netns, and the relay runs there, so the sum leaves out the socket counters (part).
+// netns, so the sum leaves out the server socket counter (part).
 var dropPlaces = []struct {
 	key, name string
 	part      bool
 }{
 	{"client_link_drops", "client link", false},
 	{"client_tx_drops", "client tx", false},
-	{"relay_rcvbuf_drops", "relay socket", true},
 	{"relay_drops", "relay", false},
 	{"server_rcvbuf_errors", "server rcvbuf", false},
 	{"server_sock_drops", "server socket", true},
@@ -134,17 +133,15 @@ var dropPlaces = []struct {
 	{"server_link_drops", "server link", false},
 }
 
-// dropsCell is the sum of the drops of all sides in the omit period and in the
-// window. In a node result, the relay socket is on its own host, so the sum has it.
-func dropsCell(info map[string]float64, node bool) string {
+// dropsCell is the sum of the drops of all sides in the omit period and in the window.
+func dropsCell(info map[string]float64) string {
 	sum := func(prefix string) (float64, bool) {
 		total, found := 0.0, false
 		for _, p := range dropPlaces {
 			v, ok := info[prefix+p.key]
 			found = found || ok
-			part := p.part && !(node && p.key == "relay_rcvbuf_drops")
 			// A counter is -1 when the side cannot read it.
-			if v > 0 && !part {
+			if v > 0 && !p.part {
 				total += v
 			}
 		}

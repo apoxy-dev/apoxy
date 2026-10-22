@@ -5,6 +5,7 @@ package dp
 import (
 	"context"
 	"net/netip"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -39,9 +40,57 @@ const (
 	KindRaw   uint8 = 6
 )
 
-// Sender sends one UDP payload of port 1000 to an outer address. It never waits, and b is valid
-// only during the call.
-type Sender func(to netip.AddrPort, b []byte)
+// RxPacket is one UDP payload of port 1000 and its outer source address. The payload is in the RX
+// frame, and the pipeline opens it in place.
+type RxPacket struct {
+	From    netip.AddrPort
+	Payload []byte
+}
+
+// TxBatch is the sealed PSP and RAW payloads of one batch, in order: at most rxBatch, in one
+// buffer of one RX goroutine. The zero value is an empty batch.
+type TxBatch struct {
+	to   []netip.AddrPort
+	ends []int
+	buf  []byte
+	txq  *txQueue // The TX queue of the RX queue of the batch, or nil.
+	hops hopCache // The next-hop MACs of the RX goroutine of the batch, or nil.
+}
+
+// Len is the number of packets in the batch.
+func (b *TxBatch) Len() int { return len(b.to) }
+
+// Packet returns packet i and its outer address. The payload is valid until the batch is reset.
+func (b *TxBatch) Packet(i int) (to netip.AddrPort, payload []byte) {
+	start := 0
+	if i > 0 {
+		start = b.ends[i-1]
+	}
+	return b.to[i], b.buf[start:b.ends[i]:b.ends[i]]
+}
+
+// room returns n bytes after the last packet, for the next packet.
+func (b *TxBatch) room(n int) []byte {
+	b.buf = slices.Grow(b.buf, n)
+	return b.buf[len(b.buf) : len(b.buf)+n]
+}
+
+// add adds the first n bytes of room as the next packet, to the outer address to.
+func (b *TxBatch) add(to netip.AddrPort, n int) {
+	b.buf = b.buf[:len(b.buf)+n]
+	b.to = append(b.to, to)
+	b.ends = append(b.ends, len(b.buf))
+}
+
+func (b *TxBatch) reset() {
+	b.to, b.ends, b.buf = b.to[:0], b.ends[:0], b.buf[:0]
+}
+
+// Sender sends the UDP payloads of port 1000 of a batch. Send never waits: it drops and counts
+// (tx_full) what does not fit. b is valid only during the call.
+type Sender interface {
+	Send(b *TxBatch)
+}
 
 // counter is one index of a packets_and_bytes counter.
 type counter struct {
@@ -53,14 +102,15 @@ func (c *counter) add(n int) {
 	c.bytes.Add(uint64(n))
 }
 
-// Pipeline is the Go pipeline of relay.p4. Write takes the lock; the packets take the read lock.
-// The callbacks (Sender, frame writers, OnPacketIn) run with the read lock held and must not call
-// the Pipeline.
+// Pipeline is the Go pipeline of relay.p4. Write takes the lock; a batch of packets takes the read
+// lock one time. The frame writers and OnPacketIn run with the read lock held and must not call the
+// Pipeline. The Sender runs after the batch releases the read lock.
 type Pipeline struct {
 	send     Sender
 	defaults map[uint32]Action
 	packetIn atomic.Pointer[func(*p4.PacketIn) bool]
 	bufs     sync.Pool
+	batches  sync.Pool // The TxBatch of a PacketOut.
 
 	cells     []counter
 	drops     []counter
@@ -92,6 +142,7 @@ func New(send Sender) *Pipeline {
 		p.defaults[id] = d
 	}
 	p.bufs.New = func() any { b := make([]byte, maxPacket); return &b }
+	p.batches.New = func() any { return &TxBatch{} }
 	return p
 }
 

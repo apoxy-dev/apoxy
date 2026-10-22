@@ -13,10 +13,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -41,8 +41,6 @@ const (
 	nodeGrace = 3 * time.Minute
 	// groupDeleteWait is the time to wait for the instances of a placement group to terminate.
 	groupDeleteWait = "4m"
-	// publicIPWait is the time to wait for the public IP of a new host.
-	publicIPWait = "2m"
 )
 
 type Perf struct{}
@@ -160,8 +158,8 @@ func (m *Perf) Ec2(
 	}
 	spec.RunID = runTag
 	r := newEC2Run(region, accessKeyId, secretAccessKey, sessionToken, endpoint, bucket, runTag, keys, d)
-	reap(ctx, r.aws)
-	defer reap(context.WithoutCancel(ctx), r.aws)
+	r.reap(ctx)
+	defer r.reap(context.WithoutCancel(ctx))
 	// The inputs have presigned URLs. Delete them in all cases.
 	defer r.cleanup(context.WithoutCancel(ctx))
 
@@ -174,7 +172,7 @@ func (m *Perf) Ec2(
 	}
 	launched := time.Now()
 	spec.Deadline = launched.Add(d).UTC()
-	id, err := r.launch(ctx, r.aws, spec, keys.Spec(), agentURL, launchOpts{image: image, instanceType: instanceType, subnetTag: subnetTag}, launched)
+	id, err := r.launch(ctx, spec, keys.Spec(), agentURL, launchOpts{image: image, instanceType: instanceType, subnetTag: subnetTag}, launched)
 	if err != nil {
 		return infra(runTag, err), nil
 	}
@@ -194,9 +192,6 @@ func (m *Perf) Ec2(
 
 // Ec2Nodes runs the plan of each role on its own host in one cluster placement
 // group. The client host outputs are at the top, the others under nodes/ROLE/.
-// With a second relay, the second relay and the server are in peerRegion, in
-// their own placement group, and the hosts of the two regions use their public
-// IPs between them.
 func (m *Perf) Ec2Nodes(
 	ctx context.Context,
 	// perfagent and the binaries of the rows, for linux/amd64.
@@ -204,10 +199,9 @@ func (m *Perf) Ec2Nodes(
 	// Files for the run directory, for example baseline.json.
 	// +optional
 	files *dagger.Directory,
-	// A JSON object with a plan for each role: client, server, relay (optional)
-	// and relay2 (optional).
+	// A JSON object with a plan for each role: client, server and relay (optional).
 	plans string,
-	// Names the run in the S3 keys, the tags, the placement groups and the security groups.
+	// Names the run in the S3 keys, the tags and the placement group.
 	runTag string,
 	bucket string,
 	// +default="us-west-2"
@@ -229,12 +223,6 @@ func (m *Perf) Ec2Nodes(
 	// Replaces the AWS endpoints, for example with a local AWS fake.
 	// +optional
 	endpoint string,
-	// The region of the second relay and the server. Plans with relay2 need it.
-	// +optional
-	peerRegion string,
-	// The image of the hosts in peerRegion: the same OS as image.
-	// +optional
-	peerImage string,
 ) (*dagger.Directory, error) {
 	specs, err := perfspec.ParseNodePlans(plans)
 	if err != nil {
@@ -251,37 +239,13 @@ func (m *Perf) Ec2Nodes(
 	if d+uploadSlack >= poweroff {
 		return nil, fmt.Errorf("deadline %s plus %s is not less than the instance life %s", d, uploadSlack, poweroff)
 	}
-	_, two := specs["relay2"]
-	if two && (peerRegion == "" || peerRegion == region || peerImage == "") {
-		return nil, errors.New("plans with a second relay need a peer region that is not the region, and a peer image")
-	}
 	r := newEC2Run(region, accessKeyId, secretAccessKey, sessionToken, endpoint, bucket, runTag, keys, d)
-	home := &site{aws: r.aws, region: region, image: image}
-	sites := []*site{home}
-	siteOf := func(string) *site { return home }
-	if two {
-		peer := &site{aws: awsIn(peerRegion, accessKeyId, secretAccessKey, sessionToken, endpoint), region: peerRegion, image: peerImage}
-		sites = append(sites, peer)
-		siteOf = func(role string) *site {
-			if slices.Contains(perfspec.PeerRoles, role) {
-				return peer
-			}
-			return home
-		}
-	}
-	for _, st := range sites {
-		reap(ctx, st.aws)
-		defer reap(context.WithoutCancel(ctx), st.aws)
-	}
+	r.reap(ctx)
+	defer r.reap(context.WithoutCancel(ctx))
 	defer r.cleanup(context.WithoutCancel(ctx))
 	group := perfspec.GroupName(runTag)
-	// The deferred terminates run first, so the groups are free when these run.
-	for _, st := range sites {
-		defer deleteGroup(context.WithoutCancel(ctx), st.aws, group)
-		if two {
-			defer deleteSecurityGroups(context.WithoutCancel(ctx), st, runTag)
-		}
-	}
+	// The deferred terminates run first, so the group is free when this runs.
+	defer r.deleteGroup(context.WithoutCancel(ctx), group)
 
 	// The bins and the files are the same for all hosts.
 	var shared perfspec.Spec
@@ -291,62 +255,40 @@ func (m *Perf) Ec2Nodes(
 	}
 	launched := time.Now()
 	deadlineAt := launched.Add(d).UTC()
-	for _, st := range sites {
-		if err := st.aws.CreatePlacementGroup(ctx, group, perfspec.Tags(runTag, launched.Add(poweroff))); err != nil {
-			return infra(runTag, fmt.Errorf("%s: %w", st.region, err)), nil
-		}
-		if !two {
-			continue
-		}
-		// The security group of the bench subnets does not take the hosts of another region.
-		opts := dagger.AwsCreateSecurityGroupOpts{SubnetTag: subnetTag}
-		if st.securityGroup, err = st.aws.CreateSecurityGroup(ctx, group, perfspec.SecurityGroupTags(runTag, launched.Add(poweroff)), opts); err != nil {
-			return infra(runTag, fmt.Errorf("%s: %w", st.region, err)), nil
-		}
+	if err := r.aws.CreatePlacementGroup(ctx, group, perfspec.Tags(runTag, launched.Add(poweroff))); err != nil {
+		return infra(runTag, err), nil
 	}
-	hosts := map[string]host{}
+	ips := map[string]string{}
 	insts := map[string]*dagger.AwsInstance{}
+	subnet := ""
 	for _, role := range perfspec.NodeRoles {
 		spec, ok := specs[role]
 		if !ok {
 			continue
 		}
-		st := siteOf(role)
 		spec.RunID, spec.Deadline, spec.Bins, spec.Files = runTag, deadlineAt, shared.Bins, shared.Files
-		spec.Nodes = nodeAddrs(hosts, st)
+		spec.Nodes = maps.Clone(ips)
 		if err := r.uploads(ctx, &spec, func(name string) string { return keys.NodeOutput(role, name) }); err != nil {
 			return infra(runTag, err), nil
 		}
-		opts := launchOpts{image: st.image, instanceType: instanceType, subnetTag: subnetTag, subnet: st.subnet, group: group, securityGroup: st.securityGroup}
-		id, err := r.launch(ctx, st.aws, spec, keys.NodeSpec(role), agentURL, opts, launched)
+		opts := launchOpts{image: image, instanceType: instanceType, subnetTag: subnetTag, subnet: subnet, group: group}
+		id, err := r.launch(ctx, spec, keys.NodeSpec(role), agentURL, opts, launched)
 		if err != nil {
-			return infra(runTag, fmt.Errorf("launch the %s host in %s: %w", role, st.region, err)), nil
+			return infra(runTag, fmt.Errorf("launch the %s host: %w", role, err)), nil
 		}
-		inst := st.aws.Instance(id)
+		inst := r.aws.Instance(id)
 		insts[role] = inst
 		defer r.terminate(context.WithoutCancel(ctx), inst, id)
 		facts := inst.Facts()
-		h := host{site: st}
-		if h.private, err = facts.PrivateIP(ctx); err == nil {
-			st.subnet, err = facts.SubnetID(ctx)
-		}
-		if err == nil && two {
-			h.public, err = inst.PublicIP(ctx, publicIPWait)
+		ip, err := facts.PrivateIP(ctx)
+		if err == nil {
+			subnet, err = facts.SubnetID(ctx)
 		}
 		if err != nil {
 			return infra(runTag, fmt.Errorf("read the facts of the %s host: %w", role, err)), nil
 		}
-		hosts[role] = h
-		slog.Info("Launched a bench host", "role", role, "region", st.region, "instance", id, "ip", h.private, "public_ip", h.public,
-			"subnet", st.subnet, "group", group, "deadline", deadlineAt)
-	}
-	// The hosts wait for each other, so the rules can come after the launches.
-	for _, st := range sites {
-		if cidrs := peerCIDRs(hosts, st); len(cidrs) > 0 {
-			if err := st.aws.AllowFrom(ctx, st.securityGroup, cidrs); err != nil {
-				return infra(runTag, fmt.Errorf("%s: %w", st.region, err)), nil
-			}
-		}
+		ips[role] = ip
+		slog.Info("Launched a bench host", "role", role, "instance", id, "ip", ip, "subnet", subnet, "group", group, "deadline", deadlineAt)
 	}
 
 	until := deadlineAt.Add(uploadSlack)
@@ -363,7 +305,7 @@ func (m *Perf) Ec2Nodes(
 	if grace.Before(until) {
 		until = grace
 	}
-	for _, role := range []string{"server", "relay", "relay2"} {
+	for _, role := range []string{"server", "relay"} {
 		inst, ok := insts[role]
 		if !ok {
 			continue
@@ -380,53 +322,9 @@ func (m *Perf) Ec2Nodes(
 	return dir, nil
 }
 
-// site is the part of a multi-node run in one region.
-type site struct {
-	aws           *dagger.Aws
-	region, image string
-	// subnet is the subnet of the first host. The hosts of one placement group
-	// must be in one subnet.
-	subnet string
-	// securityGroup is the group of the run, or empty in a run in one region.
-	securityGroup string
-}
-
-// host is one launched host. public is empty in a run in one region.
-type host struct {
-	site            *site
-	private, public string
-}
-
-// nodeAddrs returns the address of each host for a new host in the site st: the
-// private IP of a host in the same region, else its public IP.
-func nodeAddrs(hosts map[string]host, st *site) map[string]string {
-	addrs := map[string]string{}
-	for role, h := range hosts {
-		if h.site == st {
-			addrs[role] = h.private
-		} else {
-			addrs[role] = h.public
-		}
-	}
-	return addrs
-}
-
-// peerCIDRs returns the public addresses of the hosts that are not in the site st.
-func peerCIDRs(hosts map[string]host, st *site) []string {
-	var cidrs []string
-	for _, h := range hosts {
-		if h.site != st && h.public != "" {
-			cidrs = append(cidrs, h.public+"/32")
-		}
-	}
-	slices.Sort(cidrs)
-	return cidrs
-}
-
 // Ec2Cleanup terminates the live instances of a run and deletes its placement
-// groups, its security groups and its inputs in S3. A cancelled job runs it,
-// because a cancel stops Ec2 and Ec2Nodes before their own cleanup. With nothing
-// left, it does nothing. The result lists what the run still has in each region.
+// group and its inputs in S3. A cancelled job runs it, because a cancel stops
+// Ec2 and Ec2Nodes before their own cleanup. With nothing left, it does nothing.
 func (m *Perf) Ec2Cleanup(
 	ctx context.Context,
 	// The run tag of the Ec2 call.
@@ -441,49 +339,28 @@ func (m *Perf) Ec2Cleanup(
 	// Replaces the AWS endpoints, for example with a local AWS fake.
 	// +optional
 	endpoint string,
-	// The second region of a run with two relays.
-	// +optional
-	peerRegion string,
 ) (string, error) {
 	keys, err := perfspec.NewKeys(runTag)
 	if err != nil {
 		return "", err
 	}
-	regions := []string{region}
-	if peerRegion != "" && peerRegion != region {
-		regions = append(regions, peerRegion)
-	}
-	tag, group := perfspec.RunTag(runTag), perfspec.GroupName(runTag)
-	var errs []error
-	var done, left []string
-	for i, rg := range regions {
-		a := awsIn(rg, accessKeyId, secretAccessKey, sessionToken, endpoint)
-		// Do the next deletes also when one fails.
-		ids, err := a.Reap(ctx, dagger.AwsReapOpts{Tag: tag, All: true})
-		errs = append(errs, err)
-		if i == 0 {
-			n, err := a.Bucket(bucket).Delete(ctx, keys.Inputs())
-			errs = append(errs, err)
-			done = append(done, fmt.Sprintf("deleted %d input objects", n))
-		}
-		// The groups are free when their instances have terminated.
-		errs = append(errs, a.DeletePlacementGroup(ctx, group, dagger.AwsDeletePlacementGroupOpts{Wait: groupDeleteWait}))
-		sgs, err := a.DeleteSecurityGroups(ctx, tag, dagger.AwsDeleteSecurityGroupsOpts{Wait: groupDeleteWait})
-		errs = append(errs, err)
-		done = append(done, fmt.Sprintf("%s: terminated %d instances %v, deleted the placement group %s and %d security groups %v", rg, len(ids), ids, group, len(sgs), sgs))
-
-		insts, err := a.Instances(ctx, dagger.AwsInstancesOpts{Tag: tag})
-		errs = append(errs, err)
-		pgs, err := a.PlacementGroups(ctx, dagger.AwsPlacementGroupsOpts{Tag: tag})
-		errs = append(errs, err)
-		rest, err := a.SecurityGroups(ctx, dagger.AwsSecurityGroupsOpts{Tag: tag})
-		errs = append(errs, err)
-		left = append(left, fmt.Sprintf("%s: %d instances %v, %d placement groups %v, %d security groups %v", rg, len(insts), insts, len(pgs), pgs, len(rest), rest))
-	}
-	if err := errors.Join(errs...); err != nil {
+	a := dag.Aws(dagger.AwsOpts{
+		Region:          region,
+		AccessKeyID:     accessKeyId,
+		SecretAccessKey: secretAccessKey,
+		SessionToken:    sessionToken,
+		Endpoint:        endpoint,
+	})
+	// Do the S3 delete also when the terminate fails.
+	ids, terr := a.Reap(ctx, dagger.AwsReapOpts{Tag: perfspec.RunTag(runTag), All: true})
+	n, derr := a.Bucket(bucket).Delete(ctx, keys.Inputs())
+	// The group is free when its instances have terminated.
+	group := perfspec.GroupName(runTag)
+	gerr := a.DeletePlacementGroup(ctx, group, dagger.AwsDeletePlacementGroupOpts{Wait: groupDeleteWait})
+	if err := errors.Join(terr, derr, gerr); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Run %s: %s.\nLeft with the tag %s: %s.", runTag, strings.Join(done, "; "), tag, strings.Join(left, "; ")), nil
+	return fmt.Sprintf("Terminated %d instances %v, deleted %d input objects and the placement group %s of run %s.", len(ids), ids, n, group, runTag), nil
 }
 
 // ec2Run is the state of one Ec2 or Ec2Nodes call.
@@ -496,19 +373,14 @@ type ec2Run struct {
 }
 
 func newEC2Run(region string, accessKeyId, secretAccessKey, sessionToken *dagger.Secret, endpoint, bucket, runTag string, keys perfspec.Keys, d time.Duration) *ec2Run {
-	a := awsIn(region, accessKeyId, secretAccessKey, sessionToken, endpoint)
-	return &ec2Run{aws: a, bucket: a.Bucket(bucket), runTag: runTag, keys: keys, expires: (d + 10*time.Minute).String()}
-}
-
-// awsIn returns the AWS session of a region.
-func awsIn(region string, accessKeyId, secretAccessKey, sessionToken *dagger.Secret, endpoint string) *dagger.Aws {
-	return dag.Aws(dagger.AwsOpts{
+	a := dag.Aws(dagger.AwsOpts{
 		Region:          region,
 		AccessKeyID:     accessKeyId,
 		SecretAccessKey: secretAccessKey,
 		SessionToken:    sessionToken,
 		Endpoint:        endpoint,
 	})
+	return &ec2Run{aws: a, bucket: a.Bucket(bucket), runTag: runTag, keys: keys, expires: (d + 10*time.Minute).String()}
 }
 
 // launchOpts are the EC2 settings of one host.
@@ -516,30 +388,22 @@ type launchOpts struct {
 	image, instanceType, subnetTag string
 	// subnet and group are set for the hosts of a multi-node run.
 	subnet, group string
-	// securityGroup is set for the hosts of a run in two regions.
-	securityGroup string
 }
 
-// reap terminates the expired bench instances of the region of a, and deletes
-// the expired placement groups and security groups with no instances.
-func reap(ctx context.Context, a *dagger.Aws) {
-	ids, err := a.Reap(ctx)
+// reap terminates the expired bench instances and deletes the placement
+// groups with no instances.
+func (r *ec2Run) reap(ctx context.Context) {
+	ids, err := r.aws.Reap(ctx)
 	if err != nil {
 		slog.Warn("Failed to terminate expired bench instances", "error", err)
 	} else if len(ids) > 0 {
 		slog.Info("Terminated expired bench instances", "instances", ids)
 	}
-	groups, err := a.ReapPlacementGroups(ctx)
+	groups, err := r.aws.ReapPlacementGroups(ctx)
 	if err != nil {
 		slog.Warn("Failed to delete empty bench placement groups", "error", err)
 	} else if len(groups) > 0 {
 		slog.Info("Deleted empty bench placement groups", "groups", groups)
-	}
-	sgs, err := a.ReapSecurityGroups(ctx)
-	if err != nil {
-		slog.Warn("Failed to delete expired bench security groups", "error", err)
-	} else if len(sgs) > 0 {
-		slog.Info("Deleted expired bench security groups", "groups", sgs)
 	}
 }
 
@@ -549,22 +413,12 @@ func (r *ec2Run) terminate(ctx context.Context, inst *dagger.AwsInstance, id str
 	}
 }
 
-func deleteGroup(ctx context.Context, a *dagger.Aws, group string) {
-	if err := a.DeletePlacementGroup(ctx, group, dagger.AwsDeletePlacementGroupOpts{Wait: groupDeleteWait}); err != nil {
+func (r *ec2Run) deleteGroup(ctx context.Context, group string) {
+	if err := r.aws.DeletePlacementGroup(ctx, group, dagger.AwsDeletePlacementGroupOpts{Wait: groupDeleteWait}); err != nil {
 		slog.Warn("Failed to delete the placement group", "group", group, "error", err)
 		return
 	}
 	slog.Info("Deleted the placement group", "group", group)
-}
-
-// deleteSecurityGroups deletes the security groups of the run in the region of st.
-func deleteSecurityGroups(ctx context.Context, st *site, runTag string) {
-	ids, err := st.aws.DeleteSecurityGroups(ctx, perfspec.RunTag(runTag), dagger.AwsDeleteSecurityGroupsOpts{Wait: groupDeleteWait})
-	if err != nil {
-		slog.Warn("Failed to delete the security groups of the run", "region", st.region, "error", err)
-		return
-	}
-	slog.Info("Deleted the security groups of the run", "region", st.region, "groups", ids)
 }
 
 // failed returns the infra error of a host, with its console output when it is readable.
@@ -662,8 +516,8 @@ func (r *ec2Run) uploads(ctx context.Context, spec *perfspec.Spec, keyOf func(st
 	return nil
 }
 
-// launch puts the spec in S3 at specKey and launches the instance in the region of a.
-func (r *ec2Run) launch(ctx context.Context, a *dagger.Aws, spec perfspec.Spec, specKey, agentURL string, o launchOpts, at time.Time) (string, error) {
+// launch puts the spec in S3 at specKey and launches the instance.
+func (r *ec2Run) launch(ctx context.Context, spec perfspec.Spec, specKey, agentURL string, o launchOpts, at time.Time) (string, error) {
 	js, err := spec.JSON()
 	if err != nil {
 		return "", err
@@ -679,9 +533,8 @@ func (r *ec2Run) launch(ctx context.Context, a *dagger.Aws, spec perfspec.Spec, 
 	if err != nil {
 		return "", err
 	}
-	return a.Launch(ctx, o.image, o.instanceType, dag.SetSecret("perf-user-data-"+path.Base(specKey)+"-"+spec.RunID, ud),
-		perfspec.Tags(spec.RunID, at.Add(poweroff)),
-		dagger.AwsLaunchOpts{SubnetTag: o.subnetTag, Subnet: o.subnet, PlacementGroup: o.group, SecurityGroup: o.securityGroup})
+	return r.aws.Launch(ctx, o.image, o.instanceType, dag.SetSecret("perf-user-data-"+path.Base(specKey)+"-"+spec.RunID, ud),
+		perfspec.Tags(spec.RunID, at.Add(poweroff)), dagger.AwsLaunchOpts{SubnetTag: o.subnetTag, Subnet: o.subnet, PlacementGroup: o.group})
 }
 
 // wait waits for the key until the time. It fails early when the instance stops.

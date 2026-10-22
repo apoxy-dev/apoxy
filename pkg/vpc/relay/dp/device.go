@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/bits"
 	"net"
 	"net/netip"
 	"sync"
@@ -21,7 +22,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-// rxBatch is the most frames that a receive loop takes in one turn.
+// rxBatch is the most frames that a receive loop takes in one turn, and the most packets of a
+// TxBatch.
 const rxBatch = 64
 
 // Device is the dedicated interface of the relay. Its demux gives UDP 1000 to the pipeline, UDP
@@ -42,8 +44,8 @@ type Device struct {
 	delays atomic.Pointer[delayTable]
 }
 
-// txQueue is a transmit queue. The pipeline, quic-go and the netstack send from many goroutines,
-// so a lock keeps the queue to one at a time.
+// txQueue is a transmit queue. The receive loops, quic-go and the netstack send from many
+// goroutines, so a lock keeps the queue to one at a time.
 type txQueue struct {
 	mu     sync.Mutex
 	q      packetio.TxQueue
@@ -76,7 +78,7 @@ func newDevice(ifc Interface, dev packetio.Device, mtu uint32, impair *ebpf.Map)
 		return nil, err
 	}
 	d.ns = ns
-	d.p = New(func(to netip.AddrPort, b []byte) { d.sendUDP(PortData, to, 0, b) })
+	d.p = New(deviceSender{d})
 	local := d.src4
 	if !local.IsValid() {
 		local = d.src6
@@ -101,7 +103,8 @@ func (d *Device) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	for i := range d.dev.NumRxQueues() {
 		q := d.dev.RxQueue(i)
-		g.Go(func() error { return d.receive(gctx, q) })
+		tx := &TxBatch{txq: d.tx[i%len(d.tx)], hops: hopCache{}}
+		g.Go(func() error { return d.receive(gctx, q, tx) })
 	}
 	g.Go(func() error {
 		d.readDelays(gctx)
@@ -125,8 +128,9 @@ func (d *Device) Run(ctx context.Context) error {
 	return err
 }
 
-// receive is the receive loop of one queue.
-func (d *Device) receive(ctx context.Context, q packetio.RxQueue) error {
+// receive is the receive loop of one queue. The pipeline sends the packets of each turn in tx.
+func (d *Device) receive(ctx context.Context, q packetio.RxQueue, tx *TxBatch) error {
+	rx := make([]RxPacket, 0, rxBatch)
 	q.Fill(q.NumFreeFillSlots())
 	for ctx.Err() == nil {
 		n, err := q.Poll(100 * time.Millisecond)
@@ -137,9 +141,13 @@ func (d *Device) receive(ctx context.Context, q packetio.RxQueue) error {
 			continue
 		}
 		descs := q.Receive(min(n, rxBatch))
+		rx = rx[:0]
 		for _, desc := range descs {
-			d.input(q.Region().Frame(desc))
+			if dg, ok := d.input(q.Region().Frame(desc)); ok {
+				rx = append(rx, RxPacket{From: dg.from, Payload: dg.payload})
+			}
 		}
+		d.p.Receive(rx, tx)
 		q.Recycle(descs)
 		q.Fill(q.NumFreeFillSlots())
 	}
@@ -168,11 +176,11 @@ func (d *Device) readDelays(ctx context.Context) {
 	}
 }
 
-// input is the demux of one received frame.
-func (d *Device) input(frame []byte) {
+// input is the demux of one received frame. It returns the datagrams for the pipeline.
+func (d *Device) input(frame []byte) (datagram, bool) {
 	switch to, dg := demux(frame, d.own); to {
 	case toPipeline:
-		d.p.Receive(dg.from, dg.payload)
+		return dg, true
 	case toQUIC:
 		d.conn.deliver(dg)
 	case toNetstack:
@@ -182,6 +190,7 @@ func (d *Device) input(frame []byte) {
 		// because a send runs with or without it.
 		d.p.drop(ReasonDemux, len(frame))
 	}
+	return datagram{}, false
 }
 
 func (d *Device) own(a netip.Addr) bool {
@@ -193,40 +202,131 @@ func (d *Device) own(a netip.Addr) bool {
 	return false
 }
 
-// sendUDP sends a UDP datagram from the own address and port. With no next-hop MAC it drops the
-// datagram (no_neighbor). It never waits: when the impair map delays the datagram, a timer sends a
-// copy of it.
-func (d *Device) sendUDP(port uint16, to netip.AddrPort, ecn uint8, b []byte) {
+// udpFrame is a UDP datagram from the own address, with its next-hop MAC.
+type udpFrame struct {
+	from, to netip.AddrPort
+	mac      tcpip.LinkAddress
+	ecn      uint8
+	payload  []byte
+}
+
+// route returns the frame of a UDP datagram from the own address and port. With no next-hop MAC in
+// hops or gVisor it drops it (no_neighbor). Call it before a TX queue lock: a miss sends ARP or NDP.
+func (d *Device) route(port uint16, to netip.AddrPort, ecn uint8, b []byte, hops hopCache, now time.Time) (udpFrame, bool) {
 	to = netip.AddrPortFrom(to.Addr().Unmap(), to.Port())
 	src := d.src4
 	if to.Addr().Is6() {
 		src = d.src6
 	}
-	mac, ok := d.ns.neighbor(to.Addr())
+	mac, ok := hops.mac(d.ns, to.Addr(), now)
 	if !src.IsValid() || !ok {
 		d.p.drop(ReasonNoNeighbor, len(b))
+		return udpFrame{}, false
+	}
+	return udpFrame{from: netip.AddrPortFrom(src, port), to: to, mac: mac, ecn: ecn, payload: b}, true
+}
+
+// hopTTL is the time that an RX goroutine uses a MAC from gVisor. Each new ask keeps the neighbor
+// checks of gVisor going, so a new MAC of a next hop applies within about hopTTL.
+const hopTTL = time.Second
+
+// hopCache is the next-hop MACs of one RX goroutine, with the time it asked gVisor for each. Only
+// that goroutine uses it, so it has no lock.
+type hopCache map[netip.Addr]hopEntry
+
+type hopEntry struct {
+	mac tcpip.LinkAddress
+	at  time.Time
+}
+
+// mac returns the MAC of the next hop to dst. A miss, or an entry older than hopTTL, asks gVisor
+// one time. A nil cache asks gVisor each time.
+func (c hopCache) mac(ns *netstack, dst netip.Addr, now time.Time) (tcpip.LinkAddress, bool) {
+	hop := ns.nextHop(dst)
+	if e, ok := c[hop]; ok && now.Sub(e.at) < hopTTL {
+		return e.mac, true
+	}
+	mac, ok := ns.neighbor(hop)
+	if ok && c != nil {
+		// There are few next hops, so a full cache is cleared. An LRU would write on each hit.
+		if len(c) >= stack.NeighborCacheSize {
+			clear(c)
+		}
+		c[hop] = hopEntry{mac: mac, at: now}
+	}
+	return mac, ok
+}
+
+// encode writes f into frame. It returns the frame length, or 0 when frame is too small.
+func (d *Device) encode(f *udpFrame, frame []byte) int {
+	return encodeUDP(frame, tcpip.LinkAddress(d.ifc.MAC), f.mac, f.from, f.to, f.ecn, f.payload)
+}
+
+// deviceSender gives the batches of the pipeline to the device.
+type deviceSender struct{ d *Device }
+
+// Send sends the packets of b on the TX queue of its RX queue, with one Transmit. A batch with no
+// RX queue (PacketOut) sends each packet alone and asks gVisor for each MAC. It never waits.
+func (s deviceSender) Send(b *TxBatch) {
+	d := s.d
+	if b.txq == nil {
+		for i := range b.Len() {
+			to, payload := b.Packet(i)
+			d.sendUDP(PortData, to, 0, payload)
+		}
 		return
 	}
-	from := netip.AddrPortFrom(src, port)
-	h := to.Addr().As16()
-	q := d.tx[(uint32(h[15])|uint32(to.Port())<<8)%uint32(len(d.tx))]
+	var fs [rxBatch]udpFrame
+	n := 0
+	t, now := d.delays.Load(), time.Now()
+	for i := range b.Len() {
+		to, payload := b.Packet(i)
+		f, ok := d.route(PortData, to, 0, payload, b.hops, now)
+		if !ok {
+			continue
+		}
+		if t != nil {
+			if w := t.wait(PortData, f.to.Addr()); w > 0 {
+				d.sendLater(w, b.txq, f)
+				continue
+			}
+		}
+		fs[n] = f
+		n++
+	}
+	if n == 0 {
+		return
+	}
+	_, full := b.txq.send(n, func(i int, frame []byte) int { return d.encode(&fs[i], frame) })
+	for ; full != 0; full &= full - 1 {
+		d.p.drop(ReasonTXFull, len(fs[bits.TrailingZeros64(full)].payload))
+	}
+}
+
+// sendUDP sends a UDP datagram from the own address and port. With no next-hop MAC it drops the
+// datagram (no_neighbor). It never waits: when the impair map delays the datagram, a timer sends a
+// copy of it.
+func (d *Device) sendUDP(port uint16, to netip.AddrPort, ecn uint8, b []byte) {
+	f, ok := d.route(port, to, ecn, b, nil, time.Time{})
+	if !ok {
+		return
+	}
+	h := f.to.Addr().As16()
+	q := d.tx[(uint32(h[15])|uint32(f.to.Port())<<8)%uint32(len(d.tx))]
 	if t := d.delays.Load(); t != nil {
-		if w := t.wait(port, to.Addr()); w > 0 {
-			d.sendLater(w, q, from, to, mac, ecn, bytes.Clone(b))
+		if w := t.wait(port, f.to.Addr()); w > 0 {
+			d.sendLater(w, q, f)
 			return
 		}
 	}
-	d.transmit(q, len(b), func(frame []byte) int {
-		return encodeUDP(frame, tcpip.LinkAddress(d.ifc.MAC), mac, from, to, ecn, b)
-	})
+	d.transmit(q, len(b), func(frame []byte) int { return d.encode(&f, frame) })
 }
 
-// sendLater sends the datagram b after w.
-func (d *Device) sendLater(w time.Duration, q *txQueue, from, to netip.AddrPort, mac tcpip.LinkAddress, ecn uint8, b []byte) {
+// sendLater sends a copy of f on q after w.
+func (d *Device) sendLater(w time.Duration, q *txQueue, f udpFrame) {
+	f.payload = bytes.Clone(f.payload)
 	time.AfterFunc(w, func() {
-		d.transmit(q, len(b), func(frame []byte) int {
-			return encodeUDP(frame, tcpip.LinkAddress(d.ifc.MAC), mac, from, to, ecn, b)
-		})
+		d.transmit(q, len(f.payload), func(frame []byte) int { return d.encode(&f, frame) })
 	})
 }
 
@@ -247,35 +347,39 @@ func (d *Device) sendPacket(pkt *stack.PacketBuffer) bool {
 // transmit builds one frame on t and transmits it. A full ring drops the frame (tx_full); size is
 // the size that the drop counts.
 func (d *Device) transmit(t *txQueue, size int, build func(frame []byte) int) bool {
-	sent, full := t.send(build)
-	if full {
+	sent, full := t.send(1, func(_ int, frame []byte) int { return build(frame) })
+	if full != 0 {
 		d.p.drop(ReasonTXFull, size)
 	}
-	return sent
+	return sent == 1
 }
 
-// send builds one frame and transmits it. full tells that the ring had no room for it.
-func (t *txQueue) send(build func(frame []byte) int) (sent, full bool) {
+// send builds the frames of n packets (at most rxBatch) and sends them with one Transmit. build
+// returns 0 to skip packet i. Bit i of full tells that packet i had no room in the ring.
+func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, full uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		return false, false
+		return 0, 0
 	}
 	t.q.Complete(rxBatch)
-	descs := t.q.Alloc(1)
-	if len(descs) == 0 {
-		return false, true
+	descs := t.q.Alloc(n)
+	var pkts [rxBatch]int // The packet of each frame.
+	k, i := 0, 0
+	for ; i < n && k < len(descs); i++ {
+		if l := build(i, t.q.Region().Writable(descs[k])); l > 0 {
+			descs[k].Len, pkts[k] = uint32(l), i
+			k++
+		}
 	}
-	desc := descs[0]
-	n := build(t.q.Region().Writable(desc))
-	if n <= 0 {
-		t.q.Free(descs)
-		return false, false
+	t.q.Free(descs[k:])
+	sent = t.q.Transmit(descs[:k])
+	t.q.Free(descs[sent:k])
+	for _, j := range pkts[sent:k] {
+		full |= 1 << j
 	}
-	desc.Len = uint32(n)
-	if t.q.Transmit([]packetio.Desc{desc}) != 1 {
-		t.q.Free([]packetio.Desc{desc})
-		return false, true
+	for ; i < n; i++ {
+		full |= 1 << i
 	}
-	return true, false
+	return sent, full
 }

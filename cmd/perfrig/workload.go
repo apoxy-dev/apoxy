@@ -27,9 +27,6 @@ type Workload struct {
 	// before the server and stops after the server exits. Its CPU counts as
 	// server CPU.
 	Sidecar func(Env) []string
-	// Sidecar2, when set, returns the argv of the second relay of "perfrig node",
-	// which runs on its own host.
-	Sidecar2 func(Env) []string
 	// Ready is the socket that the server opens. The client starts after the
 	// socket is open. A zero Socket means start the client after 1 s.
 	Ready Socket
@@ -48,13 +45,13 @@ type Env struct {
 	// RelayIP is the address of the relay netns, or ServerIP without one. In
 	// "perfrig node", it is the relay host.
 	RelayIP string
-	// Relay2IP is the host of the second relay in "perfrig node", or empty.
-	Relay2IP string
-	Duration time.Duration
-	Omit     time.Duration
-	Streams  int
-	Bitrate  string
-	Window   string
+	// RelayCtlIP is the address of the control link of the relay netns, or RelayIP without one.
+	RelayCtlIP string
+	Duration   time.Duration
+	Omit       time.Duration
+	Streams    int
+	Bitrate    string
+	Window     string
 	// Dir is a directory for workload files, for example qlogs.
 	Dir string
 	// Dev is the network device of this host in "perfrig node". It is empty in the netns rig.
@@ -66,7 +63,7 @@ func (e Env) vars() []string {
 		"SERVER_IP=" + e.ServerIP,
 		"CLIENT_IP=" + e.ClientIP,
 		"RELAY_IP=" + e.RelayIP,
-		"RELAY2_IP=" + e.Relay2IP,
+		"RELAY_CTL_IP=" + e.RelayCtlIP,
 		"DURATION_S=" + strconv.Itoa(seconds(e.Duration)),
 		"OMIT_S=" + strconv.Itoa(seconds(e.Omit)),
 		"STREAMS=" + strconv.Itoa(e.Streams),
@@ -100,7 +97,7 @@ func execWorkload(cfg config) (Workload, error) {
 	if cfg.Name == "" || len(cfg.ServerArgv) == 0 || len(cfg.ClientArgv) == 0 {
 		return Workload{}, errors.New("the exec workload needs -name, -server-argv and -client-argv")
 	}
-	for _, argv := range [][]string{cfg.ServerArgv, cfg.ClientArgv, cfg.SidecarArgv, cfg.Sidecar2Argv} {
+	for _, argv := range [][]string{cfg.ServerArgv, cfg.ClientArgv, cfg.SidecarArgv} {
 		if err := checkVars(argv); err != nil {
 			return Workload{}, err
 		}
@@ -118,9 +115,6 @@ func execWorkload(cfg config) (Workload, error) {
 	}
 	if len(cfg.SidecarArgv) > 0 {
 		w.Sidecar = func(e Env) []string { return e.expand(cfg.SidecarArgv) }
-	}
-	if len(cfg.Sidecar2Argv) > 0 {
-		w.Sidecar2 = func(e Env) []string { return e.expand(cfg.Sidecar2Argv) }
 	}
 	return w, nil
 }
