@@ -16,7 +16,18 @@ jobs:
             p4test --arch v1model --p4runtime-files /out/relay.p4info.txtpb relay.p4
           diff -u relay.p4info.txtpb "$RUNNER_TEMP/relay.p4info.txtpb"
 
+  # The edge-runtime image is tagged with the edge-runtime commit, not the apoxy
+  # commit. If the image for that commit exists, the build jobs do nothing.
+  edge-runtime-rev:
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    outputs:
+      rev: ${{ steps.rev.outputs.rev }}
+    steps:
+      - id: rev
+        run: echo "rev=$(git ls-remote https://github.com/apoxy-dev/edge-runtime refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
+
   build-edge-runtime:
+    needs: edge-runtime-rev
     strategy:
       matrix:
         include:
@@ -38,10 +49,10 @@ jobs:
           SHUTUP: 1
         timeout-minutes: 30
         run: |
-          dagger call -v publish-edge-runtime --sha=${GITHUB_SHA::7} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
+          dagger call -v publish-edge-runtime --rev=${{ needs.edge-runtime-rev.outputs.rev }} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
 
   publish-edge-runtime-multiarch:
-    needs: build-edge-runtime
+    needs: [edge-runtime-rev, build-edge-runtime]
     runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
@@ -56,10 +67,10 @@ jobs:
           SHUTUP: 1
         timeout-minutes: 20
         run: |
-          dagger call -v publish-edge-runtime-multiarch --sha=${GITHUB_SHA::7} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
+          dagger call -v publish-edge-runtime-multiarch --rev=${{ needs.edge-runtime-rev.outputs.rev }} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS
 
   publish-images:
-    needs: publish-edge-runtime-multiarch
+    needs: [edge-runtime-rev, publish-edge-runtime-multiarch]
     runs-on: blacksmith-32vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
@@ -72,7 +83,8 @@ jobs:
         env:
           APOXY_INTERNAL_GAR_CREDENTIALS: ${{ secrets.APOXY_INTERNAL_GAR_CREDENTIALS }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EDGE_RUNTIME_REV: ${{ needs.edge-runtime-rev.outputs.rev }}
           SHUTUP: 1
         timeout-minutes: 30
         run: |
-          dagger call -v publish-images --src=. --tag=latest --sha=${GITHUB_SHA::7} --edge-runtime-tag=${GITHUB_SHA::7} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS --github-token=env:GITHUB_TOKEN
+          dagger call -v publish-images --src=. --tag=latest --sha=${GITHUB_SHA::7} --edge-runtime-tag=er-${EDGE_RUNTIME_REV::7} --gcr-creds=env:APOXY_INTERNAL_GAR_CREDENTIALS --github-token=env:GITHUB_TOKEN

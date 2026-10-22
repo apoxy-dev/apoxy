@@ -600,18 +600,48 @@ func (m *ApoxyCli) BuildEdgeRuntime(
 	return builder.WithExec([]string{"cargo", "build", "--release"})
 }
 
-// PublishEdgeRuntime builds edge-runtime for the host architecture and publishes it to GAR.
+// edgeRuntimeTag returns the GAR tag for an edge-runtime commit. The tag comes
+// from the edge-runtime commit, so apoxy commits that do not change edge-runtime
+// use the same image and do not push a new one.
+func edgeRuntimeTag(rev string) string {
+	if len(rev) > 7 {
+		rev = rev[:7]
+	}
+	return "er-" + rev
+}
+
+// imageExists reports whether ref is in the registry. A failed lookup counts as
+// missing, so the caller builds the image again.
+func (m *ApoxyCli) imageExists(ctx context.Context, gcrCreds *dagger.Secret, ref string) bool {
+	out, err := m.CraneContainer(ctx, gcrCreds).
+		// Do not use a cached result from an earlier run.
+		WithEnvVariable("CACHE_BUST", time.Now().String()).
+		WithExec([]string{"sh", "-c", `crane digest "$0" >/dev/null 2>&1 && echo found || echo missing`, ref}).
+		Stdout(ctx)
+	return err == nil && strings.TrimSpace(out) == "found"
+}
+
+// PublishEdgeRuntime builds edge-runtime at commit rev for the host architecture
+// and publishes it to GAR. It does nothing if the image for rev already exists.
 // This should be run on native arch workers (amd64 and arm64) in parallel.
 func (m *ApoxyCli) PublishEdgeRuntime(
 	ctx context.Context,
 	gcrCreds *dagger.Secret,
-	sha string,
+	// Full commit SHA of github.com/apoxy-dev/edge-runtime.
+	rev string,
 ) error {
 	platform := hostPlatform()
 	goarch := runtime.GOARCH
 
+	ref := fmt.Sprintf("%s/apoxy-internal/cloud/edge-runtime:%s-%s", GARRegistry, edgeRuntimeTag(rev), goarch)
+	if m.imageExists(ctx, gcrCreds, ref) {
+		fmt.Printf("Image %s exists, skipping edge-runtime build\n", ref)
+		return nil
+	}
+
 	// Build edge-runtime and copy binary out of cache mount.
-	builder := m.BuildEdgeRuntime(ctx, platform, nil).
+	src := dag.Git("https://github.com/apoxy-dev/edge-runtime").Commit(rev).Tree()
+	builder := m.BuildEdgeRuntime(ctx, platform, src).
 		WithExec([]string{"cp", "/src/target/release/edge-runtime", "/edge-runtime"})
 
 	// Create container with edge-runtime binary.
@@ -625,7 +655,7 @@ func (m *ApoxyCli) PublishEdgeRuntime(
 	// Publish to GAR with arch-specific tag.
 	addr, err := ctr.
 		WithRegistryAuth(GARRegistry, "_json_key", gcrCreds).
-		Publish(ctx, fmt.Sprintf("%s/apoxy-internal/cloud/edge-runtime:%s-%s", GARRegistry, sha, goarch))
+		Publish(ctx, ref)
 	if err != nil {
 		return fmt.Errorf("failed to publish edge-runtime: %w", err)
 	}
@@ -638,11 +668,16 @@ func (m *ApoxyCli) PublishEdgeRuntime(
 func (m *ApoxyCli) PublishEdgeRuntimeMultiarch(
 	ctx context.Context,
 	gcrCreds *dagger.Secret,
-	sha string,
+	// Full commit SHA of github.com/apoxy-dev/edge-runtime.
+	rev string,
 ) error {
-	crane := m.CraneContainer(ctx, gcrCreds)
+	manifest := fmt.Sprintf("%s/apoxy-internal/cloud/edge-runtime:%s", GARRegistry, edgeRuntimeTag(rev))
+	if m.imageExists(ctx, gcrCreds, manifest) {
+		fmt.Printf("Image %s exists, skipping edge-runtime manifest\n", manifest)
+		return nil
+	}
 
-	manifest := fmt.Sprintf("%s/apoxy-internal/cloud/edge-runtime:%s", GARRegistry, sha)
+	crane := m.CraneContainer(ctx, gcrCreds)
 	craneCmd := []string{
 		"crane", "index", "append",
 		"--manifest", manifest + "-amd64",
