@@ -4,6 +4,18 @@ on:
     branches:
       - main
 jobs:
+  p4test:
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check relay.p4 and its P4Info
+        working-directory: pkg/vpc/relay/dp
+        timeout-minutes: 10
+        run: |
+          docker run --rm -v "$PWD:/w:ro" -v "$RUNNER_TEMP:/out" -w /w p4lang/p4c:1.2.5.18 \
+            p4test --arch v1model --p4runtime-files /out/relay.p4info.txtpb relay.p4
+          diff -u relay.p4info.txtpb "$RUNNER_TEMP/relay.p4info.txtpb"
+
   build-edge-runtime:
     strategy:
       matrix:

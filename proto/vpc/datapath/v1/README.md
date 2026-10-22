@@ -1220,6 +1220,15 @@ An agent below revision 10, or with `local_routes_only`, opens no peer session
 to such an address. It accepts the peer session that an agent of another relay
 opens, and then the two agents send to each other.
 
+### Keys entry of the relay data plane
+
+`PspSaEntry` (`keys.proto`) does not go on the wire. It is the `entry` of a
+P4Runtime `ExternEntry` of the `PspSa` extern in `pkg/vpc/relay/dp`, which the
+relay control plane writes in process. An RX entry (`PSP_SA_DIRECTION_RX`) has
+the key `(direction, spi)`. A TX entry (`PSP_SA_DIRECTION_TX`) has the key
+`(direction, port, session, spi)`. A Read gives an empty `key`, and for an RX
+entry it gives `packets` and `seq`.
+
 ## Revisions
 
 Agents run on customer hosts for months, and relays change more often, so the

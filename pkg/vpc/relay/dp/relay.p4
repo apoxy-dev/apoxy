@@ -1,0 +1,271 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+#include <core.p4>
+#include <v1model.p4>
+
+// Drop reasons: the index in the drops counter.
+const bit<8> R_OLD_SESSION = 1;
+const bit<8> R_NO_CONTEXT = 2;
+const bit<8> R_SOURCE = 3;
+// The Go demux before the pipeline counts its drops at R_DEMUX.
+const bit<8> R_DEMUX = 4;
+// open_psp: no RX keys entry of the SPI.
+const bit<8> R_UNKNOWN_SPI = 5;
+// check_in: PSP not from addr, prev or a lane.
+const bit<8> R_UNKNOWN_SOURCE = 6;
+// check_in: a lane or port meter is red; toRoot: the punt meter is red.
+const bit<8> R_METER = 7;
+const bit<8> R_NO_ROUTE = 8;
+const bit<8> R_NO_TARGET = 9;
+const bit<8> R_TRUNK_TO_TRUNK = 10;
+const bit<8> R_LOCAL_ONLY = 11;
+const bit<8> R_MTU = 12;
+// send_out: no TX keys entry of the out port session.
+const bit<8> R_NO_KEYS = 13;
+// FRAME out: the datagram queue of the frame writer is full.
+const bit<8> R_DATAGRAM_FULL = 14;
+// The packet I/O of the interface: no next-hop MAC.
+const bit<8> R_NO_NEIGHBOR = 15;
+// The root's callback did not take a PacketIn.
+const bit<8> R_PUNT_FULL = 16;
+// The parser: not a keepalive, a probe, a PSP packet or a data frame, or no IP packet in it.
+const bit<8> R_MALFORMED = 17;
+// open_psp: the packet did not authenticate, had no sequence number or was a replay.
+const bit<8> R_OPEN = 18;
+
+// A VPC name: "<VPC UID>/<network ID>". The CP sends a string; the DP maps it to a number.
+@p4runtime_translation("apoxy.dev/relay/name", string)
+type bit<32> name_t;
+// kind: 1 PUNT, 2 MISS (to the root), 4 FRAME (to the port's frame writer). hash: the
+// QUIC connection. from: the outer address and port of a probe (port 0: the root uses the SID).
+@controller_header("packet_in")
+header packet_in_t {
+    bit<8> kind;
+    bit<64> port;
+    bit<64> session;
+    bit<32> hash;
+    bit<144> from;
+}
+// kind: 4 FRAME, 5 SEAL, 6 RAW (SEAL and RAW skip apply; SEAL gets tag 0). to: RAW's outer address.
+@controller_header("packet_out")
+header packet_out_t {
+    bit<8> kind;
+    bit<64> port;
+    bit<64> session;
+    bit<144> to;
+}
+
+header ethernet_t {
+    bit<48> dst;
+    bit<48> src;
+    bit<16> ethertype;
+}
+struct headers_t {
+    packet_in_t packet_in;
+    packet_out_t packet_out;
+    ethernet_t eth;
+}
+struct port_t {
+    bit<1> trunk;
+    bit<64> session;
+    bit<24> tag;
+    bit<144> addr;
+    bit<144> prev;
+    bit<48> lanes;
+    bit<16> mtu;
+    bit<32> meter_index;
+}
+struct context_t {
+    name_t vpc;
+    bit<24> vni;
+    bit<32> cell;
+}
+struct fwd_t {
+    bit<64> port;
+    bit<32> cell;
+}
+struct local_t {
+    bit<64> port;
+    bit<32> cell;
+}
+struct meta_t {
+    bit<64> port;
+    bit<64> sa_session;
+    bit<2> lane;
+    bit<24> vni;
+    bit<24> tag;
+    bool local_only;
+    bit<128> src;
+    bit<128> dst;
+    port_t p;
+    context_t c;
+    fwd_t fwd;
+    local_t local;
+}
+
+// The keys table. Writer: the root, with the agent or trunk key engine. A Read gives an empty key;
+// for an RX entry it also gives the packet count and the highest accepted sequence number.
+extern PspSa {
+    PspSa(bit<32> size);
+    // Opens in place by SPI. Sets m.port, m.sa_session, m.lane (RX keys entry) and m.vni (packet).
+    bool open(in bit<32> spi, inout meta_t m);
+    // Seals with the TX keys entry of a lane (flow hash). vni: the outgoing VNI field (trunk port:
+    // the sender's tag; access port: m.c.vni).
+    bool seal(in bit<64> port, in bit<24> vni);
+}
+
+
+// m.port is a relay port (an access or trunk peer), not a v1model port.
+control Relay(inout headers_t h,
+              inout meta_t m,
+              inout standard_metadata_t sm) {
+    // Cell c: receive at 2c, transmit at 2c+1. The root gives c and the meter indices (pools).
+    counter(1 << 21, CounterType.packets_and_bytes) cells;
+    counter(64, CounterType.packets_and_bytes) drops;
+    // Port meter i has lane meters 4i to 4i+3 and punt meter i. Punt meter 0: probes.
+    meter(1 << 16, MeterType.bytes) port_meter;
+    meter(1 << 18, MeterType.bytes) lane_meter;
+    meter(1 << 16, MeterType.packets) punt_meter;
+    PspSa(1 << 18) keys;
+    @hidden action open_psp() {
+    }
+    @hidden action check_in() {
+    }
+    @hidden action read_tag() {
+    }
+    @hidden action route_end() {
+    }
+    @hidden action send_out() {
+    }
+    // hide:begin
+    action drop(bit<8> reason) {
+        drops.count((bit<32>)reason);
+        mark_to_drop(sm);
+        exit;
+    }
+    // hide:end
+    // Writer: A (access) or M (trunk). addr 0: data on QUIC. lanes: 3 ports at addr's IP. prev
+    // (access): cleared 5 s after the agent moves. tag: the session tag of an access port.
+    action port(bit<1> trunk,
+                bit<64> session,
+                bit<24> tag,
+                bit<144> addr,
+                bit<144> prev,
+                bit<48> lanes,
+                bit<16> mtu,
+                bit<32> meter_index) {
+        m.p = {trunk, session, tag, addr, prev, lanes, mtu, meter_index};
+    }
+    // One classify entry for each access port, or each (trunk port, MS, tag). cell: receive cell.
+    action context(name_t vpc, bit<24> vni, bit<32> cell) {
+        m.c = {vpc, vni, cell};
+    }
+    // One entry for each prefix. port, cell: the winner, for a packet from an access port.
+    // local_port, local_cell: the best local candidate, from a trunk port or local_only (0: none).
+    action forward(bit<64> port, bit<32> cell, bit<64> local_port, bit<32> local_cell) {
+        m.fwd = {port, cell};
+        m.local = {local_port, local_cell};
+    }
+    // A source entry of a remote address that V accepted. send_out drops it to a trunk port.
+    action local_only() {
+        m.local_only = true;
+    }
+    table ports {
+        key = { m.port: exact; }
+        actions = { port; drop; }
+        const default_action = drop(R_OLD_SESSION);
+    }
+    // classify, source. Writer: the port's writer. m.p.session in the key: old entries never match.
+    table classify {
+        key = {
+            m.port: exact;
+            m.p.session: exact;
+            m.tag: exact;
+        }
+        actions = { context; drop; }
+        const default_action = drop(R_NO_CONTEXT);
+    }
+    // One set: A's attachment prefixes and the remote addresses V accepted, or a tag's records.
+    table source {
+        key = {
+            m.port: exact;
+            m.p.session: exact;
+            m.tag: exact;
+            m.src: lpm;
+        }
+        actions = { NoAction; local_only; drop; }
+        const default_action = drop(R_SOURCE);
+    }
+    // Writer: V of the VPC.
+    table route {
+        key = {
+            m.c.vpc: exact;
+            m.dst: lpm;
+        }
+        actions = { forward; drop; }
+    }
+    apply {
+        // 1. UDP 1000 from the Go demux: the parser drops keepalives and punts probes. 2. FRAME in
+        // (a PacketOut from a frame reader) starts at ports, with its port and session.
+        open_psp();
+        ports.apply();
+        // sa_session must be m.p.session. PSP from addr, prev or a lane. Lane and port meters.
+        check_in();
+        // 3. Tag: the VNI field (sender's session tag) on a trunk port, else 0. Trunk tag 0: PUNT.
+        read_tag();
+        // 4. On access, a VNI in the packet must be m.c.vni. Count. 5. The inner source.
+        classify.apply();
+        source.apply();
+        // 6. Route: from a trunk port or with local_only, the local target. No entry on an access
+        // port: MISS. No local target: no_route.
+        route.apply();
+        route_end();
+        // 7. ports entry of m.fwd.port (no_target), no trunk to trunk, no local_only to a trunk,
+        // mtu. Then seal on a lane with the outgoing VNI (no_keys), or FRAME out with m.c.vni.
+        send_out();
+    }
+}
+
+parser RelayParser(packet_in pkt,
+                   out headers_t h,
+                   inout meta_t m,
+                   inout standard_metadata_t sm) {
+    state start {
+        pkt.extract(h.eth);
+        transition accept;
+    }
+}
+
+control RelayVerify(inout headers_t h,
+                    inout meta_t m) {
+    apply {
+    }
+}
+
+control RelayEgress(inout headers_t h,
+                    inout meta_t m,
+                    inout standard_metadata_t sm) {
+    apply {
+    }
+}
+
+control RelayCompute(inout headers_t h,
+                     inout meta_t m) {
+    apply {
+    }
+}
+
+control RelayDeparser(packet_out pkt,
+                      in headers_t h) {
+    apply {
+        pkt.emit(h.packet_in);
+        pkt.emit(h.eth);
+    }
+}
+
+V1Switch(RelayParser(),
+         RelayVerify(),
+         Relay(),
+         RelayEgress(),
+         RelayCompute(),
+         RelayDeparser()) main;

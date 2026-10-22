@@ -1,0 +1,412 @@
+# proto-file: p4/config/v1/p4info.proto
+# proto-message: p4.config.v1.P4Info
+
+pkg_info {
+  arch: "v1model"
+}
+tables {
+  preamble {
+    id: 48524748
+    name: "Relay.ports"
+    alias: "ports"
+  }
+  match_fields {
+    id: 1
+    name: "m.port"
+    bitwidth: 64
+    match_type: EXACT
+  }
+  action_refs {
+    id: 24992955
+  }
+  action_refs {
+    id: 16983990
+  }
+  const_default_action_id: 16983990
+  initial_default_action {
+    action_id: 16983990
+    arguments {
+      param_id: 1
+      value: "\001"
+    }
+  }
+  size: 1024
+}
+tables {
+  preamble {
+    id: 37194576
+    name: "Relay.classify"
+    alias: "classify"
+  }
+  match_fields {
+    id: 1
+    name: "m.port"
+    bitwidth: 64
+    match_type: EXACT
+  }
+  match_fields {
+    id: 2
+    name: "m.p.session"
+    bitwidth: 64
+    match_type: EXACT
+  }
+  match_fields {
+    id: 3
+    name: "m.tag"
+    bitwidth: 24
+    match_type: EXACT
+  }
+  action_refs {
+    id: 25404084
+  }
+  action_refs {
+    id: 16983990
+  }
+  const_default_action_id: 16983990
+  initial_default_action {
+    action_id: 16983990
+    arguments {
+      param_id: 1
+      value: "\002"
+    }
+  }
+  size: 1024
+}
+tables {
+  preamble {
+    id: 37945331
+    name: "Relay.source"
+    alias: "source"
+  }
+  match_fields {
+    id: 1
+    name: "m.port"
+    bitwidth: 64
+    match_type: EXACT
+  }
+  match_fields {
+    id: 2
+    name: "m.p.session"
+    bitwidth: 64
+    match_type: EXACT
+  }
+  match_fields {
+    id: 3
+    name: "m.tag"
+    bitwidth: 24
+    match_type: EXACT
+  }
+  match_fields {
+    id: 4
+    name: "m.src"
+    bitwidth: 128
+    match_type: LPM
+  }
+  action_refs {
+    id: 21257015
+  }
+  action_refs {
+    id: 24976605
+  }
+  action_refs {
+    id: 16983990
+  }
+  const_default_action_id: 16983990
+  initial_default_action {
+    action_id: 16983990
+    arguments {
+      param_id: 1
+      value: "\003"
+    }
+  }
+  size: 1024
+}
+tables {
+  preamble {
+    id: 42238873
+    name: "Relay.route"
+    alias: "route"
+  }
+  match_fields {
+    id: 1
+    name: "m.c.vpc"
+    match_type: EXACT
+    type_name {
+      name: "name_t"
+    }
+  }
+  match_fields {
+    id: 2
+    name: "m.dst"
+    bitwidth: 128
+    match_type: LPM
+  }
+  action_refs {
+    id: 22957411
+  }
+  action_refs {
+    id: 16983990
+  }
+  action_refs {
+    id: 21257015
+    annotations: "@defaultonly"
+    scope: DEFAULT_ONLY
+  }
+  initial_default_action {
+    action_id: 21257015
+  }
+  size: 1024
+}
+actions {
+  preamble {
+    id: 21257015
+    name: "NoAction"
+    alias: "NoAction"
+    annotations: "@noWarn(\"unused\")"
+  }
+}
+actions {
+  preamble {
+    id: 16983990
+    name: "Relay.drop"
+    alias: "drop"
+  }
+  params {
+    id: 1
+    name: "reason"
+    bitwidth: 8
+  }
+}
+actions {
+  preamble {
+    id: 24992955
+    name: "Relay.port"
+    alias: "port"
+  }
+  params {
+    id: 1
+    name: "trunk"
+    bitwidth: 1
+  }
+  params {
+    id: 2
+    name: "session"
+    bitwidth: 64
+  }
+  params {
+    id: 3
+    name: "tag"
+    bitwidth: 24
+  }
+  params {
+    id: 4
+    name: "addr"
+    bitwidth: 144
+  }
+  params {
+    id: 5
+    name: "prev"
+    bitwidth: 144
+  }
+  params {
+    id: 6
+    name: "lanes"
+    bitwidth: 48
+  }
+  params {
+    id: 7
+    name: "mtu"
+    bitwidth: 16
+  }
+  params {
+    id: 8
+    name: "meter_index"
+    bitwidth: 32
+  }
+}
+actions {
+  preamble {
+    id: 25404084
+    name: "Relay.context"
+    alias: "context"
+  }
+  params {
+    id: 1
+    name: "vpc"
+    type_name {
+      name: "name_t"
+    }
+  }
+  params {
+    id: 2
+    name: "vni"
+    bitwidth: 24
+  }
+  params {
+    id: 3
+    name: "cell"
+    bitwidth: 32
+  }
+}
+actions {
+  preamble {
+    id: 22957411
+    name: "Relay.forward"
+    alias: "forward"
+  }
+  params {
+    id: 1
+    name: "port"
+    bitwidth: 64
+  }
+  params {
+    id: 2
+    name: "cell"
+    bitwidth: 32
+  }
+  params {
+    id: 3
+    name: "local_port"
+    bitwidth: 64
+  }
+  params {
+    id: 4
+    name: "local_cell"
+    bitwidth: 32
+  }
+}
+actions {
+  preamble {
+    id: 24976605
+    name: "Relay.local_only"
+    alias: "local_only"
+  }
+}
+counters {
+  preamble {
+    id: 317147353
+    name: "Relay.cells"
+    alias: "cells"
+  }
+  spec {
+    unit: BOTH
+  }
+  size: 2097152
+}
+counters {
+  preamble {
+    id: 309103603
+    name: "Relay.drops"
+    alias: "drops"
+  }
+  spec {
+    unit: BOTH
+  }
+  size: 64
+}
+meters {
+  preamble {
+    id: 345235978
+    name: "Relay.port_meter"
+    alias: "port_meter"
+  }
+  spec {
+    unit: BYTES
+  }
+  size: 65536
+}
+meters {
+  preamble {
+    id: 339716295
+    name: "Relay.lane_meter"
+    alias: "lane_meter"
+  }
+  spec {
+    unit: BYTES
+  }
+  size: 262144
+}
+meters {
+  preamble {
+    id: 338249407
+    name: "Relay.punt_meter"
+    alias: "punt_meter"
+  }
+  spec {
+    unit: PACKETS
+  }
+  size: 65536
+}
+controller_packet_metadata {
+  preamble {
+    id: 80671331
+    name: "packet_in"
+    alias: "packet_in"
+    annotations: "@controller_header(\"packet_in\")"
+  }
+  metadata {
+    id: 1
+    name: "kind"
+    bitwidth: 8
+  }
+  metadata {
+    id: 2
+    name: "port"
+    bitwidth: 64
+  }
+  metadata {
+    id: 3
+    name: "session"
+    bitwidth: 64
+  }
+  metadata {
+    id: 4
+    name: "hash"
+    bitwidth: 32
+  }
+  metadata {
+    id: 5
+    name: "from"
+    bitwidth: 144
+  }
+}
+controller_packet_metadata {
+  preamble {
+    id: 75327753
+    name: "packet_out"
+    alias: "packet_out"
+    annotations: "@controller_header(\"packet_out\")"
+  }
+  metadata {
+    id: 1
+    name: "kind"
+    bitwidth: 8
+  }
+  metadata {
+    id: 2
+    name: "port"
+    bitwidth: 64
+  }
+  metadata {
+    id: 3
+    name: "session"
+    bitwidth: 64
+  }
+  metadata {
+    id: 4
+    name: "to"
+    bitwidth: 144
+  }
+}
+type_info {
+  new_types {
+    key: "name_t"
+    value {
+      translated_type {
+        uri: "apoxy.dev/relay/name"
+        sdn_string {
+        }
+      }
+    }
+  }
+}

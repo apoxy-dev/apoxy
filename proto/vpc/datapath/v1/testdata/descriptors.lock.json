@@ -1,6 +1,93 @@
 {
   "file": [
     {
+      "name": "proto/vpc/datapath/v1/keys.proto",
+      "package": "apoxy.vpc.datapath.v1",
+      "messageType": [
+        {
+          "name": "PspSaEntry",
+          "field": [
+            {
+              "name": "direction",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_ENUM",
+              "typeName": ".apoxy.vpc.datapath.v1.PspSaDirection",
+              "jsonName": "direction"
+            },
+            {
+              "name": "spi",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "spi"
+            },
+            {
+              "name": "key",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BYTES",
+              "jsonName": "key"
+            },
+            {
+              "name": "port",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "port"
+            },
+            {
+              "name": "session",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "session"
+            },
+            {
+              "name": "lane",
+              "number": 6,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "lane"
+            },
+            {
+              "name": "packets",
+              "number": 7,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "packets"
+            },
+            {
+              "name": "seq",
+              "number": 8,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "seq"
+            }
+          ]
+        }
+      ],
+      "enumType": [
+        {
+          "name": "PspSaDirection",
+          "value": [
+            {
+              "name": "PSP_SA_DIRECTION_RX",
+              "number": 0
+            },
+            {
+              "name": "PSP_SA_DIRECTION_TX",
+              "number": 1
+            }
+          ]
+        }
+      ],
+      "options": {
+        "goPackage": "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1"
+      },
+      "syntax": "proto3"
+    },
+    {
       "name": "proto/vpc/datapath/v1/mesh.proto",
       "package": "apoxy.vpc.datapath.v1",
       "dependency": [

@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package apoxy.vpc.datapath.v1;
+
+option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1";
+
+// PspSaDirection is the direction of a keys entry.
+enum PspSaDirection {
+  // The receive SA of an SPI: the relay data plane opens the packets of that
+  // SPI with it.
+  PSP_SA_DIRECTION_RX = 0;
+  // A send SA of one lane of a port session.
+  PSP_SA_DIRECTION_TX = 1;
+}
+
+// PspSaEntry is the entry of an ExternEntry of the keys extern (PspSa) of the
+// relay data plane. The key of an RX entry is (direction, spi). The key of a
+// TX entry is (direction, port, session, spi).
+message PspSaEntry {
+  PspSaDirection direction = 1;
+  // The SPI. For TX, the SPI that the peer gave.
+  uint32 spi = 2;
+  // The SA key, 16 or 32 bytes. A Read gives it empty.
+  bytes key = 3;
+  uint64 port = 4;
+  uint64 session = 5;
+  // The lane, 0 to 3.
+  uint32 lane = 6;
+  // RX only, Read only: the number of accepted packets.
+  uint64 packets = 7;
+  // RX only, Read only: the highest accepted sequence number.
+  uint32 seq = 8;
+}
