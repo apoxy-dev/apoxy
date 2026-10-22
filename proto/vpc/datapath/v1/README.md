@@ -539,15 +539,25 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, version, name, local_routes_only, instance}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version, PSP address), `Config`, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
-| `Attach`        | unary | `AttachRequest{vpc, name, labels, routes, rank}` -> `AttachResponse{attachment_id, grant, routes}`. `routes` has one status for each advertised route. Errors: `FailedPrecondition` (the session sent no `Hello`), `AlreadyExists` (another session of this relay has the address). |
-| `Rekey`         | unary | `KeysRequest` -> `KeysResponse`: SAs for traffic from the relay to the agent. The first one from a session in QUIC mode changes it to PSP mode (see "Data mode"). Errors: `FailedPrecondition` (no `Session` call), `InvalidArgument` (an SA VNI is not the network ID), `Unavailable` (the relay has no PSP bridge, or it cannot make its relay SAs). |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, version, name, local_routes_only, instance}`, then `Ack{rev}`, `Status` (ICV failures; the first one after `Config` also has the time to connect) and `RemoteAddresses{attachment_id, attachments}`. Relay: `Welcome` (reflexive address, lane port limit, version, PSP address, relay ID), `Config`, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
+| `Attach`        | unary | `AttachRequest{vpc, name, labels, routes, rank}` -> `AttachResponse{attachment_id, grant, routes, addresses}`. `routes` has one status for each advertised route. `addresses` has the address prefixes that the relay gives the attachment. Errors: `FailedPrecondition` (the session sent no `Hello`), `AlreadyExists` (another session of this relay has the address). |
+| `Rekey`         | unary | `KeysRequest{op, generation}` -> `KeysResponse`: SAs for traffic from the relay to the agent. The first one from a session in QUIC mode changes it to PSP mode (see "Data mode"). Errors: `FailedPrecondition` (no `Session` call), `InvalidArgument` (an SA VNI is not the network ID), `Unavailable` (the relay has no PSP bridge, or it cannot make its relay SAs). |
 | `ResolvePeer`   | unary | `{vpc, address}` -> `{reach: local, trunk or visit; p2p; subject; attachment_ids; home_relay}`. Errors: `NotFound`, `PermissionDenied`. |
 | `RegisterSPI`   | unary | `{vpc, destination, spis, expires_in, lanes, sa_lanes}` -> `Empty`. `lanes` gives the source of each SPI: 0 is the session address, i is port i of `RegisterLanes`. `sa_lanes` gives the SA lane of each SPI at the receiver. Errors: `AlreadyExists` (the caller has an SPI in a row for another destination, another session on its socket has it, or the relay of the receiver has it in use: see "Trunk"). |
 | `UnregisterSPI` | unary | `{vpc, spis}` -> `Empty` |
 | `RegisterLanes` | unary | `{ports, receive}` -> `Empty`: replaces the lane ports of the session. `receive` tells that the agent reads them. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `AlreadyExists` (a port is a source of another agent), `FailedPrecondition`. |
 | `Visit`         | unary | `{vpc, address, grant}` -> `Empty`: the session becomes a visitor with the prefix of the grant that has `address` (see below). Errors: `Unimplemented` (the relay has no mesh), `Unavailable` (the relay cannot read the relay roots), `PermissionDenied`, `FailedPrecondition`, `AlreadyExists`, `ResourceExhausted`. |
 | `Grant`         | unary | `{attachment_id}` -> `{grant}`: a new grant for an attachment of the session, with the claims of the grant of `Attach`. It ends 15 minutes after the call. Errors: `NotFound` (the session does not have the attachment; a visitor session has none), `Unavailable` (the relay has no key for grants). |
+
+`Welcome.relay_id` is the ID of the relay. `Route.relay` is the `RelayRef` of
+the relay that has the origin of the route, also of this relay for a local
+origin. It can have the ID and no addresses. `RemoteAddresses` gives, for one
+attachment of the session, the attachments of the same name on the other
+relays of the agent: the relay ID that each `Welcome` gave, the attachment ID
+and the address prefixes there. Each `RemoteAddresses` replaces the last one
+for its attachment. `KeysRequest.generation` is the key attempt of the agent,
+from 1. The relay copies it from the `Rekey` request that changes the mode
+into its `OfferSAs`, and its own renewals carry 0.
 
 `Attach` returns an `AttachmentGrant`: the claims, the signature of the relay
 TLS key, and the relay cert chain (leaf first). A peer accepts it only if the
@@ -585,7 +595,8 @@ The relay checks each advertised route of an `Attach`, and refuses a route
 that is:
 
 - a default route, IPv4 or IPv6 (`ROUTE_RESULT_DEFAULT_ROUTE`);
-- an IPv4-mapped IPv6 prefix (`ROUTE_RESULT_IPV4_MAPPED`);
+- an IPv4 prefix or an IPv4-mapped IPv6 prefix (`ROUTE_RESULT_IPV4`): an
+  IPv4 address is reachable only in the /96 of an attachment;
 - a prefix that overlaps the network of the VPC, which is the /72 with the
   addresses of the attachment (`ROUTE_RESULT_OVERLAPS_VPC`).
 

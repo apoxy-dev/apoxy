@@ -204,7 +204,7 @@ func routeResult(p netip.Prefix, addrs []netip.Prefix) dp.RouteResult {
 	case p.Bits() == 0:
 		return dp.RouteResult_ROUTE_RESULT_DEFAULT_ROUTE
 	case p.Addr().Is4In6():
-		return dp.RouteResult_ROUTE_RESULT_IPV4_MAPPED
+		return dp.RouteResult_ROUTE_RESULT_IPV4
 	case slices.ContainsFunc(addrs, inVPC):
 		return dp.RouteResult_ROUTE_RESULT_OVERLAPS_VPC
 	}

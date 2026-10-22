@@ -83,6 +83,9 @@ message KeysRequest {
     RekeySA rekey = 2;
     RevokeSA revoke = 3;
   }
+  // Key attempt of the agent, from 1. The relay copies it from the Rekey
+  // request that changes the mode into its OfferSAs. 0 is a renewal.
+  uint64 generation = 4;
 }
 
 // KeysResponse is the answer of the sender.

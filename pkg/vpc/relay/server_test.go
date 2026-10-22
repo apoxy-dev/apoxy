@@ -411,7 +411,7 @@ func TestAttachRoutes(t *testing.T) {
 		accepted   = dp.RouteResult_ROUTE_RESULT_ACCEPTED
 		defaultRt  = dp.RouteResult_ROUTE_RESULT_DEFAULT_ROUTE
 		overlaps   = dp.RouteResult_ROUTE_RESULT_OVERLAPS_VPC
-		ipv4Mapped = dp.RouteResult_ROUTE_RESULT_IPV4_MAPPED
+		ipv4Mapped = dp.RouteResult_ROUTE_RESULT_IPV4
 	)
 	// route is an advertised route as the agent sends it, and the answer of
 	// the relay. The answer has the prefix in the masked form.

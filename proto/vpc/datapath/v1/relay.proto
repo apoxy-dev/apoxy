@@ -64,9 +64,30 @@ message SessionRequest {
     Hello hello = 1;
     Ack ack = 2;
     Status status = 3;
+    // The attachments of the same name on the other relays of the agent.
+    RemoteAddresses remote = 5;
   }
   reserved 4;
   reserved "moved";
+}
+
+// RemoteAddresses gives, for one attachment of the session, the attachments
+// of the same name on the other relays of the agent. Each message replaces the
+// last one for that attachment.
+message RemoteAddresses {
+  // Attachment of the session.
+  string attachment_id = 1;
+  repeated RemoteAttachment attachments = 2;
+}
+
+// RemoteAttachment is an attachment of the agent on another relay.
+message RemoteAttachment {
+  // ID of that relay, as its Welcome gave it.
+  string relay_id = 1;
+  // Attachment ID on that relay.
+  string attachment_id = 2;
+  // Address prefixes of the attachment on that relay.
+  repeated string addresses = 3;
 }
 
 // SessionResponse is a message from the relay on Session.
@@ -139,6 +160,8 @@ message Welcome {
   string psp_host = 4;
   // Port of the PSP socket of the relay.
   uint32 psp_port = 5;
+  // ID of the relay.
+  string relay_id = 6;
 }
 
 // Route is a prefix in a VPC.
@@ -152,6 +175,9 @@ message Route {
   // they become the active announcer. Only in an added route, for an agent at
   // revision 16 or later. An added route that the agent has gives a new list.
   repeated string standby = 4;
+  // Relay that has the origin, also this relay for a local origin. It can
+  // have the ID and no addresses.
+  RelayRef relay = 5;
 }
 
 // RouteDelta changes the routes of the agent.
@@ -228,6 +254,8 @@ message AttachResponse {
   // request, for an agent at revision 16 or later. A route with no answer is
   // accepted.
   repeated RouteStatus routes = 3;
+  // Address prefixes that the relay gives the attachment.
+  repeated string addresses = 4;
 }
 
 message DetachRequest {
@@ -336,8 +364,9 @@ enum RouteResult {
   // Refused: the prefix overlaps the network of the VPC, from which the relay
   // assigns the addresses of the attachments.
   ROUTE_RESULT_OVERLAPS_VPC = 2;
-  // Refused: the prefix is an IPv4-mapped IPv6 prefix.
-  ROUTE_RESULT_IPV4_MAPPED = 3;
+  // Refused: the prefix is IPv4 or IPv4-mapped. An IPv4 address is reachable
+  // only in the /96 of an attachment.
+  ROUTE_RESULT_IPV4 = 3;
 }
 
 // RouteStatus is the answer of the relay for one advertised route.

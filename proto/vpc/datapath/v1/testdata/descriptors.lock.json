@@ -6,9 +6,94 @@
       "dependency": [
         "google/protobuf/duration.proto",
         "google/protobuf/empty.proto",
+        "google/protobuf/timestamp.proto",
         "proto/vpc/datapath/v1/types.proto"
       ],
       "messageType": [
+        {
+          "name": "MeshOpenRequest",
+          "field": [
+            {
+              "name": "version",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Version",
+              "jsonName": "version"
+            },
+            {
+              "name": "name",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "name"
+            },
+            {
+              "name": "relay",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RelayRef",
+              "jsonName": "relay"
+            },
+            {
+              "name": "psp_host",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "pspHost"
+            },
+            {
+              "name": "psp_port",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "pspPort"
+            }
+          ]
+        },
+        {
+          "name": "MeshOpenResponse",
+          "field": [
+            {
+              "name": "version",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Version",
+              "jsonName": "version"
+            },
+            {
+              "name": "name",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "name"
+            },
+            {
+              "name": "relay",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RelayRef",
+              "jsonName": "relay"
+            },
+            {
+              "name": "psp_host",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "pspHost"
+            },
+            {
+              "name": "psp_port",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "pspPort"
+            }
+          ]
+        },
         {
           "name": "Presence",
           "field": [
@@ -47,6 +132,64 @@
               "label": "LABEL_OPTIONAL",
               "type": "TYPE_BOOL",
               "jsonName": "gone"
+            },
+            {
+              "name": "subject",
+              "number": 6,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "subject"
+            },
+            {
+              "name": "agent_name",
+              "number": 7,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "agentName"
+            },
+            {
+              "name": "sender_tag",
+              "number": 8,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "senderTag"
+            },
+            {
+              "name": "instance",
+              "number": 9,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_FIXED64",
+              "jsonName": "instance"
+            },
+            {
+              "name": "state",
+              "number": 10,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_ENUM",
+              "typeName": ".apoxy.vpc.datapath.v1.AnnouncerState",
+              "jsonName": "state"
+            },
+            {
+              "name": "rank",
+              "number": 11,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "rank"
+            },
+            {
+              "name": "attached",
+              "number": 12,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "attached"
+            },
+            {
+              "name": "active_from",
+              "number": 13,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".google.protobuf.Timestamp",
+              "jsonName": "activeFrom"
             }
           ]
         },
@@ -60,6 +203,13 @@
               "type": "TYPE_MESSAGE",
               "typeName": ".apoxy.vpc.datapath.v1.Presence",
               "jsonName": "entries"
+            },
+            {
+              "name": "end_of_full_set",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BOOL",
+              "jsonName": "endOfFullSet"
             }
           ]
         },
@@ -124,12 +274,79 @@
               "jsonName": "rows"
             }
           ]
+        },
+        {
+          "name": "SnapshotRequest"
+        },
+        {
+          "name": "SnapshotPart",
+          "field": [
+            {
+              "name": "data",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BYTES",
+              "jsonName": "data"
+            },
+            {
+              "name": "total_size",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "totalSize"
+            }
+          ]
+        }
+      ],
+      "enumType": [
+        {
+          "name": "MeshCloseCode",
+          "value": [
+            {
+              "name": "MESH_CLOSE_CODE_UNSPECIFIED",
+              "number": 0
+            },
+            {
+              "name": "MESH_CLOSE_CODE_RESTART",
+              "number": 1
+            },
+            {
+              "name": "MESH_CLOSE_CODE_UPGRADE",
+              "number": 2
+            },
+            {
+              "name": "MESH_CLOSE_CODE_NOT_MEMBER",
+              "number": 3
+            }
+          ]
+        },
+        {
+          "name": "AnnouncerState",
+          "value": [
+            {
+              "name": "ANNOUNCER_STATE_NORMAL",
+              "number": 0
+            },
+            {
+              "name": "ANNOUNCER_STATE_DRAINING",
+              "number": 1
+            },
+            {
+              "name": "ANNOUNCER_STATE_SUSPECT",
+              "number": 2
+            }
+          ]
         }
       ],
       "service": [
         {
           "name": "Mesh",
           "method": [
+            {
+              "name": "Open",
+              "inputType": ".apoxy.vpc.datapath.v1.MeshOpenRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.MeshOpenResponse"
+            },
             {
               "name": "Presence",
               "inputType": ".apoxy.vpc.datapath.v1.PresenceUpdate",
@@ -146,6 +363,12 @@
               "name": "TrunkKeys",
               "inputType": ".apoxy.vpc.datapath.v1.KeysRequest",
               "outputType": ".apoxy.vpc.datapath.v1.KeysResponse"
+            },
+            {
+              "name": "Snapshot",
+              "inputType": ".apoxy.vpc.datapath.v1.SnapshotRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.SnapshotPart",
+              "serverStreaming": true
             }
           ]
         }
@@ -471,11 +694,75 @@
               "typeName": ".apoxy.vpc.datapath.v1.Status",
               "oneofIndex": 0,
               "jsonName": "status"
+            },
+            {
+              "name": "remote",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RemoteAddresses",
+              "oneofIndex": 0,
+              "jsonName": "remote"
             }
           ],
           "oneofDecl": [
             {
               "name": "msg"
+            }
+          ],
+          "reservedRange": [
+            {
+              "start": 4,
+              "end": 5
+            }
+          ],
+          "reservedName": [
+            "moved"
+          ]
+        },
+        {
+          "name": "RemoteAddresses",
+          "field": [
+            {
+              "name": "attachment_id",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "attachmentId"
+            },
+            {
+              "name": "attachments",
+              "number": 2,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RemoteAttachment",
+              "jsonName": "attachments"
+            }
+          ]
+        },
+        {
+          "name": "RemoteAttachment",
+          "field": [
+            {
+              "name": "relay_id",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "relayId"
+            },
+            {
+              "name": "attachment_id",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "attachmentId"
+            },
+            {
+              "name": "addresses",
+              "number": 3,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "addresses"
             }
           ]
         },
@@ -587,20 +874,43 @@
               "jsonName": "fallbackReason"
             },
             {
-              "name": "spare",
-              "number": 5,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_BOOL",
-              "jsonName": "spare"
-            },
-            {
               "name": "version",
               "number": 6,
               "label": "LABEL_OPTIONAL",
               "type": "TYPE_MESSAGE",
               "typeName": ".apoxy.vpc.datapath.v1.Version",
               "jsonName": "version"
+            },
+            {
+              "name": "name",
+              "number": 7,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "name"
+            },
+            {
+              "name": "local_routes_only",
+              "number": 8,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_BOOL",
+              "jsonName": "localRoutesOnly"
+            },
+            {
+              "name": "instance",
+              "number": 9,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_FIXED64",
+              "jsonName": "instance"
             }
+          ],
+          "reservedRange": [
+            {
+              "start": 5,
+              "end": 6
+            }
+          ],
+          "reservedName": [
+            "spare"
           ]
         },
         {
@@ -646,6 +956,27 @@
               "type": "TYPE_MESSAGE",
               "typeName": ".apoxy.vpc.datapath.v1.Version",
               "jsonName": "version"
+            },
+            {
+              "name": "psp_host",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "pspHost"
+            },
+            {
+              "name": "psp_port",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "pspPort"
+            },
+            {
+              "name": "relay_id",
+              "number": 6,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "relayId"
             }
           ]
         },
@@ -673,6 +1004,21 @@
               "label": "LABEL_OPTIONAL",
               "type": "TYPE_STRING",
               "jsonName": "origin"
+            },
+            {
+              "name": "standby",
+              "number": 4,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "standby"
+            },
+            {
+              "name": "relay",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RelayRef",
+              "jsonName": "relay"
             }
           ]
         },
@@ -863,6 +1209,13 @@
               "label": "LABEL_REPEATED",
               "type": "TYPE_STRING",
               "jsonName": "routes"
+            },
+            {
+              "name": "rank",
+              "number": 5,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "rank"
             }
           ],
           "nestedType": [
@@ -907,6 +1260,21 @@
               "type": "TYPE_MESSAGE",
               "typeName": ".apoxy.vpc.datapath.v1.AttachmentGrant",
               "jsonName": "grant"
+            },
+            {
+              "name": "routes",
+              "number": 3,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RouteStatus",
+              "jsonName": "routes"
+            },
+            {
+              "name": "addresses",
+              "number": 4,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "addresses"
             }
           ]
         },
@@ -919,6 +1287,31 @@
               "label": "LABEL_OPTIONAL",
               "type": "TYPE_STRING",
               "jsonName": "attachmentId"
+            }
+          ]
+        },
+        {
+          "name": "GrantRequest",
+          "field": [
+            {
+              "name": "attachment_id",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "attachmentId"
+            }
+          ]
+        },
+        {
+          "name": "GrantResponse",
+          "field": [
+            {
+              "name": "grant",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.AttachmentGrant",
+              "jsonName": "grant"
             }
           ]
         },
@@ -974,6 +1367,13 @@
               "label": "LABEL_OPTIONAL",
               "type": "TYPE_STRING",
               "jsonName": "subject"
+            },
+            {
+              "name": "attachment_ids",
+              "number": 5,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "attachmentIds"
             }
           ]
         },
@@ -1064,6 +1464,54 @@
               "jsonName": "receive"
             }
           ]
+        },
+        {
+          "name": "VisitRequest",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "address",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "address"
+            },
+            {
+              "name": "grant",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.AttachmentGrant",
+              "jsonName": "grant"
+            }
+          ]
+        },
+        {
+          "name": "RouteStatus",
+          "field": [
+            {
+              "name": "prefix",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "prefix"
+            },
+            {
+              "name": "result",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_ENUM",
+              "typeName": ".apoxy.vpc.datapath.v1.RouteResult",
+              "jsonName": "result"
+            }
+          ]
         }
       ],
       "enumType": [
@@ -1125,6 +1573,27 @@
               "number": 2
             }
           ]
+        },
+        {
+          "name": "RouteResult",
+          "value": [
+            {
+              "name": "ROUTE_RESULT_ACCEPTED",
+              "number": 0
+            },
+            {
+              "name": "ROUTE_RESULT_DEFAULT_ROUTE",
+              "number": 1
+            },
+            {
+              "name": "ROUTE_RESULT_OVERLAPS_VPC",
+              "number": 2
+            },
+            {
+              "name": "ROUTE_RESULT_IPV4",
+              "number": 3
+            }
+          ]
         }
       ],
       "service": [
@@ -1172,6 +1641,16 @@
               "name": "RegisterLanes",
               "inputType": ".apoxy.vpc.datapath.v1.RegisterLanesRequest",
               "outputType": ".google.protobuf.Empty"
+            },
+            {
+              "name": "Visit",
+              "inputType": ".apoxy.vpc.datapath.v1.VisitRequest",
+              "outputType": ".google.protobuf.Empty"
+            },
+            {
+              "name": "Grant",
+              "inputType": ".apoxy.vpc.datapath.v1.GrantRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.GrantResponse"
             }
           ]
         }
@@ -1368,6 +1847,13 @@
               "typeName": ".apoxy.vpc.datapath.v1.RevokeSA",
               "oneofIndex": 0,
               "jsonName": "revoke"
+            },
+            {
+              "name": "generation",
+              "number": 4,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "generation"
             }
           ],
           "oneofDecl": [
