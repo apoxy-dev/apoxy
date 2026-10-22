@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash/maphash"
 	"io"
 	"log/slog"
@@ -47,7 +48,9 @@ type (
 	}
 	prevExpired struct{ addr netip.AddrPort }
 	checkLost   struct{ c *checkProc }
-	extraEnded  struct {
+	// remoteIn is a RemoteAddresses message of the agent, from the reader task.
+	remoteIn   struct{ m *dpv1.RemoteAddresses }
+	extraEnded struct {
 		index uint32
 		x     *extraProc
 	}
@@ -71,6 +74,8 @@ type connAtt struct {
 	statuses []*dpv1.RouteStatus
 	res      chan callResult // The Attach call, until it is answered.
 	assigned bool
+	// remote has the addresses of the attachments of the agent on other relays that V accepted.
+	remote []netip.Prefix
 	// detach is the Detach call that waits for V, or nil.
 	detach chan callResult
 }
@@ -115,7 +120,8 @@ type connProc struct {
 	check   *checkProc
 	extras  [peerconn.MaxConns]*extraProc
 	dconns  atomic.Pointer[[peerconn.MaxConns]quic.Connection]
-	sources map[netip.Prefix]struct{}
+	// sources has the source entries of the port. The value is true for a remote address.
+	sources map[netip.Prefix]bool
 
 	atts    []*connAtt // Attached, the oldest first.
 	pend    map[string]*connAtt
@@ -163,7 +169,7 @@ func startConn(r *Router, vbox *mailbox, e toConn, down, up *valueMap, draining 
 		out:     newOutbox(),
 		mode:    dpv1.Mode_MODE_QUIC,
 		limit:   rate.NewLimiter(probeRate, probeRate),
-		sources: map[netip.Prefix]struct{}{},
+		sources: map[netip.Prefix]bool{},
 		pend:    map[string]*connAtt{},
 		noRoute: map[netip.Addr]time.Time{},
 		state:   stateNormal,
@@ -299,7 +305,7 @@ func (a *connProc) read() error {
 				connectSeconds.WithLabelValues(modeLabel(a.hello.GetMode())).Observe(d.AsDuration().Seconds())
 			}
 		case *dpv1.SessionRequest_Remote:
-			slog.Debug("Ignoring the remote addresses of an agent", "agent", a.l.subject)
+			a.box.send(remoteIn{m: m.Remote})
 		case nil:
 			slog.Debug("Ignoring an unknown message on a Session call", "agent", a.l.subject)
 		default:
@@ -322,6 +328,10 @@ func (a *connProc) handle(e any) {
 		a.attached(e)
 	case detached:
 		a.detached(e)
+	case remoteIn:
+		a.remote(e.m)
+	case remoteAccepted:
+		a.remoteAccepted(e)
 	case toKeysDone:
 		a.keysDone(e)
 	case toRekeyed:
@@ -594,26 +604,79 @@ func (a *connProc) detached(e detached) {
 	ca.detach <- callResult{out: &emptypb.Empty{}}
 }
 
-// syncSources writes the source entries of the prefixes of the attachments that V has or gets.
+// remote sends V the addresses that the agent reports for an attached attachment: the
+// attachments of the same name on other relays.
+func (a *connProc) remote(m *dpv1.RemoteAddresses) {
+	id := m.GetAttachmentId()
+	if !slices.ContainsFunc(a.atts, func(ca *connAtt) bool { return ca.att.ID == id }) {
+		slog.Debug("Ignoring the remote addresses of an attachment that is not attached", "agent", a.l.subject, "attachment", id)
+		return
+	}
+	var addrs []remoteAddr
+	for _, ra := range m.GetAttachments() {
+		if n := len(ra.GetAddresses()); n > maxEntryPrefixes {
+			slog.Warn("Refused the remote addresses of an attachment", "agent", a.l.subject, "attachment", id,
+				"relay", ra.GetRelayId(), "reason", fmt.Sprintf("%d addresses, which is more than the limit %d", n, maxEntryPrefixes))
+			continue
+		}
+		for _, s := range ra.GetAddresses() {
+			p, err := netip.ParsePrefix(s)
+			if err != nil {
+				slog.Warn("Refused a remote address", "agent", a.l.subject, "attachment", id, "relay", ra.GetRelayId(), "error", err)
+				continue
+			}
+			addrs = append(addrs, remoteAddr{prefix: p, relay: ra.GetRelayId(), origin: ra.GetAttachmentId()})
+		}
+	}
+	a.vbox.send(aRemote{port: a.port, att: id, addrs: addrs})
+}
+
+// remoteAccepted writes the source entries again with the remote addresses that V accepted.
+func (a *connProc) remoteAccepted(e remoteAccepted) {
+	i := slices.IndexFunc(a.atts, func(ca *connAtt) bool { return ca.att.ID == e.att })
+	if i < 0 {
+		return
+	}
+	a.atts[i].remote = e.addrs
+	if err := a.syncSources(); err != nil {
+		slog.Error("Failed to write source entries", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
+	}
+}
+
+// syncSources writes the source entries of the prefixes of the attachments that V has or gets,
+// and of the remote addresses that V accepted. A remote address is local only: its packets never
+// go out on a trunk port.
 func (a *connProc) syncSources() error {
-	want := map[netip.Prefix]struct{}{}
+	want := map[netip.Prefix]bool{}
+	for _, ca := range a.atts {
+		for _, p := range ca.remote {
+			want[p] = true
+		}
+	}
 	for _, ca := range a.atts {
 		for _, p := range ca.att.prefixes() {
-			want[p] = struct{}{}
+			want[p] = false
 		}
 	}
 	for _, ca := range a.pend {
 		if ca.assigned {
 			for _, p := range ca.att.prefixes() {
-				want[p] = struct{}{}
+				want[p] = false
 			}
 		}
 	}
 	var b batch
 	md := portKey(a.port)
-	for p := range want {
-		if _, ok := a.sources[p]; !ok {
-			b.insert(dp.SourceKey{Port: a.port, Session: accessSession, Src: p}.Entry(dp.NoAction{}), md)
+	for p, local := range want {
+		var act dp.Action = dp.NoAction{}
+		if local {
+			act = dp.LocalOnlyAction{}
+		}
+		switch have, ok := a.sources[p]; {
+		case !ok:
+			b.insert(dp.SourceKey{Port: a.port, Session: accessSession, Src: p}.Entry(act), md)
+		case have != local:
+			b.modify(dp.SourceKey{Port: a.port, Session: accessSession, Src: p}.Entry(act), md)
 		}
 	}
 	for p := range a.sources {

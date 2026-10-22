@@ -187,6 +187,8 @@ type envOpts struct {
 	snapshot func() []byte
 	// dataSend wraps the data socket for the packets that the data plane sends.
 	dataSend func(net.PacketConn) net.PacketConn
+	// quicSend wraps the QUIC socket of the agent connections and the mesh sessions.
+	quicSend func(net.PacketConn) net.PacketConn
 }
 
 func newEnv(t *testing.T) *env {
@@ -235,7 +237,11 @@ func newEnvWith(t *testing.T, o envOpts) *env {
 	e.r.AddVPC(vpcKey, relay.Network{ID: netID, Name: "net-a", MTU: o.mtu})
 	cert, err := ca.RelayCert(o.id)
 	require.NoError(t, err)
-	tr := &quic.Transport{Conn: lo.QUIC, ConnContext: relay.TraceContext}
+	var qconn net.PacketConn = lo.QUIC
+	if o.quicSend != nil {
+		qconn = o.quicSend(lo.QUIC)
+	}
+	tr := &quic.Transport{Conn: qconn, ConnContext: relay.TraceContext}
 	if o.mesh {
 		require.NoError(t, e.r.SetMesh(o.id, relay.MeshConfig{
 			TLS:      &tls.Config{Certificates: []tls.Certificate{*cert}, InsecureSkipVerify: true},
