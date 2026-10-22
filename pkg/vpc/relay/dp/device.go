@@ -3,15 +3,19 @@
 package dp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atoonk/packetio"
+	"github.com/cilium/ebpf"
 	"golang.org/x/sync/errgroup"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -31,6 +35,11 @@ type Device struct {
 	tx   []*txQueue
 
 	src4, src6 netip.Addr
+
+	// impair is the impair map, and delays the copy of it that the send path reads. delays is nil
+	// when no entry delays a packet.
+	impair *ebpf.Map
+	delays atomic.Pointer[delayTable]
 }
 
 // txQueue is a transmit queue. The pipeline, quic-go and the netstack send from many goroutines,
@@ -42,9 +51,9 @@ type txQueue struct {
 }
 
 // newDevice builds the pipeline, the netstack and the QUIC conn on dev. mtu is the IP MTU of the
-// link.
-func newDevice(ifc Interface, dev packetio.Device, mtu uint32) (*Device, error) {
-	d := &Device{ifc: ifc, dev: dev}
+// link, and impair the impair map.
+func newDevice(ifc Interface, dev packetio.Device, mtu uint32, impair *ebpf.Map) (*Device, error) {
+	d := &Device{ifc: ifc, dev: dev, impair: impair}
 	for _, p := range ifc.Own {
 		switch a := p.Addr(); {
 		case a.Is4() && !d.src4.IsValid():
@@ -86,14 +95,18 @@ func (d *Device) PacketConn() net.PacketConn { return d.conn }
 // Interface is the interface of the device and its addresses.
 func (d *Device) Interface() Interface { return d.ifc }
 
-// Run receives on all queues until ctx is done. Then it closes the QUIC conn, the netstack and
-// the interface.
+// Run receives on all queues and reads the impair map each second, until ctx is done. Then it
+// closes the QUIC conn, the netstack, the interface and the impair map.
 func (d *Device) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	for i := range d.dev.NumRxQueues() {
 		q := d.dev.RxQueue(i)
 		g.Go(func() error { return d.receive(gctx, q) })
 	}
+	g.Go(func() error {
+		d.readDelays(gctx)
+		return nil
+	})
 	err := g.Wait()
 	d.conn.Close()
 	for _, t := range d.tx {
@@ -105,6 +118,7 @@ func (d *Device) Run(ctx context.Context) error {
 	if cerr := d.dev.Close(); cerr != nil && err == nil {
 		err = cerr
 	}
+	d.impair.Close()
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		return nil
 	}
@@ -130,6 +144,28 @@ func (d *Device) receive(ctx context.Context, q packetio.RxQueue) error {
 		q.Fill(q.NumFreeFillSlots())
 	}
 	return ctx.Err()
+}
+
+// readDelays reads the impair map into the delay table now and then each second, until ctx is
+// done. When it cannot read the map, it keeps the last table.
+func (d *Device) readDelays(ctx context.Context) {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		entries, err := impairments(d.impair)
+		if err != nil {
+			slog.Warn("Failed to read the impair map", "error", err)
+		} else if t := newDelayTable(entries); t != nil {
+			d.delays.Store(&t)
+		} else {
+			d.delays.Store(nil)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 // input is the demux of one received frame.
@@ -158,7 +194,8 @@ func (d *Device) own(a netip.Addr) bool {
 }
 
 // sendUDP sends a UDP datagram from the own address and port. With no next-hop MAC it drops the
-// datagram (no_neighbor). It never waits.
+// datagram (no_neighbor). It never waits: when the impair map delays the datagram, a timer sends a
+// copy of it.
 func (d *Device) sendUDP(port uint16, to netip.AddrPort, ecn uint8, b []byte) {
 	to = netip.AddrPortFrom(to.Addr().Unmap(), to.Port())
 	src := d.src4
@@ -172,8 +209,24 @@ func (d *Device) sendUDP(port uint16, to netip.AddrPort, ecn uint8, b []byte) {
 	}
 	from := netip.AddrPortFrom(src, port)
 	h := to.Addr().As16()
-	d.transmit(d.tx[(uint32(h[15])|uint32(to.Port())<<8)%uint32(len(d.tx))], len(b), func(frame []byte) int {
+	q := d.tx[(uint32(h[15])|uint32(to.Port())<<8)%uint32(len(d.tx))]
+	if t := d.delays.Load(); t != nil {
+		if w := t.wait(port, to.Addr()); w > 0 {
+			d.sendLater(w, q, from, to, mac, ecn, bytes.Clone(b))
+			return
+		}
+	}
+	d.transmit(q, len(b), func(frame []byte) int {
 		return encodeUDP(frame, tcpip.LinkAddress(d.ifc.MAC), mac, from, to, ecn, b)
+	})
+}
+
+// sendLater sends the datagram b after w.
+func (d *Device) sendLater(w time.Duration, q *txQueue, from, to netip.AddrPort, mac tcpip.LinkAddress, ecn uint8, b []byte) {
+	time.AfterFunc(w, func() {
+		d.transmit(q, len(b), func(frame []byte) int {
+			return encodeUDP(frame, tcpip.LinkAddress(d.ifc.MAC), mac, from, to, ecn, b)
+		})
 	})
 }
 

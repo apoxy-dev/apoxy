@@ -12,6 +12,7 @@ require (
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
 	github.com/apoxy-dev/icx v0.19.1-0.20261006074019-0b857f6d1fb8
 	github.com/apoxy-dev/softpsp v0.0.0-20261013000621-34c37d5a9e41
+	github.com/atoonk/go-afxdp v0.12.0
 	github.com/atoonk/packetio v0.1.11
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/aws/aws-sdk-go-v2 v1.41.5
@@ -163,7 +164,6 @@ require (
 	github.com/apache/thrift v0.20.0 // indirect
 	github.com/apparentlymart/go-cidr v1.1.0 // indirect
 	github.com/armon/go-metrics v0.0.0-20180917152333-f0300d1749da // indirect
-	github.com/atoonk/go-afxdp v0.12.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aws/aws-sdk-go v1.55.5 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
@@ -464,6 +464,8 @@ require (
 replace github.com/getsavvyinc/upgrade-cli => github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e
 
 replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261022003109-e1accdc5511a
+
+replace github.com/atoonk/go-afxdp => github.com/apoxy-dev/go-afxdp v0.0.0-20261022050806-9f3c35711201
 
 replace github.com/quic-go/connect-ip-go => github.com/apoxy-dev/connect-ip-go v0.0.0-20261002135041-baadecfb9616
 
