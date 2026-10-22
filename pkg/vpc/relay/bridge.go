@@ -312,8 +312,8 @@ func innerDest(p []byte) (netip.Addr, bool) {
 }
 
 // offerLocked makes the relay SAs of s and their rows, and returns the Rekey
-// message for its agent. Router.mu must be held.
-func (r *Router) offerLocked(br *bridge, s *Session, n Network, now time.Time) (*dp.SessionResponse, error) {
+// message for its agent with the key attempt gen of the agent. Router.mu must be held.
+func (r *Router) offerLocked(br *bridge, s *Session, n Network, gen uint64, now time.Time) (*dp.SessionResponse, error) {
 	p, err := br.recv.NewPeer(keys.PeerConfig{VNI: n.ID, MTU: int(n.MTU), Lanes: 1, Sources: s.sources})
 	if err != nil {
 		return nil, err
@@ -329,7 +329,9 @@ func (r *Router) offerLocked(br *bridge, s *Session, n Network, now time.Time) (
 	s.rx = p
 	br.peers[p] = s
 	r.addRelaySAs(br, s, req.SAs, now)
-	return &dp.SessionResponse{Msg: &dp.SessionResponse_Rekey{Rekey: keyproto.ToProto(req)}}, nil
+	m := keyproto.ToProto(req)
+	m.Generation = gen
+	return &dp.SessionResponse{Msg: &dp.SessionResponse_Rekey{Rekey: m}}, nil
 }
 
 // avoidClashes offers new SAs for the relay SPIs that are in rows of s. An
@@ -527,7 +529,7 @@ func (srv *Server) Rekey(ctx context.Context, in *dp.KeysRequest) (*dp.KeysRespo
 	if err != nil {
 		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
-	refused, err := srv.R.rekey(s, req, time.Now())
+	refused, err := srv.R.rekey(s, req, in.GetGeneration(), time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -535,8 +537,8 @@ func (srv *Server) Rekey(ctx context.Context, in *dp.KeysRequest) (*dp.KeysRespo
 }
 
 // rekey applies req to the SAs of the relay for s. A QUIC-mode session
-// changes to PSP mode.
-func (r *Router) rekey(s *Session, req keys.Request, now time.Time) ([]uint32, error) {
+// changes to PSP mode, and its Offer has the key attempt gen of the agent.
+func (r *Router) rekey(s *Session, req keys.Request, gen uint64, now time.Time) ([]uint32, error) {
 	br := r.bridge.Load()
 	if br == nil {
 		return nil, rpc.Errorf(rpc.Unavailable, "relay has no PSP bridge")
@@ -556,7 +558,7 @@ func (r *Router) rekey(s *Session, req keys.Request, now time.Time) ([]uint32, e
 		}
 	}
 	if s.sync.mode == dp.Mode_MODE_QUIC {
-		return r.changeToPSP(br, s, req, now)
+		return r.changeToPSP(br, s, req, gen, now)
 	}
 	return applyTx(br, s, req, now)
 }
@@ -575,15 +577,16 @@ func applyTx(br *bridge, s *Session, req keys.Request, now time.Time) ([]uint32,
 }
 
 // changeToPSP changes the QUIC-mode session s to PSP mode with the SAs in req.
-// The mode stays QUIC if req gives the relay no SA for lane 0. Router.mu must be held.
-func (r *Router) changeToPSP(br *bridge, s *Session, req keys.Request, now time.Time) ([]uint32, error) {
+// The mode stays QUIC if req gives the relay no SA for lane 0. The Offer has
+// the key attempt gen. Router.mu must be held.
+func (r *Router) changeToPSP(br *bridge, s *Session, req keys.Request, gen uint64, now time.Time) ([]uint32, error) {
 	if !s.addr.IsValid() {
 		return nil, rpc.Errorf(rpc.FailedPrecondition, "session has no PSP address: no path probe passed")
 	}
 	if len(s.sync.out) >= maxSyncQueue {
 		return nil, rpc.Errorf(rpc.Unavailable, "no room for the relay SAs in the session queue")
 	}
-	m, err := r.offerLocked(br, s, Network{ID: s.sync.ref.GetNetworkId(), MTU: s.sync.mtu}, now)
+	m, err := r.offerLocked(br, s, Network{ID: s.sync.ref.GetNetworkId(), MTU: s.sync.mtu}, gen, now)
 	if err != nil {
 		return nil, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
 	}

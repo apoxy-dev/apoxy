@@ -19,18 +19,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// shardQC is a shard. It counts the frames sent on it. Its reader ends when
-// gone closes.
-type shardQC struct {
+// fakeConn is a connection of a relay session. It counts the frames sent on
+// it, and its reader gets the frames on in. Its reader ends when gone closes.
+type fakeConn struct {
 	quic.Connection
 	sent atomic.Int64
+	in   chan []byte
 	gone chan struct{}
 }
 
-func newShardQC() *shardQC { return &shardQC{gone: make(chan struct{})} }
+func newFakeConn() *fakeConn { return &fakeConn{in: make(chan []byte, 4), gone: make(chan struct{})} }
 
-func (f *shardQC) ReceiveDatagram(ctx context.Context) ([]byte, error) {
+func (f *fakeConn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	select {
+	case b := <-f.in:
+		return b, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-f.gone:
@@ -38,7 +41,7 @@ func (f *shardQC) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	}
 }
 
-func (f *shardQC) SendDatagram([]byte) error {
+func (f *fakeConn) SendDatagram([]byte) error {
 	f.sent.Add(1)
 	return nil
 }
@@ -56,8 +59,8 @@ func flowPacket(id uint16, seq uint32) []byte {
 
 func flowFrame(id uint16) []byte { return EncodeData(nil, testVNI, flowPacket(id, 0)) }
 
-// shardOf sends frame on c and returns the index of the shard that took it.
-func shardOf(t *testing.T, c *Conn, qcs []*shardQC, frame []byte) int {
+// connOf sends frame on c and returns the index of the connection that took it.
+func connOf(t *testing.T, c *Conn, qcs []*fakeConn, frame []byte) int {
 	t.Helper()
 	before := make([]int64, len(qcs))
 	for i, qc := range qcs {
@@ -69,20 +72,20 @@ func shardOf(t *testing.T, c *Conn, qcs []*shardQC, frame []byte) int {
 			return i
 		}
 	}
-	t.Fatal("no shard took the frame")
+	t.Fatal("no connection took the frame")
 	return -1
 }
 
-func newShards(t *testing.T, n int) (*Conn, []*shardQC) {
+func newConns(t *testing.T, n int) (*Conn, []*fakeConn) {
 	t.Helper()
-	qcs := make([]*shardQC, n)
+	qcs := make([]*fakeConn, n)
 	for i := range qcs {
-		qcs[i] = newShardQC()
+		qcs[i] = newFakeConn()
 	}
-	c := New(qcs[0], testSrc)
+	c := New(qcs[0])
 	t.Cleanup(func() { _ = c.Close() })
 	for i := 1; i < n; i++ {
-		require.NoError(t, c.SetShard(i, qcs[i]))
+		require.NoError(t, c.SetExtra(i, qcs[i]))
 	}
 	return c, qcs
 }
@@ -91,44 +94,38 @@ func TestSendData(t *testing.T) {
 	const flows = 256
 	cases := []struct {
 		name string
-		n    int   // Shards, with the session.
-		down []int // Shards removed with SetShard.
-		gone []int // Shards whose connection closed.
+		n    int   // Connections, with the session.
+		down []int // Extra connections removed with SetExtra.
 	}{
 		{name: "session only", n: 1},
-		{name: "two shards", n: 2},
-		{name: "four shards", n: 4},
-		{name: "shard removed", n: 4, down: []int{2}},
-		{name: "shard closed", n: 4, gone: []int{3}},
-		{name: "two shards down", n: 4, down: []int{1}, gone: []int{2}},
+		{name: "two connections", n: 2},
+		{name: "four connections", n: 4},
+		{name: "extra connection removed", n: 4, down: []int{2}},
+		{name: "two extra connections down", n: 4, down: []int{1, 2}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c, qcs := newShards(t, tc.n)
+			c, qcs := newConns(t, tc.n)
 			before := make([]int, flows)
 			used := make([]int, tc.n)
 			for id := range uint16(flows) {
-				before[id] = shardOf(t, c, qcs, flowFrame(id))
+				before[id] = connOf(t, c, qcs, flowFrame(id))
 				used[before[id]]++
 			}
 			for i, n := range used {
-				assert.NotZero(t, n, "shard %d got no flow", i)
+				assert.NotZero(t, n, "connection %d got no flow", i)
 			}
 
 			for _, i := range tc.down {
-				require.NoError(t, c.SetShard(i, nil))
+				require.NoError(t, c.SetExtra(i, nil))
 			}
-			for _, i := range tc.gone {
-				close(qcs[i].gone)
-				require.Eventually(t, func() bool { return c.shards.Load().conns[i] == nil }, 5*time.Second, time.Millisecond)
-			}
-			off := append(slices.Clone(tc.down), tc.gone...)
+			off := tc.down
 			for id := range uint16(flows) {
-				got := shardOf(t, c, qcs, flowFrame(id))
-				assert.Equal(t, got, shardOf(t, c, qcs, flowFrame(id)), "flow %d changed shard", id)
+				got := connOf(t, c, qcs, flowFrame(id))
+				assert.Equal(t, got, connOf(t, c, qcs, flowFrame(id)), "flow %d changed connection", id)
 				assert.NotContains(t, off, got, "flow %d", id)
 				if !slices.Contains(off, before[id]) {
-					assert.Equal(t, before[id], got, "flow %d moved from a live shard", id)
+					assert.Equal(t, before[id], got, "flow %d moved from a live connection", id)
 				}
 			}
 		})
@@ -136,33 +133,26 @@ func TestSendData(t *testing.T) {
 }
 
 func TestSendDataSession(t *testing.T) {
-	c, qcs := newShards(t, 4)
-	assert.Equal(t, 0, shardOf(t, c, qcs, EncodeData(nil, testVNI, nil)), "frame with no packet")
-	assert.Equal(t, 0, shardOf(t, c, qcs, []byte{TypeData}), "short frame")
+	c, qcs := newConns(t, 4)
+	assert.Equal(t, 0, connOf(t, c, qcs, EncodeData(nil, testVNI, nil)), "frame with no packet")
+	assert.Equal(t, 0, connOf(t, c, qcs, []byte{TypeData}), "short frame")
 
-	// A new session drops the shards of the old one.
-	next := newShardQC()
-	c.SetConn(next)
-	all := append(qcs, next)
-	for id := range uint16(64) {
-		require.Equal(t, 4, shardOf(t, c, all, flowFrame(id)))
-	}
 	require.NoError(t, c.Close())
 	assert.ErrorIs(t, c.SendData(flowFrame(1)), net.ErrClosed)
 }
 
-func TestSetShard(t *testing.T) {
-	c, _ := newShards(t, 1)
-	for _, i := range []int{-1, 0, MaxShards} {
-		assert.ErrorIs(t, c.SetShard(i, newShardQC()), ErrShard, "index %d", i)
+func TestSetExtra(t *testing.T) {
+	c, _ := newConns(t, 1)
+	for _, i := range []int{-1, 0, MaxConns} {
+		assert.ErrorIs(t, c.SetExtra(i, newFakeConn()), ErrExtraIndex, "index %d", i)
 	}
 	require.NoError(t, c.Close())
-	assert.ErrorIs(t, c.SetShard(1, newShardQC()), net.ErrClosed)
+	assert.ErrorIs(t, c.SetExtra(1, newFakeConn()), net.ErrClosed)
 }
 
-// TestShardsQUIC sends flows on four QUIC connections from one socket to a
+// TestConnsQUIC sends flows on four QUIC connections from one socket to a
 // relay in this process, and data frames back on each connection.
-func TestShardsQUIC(t *testing.T) {
+func TestConnsQUIC(t *testing.T) {
 	const (
 		flows   = 64
 		packets = 20
@@ -176,13 +166,13 @@ func TestShardsQUIC(t *testing.T) {
 	require.NoError(t, err)
 
 	type got struct {
-		shard int
-		seq   uint32
+		conn int
+		seq  uint32
 	}
 	var mu sync.Mutex
 	seen := map[uint16][]got{}
 	var total atomic.Int64
-	server := make([]quic.Connection, MaxShards)
+	server := make([]quic.Connection, MaxConns)
 	accepted := make(chan struct{})
 	go func() {
 		defer close(accepted)
@@ -216,17 +206,18 @@ func TestShardsQUIC(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	tc := &tls.Config{RootCAs: p.pool, ServerName: "relay.test", NextProtos: []string{alpnRelay}}
-	qcs := make([]quic.Connection, MaxShards)
+	qcs := make([]quic.Connection, MaxConns)
 	for i := range qcs {
 		qcs[i], err = tr.Dial(ctx, ln.Addr(), tc, &quic.Config{EnableDatagrams: true})
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = qcs[i].CloseWithError(0, "") })
 	}
 	<-accepted
-	c := New(qcs[0], testSrc)
+	c := New(qcs[0])
 	defer c.Close()
-	for i := 1; i < MaxShards; i++ {
-		require.NoError(t, c.SetShard(i, qcs[i]))
+	for i := 1; i < MaxConns; i++ {
+		require.NoError(t, c.SetExtra(i, qcs[i]))
+		go c.Receive(ctx, qcs[i])
 	}
 	var handled atomic.Int64
 	c.HandleData(func([]byte) { handled.Add(1) })
@@ -244,33 +235,33 @@ func TestShardsQUIC(t *testing.T) {
 			require.NoError(t, sc.SendDatagram(flowFrame(1)))
 		}
 	}
-	require.Eventually(t, func() bool { return handled.Load() == MaxShards*back }, 5*time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { return handled.Load() == MaxConns*back }, 5*time.Second, time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
-	perShard := make([]int, MaxShards)
+	perConn := make([]int, MaxConns)
 	for id, gs := range seen {
 		for j, g := range gs {
-			require.Equal(t, gs[0].shard, g.shard, "flow %d is on two connections", id)
+			require.Equal(t, gs[0].conn, g.conn, "flow %d is on two connections", id)
 			require.Equal(t, uint32(j), g.seq, "flow %d is out of order", id)
 		}
-		perShard[gs[0].shard]++
+		perConn[gs[0].conn]++
 	}
-	t.Logf("Flows on each connection: %v", perShard)
-	for i, n := range perShard {
+	t.Logf("Flows on each connection: %v", perConn)
+	for i, n := range perConn {
 		assert.NotZero(t, n, "connection %d got no flow", i)
 	}
 }
 
 func BenchmarkSendData(b *testing.B) {
-	qcs := make([]*shardQC, MaxShards)
+	qcs := make([]*fakeConn, MaxConns)
 	for i := range qcs {
-		qcs[i] = newShardQC()
+		qcs[i] = newFakeConn()
 	}
-	c := New(qcs[0], testSrc)
+	c := New(qcs[0])
 	defer c.Close()
-	for i := 1; i < MaxShards; i++ {
-		if err := c.SetShard(i, qcs[i]); err != nil {
+	for i := 1; i < MaxConns; i++ {
+		if err := c.SetExtra(i, qcs[i]); err != nil {
 			b.Fatal(err)
 		}
 	}

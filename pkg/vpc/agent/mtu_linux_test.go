@@ -41,9 +41,7 @@ func TestPathMTUNetns(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to make network namespaces")
 	}
-	oldMin, oldMax, oldNext := pspRetryMin, pspRetryMax, pspRetryNext
-	pspRetryMin, pspRetryMax, pspRetryNext = time.Second, 2*time.Second, 300*time.Millisecond
-	t.Cleanup(func() { pspRetryMin, pspRetryMax, pspRetryNext = oldMin, oldMax, oldNext })
+	retry := [3]time.Duration{time.Second, 2 * time.Second, 300 * time.Millisecond}
 	cases := []struct {
 		name      string
 		linkMTU   []int // Relay end of the veth, per session of agent a.
@@ -65,7 +63,7 @@ func TestPathMTUNetns(t *testing.T) {
 			w.mtu = 1400
 			r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP), listenIn(t, relayNS, relayIP))
 			b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), tcp: true, mode: TransportAuto})
-			a := w.agent(t, "a", r, agentOptions{udp: listenIn(t, agentNS, agentIP), tcp: true, mode: TransportAuto})
+			a := w.agent(t, "a", r, agentOptions{udp: listenIn(t, agentNS, agentIP), tcp: true, mode: TransportAuto, pspRetry: retry})
 			var ea attachEvent
 			for i, mtu := range tc.linkMTU {
 				link(mtu)
@@ -89,9 +87,6 @@ func TestPathMTUNetns(t *testing.T) {
 			assert.Equal(t, 1400, b.binding().DeviceMTU())
 			assert.Equal(t, 0, b.binding().ClampMTU())
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			require.NoError(t, a.a.Connect(ctx, eb.addr))
 			echoTCP(t, a, b, ea.addr, eb.addr)
 		})
 	}

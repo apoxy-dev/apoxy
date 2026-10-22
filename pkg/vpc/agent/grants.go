@@ -4,475 +4,339 @@ package agent
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
-	"sync"
 	"time"
 
-	"google.golang.org/protobuf/types/known/emptypb"
-
-	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
-
-// maxGrants is the most grants in one Open or Grants call. A grant with its
-// relay chain is about 1.5 KB.
-const maxGrants = 256
-
-// extra is an attachment of this agent on a relay session, other than the
-// attachment of Config.
-type extra struct {
-	spec     *AttachmentSpec
-	id       string
-	grant    *ownGrant
-	prefixes []netip.Prefix
-}
 
 // grantRefreshAge is the age of a stored grant from which the agent gets a
 // new one before it sends a grant. See relay.GrantLife for the clock difference.
 const grantRefreshAge = relay.GrantLife / 3
 
 // ownGrant is the grant of one attachment of this agent. The agent sends it
-// to peers and to visited relays, which check it one time.
+// to visited relays, which check it one time.
 type ownGrant struct {
-	rc *relayConn // The attached session that has the attachment.
-	id string
-
-	mu  sync.Mutex // Held during the Grant call, so that two callers make one call.
+	id  string
 	cur *dp.AttachmentGrant
 	got time.Time // When the agent got cur.
 }
 
-// newOwnGrant keeps the grant g of Attach on rc for the attachment id.
-func newOwnGrant(rc *relayConn, g *dp.AttachmentGrant, id string) *ownGrant {
-	return &ownGrant{rc: rc, id: id, cur: g, got: time.Now()}
+func newOwnGrant(g *dp.AttachmentGrant, id string) ownGrant {
+	return ownGrant{id: id, cur: g, got: time.Now()}
 }
 
 // get returns the stored grant while its age is below grantRefreshAge, else a
-// new one. The age is elapsed time of this host, so no clock matters.
-func (g *ownGrant) get(ctx context.Context) (*dp.AttachmentGrant, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+// new one from the relay of c at addr. The age is elapsed time of this host,
+// so no clock matters.
+func (g ownGrant) get(ctx context.Context, c dp.RelayClient, addr string, roots *x509.CertPool) (*dp.AttachmentGrant, error) {
 	if time.Since(g.got) < grantRefreshAge {
 		return g.cur, nil
 	}
-	res, err := g.rc.c.Grant(ctx, &dp.GrantRequest{AttachmentId: g.id})
+	res, err := c.Grant(ctx, &dp.GrantRequest{AttachmentId: g.id})
 	if err != nil {
 		return nil, fmt.Errorf("new grant of attachment %s: %w", g.id, err)
 	}
-	if _, err := g.rc.verifyOwn(res.GetGrant()); err != nil {
+	if _, err := verifyOwn(addr, roots, res.GetGrant()); err != nil {
 		return nil, fmt.Errorf("new grant of attachment %s: %w", g.id, err)
 	}
-	g.cur, g.got = res.GetGrant(), time.Now()
-	return g.cur, nil
+	return res.GetGrant(), nil
 }
 
-// verifyOwn checks a grant that the relay of rc signed for this agent now. It
-// has ended only if the clock of this host or of the relay is wrong.
-func (rc *relayConn) verifyOwn(g *dp.AttachmentGrant) (*dp.GrantClaims, error) {
+// verifyOwn checks a grant that the relay at addr signed for this agent now.
+// It has ended only if the clock of this host or of the relay is wrong.
+func verifyOwn(addr string, roots *x509.CertPool, g *dp.AttachmentGrant) (*dp.GrantClaims, error) {
 	now := time.Now()
-	claims, err := relay.VerifyGrant(g, rc.roots, now)
+	claims, err := relay.VerifyGrant(g, roots, now)
 	if errors.Is(err, relay.ErrGrantEnded) {
 		slog.Error("A grant that the relay signed in this moment has ended; the clock of this host or of the relay is wrong",
-			"relay", rc.addr, "host_time", now.UTC().Format(time.RFC3339), "error", err)
+			"relay", addr, "host_time", now.UTC().Format(time.RFC3339), "error", err)
 	}
 	return claims, err
 }
 
-// openGrants returns the grant of the session rc and the grants of xs for the
-// Open call of a peer session.
-func (rc *relayConn) openGrants(ctx context.Context, xs []*extra) (*dp.AttachmentGrant, []*dp.AttachmentGrant, error) {
-	base, err := rc.grant.get(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	grants, err := grantsOf(ctx, xs)
-	return base, grants, err
+// extra is an attachment of this agent on a relay session, other than the
+// attachment of Config.
+type extra struct {
+	spec     *AttachmentSpec
+	id       string
+	grant    ownGrant
+	prefixes []netip.Prefix
 }
 
-// grantsOf returns the grants of xs to send.
-func grantsOf(ctx context.Context, xs []*extra) ([]*dp.AttachmentGrant, error) {
-	var out []*dp.AttachmentGrant
-	for _, x := range xs {
-		g, err := x.grant.get(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, g)
-	}
-	return out, nil
+// xjob is an attachX in a home session: queued, in its Attach call, or
+// waiting for the joins of the visits.
+type xjob struct {
+	spec     *AttachmentSpec
+	ctx      context.Context
+	x        *extra
+	detached bool // A detachX came during the Attach call.
+	joins    map[*visit]bool
 }
 
-// attachExtra runs Attach on rc for s and checks the grant.
-func (rc *relayConn) attachExtra(ctx context.Context, s *AttachmentSpec) (*extra, error) {
-	res, err := rc.c.Attach(ctx, &dp.AttachRequest{Vpc: rc.ref, Name: s.Name, Labels: s.Labels, Routes: prefixStrings(s.Routes), Rank: rc.rank})
-	if err != nil {
-		return nil, attachError(rc, fmt.Errorf("attach: %w", err))
-	}
-	rc.logRefused(s.Name, res.GetRoutes())
-	claims, err := rc.verifyOwn(res.GetGrant())
-	if err != nil {
-		return nil, err
-	}
-	prefixes, err := parsePrefixes(claims.GetAddresses())
-	if err != nil {
-		return nil, err
-	}
-	return &extra{spec: s, id: claims.GetAttachmentId(), grant: newOwnGrant(rc, res.GetGrant(), claims.GetAttachmentId()), prefixes: prefixes}, nil
+// djob is a detachX in a home session after its Detach call started.
+type djob struct {
+	spec    *AttachmentSpec
+	id      string
+	running bool
+	leaves  map[*visit]bool
 }
 
-// addExtra adds x to rc and queues its grant for the peers on rc. Routes of x
-// that came before leave the route table. a.attMu must be held.
-func (a *Agent) addExtra(rc *relayConn, x *extra) {
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	removed := rc.routes.drop(x.id)
-	a.mu.Lock()
-	if rc.extras == nil {
-		rc.extras = map[string]*extra{}
-	}
-	rc.extras[x.id] = x
-	if !rc.visitor() {
-		for _, pfx := range x.prefixes {
-			if err := rc.link.AddSource(pfx); err != nil {
-				slog.Warn("Failed to send from the address of an attachment", "name", x.spec.Name, "prefix", pfx, "error", err)
+// xattached is the result of the Attach call of an xjob.
+type xattached struct {
+	j   *xjob
+	x   *extra
+	err error
+}
+
+// xdetached is the result of a Detach call: of a djob, or of the xjob of a
+// spec that Detach forgot during its Attach call.
+type xdetached struct {
+	j   *xjob
+	dj  *djob
+	err error
+}
+
+// handleExtras takes the messages of the extra attachments and the visits.
+func (s *session) handleExtras(m any) {
+	switch m := m.(type) {
+	case attachX:
+		s.queue = append(s.queue, &xjob{spec: m.spec, ctx: m.ctx})
+		s.admit()
+	case cancelX:
+		s.queue = slices.DeleteFunc(s.queue, func(j *xjob) bool {
+			if j.spec != m.spec {
+				return false
 			}
-		}
-	}
-	for _, p := range a.peers {
-		if p.rc == rc {
-			p.queueGrants(x, "")
-		}
-	}
-	a.mu.Unlock()
-	if a.routesOf == rc {
-		a.report(nil, slices.DeleteFunc(removed, func(p netip.Prefix) bool { return !a.reported[p] }))
+			err := context.Canceled
+			if j.ctx != nil && j.ctx.Err() != nil {
+				err = j.ctx.Err()
+			}
+			s.up.send(attachedX{s: s, spec: j.spec, err: err})
+			return true
+		})
+	case detachX:
+		s.detachExtra(m)
+	case xattached:
+		s.xattached(m)
+	case xdetached:
+		s.xdetached(m)
+	default:
+		s.handleVisits(m)
 	}
 }
 
-// detachExtra runs Detach on rc for the attachment id. An attachment that the
-// relay does not have is not an error.
-func (rc *relayConn) detachExtra(ctx context.Context, id string) error {
-	if _, err := rc.c.Detach(ctx, &dp.DetachRequest{AttachmentId: id}); err != nil && rpc.CodeOf(err) != rpc.NotFound {
+// admit starts the Attach calls of queued specs, at most maxInFlight at once.
+// A spec whose caller stopped to wait gets the error of its context.
+func (s *session) admit() {
+	for len(s.running) < maxInFlight && len(s.queue) > 0 {
+		j := s.queue[0]
+		s.queue = s.queue[1:]
+		if j.ctx != nil && j.ctx.Err() != nil {
+			s.up.send(attachedX{s: s, spec: j.spec, err: j.ctx.Err()})
+			continue
+		}
+		s.running[j] = true
+		s.attachCall(j)
+	}
+}
+
+// attachCall starts the Attach call of j. It runs under the session with
+// openTimeout, not under the context of the caller.
+func (s *session) attachCall(j *xjob) {
+	sp := j.spec
+	c, qc, addr, roots, ctx := s.d.client, s.d.qc, s.addr(), s.d.roots, s.ctx
+	req := &dp.AttachRequest{Vpc: s.d.config.GetVpc(), Name: sp.Name, Labels: sp.Labels, Routes: prefixStrings(sp.Routes), Rank: s.rank}
+	s.task(func() any {
+		ctx, cancel := context.WithTimeout(ctx, openTimeout)
+		defer cancel()
+		res, err := c.Attach(ctx, req)
+		if err != nil {
+			return xattached{j: j, err: attachError(qc, fmt.Errorf("attach: %w", err))}
+		}
+		logRefused(addr, sp.Name, res.GetRoutes())
+		claims, err := verifyOwn(addr, roots, res.GetGrant())
+		if err != nil {
+			return xattached{j: j, err: err}
+		}
+		prefixes, err := parsePrefixes(claims.GetAddresses())
+		if err != nil {
+			return xattached{j: j, err: err}
+		}
+		id := claims.GetAttachmentId()
+		return xattached{j: j, x: &extra{spec: sp, id: id, grant: newOwnGrant(res.GetGrant(), id), prefixes: prefixes}}
+	})
+}
+
+func (s *session) xattached(m xattached) {
+	j := m.j
+	delete(s.running, j)
+	defer s.admit()
+	switch {
+	case m.err != nil:
+		s.up.send(attachedX{s: s, spec: j.spec, err: m.err})
+		return
+	case j.detached:
+		// Detach forgot the spec during the call, so the attachment goes again.
+		s.detachCall(m.x.id, nil, xdetached{j: j})
+		return
+	}
+	x := m.x
+	j.x = x
+	// Routes of the attachment that came before leave the route table.
+	if removed := s.routes.drop(x.id); len(removed) > 0 {
+		s.up.send(routesMsg{s: s, remove: removed})
+	}
+	for _, pfx := range x.prefixes {
+		if err := s.link.AddSource(pfx); err != nil {
+			slog.Warn("Failed to send from the address of an attachment", "name", x.spec.Name, "prefix", pfx, "error", err)
+		}
+	}
+	s.extras[x.spec.Name], s.byID[x.id] = x, x
+	// The visits take the new attachment too.
+	j.joins = map[*visit]bool{}
+	for _, rec := range s.visits {
+		if rec.up && rec.extras {
+			rec.v.mb.send(joinMsg{x: *x})
+			j.joins[rec.v] = true
+		}
+	}
+	if len(j.joins) > 0 {
+		s.joining[j] = true
+		return
+	}
+	s.attachedOK(j)
+}
+
+// attachedOK gives the root the attachment of j.
+func (s *session) attachedOK(j *xjob) {
+	s.up.send(attachedX{s: s, spec: j.spec, at: s.attachmentOf(j.x)})
+}
+
+// attachmentOf returns the extra attachment x of s.
+func (s *session) attachmentOf(x *extra) Attachment {
+	at := x.spec.attachment()
+	at.ID, at.Address, at.Prefixes, at.Relay = x.id, overlayAddr(x.prefixes), slices.Clone(x.prefixes), s.addr()
+	return at
+}
+
+// detachExtra takes a detachX. A spec that waits or that is in its Attach call
+// has nothing at the relay yet, so the answer goes at once.
+func (s *session) detachExtra(m detachX) {
+	name := m.spec.Name
+	if i := slices.IndexFunc(s.queue, func(j *xjob) bool { return j.spec == m.spec }); i >= 0 {
+		s.queue = slices.Delete(s.queue, i, i+1)
+		s.up.send(attachedX{s: s, spec: m.spec, err: fmt.Errorf("%w: %s", ErrNoAttachment, name)})
+		s.up.send(detachedX{s, m.spec})
+		return
+	}
+	for j := range s.running {
+		if j.spec == m.spec {
+			j.detached = true
+			s.up.send(detachedX{s, m.spec})
+			return
+		}
+	}
+	for j := range s.joining {
+		if j.spec == m.spec {
+			delete(s.joining, j)
+			s.attachedOK(j)
+		}
+	}
+	x := s.extras[name]
+	if x == nil || x.spec != m.spec {
+		s.up.send(detachedX{s, m.spec})
+		return
+	}
+	delete(s.extras, name)
+	delete(s.byID, x.id)
+	for _, pfx := range x.prefixes {
+		s.link.RemoveSource(pfx)
+	}
+	dj := &djob{spec: m.spec, id: x.id, running: true, leaves: map[*visit]bool{}}
+	for _, rec := range s.visits {
+		if rec.joined[x.id] {
+			delete(rec.joined, x.id)
+			rec.v.mb.send(leaveMsg{x.id})
+			dj.leaves[rec.v] = true
+		}
+	}
+	s.detaching = append(s.detaching, dj)
+	s.detachCall(x.id, m.ctx, xdetached{dj: dj})
+}
+
+// detachCall starts the Detach call of the attachment id under ctx, or under
+// the session when ctx is nil, with openTimeout. res is its result.
+func (s *session) detachCall(id string, ctx context.Context, res xdetached) {
+	c, sctx := s.d.client, s.ctx
+	if ctx == nil {
+		ctx = sctx
+	}
+	s.task(func() any {
+		ctx, cancel := context.WithTimeout(ctx, openTimeout)
+		defer cancel()
+		stop := context.AfterFunc(sctx, cancel)
+		defer stop()
+		res.err = detach(ctx, c, id)
+		return res
+	})
+}
+
+// detach runs Detach for the attachment id. An attachment that the relay
+// does not have is not an error.
+func detach(ctx context.Context, c dp.RelayClient, id string) error {
+	if _, err := c.Detach(ctx, &dp.DetachRequest{AttachmentId: id}); err != nil && rpc.CodeOf(err) != rpc.NotFound {
 		return fmt.Errorf("detach: %w", err)
 	}
 	return nil
 }
 
-// removeExtra removes the attachment id from rc and queues the remove for the
-// peers on rc. It returns nil if rc has no such attachment. a.attMu must be held.
-func (a *Agent) removeExtra(rc *relayConn, id string) *extra {
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	x := rc.extras[id]
-	if x == nil {
-		return nil
+func (s *session) xdetached(m xdetached) {
+	if m.err != nil {
+		slog.Warn("Failed to detach an attachment at the relay; the relay keeps it until the session ends", "relay", s.addr(), "error", m.err)
 	}
-	delete(rc.extras, id)
-	if !rc.visitor() {
-		for _, pfx := range x.prefixes {
-			rc.link.RemoveSource(pfx)
-		}
+	if j := m.j; j != nil {
+		s.up.send(attachedX{s: s, spec: j.spec, err: fmt.Errorf("%w: %s", ErrNoAttachment, j.spec.Name)})
+		return
 	}
-	for _, p := range a.peers {
-		if p.rc == rc {
-			p.queueGrants(nil, id)
-		}
-	}
-	return x
+	m.dj.running = false
+	s.detachProgress()
 }
 
-// ownOrigin reports whether origin is an attachment of this agent on rc. The
-// caller holds a.routeMu or a.mu.
-func (rc *relayConn) ownOrigin(origin string) bool {
-	return origin == rc.attachmentID || rc.extras[origin] != nil
-}
-
-// ownAddr reports whether an attachment of this agent on rc has addr.
-// Agent.mu must be held.
-func (rc *relayConn) ownAddr(addr netip.Addr) bool {
-	has := func(p netip.Prefix) bool { return p.Contains(addr) }
-	if slices.ContainsFunc(rc.prefixes, has) {
+// detachProgress answers each djob whose call and leaves ended.
+func (s *session) detachProgress() {
+	s.detaching = slices.DeleteFunc(s.detaching, func(dj *djob) bool {
+		if dj.running || len(dj.leaves) > 0 {
+			return false
+		}
+		s.up.send(detachedX{s, dj.spec})
 		return true
-	}
-	for _, x := range rc.extras {
-		if slices.ContainsFunc(x.prefixes, has) {
-			return true
-		}
-	}
-	return false
+	})
 }
 
-func prefixStrings(ps []netip.Prefix) []string {
-	out := make([]string, len(ps))
-	for i, p := range ps {
-		out[i] = p.String()
+// joinProgress answers each xjob whose joins ended.
+func (s *session) joinProgress() {
+	for j := range s.joining {
+		if len(j.joins) == 0 {
+			delete(s.joining, j)
+			s.attachedOK(j)
+		}
+	}
+}
+
+// extrasCopy returns copies of the extra attachments of s.
+func (s *session) extrasCopy() []extra {
+	var out []extra
+	for _, x := range slices.Collect(maps.Values(s.extras)) {
+		out = append(out, *x)
 	}
 	return out
-}
-
-// openExtras returns the extra attachments whose grants go in the Open call
-// of p, at most maxGrants. The others go to p after Open. a.mu must be held.
-func (a *Agent) openExtras(p *peer) []*extra {
-	var out []*extra
-	for _, x := range p.rc.extras {
-		if len(out) < maxGrants {
-			out = append(out, x)
-		} else {
-			p.queueGrants(x, "")
-		}
-	}
-	return out
-}
-
-// queueGrants queues an added grant or a removed attachment ID for the peer,
-// and starts the sender if it does not run. a.mu must be held.
-func (p *peer) queueGrants(add *extra, remove string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.noGrants {
-		return
-	}
-	if p.sendAdd == nil {
-		p.sendAdd, p.sendRemove = map[string]*extra{}, map[string]bool{}
-	}
-	if add != nil {
-		delete(p.sendRemove, add.id)
-		p.sendAdd[add.id] = add
-	} else {
-		// The peer can have the grant from Open, so the remove always goes.
-		delete(p.sendAdd, remove)
-		p.sendRemove[remove] = true
-	}
-	if !p.sending {
-		p.sending = true
-		go p.sendGrants()
-	}
-}
-
-// sendGrants sends the queued grant changes to the peer, one call at a time,
-// until the queue is empty. An error closes the peer session.
-func (p *peer) sendGrants() {
-	select {
-	case <-p.ready:
-	case <-p.qc.Context().Done():
-		return
-	}
-	for {
-		p.mu.Lock()
-		req := &dp.GrantsRequest{}
-		var add []*extra
-		for id, x := range p.sendAdd {
-			if len(add) == maxGrants {
-				break
-			}
-			add = append(add, x)
-			delete(p.sendAdd, id)
-		}
-		for id := range p.sendRemove {
-			req.Remove = append(req.Remove, id)
-			delete(p.sendRemove, id)
-		}
-		if len(add)+len(req.Remove) == 0 {
-			p.sending = false
-			p.mu.Unlock()
-			return
-		}
-		p.mu.Unlock()
-		ctx, cancel := context.WithTimeout(p.rc.ctx, keysTimeout)
-		var err error
-		if req.Add, err = grantsOf(ctx, add); err == nil {
-			_, err = p.client.Grants(ctx, req)
-		}
-		cancel()
-		if rpc.CodeOf(err) == rpc.Unimplemented {
-			p.mu.Lock()
-			p.noGrants, p.sending, p.sendAdd, p.sendRemove = true, false, nil, nil
-			p.mu.Unlock()
-			slog.Info("Peer does not serve grant changes; it gets only the grants of Open", "peer", p.subject)
-			return
-		}
-		if err != nil {
-			if p.qc.Context().Err() == nil {
-				slog.Warn("Failed to send grants to a peer; closing the peer session", "peer", p.subject, "error", err)
-				_ = p.qc.CloseWithError(0, "grant change failed")
-			}
-			return
-		}
-	}
-}
-
-// addGrants checks the grants of the other attachments of the peer, and routes
-// their prefixes to it. It skips the grants that fail and returns their errors.
-func (a *Agent) addGrants(p *peer, gs []*dp.AttachmentGrant) error {
-	if len(gs) == 0 {
-		return nil
-	}
-	type grant struct {
-		id       string
-		prefixes []netip.Prefix
-	}
-	var errs []error
-	var ok []grant
-	for _, g := range gs {
-		claims, prefixes, err := a.checkGrant(p, g)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		ok = append(ok, grant{claims.GetAttachmentId(), prefixes})
-	}
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	vpc := tunnet.NetworkPrefixOf(p.rc.self)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.peers[p.conn] != p || p.bp == nil {
-		return errors.Join(append(errs, errors.New("peer session is closed"))...)
-	}
-	for _, g := range ok {
-		if g.id == p.attachmentID() || p.extra[g.id] != nil {
-			continue
-		}
-		if err := a.routeGrant(p, g.prefixes); err != nil {
-			errs = append(errs, fmt.Errorf("attachment %s: %w", g.id, err))
-			continue
-		}
-		if p.extra == nil {
-			p.extra = map[string][]netip.Prefix{}
-		}
-		p.extra[g.id] = g.prefixes
-		for pfx, origin := range p.rc.routes.origins {
-			if origin == g.id {
-				a.addAdvertised(p, pfx, vpc)
-			}
-		}
-		close(a.admitted)
-		a.admitted = make(chan struct{})
-	}
-	return errors.Join(errs...)
-}
-
-// waitGrant returns the peer session on rc that covers dst, or nil. It waits up
-// to duplicateWait for the grant of another attachment of a peer.
-func (a *Agent) waitGrant(ctx context.Context, rc *relayConn, dst netip.Addr, res *dp.ResolvePeerResponse) *peer {
-	if res.GetSubject() == "" {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, duplicateWait)
-	defer cancel()
-	for {
-		a.mu.Lock()
-		p, admitted := a.peerTo(rc, dst), a.admitted
-		open := false
-		for _, q := range a.peers {
-			if q.rc == rc && q.bp != nil && q.qc.Context().Err() == nil && q.matches(res) {
-				open = true
-				break
-			}
-		}
-		a.mu.Unlock()
-		if p != nil || !open {
-			return p
-		}
-		select {
-		case <-admitted:
-		case <-rc.ctx.Done():
-			return nil
-		case <-ctx.Done():
-			return nil
-		}
-	}
-}
-
-// matches reports whether the ResolvePeer answer res is for the agent of p. A
-// relay before agentNames gives only the subject, which many agents can have.
-// a.mu must be held.
-func (p *peer) matches(res *dp.ResolvePeerResponse) bool {
-	if !p.rc.relayAtLeast(agentNames) {
-		return p.subject == res.GetSubject()
-	}
-	return slices.ContainsFunc(res.GetAttachmentIds(), p.origin)
-}
-
-// routeGrant routes prefixes to p. It routes all of them or none. a.mu must
-// be held.
-func (a *Agent) routeGrant(p *peer, prefixes []netip.Prefix) error {
-	for i, pfx := range prefixes {
-		if err := a.bind.AddRoute(pfx, p.bp); err != nil {
-			for _, q := range prefixes[:i] {
-				a.bind.RemoveRoute(q, p.bp)
-			}
-			return fmt.Errorf("route %s: %w", pfx, err)
-		}
-	}
-	return nil
-}
-
-// removeGrants removes the routes of the attachments ids of the peer.
-func (a *Agent) removeGrants(p *peer, ids []string) {
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, id := range ids {
-		a.dropGrant(p, id)
-	}
-}
-
-// dropGrant removes the routes of the attachment id of the peer. a.routeMu
-// and a.mu must be held.
-func (a *Agent) dropGrant(p *peer, id string) {
-	prefixes, ok := p.extra[id]
-	if !ok {
-		return
-	}
-	delete(p.extra, id)
-	if a.peers[p.conn] != p || p.bp == nil {
-		return
-	}
-	if len(p.advertised) > 0 {
-		for pfx, origin := range p.rc.routes.origins {
-			if origin == id {
-				a.removeAdvertised(p, pfx)
-			}
-		}
-	}
-	for _, pfx := range prefixes {
-		a.bind.RemoveRoute(pfx, p.bp)
-	}
-}
-
-// Grants applies a grant change from the peer, after the grants of Open.
-func (s *peerService) Grants(ctx context.Context, in *dp.GrantsRequest) (*emptypb.Empty, error) {
-	p := s.a.peerOf(ctx)
-	if p == nil {
-		return nil, rpc.Errorf(rpc.Unauthenticated, "no peer session")
-	}
-	select {
-	case <-p.granted:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	s.a.removeGrants(p, in.GetRemove())
-	if err := s.a.addGrants(p, in.GetAdd()); err != nil {
-		slog.Warn("Refused grants of a peer", "peer", p.subject, "error", err)
-	}
-	return &emptypb.Empty{}, nil
-}
-
-// grantsOfOpen applies the grants that came in Open, after admit, and lets
-// Grants calls of the peer run.
-func (a *Agent) grantsOfOpen(p *peer, gs []*dp.AttachmentGrant) {
-	if err := a.addGrants(p, gs); err != nil {
-		slog.Warn("Refused grants of a peer", "peer", p.subject, "error", err)
-	}
-	close(p.granted)
 }

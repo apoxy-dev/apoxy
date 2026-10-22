@@ -25,7 +25,7 @@ import (
 
 // agentOn starts agent name with one session on each of the first sessions
 // relays, and returns it with its attached sessions in rank order.
-func (w *world) agentOn(t *testing.T, name string, opts agentOptions, sessions int, relays ...*testRelay) (*testAgent, []*relayConn) {
+func (w *world) agentOn(t *testing.T, name string, opts agentOptions, sessions int, relays ...*testRelay) (*testAgent, []sessionRef) {
 	t.Helper()
 	for _, r := range relays {
 		opts.relays = append(opts.relays, r.ref())
@@ -35,7 +35,7 @@ func (w *world) agentOn(t *testing.T, name string, opts agentOptions, sessions i
 	for range min(sessions, len(relays)) {
 		a.attached(t)
 	}
-	return a, a.a.sessions(connAttached)
+	return a, a.sessions()
 }
 
 // ranks returns the ranks of the attached and the draining sessions of a.
@@ -48,16 +48,6 @@ func ranks(a *testAgent) (attached, draining []uint32) {
 		}
 	}
 	return attached, draining
-}
-
-// peersOn returns the number of open peer sessions of a on rc, from Status.
-func peersOn(a *testAgent, rc *relayConn) int {
-	for _, c := range a.a.Status().Connections {
-		if c.Address == rc.self {
-			return c.Peers
-		}
-	}
-	return 0
 }
 
 // serveTCP answers the bytes of each TCP connection to addr:port.
@@ -154,14 +144,19 @@ func TestSessions(t *testing.T) {
 			conns := a.a.Status().Connections
 			require.Len(t, conns, tc.want)
 			var addrs []netip.Addr
+			var list []string
+			for _, r := range relays {
+				list = append(list, r.addr)
+			}
 			for i, c := range conns {
-				assert.Equal(t, relays[i].addr, c.Relay, "the relays have the order of the list")
+				assert.Contains(t, list, c.Relay, "a relay of the list")
+				assert.False(t, slices.ContainsFunc(conns[:i], func(o ConnStatus) bool { return o.Relay == c.Relay }), "each session on its own relay")
 				assert.Equal(t, uint32(i), c.Rank)
 				assert.Equal(t, rcs[i].self, c.Address)
 				assert.False(t, slices.Contains(addrs, c.Address), "each session has its own address")
 				addrs = append(addrs, c.Address)
 			}
-			assert.Same(t, rcs[0], a.current(), "the session with rank 0 has the default address")
+			sameSession(t, rcs[0], a.current(), "the session with rank 0 has the default address")
 			for i, c := range conns {
 				deprecated := func() bool { return slices.Contains(a.events("a"), "deprecate a "+c.Address.String()) }
 				if i == 0 {
@@ -175,7 +170,7 @@ func TestSessions(t *testing.T) {
 			defer cancel()
 			x, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-1"})
 			require.NoError(t, err)
-			assert.Equal(t, relays[0].addr, x.Relay, "Attach returns the attachment on the session with the lowest rank")
+			assert.Equal(t, conns[0].Relay, x.Relay, "Attach returns the attachment on the session with the lowest rank")
 			lives := func() []string {
 				return slices.DeleteFunc(a.events("x-1"), func(e string) bool { return !strings.HasPrefix(e, "attach ") && !strings.HasPrefix(e, "detach ") })
 			}
@@ -204,7 +199,12 @@ func TestSessions(t *testing.T) {
 // TestSendRule checks which relay session carries a packet: the session that has
 // the source address, or else the session with the lowest rank that does not drain.
 func TestSendRule(t *testing.T) {
-	w, r1, r2 := meshRelays(t)
+	w := newWorld(t)
+	w.mesh = true
+	tap1, tap2 := &countConn{}, &countConn{}
+	r1 := w.relayOn(t, "relay-1", loopback(t), tap1.wrap(loopback(t)))
+	r2 := w.relayOn(t, "relay-2", loopback(t), tap2.wrap(loopback(t)))
+	joinMesh(t, r1, r2)
 	route, far := netip.MustParsePrefix("fd99::/64"), netip.MustParseAddr("fd99::5")
 	a, rcs := w.agentOn(t, "a", agentOptions{routes: []netip.Prefix{route}}, 2, r1, r2)
 	b := w.agent(t, "b", r1, agentOptions{})
@@ -213,79 +213,38 @@ func TestSendRule(t *testing.T) {
 	a.netstack(t, a.binding(), far, false)
 	a.hasRoutes(t, eb.prefixes[0])
 	b.hasRoutes(t, route)
-	// Each relay session of a has the route to b.
-	for _, rc := range rcs {
-		require.Eventually(t, func() bool { _, ok := a.a.peerAddr(rc, eb.addr); return ok }, 10*time.Second, 10*time.Millisecond)
-	}
+	// The PSP socket of each relay counts the PSP packets that it gets from a.
+	from := unmap(a.tr.Conn.LocalAddr().(*net.UDPAddr).AddrPort())
+	sent := map[string]func() int{r1.addr: func() int { return tap1.got(from) }, r2.addr: func() int { return tap2.got(from) }}
+	require.Eventually(t, func() bool {
+		cs := a.a.Status().Connections
+		return len(cs) == 2 && cs[0].Mode == dp.Mode_MODE_PSP && cs[1].Mode == dp.Mode_MODE_PSP
+	}, 10*time.Second, 10*time.Millisecond, "the sessions change to PSP mode")
 
 	cases := []struct {
 		name string
 		src  netip.Addr
-		want []int // Peer sessions of a on each relay session after the packet.
+		want sessionRef // The session that carries the answer.
 	}{
-		{name: "source that no session has", src: far, want: []int{1, 0}},
-		{name: "source of the second session", src: rcs[1].self, want: []int{1, 1}},
-		{name: "source of the first session", src: rcs[0].self, want: []int{1, 1}},
+		{name: "source that no session has", src: far, want: rcs[0]},
+		{name: "source of the second session", src: rcs[1].self, want: rcs[1]},
+		{name: "source of the first session", src: rcs[0].self, want: rcs[0]},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			before := sent[tc.want.addr]()
 			ping(t, a.stack, tc.src, eb.addr, 9000, tc.name)
-			// The packet starts the peer session after it went on the default route.
-			require.Eventually(t, func() bool { return slices.Equal(tc.want, []int{peersOn(a, rcs[0]), peersOn(a, rcs[1])}) },
-				5*time.Second, 10*time.Millisecond, "peer sessions of a on each relay session")
+			assert.Greater(t, sent[tc.want.addr](), before, "the packet goes on the session")
 		})
 	}
 
 	// When the relay of the first session drains, the second session carries
 	// the packets with a source that no session has.
-	drain(t, r1, nil)
+	drain(t, w.relayAt(rcs[0].addr), nil)
 	require.Eventually(t, func() bool { return a.current() == rcs[1] }, 5*time.Second, 10*time.Millisecond)
-	a.a.mu.Lock()
-	var second *peer
-	for _, p := range a.a.peers {
-		if p.rc == rcs[1] {
-			second = p
-		}
-	}
-	a.a.mu.Unlock()
-	require.NotNil(t, second)
-	require.Eventually(t, func() bool { return routeTo(b.a, rcs[1].self).State == "up" }, 10*time.Second, 10*time.Millisecond,
-		"route of b to the second session after BFD Up")
-	before := rxCountOf(second.bp).packets
+	before := sent[rcs[1].addr]()
 	ping(t, a.stack, far, eb.addr, 9000, "after the drain")
-	assert.Greater(t, rxCountOf(second.bp).packets, before, "the answer comes on the second session")
-}
-
-// TestPeersOfEachSession checks that two agents with two relay sessions each
-// keep one peer session for each pair of their addresses.
-func TestPeersOfEachSession(t *testing.T) {
-	w, r1, r2 := meshRelays(t)
-	a, ra := w.agentOn(t, "a", agentOptions{}, 2, r1, r2)
-	b, rb := w.agentOn(t, "b", agentOptions{}, 2, r1, r2)
-	for i, rc := range rb {
-		echo(t, b.stack, rc.self, uint16(9000+i))
-	}
-	for _, rc := range ra {
-		for _, peer := range rb {
-			require.Eventually(t, func() bool { _, ok := a.a.peerAddr(rc, peer.self); return ok }, 10*time.Second, 10*time.Millisecond)
-		}
-	}
-	for _, from := range ra {
-		for i, to := range rb {
-			ping(t, a.stack, from.self, to.self, uint16(9000+i), from.self.String()+" to "+to.self.String())
-		}
-	}
-	open := func() bool {
-		return peersOn(a, ra[0]) == 2 && peersOn(a, ra[1]) == 2 && peersOn(b, rb[0]) == 2 && peersOn(b, rb[1]) == 2
-	}
-	// The packets start the peer sessions after they went on the default route.
-	require.Eventually(t, open, 5*time.Second, 10*time.Millisecond, "each relay session has a peer session to each address of the peer")
-	require.Never(t, func() bool { return !open() }, 500*time.Millisecond, 20*time.Millisecond, "the peer sessions of one agent stay open together")
-	for _, from := range ra {
-		for i, to := range rb {
-			ping(t, a.stack, from.self, to.self, uint16(9000+i), "again")
-		}
-	}
+	assert.Greater(t, sent[rcs[1].addr](), before, "the packet goes on the second session")
 }
 
 // TestDrainKeepsStream checks that a TCP stream carries data until its draining
@@ -293,11 +252,18 @@ func TestPeersOfEachSession(t *testing.T) {
 func TestDrainKeepsStream(t *testing.T) {
 	w, r1, r2 := meshRelays(t)
 	a := w.agent(t, "a", r1, agentOptions{tcp: true, relays: []identity.Relay{r1.ref(), r2.ref()}})
-	b := w.agent(t, "b", r2, agentOptions{tcp: true})
-	ea, eb := a.attached(t), b.attached(t)
+	ea := a.attached(t)
+	// The agent shuffles its relays, so the first session can be on either. b
+	// stays on the relay that does not drain.
+	prev := a.current()
+	first, other := r1, r2
+	if prev.addr == r2.addr {
+		first, other = r2, r1
+	}
+	b := w.agent(t, "b", other, agentOptions{tcp: true})
+	eb := b.attached(t)
 	serveTCP(t, b.stack, eb.addr, 9000)
 	a.hasRoutes(t, eb.prefixes[0])
-	require.Equal(t, dp.Reach_REACH_TRUNK, a.resolved(t, eb.addr).GetReach())
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	dial := func() net.Conn {
@@ -310,10 +276,9 @@ func TestDrainKeepsStream(t *testing.T) {
 	require.Equal(t, ea.addr, localOf(old))
 	roundTrip(t, old, "before the drain")
 
-	prev := a.current()
-	end := drain(t, r1, nil)
+	end := drain(t, first, nil)
 	moved := a.attached(t)
-	require.Equal(t, r2.addr, a.current().addr)
+	require.Equal(t, other.addr, a.current().addr)
 	roundTrip(t, old, "on the address of the draining relay")
 	next := dial()
 	assert.Equal(t, moved.addr, localOf(next), "a new connection uses the address of the relay that does not drain")
@@ -346,29 +311,29 @@ func TestNextRank(t *testing.T) {
 			w := newWorld(t)
 			r1, r2, r3 := w.relay(t, "relay-1"), w.relay(t, "relay-2"), w.relay(t, "relay-3")
 			a, rcs := w.agentOn(t, "a", agentOptions{}, 2, r1, r2, r3)
-			// Agent b stays on relay-1, which gives it no alternate.
-			b := w.agent(t, "b", r1, agentOptions{})
+			// Agent b stays on the relay of the first session, which gives it no
+			// alternate. The relays have no mesh.
+			r0 := w.relayAt(rcs[0].addr)
+			b := w.agent(t, "b", r0, agentOptions{})
 			eb := b.attached(t)
 			echo(t, b.stack, eb.addr, 9000)
 			ping(t, a.stack, rcs[0].self, eb.addr, 9000, "before")
-			require.Eventually(t, func() bool { return peersOn(a, rcs[0]) == 1 }, 5*time.Second, 10*time.Millisecond, "peer session before")
 
 			if tc.drain {
-				drain(t, r1, nil)
+				drain(t, r0, nil)
 			} else {
 				// The relay of the lost session takes no new session.
-				r1.stopAccept()
+				r0.stopAccept()
 				_ = rcs[0].qc.CloseWithError(0, "lost")
 			}
 			a.attached(t)
 			attached, draining := ranks(a)
 			assert.Equal(t, tc.attached, attached)
 			assert.Equal(t, tc.draining, draining)
-			assert.Same(t, rcs[1], a.current(), "the session with the lowest rank that does not drain has the default address")
+			sameSession(t, rcs[1], a.current(), "the session with the lowest rank that does not drain has the default address")
 			assert.NoError(t, rcs[1].qc.Context().Err(), "the other session stays")
 			require.Never(t, func() bool { return len(a.attach) > 0 }, 300*time.Millisecond, 20*time.Millisecond, "the agent opens one session")
 			if tc.drain {
-				assert.Equal(t, 1, peersOn(a, rcs[0]), "the peer session of the draining session stays")
 				ping(t, a.stack, rcs[0].self, eb.addr, 9000, "on the draining session")
 			}
 		})
@@ -390,7 +355,7 @@ func TestAttachFails(t *testing.T) {
 	require.Eventually(t, func() bool { now, _ := w.addrs.held(); return now == 0 }, openTimeout+5*time.Second, 50*time.Millisecond,
 		"the Attach call ends at its time limit")
 	assert.NoError(t, prev.qc.Context().Err(), "the other session stays open")
-	assert.Same(t, prev, a.current())
+	assert.Equal(t, prev, a.current())
 	release()
 	a.attached(t)
 	assert.Equal(t, r2.addr, a.current().addr)

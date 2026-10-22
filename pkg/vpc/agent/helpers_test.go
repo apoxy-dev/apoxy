@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"maps"
 	"net"
 	"net/netip"
@@ -24,9 +25,10 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/emptypb"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
@@ -39,7 +41,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -56,10 +57,7 @@ const (
 )
 
 func TestMain(m *testing.M) {
-	// A first PSP probe that a loaded host loses must not keep a session in QUIC mode.
-	pspRetryMin, pspRetryNext = 200*time.Millisecond, 100*time.Millisecond
 	_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
-	shuffleRelays = false
 	os.Exit(m.Run())
 }
 
@@ -173,6 +171,19 @@ type world struct {
 	// refuse gives the close reason of each relay that refuses all agents as
 	// too old, by the relay ID. Such a relay opens no session.
 	refuse map[string]string
+	relays []*testRelay
+}
+
+// relayAt returns the relay with the QUIC address addr, or nil.
+func (w *world) relayAt(addr string) *testRelay {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, r := range w.relays {
+		if r.addr == addr {
+			return r
+		}
+	}
+	return nil
 }
 
 // rotateAgentCA makes a new agent CA for enrolls and relays.
@@ -220,6 +231,43 @@ type testRelay struct {
 	meshMu    sync.Mutex
 	meshConns map[string][]quic.Connection // Mesh sessions that other relays dialed, by their address.
 	cut       map[string]bool              // Addresses of the relays whose mesh sessions r refuses.
+
+	connsMu sync.Mutex
+	conns   []acceptedConn // Agent connections that the relay accepted, in order.
+}
+
+// acceptedConn is an agent connection and its remote address at the accept.
+type acceptedConn struct {
+	qc   quic.Connection
+	from netip.AddrPort
+}
+
+// keep records the agent connection qc.
+func (r *testRelay) keep(qc quic.Connection) {
+	r.connsMu.Lock()
+	defer r.connsMu.Unlock()
+	r.conns = append(r.conns, acceptedConn{qc, unmap(qc.RemoteAddr().(*net.UDPAddr).AddrPort())})
+}
+
+// agentConns returns the agent connections from the address from, at the
+// accept or now, in the order that the relay accepted them. With open, only
+// the ones that did not close.
+func (r *testRelay) agentConns(from net.Addr, open bool) []quic.Connection {
+	want := unmap(from.(*net.UDPAddr).AddrPort())
+	r.connsMu.Lock()
+	defer r.connsMu.Unlock()
+	var out []quic.Connection
+	// An agent socket on the unspecified address has the port only.
+	match := func(ap netip.AddrPort) bool {
+		return ap == want || want.Addr().IsUnspecified() && ap.Port() == want.Port()
+	}
+	for _, c := range r.conns {
+		now := unmap(c.qc.RemoteAddr().(*net.UDPAddr).AddrPort())
+		if (match(c.from) || match(now)) && (!open || c.qc.Context().Err() == nil) {
+			out = append(out, c.qc)
+		}
+	}
+	return out
 }
 
 // takeMesh keeps the mesh session qc of another relay, or closes it when the
@@ -356,6 +404,9 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 		id: id, srv: srv, r: r, mesh: mesh, addr: udp.LocalAddr().String(), psp: pspUDP.LocalAddr().String(), stopAccept: stopAccept,
 	}
 	reason, refuse := w.refuse[id]
+	w.mu.Lock()
+	w.relays = append(w.relays, out)
+	w.mu.Unlock()
 	var wg sync.WaitGroup
 	if mesh != nil {
 		wg.Go(func() { mesh.Run(ctx, tr, quicConf) })
@@ -376,6 +427,7 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 				wg.Go(func() { out.refuse(ctx, qc, reason) })
 				continue
 			}
+			out.keep(qc)
 			wg.Go(func() { srv.ServeConn(ctx, qc) })
 		}
 	})
@@ -389,6 +441,47 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 		_ = pspUDP.Close()
 	})
 	return out
+}
+
+// countConn counts the PSP packets that a relay socket gets from each address.
+type countConn struct {
+	net.PacketConn
+	mu  sync.Mutex
+	psp map[netip.AddrPort]int
+}
+
+// wrap makes c read from pc.
+func (c *countConn) wrap(pc net.PacketConn) *countConn {
+	c.PacketConn = pc
+	return c
+}
+
+func (c *countConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(p)
+	if ua, ok := addr.(*net.UDPAddr); ok && err == nil && isPSP(p[:n]) {
+		c.mu.Lock()
+		if c.psp == nil {
+			c.psp = map[netip.AddrPort]int{}
+		}
+		c.psp[unmap(ua.AddrPort())]++
+		c.mu.Unlock()
+	}
+	return n, addr, err
+}
+
+// got returns the PSP packets that c got from the address from.
+func (c *countConn) got(from netip.AddrPort) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.psp[from]
+}
+
+// waitCut waits until the relays x and y of a mesh see that their mesh path is
+// down. Then each relay sends its agents to the other as visitors.
+func waitCut(t *testing.T, x, y *testRelay) {
+	t.Helper()
+	require.Eventually(t, func() bool { return !x.mesh.Up(y.id) && !y.mesh.Up(x.id) }, 15*time.Second, 20*time.Millisecond,
+		"the relays see the cut")
 }
 
 // joinMesh makes each relay a member of the mesh of the others, and waits for
@@ -425,8 +518,11 @@ type attachEvent struct {
 // testAgent is an agent with a netstack on its binding.
 type testAgent struct {
 	a       *Agent
+	w       *world
 	tr      *quic.Transport
+	ids     *identity.Manager
 	enrolls atomic.Int32
+	bind    atomic.Pointer[psp.Binding] // From OnAttach.
 	// writeIdentity replaces the identity file with a new cert that is valid
 	// for life. Nil without agentOptions.identityFile.
 	writeIdentity func(life time.Duration)
@@ -489,44 +585,28 @@ type agentOptions struct {
 	// options, as vpc connect does. It always has TCP.
 	vpcStack bool
 
-	// version gives the protocol version of the agent. Nil means the version
-	// of this build. A nil result is an agent from before revisions.
-	version func() *dp.Version
 	// runErr gets the result of Run. Nil means that an error of Run fails the test.
 	runErr chan error
-	// noGrants removes the Grants call from the peer service, as in a build
-	// from before that call.
-	noGrants bool
 	// localRoutesOnly sets Config.LocalRoutesOnly.
 	localRoutesOnly bool
-	// visitCheck, visitAsk and visitWait set the intervals of the visits. Zero
-	// keeps them.
-	visitCheck, visitAsk, visitWait time.Duration
+	// visitCheck sets the interval of the visit checks. Zero keeps it.
+	visitCheck time.Duration
 	// rttChoice keeps the band and the wait of the relay choice. Else the relays
 	// that answer in testWindow are equal, so the first relay of the list wins.
 	rttChoice bool
 	// rttWait sets the wait of the relay choice. Zero keeps it.
 	rttWait time.Duration
-	// refuseOpen makes the peer service refuse each peer session.
-	refuseOpen bool
-}
-
-// noGrantsService is a peer service that does not have the Grants call.
-type noGrantsService struct {
-	dp.PeerServer
-}
-
-func (noGrantsService) Grants(ctx context.Context, in *dp.GrantsRequest) (*emptypb.Empty, error) {
-	return dp.UnimplementedPeerServer{}.Grants(ctx, in)
-}
-
-// refuseOpenService is a peer service that refuses each peer session.
-type refuseOpenService struct {
-	dp.PeerServer
-}
-
-func (refuseOpenService) Open(context.Context, *dp.OpenRequest) (*dp.OpenResponse, error) {
-	return nil, rpc.Errorf(rpc.Unavailable, "the test refuses peer sessions")
+	// pspRetry sets Config.PSPRetryMin, PSPRetryMax and PSPRetryNext. A zero
+	// keeps the value of the test constructor.
+	pspRetry [3]time.Duration
+	// relist sets Config.RelistMin and RelistMax.
+	relist [2]time.Duration
+	// lanes sets Config.Lanes.
+	lanes int
+	// onAttach and onAttachment run at the start of the OnAttach and the
+	// OnAttachment callbacks.
+	onAttach     func(addr netip.Addr)
+	onAttachment func(at Attachment)
 }
 
 // lossyConn drops the sent packets that are larger than a max that is not zero.
@@ -669,7 +749,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		conn = opts.slow
 	}
 	ta := &testAgent{
-		tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}),
+		w: w, tr: &quic.Transport{Conn: conn}, attach: make(chan attachEvent, 16), done: make(chan struct{}),
 		routes: map[netip.Prefix]bool{}, extras: map[string]netip.Addr{}, vpcStack: opts.vpcStack,
 	}
 	ta.pspPath = func() bool {
@@ -718,7 +798,20 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		MTU:           opts.mtu,
 
 		LocalRoutesOnly: opts.localRoutesOnly,
+		// A first PSP probe that a loaded host loses must not keep a session in QUIC mode.
+		PSPRetryMin:  cmp.Or(opts.pspRetry[0], 200*time.Millisecond),
+		PSPRetryMax:  opts.pspRetry[1],
+		PSPRetryNext: cmp.Or(opts.pspRetry[2], 100*time.Millisecond),
+		RelistMin:    opts.relist[0],
+		RelistMax:    opts.relist[1],
+		Lanes:        opts.lanes,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
+			if opts.onAttach != nil {
+				opts.onAttach(addr)
+			}
+			if old := ta.bind.Swap(b); old != nil && old != b {
+				t.Errorf("agent %s: OnAttach of %s gives another binding", name, addr)
+			}
 			ta.note(t, "attach", name, addr)
 			ta.netstack(t, b, addr, opts.tcp)
 			ta.attach <- attachEvent{addr, prefixes}
@@ -745,6 +838,9 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 			}
 		},
 		OnAttachment: func(at Attachment) {
+			if opts.onAttachment != nil {
+				opts.onAttachment(at)
+			}
 			ta.extraMu.Lock()
 			ta.extras[at.Name] = at.Address
 			ta.extraMu.Unlock()
@@ -775,32 +871,17 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	if opts.noRoots {
 		cfg.RelayRoots = nil
 	}
-	ta.a = New(cfg)
-	if opts.version != nil {
-		ta.a.ver = opts.version()
-	}
-	if opts.visitCheck != 0 {
-		ta.a.visitCheck = opts.visitCheck
-	}
-	if opts.visitAsk != 0 {
-		ta.a.visitAsk = opts.visitAsk
-	}
-	if opts.visitWait != 0 {
-		ta.a.visitWait = opts.visitWait
-	}
 	if !opts.rttChoice {
-		ta.a.rttBand, ta.a.rttWaitMin, ta.a.rttWaitMax = time.Hour, testWindow, testWindow
+		cfg.RTTBand, cfg.RTTWaitMin, cfg.RTTWaitMax = time.Hour, testWindow, testWindow
 	}
 	if opts.rttWait != 0 {
-		ta.a.rttWaitMin, ta.a.rttWaitMax = opts.rttWait, opts.rttWait
+		cfg.RTTWaitMin, cfg.RTTWaitMax = opts.rttWait, opts.rttWait
 	}
-	if opts.noGrants {
-		ta.a.mux = rpc.NewMux()
-		dp.RegisterPeerServer(ta.a.mux, noGrantsService{&peerService{a: ta.a}})
-	}
-	if opts.refuseOpen {
-		ta.a.mux = rpc.NewMux()
-		dp.RegisterPeerServer(ta.a.mux, refuseOpenService{&peerService{a: ta.a}})
+	ta.ids = ids
+	ta.a = New(cfg)
+	if opts.visitCheck != 0 {
+		// The visits stay as they are until they move to the standby set-up.
+		ta.a.visitCheck = opts.visitCheck
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ta.cancel = cancel
@@ -826,19 +907,87 @@ func (ta *testAgent) stop() {
 	<-ta.done
 }
 
-func (ta *testAgent) binding() *psp.Binding {
-	ta.a.mu.Lock()
-	defer ta.a.mu.Unlock()
-	return ta.a.bind
+// binding returns the binding of the last OnAttach.
+func (ta *testAgent) binding() *psp.Binding { return ta.bind.Load() }
+
+// sessionRef is a relay session of an agent as its relay sees it.
+type sessionRef struct {
+	addr string          // Address of the relay.
+	self netip.Addr      // Overlay address of the agent on the session.
+	qc   quic.Connection // The connection at the relay. Nil when the relay has none.
 }
 
-// reconnect closes the relay session. The agent then opens a new one.
+// sameSession checks that got is the session want. It compares the
+// connections by identity, as assert.Equal reads their internals.
+func sameSession(t *testing.T, want, got sessionRef, msgAndArgs ...any) bool {
+	t.Helper()
+	if want.qc == nil {
+		return assert.Fail(t, fmt.Sprintf("relay %s has no connection of the session %s", want.addr, want.self), msgAndArgs...)
+	}
+	if want == got {
+		return true
+	}
+	return assert.Fail(t, fmt.Sprintf("other relay session: want %s %s, got %s %s", want.addr, want.self, got.addr, got.self), msgAndArgs...)
+}
+
+// ended reports whether the relay side of the session closed.
+func (s sessionRef) ended() bool { return s.qc == nil || s.qc.Context().Err() != nil }
+
+// sessionOf returns the session of c. The relay accepted the session before
+// the extra connections of that session, so it is the oldest open connection of the agent.
+func (ta *testAgent) sessionOf(c ConnStatus) sessionRef {
+	ref := sessionRef{addr: c.Relay, self: c.Address}
+	if r := ta.w.relayAt(c.Relay); r != nil {
+		if qcs := r.agentConns(ta.tr.Conn.LocalAddr(), true); len(qcs) > 0 {
+			ref.qc = qcs[0]
+		}
+	}
+	return ref
+}
+
+// sessions returns the attached sessions of ta in rank order.
+func (ta *testAgent) sessions() []sessionRef {
+	var out []sessionRef
+	for _, c := range ta.a.Status().Connections {
+		if !c.Draining {
+			out = append(out, ta.sessionOf(c))
+		}
+	}
+	return out
+}
+
+// current returns the session with the default address: the attached session
+// with the lowest rank, else the draining one.
+func (ta *testAgent) current() sessionRef {
+	cs := ta.a.Status().Connections
+	for _, c := range cs {
+		if !c.Draining {
+			return ta.sessionOf(c)
+		}
+	}
+	if len(cs) > 0 {
+		return ta.sessionOf(cs[0])
+	}
+	return sessionRef{}
+}
+
+// reconnect makes the relay close the current session. The agent then opens a new one.
 func (ta *testAgent) reconnect() {
-	_ = ta.a.primary().qc.CloseWithError(0, "next session")
+	if qc := ta.current().qc; qc != nil {
+		_ = qc.CloseWithError(0, "next session")
+	}
 }
 
-// current returns the attached session.
-func (ta *testAgent) current() *relayConn { return ta.a.primary() }
+// visitRoutes returns the routes of the visits of ta.
+func (ta *testAgent) visitRoutes() []Route {
+	var out []Route
+	for _, r := range ta.a.Routes() {
+		if r.Dst != "default" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
 
 // extraAddr returns the address of the extra attachment name from OnAttachment.
 func (ta *testAgent) extraAddr(name string) netip.Addr {
@@ -1048,4 +1197,30 @@ func (ta *testAgent) netstack(t *testing.T, b *psp.Binding, addr netip.Addr, wit
 	if err := ta.stack.AddProtocolAddress(1, pa, stack.AddressProperties{}); err != nil {
 		t.Errorf("add address: %v", err)
 	}
+}
+
+// closed reports whether ch is closed.
+func closed(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// send sends msg once from src to dst:port.
+func send(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16, msg string) {
+	t.Helper()
+	c, err := gonet.DialUDP(s, fullAddr(src, 0), fullAddr(dst, port), ipv6.ProtocolNumber)
+	require.NoError(t, err)
+	defer c.Close()
+	_, err = c.Write([]byte(msg))
+	require.NoError(t, err)
+}
+
+// unreachableIn returns the ICMPv6 destination unreachable errors that the
+// netstack of ta got.
+func unreachableIn(ta *testAgent) uint64 {
+	return ta.stack.Stats().ICMP.V6.PacketsReceived.DstUnreachable.Value()
 }

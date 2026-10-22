@@ -4,6 +4,7 @@ package psp
 
 import (
 	"hash/maphash"
+	"sync"
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -53,8 +54,8 @@ func pspPackets(p []injected) uint64 {
 	return uint64(n)
 }
 
-// newInjectBatch starts n workers. They stop when done or closed closes.
-func newInjectBatch(ep *channel.Endpoint, st *counters, seed maphash.Seed, n int, done, closed <-chan struct{}) *injectBatch {
+// newInjectBatch starts n workers in wg. They stop when done or closed closes.
+func newInjectBatch(ep *channel.Endpoint, st *counters, seed maphash.Seed, n int, done, closed <-chan struct{}, wg *sync.WaitGroup) *injectBatch {
 	j := &injectBatch{
 		ep:     ep,
 		st:     st,
@@ -68,7 +69,7 @@ func newInjectBatch(ep *channel.Endpoint, st *counters, seed maphash.Seed, n int
 	}
 	for i := range j.in {
 		j.in[i] = make(chan []injected, injectQueue)
-		go j.run(j.in[i])
+		wg.Go(func() { j.run(j.in[i]) })
 	}
 	return j
 }

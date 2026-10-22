@@ -5,25 +5,21 @@ package agent
 import (
 	"cmp"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net/netip"
-	"slices"
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
-
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 const (
-	// maxVisits is the most visitor sessions of one agent.
-	maxVisits = 2
 	// visitExtras is the first revision of a relay that takes a Visit call for
 	// each extra attachment on one visitor session.
 	visitExtras = 15
@@ -31,608 +27,725 @@ const (
 	// on a new visitor session.
 	visitCalls = 16
 	// visitCheck is the interval at which the agent asks its relay for the
-	// peers of a visit, to move them back when the relay reaches them again.
+	// addresses of a visit, to move them back when the relay reaches them again.
 	visitCheck = 10 * time.Second
-	// visitAsk is the interval at which an agent that waits for the visit of a
-	// peer asks its relay again.
-	visitAsk = time.Second
-	// visitWait is the time that the agent with the higher address waits for the
-	// peer session of the visit of its peer, before it visits too.
-	visitWait = 2 * time.Second
 )
 
-var (
-	errVisitLimit = errors.New("agent has the most visitor sessions")
-	errPeerVisits = errors.New("peer has the lower address and did not visit this relay yet")
-)
+// visitParams is what a visitor session takes from its home session.
+type visitParams struct {
+	b        *psp.Binding
+	link     *psp.Link
+	self     netip.Addr
+	prefixes []netip.Prefix
+	grant    ownGrant
+	// home gets new grants from the relay of the home session at homeAddr.
+	home      dp.RelayClient
+	homeAddr  string
+	homeRoots *x509.CertPool
+	roots     *x509.CertPool // Check the cert of the visited relay.
+	extras    []extra
+}
 
-// visit is one visitor session: a session on the relay of peers that the relay
-// of this agent cannot reach. The agent keeps its address on that session.
+// visit is the process of one visit: a visitor session on the relay of an
+// address that the home relay does not reach. It is a child of the home session.
 type visit struct {
-	key  string        // Relay of the visit.
-	home *relayConn    // Attached session whose grant the visit uses.
-	done chan struct{} // Closed when the setup ends.
-	// rc and err are set before done closes. rc is nil after a failed setup.
-	rc  *relayConn
-	err error
-	// users counts the callers that open a peer session on the visit now.
-	// Guarded by Agent.mu.
-	users int
-	// routes are the prefixes that route to the relay of the visit, on the
-	// link of home. Guarded by Agent.mu.
-	routes []netip.Prefix
+	a      *Agent
+	mb, up *mailbox
+	key    string
+	ref    *dp.RelayRef
+	vp     *visitParams
+	ctx    context.Context
+	cancel context.CancelFunc
+	h      *session // The visitor session.
+	tasks  int
+	ending bool
+	err    error
+	peer   *psp.Peer
+	queue  []any // Messages for the visitor session before it exists.
 }
 
-// session returns the visitor session after its setup, or nil.
-func (v *visit) session() *relayConn {
-	select {
-	case <-v.done:
-		return v.rc
-	default:
-		return nil
+// visitRec is the record of a visit in its home session.
+type visitRec struct {
+	v        *visit
+	key      string
+	name     string
+	peer     *psp.Peer
+	up       bool
+	extras   bool // The visited relay takes the extra attachments.
+	routes   map[netip.Prefix]netip.Addr
+	joined   map[string]bool
+	checking int
+	ending   bool
+}
+
+// Messages of the visits.
+type (
+	joinMsg  struct{ x extra }
+	leaveMsg struct{ id string }
+	// joinedMsg and leftMsg answer joinMsg and leaveMsg.
+	joinedMsg struct {
+		v   *visit
+		id  string
+		err error
 	}
+	leftMsg struct {
+		v  *visit
+		id string
+	}
+	// visitUp tells that the visitor session started.
+	visitUp struct {
+		v      *visit
+		peer   *psp.Peer
+		name   string
+		extras bool
+		joined []string
+	}
+	visitNoRoute struct{ dst netip.Addr }
+	// vEnded is the last message of a visit.
+	vEnded struct {
+		v    *visit
+		err  error
+		peer *psp.Peer
+	}
+	visitDialed struct {
+		d   *dialed
+		err error
+	}
+	visitSet struct {
+		extras bool
+		joined []string
+		err    error
+	}
+	vjoinDone struct {
+		id  string
+		err error
+	}
+	vleaveDone struct{ id string }
+	resolved   struct {
+		dst, addr netip.Addr
+		res       *dp.ResolvePeerResponse
+		err       error
+	}
+	visitChecked struct {
+		rec *visitRec
+		pfx netip.Prefix
+		ok  bool
+	}
+	icmpReady struct {
+		head   []byte
+		denied bool
+	}
+)
+
+// resolve asks the relay of c how it reaches dst.
+func resolve(ctx context.Context, c dp.RelayClient, vpc *dp.VPCRef, dst netip.Addr) (*dp.ResolvePeerResponse, error) {
+	res, err := c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: vpc, Address: dst.String()})
+	if err != nil {
+		return nil, fmt.Errorf("resolve peer %s: %w", dst, err)
+	}
+	return res, nil
 }
 
-// visits reports whether the agent with the address self visits first to reach
-// peer. The agent with the higher address visits only after visitWait.
-func visits(self, peer netip.Addr) bool {
-	return self.Compare(peer) < 0
-}
-
-// keeps reports whether a peer session on rc with the agent at peer stays when
-// the two agents visit: the one on the relay of the agent with the higher address.
-func keeps(rc *relayConn, peer netip.Addr) bool {
-	return rc.visitor() == visits(rc.self, peer)
-}
-
-// reachable reports whether the relay that gave res reaches the peer, so that
-// no visit is necessary.
+// reachable reports whether the relay that gave res reaches the address, so
+// that no visit is necessary.
 func reachable(res *dp.ResolvePeerResponse) bool {
 	return res.GetReach() == dp.Reach_REACH_LOCAL || res.GetReach() == dp.Reach_REACH_TRUNK
 }
 
-// noRoute applies a NoRoute of rc. With a home relay, the peer sessions stay
-// with the path down, and a visit starts. With none, the sessions close, and
-// the sender of a packet to the address gets an ICMP error.
-func (a *Agent) noRoute(rc *relayConn, m *dp.NoRoute) {
+// handleVisits takes the messages of the visits, of the visitor session and
+// the messages of a visitor session that go up to the root.
+func (s *session) handleVisits(m any) {
+	switch m := m.(type) {
+	case offerMsg:
+		m.s = s
+		s.up.send(m)
+	case refusedMsg:
+		m.s = s
+		s.up.send(m)
+	case applyMsg:
+		m.s = s
+		s.up.send(m)
+	case reportMsg:
+		m.s = s
+		s.up.send(m)
+	case clampMsg:
+		m.s = s
+		s.up.send(m)
+	case peerMode:
+		m.s = s
+		s.up.send(m)
+	case visitNoRoute:
+		s.icmp(m.dst)
+	case visitUp:
+		s.visitUp(m)
+	case joinedMsg:
+		s.joined(m)
+	case leftMsg:
+		for _, dj := range s.detaching {
+			if dj.id == m.id {
+				delete(dj.leaves, m.v)
+			}
+		}
+		s.detachProgress()
+	case resolved:
+		s.resolved(m)
+	case visitChecked:
+		s.visitChecked(m)
+	case icmpReady:
+		if pkt := unreachable(m.head, s.self, m.denied); pkt != nil {
+			b := s.b
+			s.write(func() { b.Deliver(pkt) })
+		}
+	case endVisit:
+		if rec := s.visits[m.key]; rec != nil && !rec.ending {
+			s.endVisitRec(rec, "agent attaches to the relay")
+		}
+	case visitSet:
+		s.visitSet(m)
+	case joinMsg:
+		s.vjoin(m)
+	case leaveMsg:
+		s.vleave(m)
+	case vjoinDone:
+		if m.err == nil {
+			s.vjoined[m.id] = true
+		}
+		s.up.send(joinedMsg{id: m.id, err: m.err})
+	case vleaveDone:
+		s.up.send(leftMsg{id: m.id})
+	}
+}
+
+// noRoute takes a NoRoute of the relay. With a home relay, the address goes
+// through a visit of that relay. With none, the sender of a packet to the
+// address gets an ICMP error.
+func (s *session) noRoute(m *dp.NoRoute) {
 	dst, err := netip.ParseAddr(m.GetAddress())
 	if err != nil {
 		return
 	}
-	if m.GetHomeRelay() == nil {
-		a.closePeers(func(p *peer) bool { return p.rc == rc && p.routes(dst) }, "relay has no route to the peer")
-		go a.unreachable(rc, dst.Unmap())
-		return
-	}
-	a.setDown(rc, dst.Unmap(), true)
-	// The Sync reader must not wait for the visit.
-	go a.visitAfterNoRoute(rc, dst.Unmap())
-}
-
-// setDown sets the path of the peer sessions on rc that route dst to down or up.
-func (a *Agent) setDown(rc *relayConn, dst netip.Addr, down bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, p := range a.peers {
-		if p.rc == rc && p.routes(dst) {
-			p.down = down
-		}
-	}
-}
-
-// cutFrom asks the relay of p how it reaches the open sessions of the subject of
-// p. It sets the path to down on the answer REACH_VISIT, and reports that.
-func (a *Agent) cutFrom(ctx context.Context, p *peer) bool {
-	if p.rc.visitor() {
-		return false
-	}
-	a.mu.Lock()
-	var old []*peer
-	for _, q := range a.peers {
-		if q != p && q.rc == p.rc && q.bp != nil && !q.down && q.subject == p.subject {
-			old = append(old, q)
-		}
-	}
-	a.mu.Unlock()
-	found := false
-	for _, q := range old {
-		if res, err := p.rc.resolve(ctx, q.addr); err == nil && res.GetReach() == dp.Reach_REACH_VISIT {
-			a.setDown(p.rc, q.addr, true)
-			found = true
-		}
-	}
-	return found
-}
-
-// visitAfterNoRoute asks rc again how it reaches dst, and starts the visit if
-// the answer is still a visit. Another answer sets the path of dst to up again.
-// It replaces a start of dst that runs or waits: see starts.renew.
-func (a *Agent) visitAfterNoRoute(rc *relayConn, dst netip.Addr) {
-	if rc.visitor() {
-		return
-	}
-	addr, ok := a.peerAddr(rc, dst)
-	if !ok {
-		return
-	}
-	key := startKey{rc.link, addr}
-	at, ok := a.starts.renew(rc.ctx, key, startKey{rc.link, dst}, time.Now())
-	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(at.ctx, keysTimeout)
-	defer cancel()
-	err := a.starts.once(ctx, key, func() error {
-		res, err := rc.resolve(ctx, addr)
-		if err != nil {
-			return err
-		}
-		if res.GetReach() != dp.Reach_REACH_VISIT {
-			if reachable(res) {
-				a.setDown(rc, addr, false)
-			}
-			return nil
-		}
-		return a.connectVisit(ctx, rc, addr, res.GetHomeRelay())
-	})
-	a.starts.end(key, at, err, time.Now(), a.retryMin, a.retryMax)
-	if err != nil {
-		slog.Warn("Failed to visit the relay of a peer", "peer", addr, "error", err)
-	}
-}
-
-// connectVisit opens a visitor session to the relay of ref and a peer session
-// on it. The agent with the higher address first waits for its peer.
-func (a *Agent) connectVisit(ctx context.Context, home *relayConn, dst netip.Addr, ref *dp.RelayRef) error {
-	if home.visitor() || len(ref.GetAddresses()) == 0 {
-		return fmt.Errorf("relay has no path to peer %s (%v)", dst, dp.Reach_REACH_VISIT)
-	}
-	// The agent with the lower address visits first, so the other agent waits.
-	// It does not wait again for a peer that it reaches on its own visit.
-	use := a.usePeer
-	if !visits(home.self, dst) && !a.visiting(home, dst) {
-		use = a.awaitVisit
-	}
-	if ok, err := use(ctx, home, dst); ok {
-		return err
-	}
-	v, err := a.visit(ctx, home, ref)
-	if err != nil {
-		return fmt.Errorf("visit relay %s for peer %s: %w", ref.GetId(), dst, err)
-	}
-	defer a.release(v)
-	a.routeVisit(v, dst)
-	// The peer opened a session as a visitor while this visit started. It stays.
-	if ok, err := a.usePeer(ctx, home, dst); ok {
-		return err
-	}
-	// A session on another relay session of the link has the routes of the peer, and
-	// its path is down. The close code moves an agent that waits for it to the new session.
-	a.closePeersWith(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE,
-		func(q *peer) bool { return q.rc != v.rc && q.rc.link == v.rc.link && q.routes(dst) }, "peer is on a visited relay")
-	return a.connect(ctx, v.rc, dst, nil)
-}
-
-// visiting reports whether a peer session that routes dst is on a visitor
-// session of home.
-func (a *Agent) visiting(home *relayConn, dst netip.Addr) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, p := range a.peers {
-		if p.rc.home == home && p.bp != nil && p.qc.Context().Err() == nil && p.routes(dst) {
-			return true
-		}
-	}
-	return false
-}
-
-// usePeer waits for the data path of the peer session on rc to dst whose path
-// is not down. It reports false when the caller must visit: no such session.
-func (a *Agent) usePeer(ctx context.Context, rc *relayConn, dst netip.Addr) (bool, error) {
-	a.mu.Lock()
-	p := a.livePeerTo(rc, dst)
-	a.mu.Unlock()
-	if p == nil {
-		return false, nil
-	}
-	return true, a.waitPath(ctx, p, dst)
-}
-
-// awaitVisit is usePeer with a wait of visitWait for the session that the agent
-// at dst opens as a visitor. It dials when the relay reaches dst again.
-func (a *Agent) awaitVisit(ctx context.Context, rc *relayConn, dst netip.Addr) (bool, error) {
-	t := time.NewTicker(a.visitAsk)
-	defer t.Stop()
-	wait := time.NewTimer(a.visitWait)
-	defer wait.Stop()
-	for {
-		a.mu.Lock()
-		p, admitted := a.livePeerTo(rc, dst), a.admitted
-		a.mu.Unlock()
-		if p != nil {
-			return true, a.waitPath(ctx, p, dst)
-		}
-		select {
-		case <-admitted:
-			continue
-		case <-rc.ctx.Done():
-			return true, errors.New("relay session closed")
-		case <-ctx.Done():
-			return true, fmt.Errorf("peer %s: %w: %w", dst, errPeerVisits, ctx.Err())
-		case <-wait.C:
-			return false, nil
-		case <-t.C:
-		}
-		res, err := rc.resolve(ctx, dst)
-		if err != nil {
-			return true, err
-		}
-		if reachable(res) {
-			return true, a.connect(ctx, rc, dst, res)
-		}
-	}
-}
-
-// visit returns the visit of the relay ref with its setup done, and counts the
-// caller as a user. It opens the visitor session if the agent has none there.
-func (a *Agent) visit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*visit, error) {
-	key := endpoint{id: ref.GetId(), addr: ref.GetAddresses()[0]}.key()
-	a.mu.Lock()
-	v := a.visits[key]
-	if v != nil {
-		v.users++
-		a.mu.Unlock()
-		select {
-		case <-v.done:
-		case <-ctx.Done():
-			a.release(v)
-			return nil, ctx.Err()
-		}
-		if v.err != nil {
-			a.release(v)
-			return nil, v.err
-		}
-		return v, nil
-	}
+	dst = dst.Unmap()
 	switch {
-	case !home.live() || a.stopped:
-		a.mu.Unlock()
-		return nil, errNoRelay
-	case slices.ContainsFunc(a.conns, func(rc *relayConn) bool { return !rc.visitor() && rc.ep.key() == key }):
+	case m.GetHomeRelay() == nil && s.visitor():
+		s.up.send(visitNoRoute{dst})
+		return
+	case m.GetHomeRelay() == nil:
+		s.icmp(dst)
+		return
+	case s.visitor() || !s.attached:
+		return
+	}
+	addr, ok := s.routes.peerAddr(dst, s.self)
+	if !ok || s.resolving[addr] {
+		return
+	}
+	s.resolving[addr] = true
+	c, vpc, ctx := s.d.client, s.d.config.GetVpc(), s.ctx
+	s.task(func() any {
+		ctx, cancel := context.WithTimeout(ctx, keysTimeout)
+		defer cancel()
+		res, err := resolve(ctx, c, vpc, addr)
+		return resolved{dst, addr, res, err}
+	})
+}
+
+// resolved starts a visit, or routes an address through the visit that runs,
+// when the home relay answers that the address is on another relay.
+func (s *session) resolved(m resolved) {
+	delete(s.resolving, m.addr)
+	if m.err != nil {
+		slog.Warn("Failed to visit the relay of a peer", "peer", m.addr, "error", m.err)
+		return
+	}
+	if m.res.GetReach() != dp.Reach_REACH_VISIT {
+		return
+	}
+	ref := m.res.GetHomeRelay()
+	if len(ref.GetAddresses()) == 0 {
+		slog.Warn("Failed to visit the relay of a peer", "peer", m.addr, "error", "relay has no address")
+		return
+	}
+	key := endpoint{id: ref.GetId(), addr: ref.GetAddresses()[0]}.key()
+	if s.homes[key] {
 		// The address of the agent on that relay reaches the peer.
-		a.mu.Unlock()
-		return nil, errors.New("agent has a session on the relay to visit")
-	case len(a.visits) >= maxVisits:
-		a.mu.Unlock()
-		return nil, fmt.Errorf("%w (%d)", errVisitLimit, maxVisits)
+		return
 	}
-	v = &visit{key: key, home: home, done: make(chan struct{}), users: 1}
-	a.visits[key] = v
-	a.mu.Unlock()
-
-	rc, err := a.openVisit(ctx, home, ref)
-	a.mu.Lock()
-	if err == nil && a.visits[key] != v {
-		// The visit ended while its session opened.
-		err = errNoRelay
+	rec := s.visits[key]
+	if rec == nil {
+		rec = s.startVisitTo(key, ref)
 	}
-	if err != nil {
-		if a.visits[key] == v {
-			delete(a.visits, key)
-		}
-	} else {
-		v.rc, rc.state = rc, connAttached
+	pfx := s.routes.routeOf(m.dst, s.self)
+	if _, ok := rec.routes[pfx]; ok || rec.ending {
+		return
 	}
-	v.err = err
-	a.mu.Unlock()
-	close(v.done)
-	if err != nil {
-		if rc != nil {
-			a.end(rc)
-		}
-		return nil, err
+	rec.routes[pfx] = m.addr
+	if rec.up {
+		s.routeVisit(rec, pfx)
+		s.sendLinkRoutes()
 	}
-	slog.Info("Started a visit", "relay", rc.addr, "address", rc.self, "transport", transportName(rc.dataMode()))
-	go a.keepVisit(v, newPSPRetry(rc))
-	return v, nil
 }
 
-// release ends the use of v by one caller of visit.
-func (a *Agent) release(v *visit) {
-	a.mu.Lock()
-	v.users--
-	a.mu.Unlock()
+// startVisitTo starts the visit of the relay ref.
+func (s *session) startVisitTo(key string, ref *dp.RelayRef) *visitRec {
+	v := &visit{
+		a: s.a, mb: newMailbox(), up: s.mb, key: key, ref: ref,
+		vp: &visitParams{
+			b: s.b, link: s.link, self: s.self, prefixes: s.prefixes, grant: s.grant,
+			home: s.d.client, homeAddr: s.addr(), homeRoots: s.d.roots, roots: s.a.rootsOf(), extras: s.extrasCopy(),
+		},
+	}
+	v.ctx, v.cancel = context.WithCancel(s.ctx)
+	rec := &visitRec{v: v, key: key, routes: map[netip.Prefix]netip.Addr{}, joined: map[string]bool{}}
+	s.visits[key] = rec
+	go v.run()
+	if s.visitTk == nil {
+		s.visitTk = time.NewTicker(s.a.visitCheck)
+	}
+	return rec
 }
 
-// openVisit opens a session to the relay ref with local routes only, and makes
-// it a visitor with the grant of home.
-func (a *Agent) openVisit(ctx context.Context, home *relayConn, ref *dp.RelayRef) (*relayConn, error) {
-	ctx, cancel := context.WithTimeout(ctx, openTimeout)
-	defer cancel()
-	var errs []error
-	for _, e := range refEndpoints([]*dp.RelayRef{ref}) {
-		rc, err := a.dialRelay(ctx, e, home)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("relay %s: %w", e.addr, err))
-			continue
-		}
-		if err := rc.startVisit(ctx); err != nil {
-			return rc, fmt.Errorf("relay %s: %w", e.addr, err)
-		}
-		return rc, nil
+// recOf returns the record of v, or nil.
+func (s *session) recOf(v *visit) *visitRec {
+	if rec := s.visits[v.key]; rec != nil && rec.v == v {
+		return rec
 	}
-	return nil, errors.Join(errs...)
-}
-
-// startVisit runs Visit on rc with a grant and the address of its home, then
-// makes the relay peer and the peer listener on the link of home.
-func (rc *relayConn) startVisit(ctx context.Context) error {
-	a, home := rc.a, rc.home
-	// A relay that does not answer in time ends the visit.
-	stop := context.AfterFunc(ctx, func() { _ = rc.qc.CloseWithError(0, "visit did not start in time") })
-	defer stop()
-	a.routeMu.Lock()
-	rc.grant, rc.claims, rc.prefixes, rc.self = home.grant, home.claims, home.prefixes, home.self
-	a.routeMu.Unlock()
-	a.mu.Lock()
-	l := home.link
-	rc.link = l
-	a.mu.Unlock()
-	grant, err := home.grant.get(ctx)
-	if err != nil {
-		return fmt.Errorf("visit: %w", err)
-	}
-	if _, err := rc.c.Visit(ctx, &dp.VisitRequest{Vpc: rc.ref, Address: rc.self.String(), Grant: grant}); err != nil {
-		return attachError(rc, fmt.Errorf("visit: %w", err))
-	}
-	if rc.relayAtLeast(visitExtras) {
-		// The peer sessions open after this, so each Open has the grants.
-		a.joinExtras(ctx, home, rc)
-	}
-	p, err := l.AddRelay(rc.relayAddr)
-	if err != nil {
-		return err
-	}
-	rc.setRelayPeer(p)
-	rc.pc = peerconn.New(rc.qc, rc.self)
-	rc.pc.HandleData(l.HandleData)
-	// The packets for the peers of the visit go as data frames on rc, and the
-	// packets for the other peers stay on the attached session.
-	if err := p.UseQUIC(rc.pc); err != nil {
-		return err
-	}
-	rc.peerTr = &quic.Transport{Conn: rc.pc}
-	ln, err := rc.peerTr.Listen(a.peerTLS(), peerQUIC)
-	if err != nil {
-		return err
-	}
-	go rc.accept(ln)
 	return nil
 }
 
-// joinExtras puts the extra attachments of home in the visit of rc. After it, an
-// attachment that home gets goes in the visit too. An older relay takes neither.
-func (a *Agent) joinExtras(ctx context.Context, home, rc *relayConn) {
-	a.attMu.Lock()
-	rc.extrasOf = home
-	a.mu.Lock()
-	xs := slices.Collect(maps.Values(home.extras))
-	a.mu.Unlock()
-	a.attMu.Unlock()
+// toVisit gives m to the visit whose visitor peer is p.
+func (s *session) toVisit(p *psp.Peer, m any) {
+	for _, rec := range s.visits {
+		if rec.peer == p {
+			rec.v.mb.send(m)
+			return
+		}
+	}
+}
+
+func (s *session) visitUp(m visitUp) {
+	rec := s.recOf(m.v)
+	if rec == nil || rec.ending {
+		return
+	}
+	rec.up, rec.peer, rec.name, rec.extras = true, m.peer, m.name, m.extras
+	for _, id := range m.joined {
+		if s.byID[id] != nil {
+			rec.joined[id] = true
+		} else {
+			// The attachment left during the setup of the visit.
+			m.v.mb.send(leaveMsg{id})
+		}
+	}
+	// An attachment that came during the setup joins now.
+	if rec.extras {
+		for _, x := range s.extras {
+			if !rec.joined[x.id] {
+				m.v.mb.send(joinMsg{x: *x})
+			}
+		}
+	}
+	s.up.send(visitorPeer{s: s, peer: m.peer})
+	for pfx := range rec.routes {
+		s.routeVisit(rec, pfx)
+	}
+	slog.Info("Started a visit", "relay", rec.name, "address", s.self)
+	s.sendLinkRoutes()
+}
+
+// joined takes the answer of a visit to a joinMsg.
+func (s *session) joined(m joinedMsg) {
+	rec := s.recOf(m.v)
+	switch {
+	case m.err != nil:
+		slog.Warn("Failed to put an attachment in a visit; the visited relay does not route it", "attachment", m.id, "error", m.err)
+	case s.byID[m.id] == nil:
+		// The attachment left during the join.
+		m.v.mb.send(leaveMsg{m.id})
+	case rec != nil:
+		rec.joined[m.id] = true
+	}
+	for j := range s.joining {
+		if j.x.id == m.id {
+			delete(j.joins, m.v)
+		}
+	}
+	s.joinProgress()
+}
+
+// routeVisit routes pfx to the visitor peer of rec, so that the packets to
+// it go through the visit.
+func (s *session) routeVisit(rec *visitRec, pfx netip.Prefix) {
+	if err := s.b.AddRoute(pfx, rec.peer); err != nil {
+		slog.Warn("Failed to route an address through a visit", "relay", rec.name, "prefix", pfx, "error", err)
+		delete(rec.routes, pfx)
+	}
+}
+
+// checkVisits asks the home relay for the addresses of each visit.
+func (s *session) checkVisits() {
+	c, vpc, ctx := s.d.client, s.d.config.GetVpc(), s.ctx
+	for _, rec := range s.visits {
+		if !rec.up || rec.ending || rec.checking > 0 {
+			continue
+		}
+		for pfx, addr := range rec.routes {
+			rec.checking++
+			s.task(func() any {
+				ctx, cancel := context.WithTimeout(ctx, keysTimeout)
+				defer cancel()
+				// The visit route ends when the home relay reaches the address again.
+				res, err := resolve(ctx, c, vpc, addr)
+				return visitChecked{rec, pfx, err == nil && reachable(res)}
+			})
+		}
+	}
+}
+
+// visitChecked moves an address back from a visit when the home relay reaches
+// it. A visit with no address left ends.
+func (s *session) visitChecked(m visitChecked) {
+	rec := m.rec
+	if s.visits[rec.key] != rec || rec.ending {
+		return
+	}
+	rec.checking--
+	if _, ok := rec.routes[m.pfx]; ok && m.ok {
+		delete(rec.routes, m.pfx)
+		s.b.RemoveRoute(m.pfx, rec.peer)
+		slog.Info("Moved an address back from a visit", "prefix", m.pfx, "relay", rec.name)
+		s.sendLinkRoutes()
+	}
+	if rec.checking == 0 && len(rec.routes) == 0 {
+		s.endVisitRec(rec, "home relay reaches the peers again")
+	}
+}
+
+// endVisitRec removes the routes of a visit, then ends it.
+func (s *session) endVisitRec(rec *visitRec, reason string) {
+	rec.ending = true
+	for pfx := range rec.routes {
+		if rec.up {
+			s.b.RemoveRoute(pfx, rec.peer)
+		}
+	}
+	clear(rec.routes)
+	rec.v.mb.send(endMsg{})
+	slog.Info("Ended a visit", "relay", cmp.Or(rec.name, rec.key), "reason", reason)
+	s.sendLinkRoutes()
+}
+
+// visitEnded forgets an ended visit.
+func (s *session) visitEnded(m vEnded) {
+	rec := s.recOf(m.v)
+	if rec == nil {
+		return
+	}
+	delete(s.visits, rec.key)
+	if len(s.visits) == 0 && s.visitTk != nil {
+		s.visitTk.Stop()
+		s.visitTk = nil
+	}
+	if s.ending {
+		return
+	}
+	if rec.up {
+		for pfx := range rec.routes {
+			s.b.RemoveRoute(pfx, rec.peer)
+		}
+	}
+	if p := cmp.Or(rec.peer, m.peer); p != nil {
+		s.up.send(visitorGone{s: s, peer: p})
+	}
+	switch {
+	case rec.ending:
+	case rec.up:
+		slog.Info("Ended a visit", "relay", rec.name, "reason", "relay session ended", "error", m.err)
+	default:
+		slog.Warn("Failed to visit the relay of a peer", "relay", rec.key, "error", m.err)
+	}
+	for j := range s.joining {
+		delete(j.joins, m.v)
+	}
+	for _, dj := range s.detaching {
+		delete(dj.leaves, m.v)
+	}
+	s.joinProgress()
+	s.detachProgress()
+	s.sendLinkRoutes()
+}
+
+// sendLinkRoutes gives the root the routes of the visits.
+func (s *session) sendLinkRoutes() {
+	if s.visitor() {
+		return
+	}
+	var out []Route
+	for _, rec := range s.visits {
+		if !rec.up {
+			continue
+		}
+		for pfx := range rec.routes {
+			out = append(out, Route{Dst: routeDst(pfx), Via: rec.name, Dev: rec.name, Src: s.self.String()})
+		}
+	}
+	s.up.send(linkRoutes{s, out})
+}
+
+// icmp sends an ICMP error to the sender of a packet to dst after a NoRoute
+// with no home relay. The code shows whether a Permit denies dst.
+func (s *session) icmp(dst netip.Addr) {
+	if s.b == nil || s.link == nil {
+		return
+	}
+	head := s.b.TakeHead(s.link, dst, time.Now())
+	if head == nil {
+		return
+	}
+	c, vpc, ctx := s.d.client, s.d.config.GetVpc(), s.ctx
+	s.task(func() any {
+		ctx, cancel := context.WithTimeout(ctx, keysTimeout)
+		defer cancel()
+		_, err := resolve(ctx, c, vpc, dst)
+		return icmpReady{head, rpc.CodeOf(err) == rpc.PermissionDenied}
+	})
+}
+
+func (v *visit) run() {
+	v.dial()
+	for !v.ending || v.tasks > 0 || v.h != nil {
+		<-v.mb.wake
+		for _, m := range v.mb.take() {
+			v.handle(m)
+		}
+	}
+	v.up.send(vEnded{v, v.err, v.peer})
+}
+
+func (v *visit) task(f func() any) {
+	v.tasks++
+	mb := v.mb
+	go func() { mb.send(taskDone{f()}) }()
+}
+
+// dial dials the relay of the visit: its addresses in order.
+func (v *visit) dial() {
+	a, ctx, ref, roots := v.a, v.ctx, v.ref, v.vp.roots
+	v.task(func() any {
+		ctx, cancel := context.WithTimeout(ctx, openTimeout)
+		defer cancel()
+		errs := []error{errors.New("relay has no address")}
+		for i, e := range refEndpoints([]*dp.RelayRef{ref}) {
+			if i == 0 {
+				errs = nil
+			}
+			d, err := a.dial(ctx, e, roots, true)
+			if err == nil {
+				return visitDialed{d: d}
+			}
+			errs = append(errs, fmt.Errorf("relay %s: %w", e.addr, err))
+		}
+		return visitDialed{err: errors.Join(errs...)}
+	})
+}
+
+func (v *visit) end(err error) {
+	if v.ending {
+		return
+	}
+	v.ending, v.err = true, err
+	v.cancel()
+	if v.h != nil {
+		v.h.mb.send(endMsg{})
+	}
+}
+
+func (v *visit) handle(m any) {
+	switch m := m.(type) {
+	case taskDone:
+		v.tasks--
+		v.handle(m.m)
+	case visitDialed:
+		switch {
+		case m.err != nil:
+			v.end(m.err)
+		case v.ending:
+			m.d.close("visit ended")
+		default:
+			v.h = newSession(v.a, v.ctx, v.mb, m.d, 0, v.vp)
+			go v.h.run()
+			for _, q := range v.queue {
+				v.h.mb.send(q)
+			}
+			v.queue = nil
+		}
+	case endMsg:
+		v.end(nil)
+	case sessEnded:
+		if m.s != v.h {
+			return
+		}
+		v.h = nil
+		v.peer = cmp.Or(v.peer, m.peer)
+		v.end(cmp.Or(m.err, errSessionClosed))
+	case visitUp:
+		v.peer, m.v = m.peer, v
+		v.up.send(m)
+	case joinedMsg:
+		m.v = v
+		v.up.send(m)
+	case leftMsg:
+		m.v = v
+		v.up.send(m)
+	case joinMsg, leaveMsg, rekeyMsg, appliedMsg, clampedMsg:
+		switch {
+		case v.h != nil:
+			v.h.mb.send(m)
+		case !v.ending:
+			v.queue = append(v.queue, m)
+		}
+	default:
+		v.up.send(m)
+	}
+}
+
+// startVisit starts the Visit call of a visitor session with the grant and the
+// address of its home, and joins the extra attachments.
+func (s *session) startVisit() {
+	vp, c, qc, vpc, ctx := s.vp, s.d.client, s.d.qc, s.d.config.GetVpc(), s.ctx
+	extras := s.d.relayAtLeast(visitExtras)
+	addr := s.addr()
+	s.task(func() any {
+		ctx, cancel := context.WithTimeout(ctx, openTimeout)
+		defer cancel()
+		// A relay that does not answer in time ends the visit.
+		stop := context.AfterFunc(ctx, func() { _ = qc.CloseWithError(0, "visit did not start in time") })
+		defer stop()
+		grant, err := vp.grant.get(ctx, vp.home, vp.homeAddr, vp.homeRoots)
+		if err != nil {
+			return visitSet{err: fmt.Errorf("visit: %w", err)}
+		}
+		if _, err := c.Visit(ctx, &dp.VisitRequest{Vpc: vpc, Address: vp.self.String(), Grant: grant}); err != nil {
+			return visitSet{err: attachError(qc, fmt.Errorf("visit: %w", err))}
+		}
+		if !extras {
+			return visitSet{}
+		}
+		return visitSet{extras: true, joined: joinAll(ctx, c, vpc, vp, addr)}
+	})
+}
+
+// joinAll puts the extra attachments of vp in the visit on c, at most
+// visitCalls at once. It returns the IDs that joined.
+func joinAll(ctx context.Context, c dp.RelayClient, vpc *dp.VPCRef, vp *visitParams, addr string) []string {
 	var (
-		wg     sync.WaitGroup
 		mu     sync.Mutex
+		wg     sync.WaitGroup
+		joined []string
 		failed int
 		first  error
 	)
 	calls := make(chan struct{}, visitCalls)
-	for _, x := range xs {
+	for _, x := range vp.extras {
 		calls <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-calls }()
-			if err := a.joinVisit(ctx, rc, x); err != nil {
-				mu.Lock()
-				defer mu.Unlock()
+			err := joinVisit(ctx, c, vpc, vp, x)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
 				failed++
 				first = cmp.Or(first, err)
+				return
 			}
+			joined = append(joined, x.id)
 		})
 	}
 	wg.Wait()
 	if failed > 0 {
-		slog.Warn("Failed to put extra attachments in a visit; the peers of the visit do not reach them",
-			"relay", rc.addr, "failed", failed, "attachments", len(xs), "error", first)
+		slog.Warn("Failed to put extra attachments in a visit; the visited relay does not route them",
+			"relay", addr, "failed", failed, "attachments", len(vp.extras), "error", first)
 	}
+	return joined
 }
 
-// joinVisit runs Visit on the visitor session rc for each prefix of x, then adds
-// x to rc for the peers of the visit. An attachment that left meanwhile leaves rc.
-func (a *Agent) joinVisit(ctx context.Context, rc *relayConn, x *extra) error {
-	grant, err := x.grant.get(ctx)
+// joinVisit runs Visit on c for each prefix of x. After an error, the relay
+// can have a part of the prefixes, so the attachment leaves the visit.
+func joinVisit(ctx context.Context, c dp.RelayClient, vpc *dp.VPCRef, vp *visitParams, x extra) error {
+	grant, err := x.grant.get(ctx, vp.home, vp.homeAddr, vp.homeRoots)
 	for _, p := range x.prefixes {
 		if err != nil {
 			break
 		}
-		req := &dp.VisitRequest{Vpc: rc.ref, Address: relay.OverlayAddr(p).String(), Grant: grant}
-		_, err = rc.c.Visit(ctx, req)
+		_, err = c.Visit(ctx, &dp.VisitRequest{Vpc: vpc, Address: relay.OverlayAddr(p).String(), Grant: grant})
 	}
 	if err != nil {
-		err = fmt.Errorf("visit with attachment %s: %w", x.spec.Name, err)
+		_ = detach(ctx, c, x.id)
+		return fmt.Errorf("visit with attachment %s: %w", x.spec.Name, err)
 	}
-	a.attMu.Lock()
-	a.mu.Lock()
-	kept := err == nil && rc.extrasOf.extras[x.id] == x
-	a.mu.Unlock()
-	if kept {
-		a.addExtra(rc, x)
-	}
-	a.attMu.Unlock()
-	if !kept {
-		// The relay can have a part of the prefixes.
-		_ = rc.detachExtra(ctx, x.id)
-	}
-	return err
+	return nil
 }
 
-// visitorsOf returns the open visitor sessions that take the extra attachments
-// of home. a.attMu must be held.
-func (a *Agent) visitorsOf(home *relayConn) []*relayConn {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	var out []*relayConn
-	for _, rc := range a.conns {
-		if rc.extrasOf == home && !rc.ended() {
-			out = append(out, rc)
-		}
-	}
-	return out
-}
-
-// keepVisit ends v when its session ends, and moves its peers back when the
-// relay of the agent reaches them. It changes the mode of v as watch does.
-func (a *Agent) keepVisit(v *visit, retry *pspRetry) {
-	t := time.NewTicker(a.visitCheck)
-	defer t.Stop()
-	defer retry.timer.Stop()
-	for {
-		select {
-		case <-v.rc.ctx.Done():
-			return
-		case <-v.rc.qc.Context().Done():
-			a.endVisit(v, "relay session ended")
-			return
-		case <-v.rc.pspLost():
-			a.useQUIC(v.rc)
-			retry.restart()
-		case <-retry.timer.C:
-			retry.probe()
-		case ok := <-retry.probed:
-			retry.result(ok)
-		case <-t.C:
-			if a.checkVisit(v) {
-				return
-			}
-		}
-	}
-}
-
-// checkVisit moves the peers of v that the home relay reaches back to the
-// attached session. It reports whether the visit ended with no peer.
-func (a *Agent) checkVisit(v *visit) bool {
-	a.mu.Lock()
-	attached, busy := v.home.live(), v.users > 0
-	var peers []*peer
-	for _, p := range a.peers {
-		if p.rc == v.rc && p.bp != nil && !a.gone(p) {
-			peers = append(peers, p)
-		}
-	}
-	a.mu.Unlock()
-	if !attached {
-		a.endVisit(v, "attached session ended")
-		return true
-	}
-	// The dials below run after the visitor session closes.
-	ctx, cancel := context.WithTimeout(v.home.ctx, keysTimeout)
-	defer cancel()
-	back := map[*peer]*dp.ResolvePeerResponse{}
-	for _, p := range peers {
-		if res, err := v.home.resolve(ctx, p.addr); err == nil && reachable(res) {
-			back[p] = res
-		}
-	}
-	// The visit ends before the dials, so that the visited relay sends the peer
-	// frames of the peers to the home relay and not to the visitor session.
-	ended := len(back) == len(peers) && !busy
-	if ended {
-		reason := "no peer uses the visit"
-		if len(back) > 0 {
-			reason = "home relay reaches the peers again"
-		}
-		a.endVisit(v, reason)
-	} else {
-		a.unrouteVisit(v, func(pfx netip.Prefix) bool {
-			return slices.ContainsFunc(peers, func(p *peer) bool { return back[p] != nil && p.routes(pfx.Addr()) })
-		})
-		a.closePeers(func(p *peer) bool { return back[p] != nil }, "home relay reaches the peer again")
-	}
-	for p, res := range back {
-		err := a.starts.once(ctx, startKey{v.home.link, p.addr}, func() error { return a.connect(ctx, v.home, p.addr, res) })
-		if err != nil {
-			slog.Warn("Failed to move a peer session back from a visit", "peer", p.addr, "error", err)
-			continue
-		}
-		slog.Info("Moved a peer session back from a visit", "peer", p.addr, "relay", v.rc.addr)
-	}
-	return ended
-}
-
-// endVisit closes the visitor session of v and its peer sessions.
-func (a *Agent) endVisit(v *visit, reason string) {
-	a.mu.Lock()
-	if a.visits[v.key] != v {
-		a.mu.Unlock()
+// visitSet makes the relay peer of a visitor session on the link of its home
+// after the Visit call.
+func (s *session) visitSet(m visitSet) {
+	if m.err != nil {
+		s.end(m.err)
 		return
 	}
-	delete(a.visits, v.key)
-	a.mu.Unlock()
-	// A setup that still runs ends its session itself.
-	if rc := v.session(); rc != nil {
-		a.end(rc)
-		slog.Info("Ended a visit", "relay", rc.addr, "reason", reason)
-	}
-}
-
-// endVisitTo ends the visit of the relay with key, if the agent has one.
-func (a *Agent) endVisitTo(key, reason string) {
-	a.mu.Lock()
-	v := a.visits[key]
-	a.mu.Unlock()
-	if v != nil {
-		a.endVisit(v, reason)
-	}
-}
-
-// endVisits ends each visit of home: a visit uses the grant of its home session.
-func (a *Agent) endVisits(home *relayConn, reason string) {
-	a.mu.Lock()
-	var vs []*visit
-	for _, v := range a.visits {
-		if v.home == home {
-			vs = append(vs, v)
-		}
-	}
-	a.mu.Unlock()
-	for _, v := range vs {
-		a.endVisit(v, reason)
-	}
-}
-
-// routeVisit routes the prefix of dst to the relay of the visit v, so that the
-// packets to dst go through the visit until the route of a peer is up.
-func (a *Agent) routeVisit(v *visit, dst netip.Addr) {
-	pfx := a.routeOf(v.home, dst)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.visits[v.key] != v || slices.Contains(v.routes, pfx) {
+	vp := s.vp
+	p, err := vp.link.AddRelay(s.d.relayAddr)
+	if err != nil {
+		s.end(err)
 		return
 	}
-	if err := a.bind.AddRoute(pfx, v.rc.relay); err != nil {
-		slog.Warn("Failed to route an address through a visit", "relay", v.rc.addr, "prefix", pfx, "error", err)
+	s.b, s.link, s.self, s.prefixes, s.peer = vp.b, vp.link, vp.self, vp.prefixes, p
+	// The packets for the addresses of the visit go as data frames on s.
+	if err := s.useConn(); err != nil {
+		s.end(err)
 		return
 	}
-	v.routes = append(v.routes, pfx)
+	s.attached = true
+	for _, id := range m.joined {
+		s.vjoined[id] = true
+	}
+	s.up.send(visitUp{peer: p, name: s.d.name, extras: m.extras, joined: m.joined})
+	for _, q := range s.vqueue {
+		s.handle(q)
+	}
+	s.vqueue = nil
+	s.takePending()
 }
 
-// unrouteVisit removes the routes of the visit v whose prefix match reports.
-func (a *Agent) unrouteVisit(v *visit, match func(netip.Prefix) bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	v.routes = slices.DeleteFunc(v.routes, func(pfx netip.Prefix) bool {
-		if !match(pfx) {
-			return false
-		}
-		a.bind.RemoveRoute(pfx, v.rc.relay)
-		return true
+// vjoin puts an extra attachment in the visit of a visitor session.
+func (s *session) vjoin(m joinMsg) {
+	if !s.attached {
+		s.vqueue = append(s.vqueue, m)
+		return
+	}
+	c, vpc, vp, ctx := s.d.client, s.d.config.GetVpc(), s.vp, s.ctx
+	s.task(func() any {
+		ctx, cancel := context.WithTimeout(ctx, openTimeout)
+		defer cancel()
+		return vjoinDone{m.x.id, joinVisit(ctx, c, vpc, vp, m.x)}
+	})
+}
+
+// vleave removes an extra attachment from the visit of a visitor session.
+func (s *session) vleave(m leaveMsg) {
+	if !s.attached {
+		s.vqueue = append(s.vqueue, m)
+		return
+	}
+	if !s.vjoined[m.id] {
+		s.up.send(leftMsg{id: m.id})
+		return
+	}
+	delete(s.vjoined, m.id)
+	c, ctx := s.d.client, s.ctx
+	s.task(func() any {
+		ctx, cancel := context.WithTimeout(ctx, openTimeout)
+		defer cancel()
+		_ = detach(ctx, c, m.id)
+		return vleaveDone{m.id}
 	})
 }

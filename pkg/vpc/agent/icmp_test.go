@@ -3,14 +3,20 @@
 package agent
 
 import (
+	"context"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
 func ipAddr(s string) tcpip.Address { return tcpip.AddrFromSlice(netip.MustParseAddr(s).AsSlice()) }
@@ -31,31 +37,6 @@ func ip4(src, dst string, proto tcpip.TransportProtocolNumber, fragOff uint16, p
 	})
 	copy(b[header.IPv4MinimumSize:], payload)
 	return b
-}
-
-func TestUnicastDst(t *testing.T) {
-	cases := []struct {
-		name string
-		pkt  []byte
-		want string // Empty means not unicast.
-	}{
-		{"IPv6", ip6("fd00::1", "fd00::2", header.UDPProtocolNumber, nil), "fd00::2"},
-		{"IPv6 multicast", ip6("fd00::1", "ff02::2", header.ICMPv6ProtocolNumber, nil), ""},
-		{"IPv6 link local", ip6("fe80::1", "fe80::2", header.UDPProtocolNumber, nil), ""},
-		{"IPv4", ip4("10.0.0.1", "10.0.0.2", header.UDPProtocolNumber, 0, nil), "10.0.0.2"},
-		{"IPv4 broadcast", ip4("10.0.0.1", "255.255.255.255", header.UDPProtocolNumber, 0, nil), ""},
-		{"short", []byte{0x60, 0, 0}, ""},
-		{"not IP", make([]byte, 60), ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dst, ok := unicastDst(tc.pkt)
-			assert.Equal(t, tc.want != "", ok)
-			if ok {
-				assert.Equal(t, netip.MustParseAddr(tc.want), dst)
-			}
-		})
-	}
 }
 
 func TestUnreachable(t *testing.T) {
@@ -126,6 +107,62 @@ func TestUnreachable(t *testing.T) {
 			assert.Equal(t, header.ICMPv4Code(tc.code), icmp.Code())
 			assert.Equal(t, uint16(0xffff), checksum.Checksum(icmp, 0), "checksum")
 			assert.Equal(t, tc.pkt[:len(icmp.Payload())], icmp.Payload())
+		})
+	}
+}
+
+// TestNoRouteError checks that packets to a destination that the relay cannot
+// reach get an ICMP error after the NoRoute of the relay: code 3 is no route,
+// code 1 permission denied. A destination keeps one error a second.
+func TestNoRouteError(t *testing.T) {
+	absent := func(attachEvent) netip.Addr { return netip.MustParseAddr("fd61:706f:7879:12:3400:99::1") }
+	other := func(eb attachEvent) netip.Addr { return eb.addr }
+	cases := []struct {
+		name    string
+		dst     func(eb attachEvent) netip.Addr
+		deny    bool   // The relay denies the destination.
+		dialErr string // Not empty: a TCP dial in place of a UDP packet fails with this error.
+		// vpcStack uses the netstack of vpc connect, which must let the ICMPv6 error in.
+		vpcStack bool
+		// waits are the times before more one-packet flows; each flow gets an error.
+		waits []time.Duration
+	}{
+		{name: "not found", dst: absent},
+		{name: "TCP dial to an absent address", dst: absent, dialErr: (&tcpip.ErrHostUnreachable{}).String()},
+		{name: "outside the VPC", dst: func(attachEvent) netip.Addr { return netip.MustParseAddr("fd97::1") }},
+		{name: "denied", dst: other, deny: true},
+		{name: "TCP dial denied", dst: other, deny: true, dialErr: (&tcpip.ErrPermissionDenied{}).String()},
+		{name: "TCP dial denied, vpc connect stack", dst: other, deny: true, vpcStack: true, dialErr: (&tcpip.ErrPermissionDenied{}).String()},
+		{name: "two flows 1.5 s apart", dst: absent, waits: []time.Duration{1500 * time.Millisecond}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			r := w.relay(t, "relay-1")
+			a, b := w.agent(t, "a", r, agentOptions{tcp: tc.dialErr != "", vpcStack: tc.vpcStack}), w.agent(t, "b", r, agentOptions{})
+			ea, eb := a.attached(t), b.attached(t)
+			dst := tc.dst(eb)
+			if tc.deny {
+				// A rule that denies each address also removes the entry of a to the
+				// relay, which has no address, so the rule denies only dst.
+				r.r.SetPermit(func(_ relay.VPCKey, _ string, _ relay.VPCKey, a netip.Addr) bool { return a != dst })
+			}
+			if tc.dialErr != "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				start := time.Now()
+				_, err := gonet.DialContextTCP(ctx, a.stack, *fullAddr(dst, 9000), ipv6.ProtocolNumber)
+				require.ErrorContains(t, err, tc.dialErr)
+				assert.Less(t, time.Since(start), time.Second, "the dial stops at the ICMP error")
+				return
+			}
+			send(t, a.stack, ea.addr, dst, 9000, "no route")
+			require.Eventually(t, func() bool { return unreachableIn(a) == 1 }, 5*time.Second, 10*time.Millisecond)
+			for i, wait := range tc.waits {
+				time.Sleep(wait)
+				send(t, a.stack, ea.addr, dst, uint16(9001+i), "no route")
+				require.Eventually(t, func() bool { return unreachableIn(a) == uint64(i+2) }, 5*time.Second, 10*time.Millisecond)
+			}
 		})
 	}
 }

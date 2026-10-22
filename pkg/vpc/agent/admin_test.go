@@ -47,8 +47,8 @@ func metric(m uint32) *uint32 { return &m }
 
 // pageRoutes are the routes of the example of the design.
 var pageRoutes = []Route{
-	{Dst: "fd61:0:a03::1", Via: "peer-b", Dev: "psp", Proto: "bfd", State: "up"},
-	{Dst: "10.20.0.0/16", Via: "peer-c", Dev: "psp", Proto: "bfd", State: "up"},
+	{Dst: "fd61:0:a03::/96", Via: "relay-3", Dev: "relay-3", Src: "fd61:0:a01::5"},
+	{Dst: "10.20.0.0/16", Via: "relay-3", Dev: "relay-3", Src: "fd61:0:a01::5"},
 	{Dst: "default", Via: "relay-1", Dev: "relay-1", Src: "fd61:0:a01::5", Metric: metric(0)},
 	{Dst: "default", Via: "relay-2", Dev: "relay-2", Src: "fd61:0:a02::7", Metric: metric(1)},
 }
@@ -63,18 +63,15 @@ func TestDebugRoutes(t *testing.T) {
 		wantBody string
 	}{
 		{name: "json", routes: pageRoutes, want: 200, wantType: "application/json", wantBody: `[` +
-			`{"dst":"fd61:0:a03::1","via":"peer-b","dev":"psp","proto":"bfd","state":"up"},` +
-			`{"dst":"10.20.0.0/16","via":"peer-c","dev":"psp","proto":"bfd","state":"up"},` +
+			`{"dst":"fd61:0:a03::/96","via":"relay-3","dev":"relay-3","src":"fd61:0:a01::5"},` +
+			`{"dst":"10.20.0.0/16","via":"relay-3","dev":"relay-3","src":"fd61:0:a01::5"},` +
 			`{"dst":"default","via":"relay-1","dev":"relay-1","src":"fd61:0:a01::5","metric":0},` +
 			`{"dst":"default","via":"relay-2","dev":"relay-2","src":"fd61:0:a02::7","metric":1}]` + "\n"},
 		{name: "text", query: "?format=text", routes: pageRoutes, want: 200, wantType: "text/plain; charset=utf-8", wantBody: "" +
-			"fd61:0:a03::1 via peer-b dev psp proto bfd state up\n" +
-			"10.20.0.0/16 via peer-c dev psp proto bfd state up\n" +
+			"fd61:0:a03::/96 via relay-3 dev relay-3 src fd61:0:a01::5\n" +
+			"10.20.0.0/16 via relay-3 dev relay-3 src fd61:0:a01::5\n" +
 			"default via relay-1 dev relay-1 src fd61:0:a01::5 metric 0\n" +
 			"default via relay-2 dev relay-2 src fd61:0:a02::7 metric 1\n"},
-		{name: "route that is down", query: "?format=text", want: 200, wantType: "text/plain; charset=utf-8",
-			routes:   []Route{{Dst: "fd61:0:a03::1", Via: "peer-b", Dev: "psp", Proto: "bfd", State: "down"}},
-			wantBody: "fd61:0:a03::1 via peer-b dev psp proto bfd state down\n"},
 		{name: "no routes", want: 200, wantType: "application/json", wantBody: "[]\n"},
 		{name: "no routes as text", query: "?format=text", want: 200, wantType: "text/plain; charset=utf-8"},
 		{name: "unknown format", query: "?format=yaml", want: 400, wantType: "application/json", wantBody: `{"error":"unknown format \"yaml\": use json or text"}` + "\n"},
@@ -260,26 +257,15 @@ func TestAdmin(t *testing.T) {
 	assert.Equal(t, x1, list[1])
 	assert.Equal(t, map[string]string{"app": "web"}, list[2].Labels)
 
-	// a dials the peer session before x-1 sends, so the session stays after
-	// the detach of x-1.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	require.NoError(t, a.a.Connect(ctx, eb.addr))
 	echo(t, a.stack, x1.Address, 9002)
 	ping(t, a.stack, x1.Address, eb.addr, 9001, "from x-1")
 	ping(t, b.stack, eb.addr, x1.Address, 9002, "to x-1")
-	pb := onlyPeer(t, b.a)
 
 	assert.Equal(t, 204, adminCall(t, c, "DELETE", "/v1/attachments/x-1", "", nil))
 	require.Equal(t, 200, adminCall(t, c, "GET", "/v1/attachments", "", &list))
 	assert.Len(t, list, 2)
 	require.Eventually(t, func() bool { return !slices.Contains(b.routeSet(), x1.Prefixes[0]) },
 		5*time.Second, 10*time.Millisecond, "b gets the remove of the route of x-1")
-	require.Eventually(t, func() bool {
-		b.a.mu.Lock()
-		defer b.a.mu.Unlock()
-		return !pb.origin(x1.ID)
-	}, 5*time.Second, 10*time.Millisecond, "b removes the grant of x-1")
 	// The x-1 check above also passes before a route came from the relay.
 	require.Eventually(t, func() bool { return slices.Contains(b.routeSet(), x2.Prefixes[0]) },
 		5*time.Second, 10*time.Millisecond, "b has the route of x-2")

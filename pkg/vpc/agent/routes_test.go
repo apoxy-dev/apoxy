@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"maps"
 	"net/netip"
 	"slices"
 	"testing"
@@ -124,14 +123,15 @@ func TestRoutable(t *testing.T) {
 }
 
 func TestPeerAddr(t *testing.T) {
-	rc := &relayConn{self: netip.MustParseAddr("fd61:706f:7879:12:3400:1::1"), routes: routeTable{origins: map[netip.Prefix]string{
+	self := netip.MustParseAddr("fd61:706f:7879:12:3400:1::1")
+	routes := &routeTable{origins: map[netip.Prefix]string{
 		netip.MustParsePrefix("fd61:706f:7879:12:3400:2::/96"): "b",
 		netip.MustParsePrefix("10.9.0.0/16"):                   "b",
 		netip.MustParsePrefix("10.9.9.0/24"):                   "c",
 		netip.MustParsePrefix("fd61:706f:7879:12:3400:3::/96"): "c",
 		netip.MustParsePrefix("0.0.0.0/0"):                     "c",
 		netip.MustParsePrefix("10.7.0.0/16"):                   "d",
-	}}}
+	}}
 	b, c := netip.MustParseAddr("fd61:706f:7879:12:3400:2::1"), netip.MustParseAddr("fd61:706f:7879:12:3400:3::1")
 	cases := []struct {
 		name string
@@ -149,7 +149,7 @@ func TestPeerAddr(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := (&Agent{}).peerAddr(rc, netip.MustParseAddr(tc.dst))
+			got, ok := routes.peerAddr(netip.MustParseAddr(tc.dst), self)
 			assert.Equal(t, tc.want, got)
 			assert.Equal(t, tc.ok, ok)
 		})
@@ -200,20 +200,15 @@ func TestDNS(t *testing.T) {
 }
 
 // TestRoutesOfOtherRelays checks which agents get the routes of an attachment on
-// another relay of a mesh, and which open a peer session to it. Each agent sends
-// to it at once on the default route.
+// another relay of a mesh. Each agent sends to it on the default route.
 func TestRoutesOfOtherRelays(t *testing.T) {
 	cases := []struct {
 		name      string
 		localOnly bool
-		version   func() *dp.Version // Nil means an agent of this build.
 		gets      bool
-		dials     bool // The agent opens the peer session to b.
 	}{
-		{name: "agent of this build", gets: true, dials: true},
+		{name: "agent of this build", gets: true},
 		{name: "local routes only", localOnly: true},
-		{name: "agent of revision 5", version: revision5},
-		{name: "agent one revision before the peer sessions to other relays", version: beforeReach, gets: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -229,7 +224,7 @@ func TestRoutesOfOtherRelays(t *testing.T) {
 					return len(got) == len(want) && !slices.ContainsFunc(want, func(p netip.Prefix) bool { return !slices.Contains(got, p) })
 				}, 5*time.Second, 10*time.Millisecond, "routes of the agent: %v, want %v", ta.routeSet(), want)
 			}
-			a := w.agent(t, "a", r1, agentOptions{localRoutesOnly: tc.localOnly, version: tc.version})
+			a := w.agent(t, "a", r1, agentOptions{localRoutesOnly: tc.localOnly})
 			ea := a.attached(t)
 			watcher := w.agent(t, "watcher", r1, agentOptions{})
 			ew := watcher.attached(t)
@@ -246,26 +241,15 @@ func TestRoutesOfOtherRelays(t *testing.T) {
 				has(a, ew.prefixes[0], ec.prefixes[0])
 			}
 
-			// The address of b, and an address in its route. The watcher has an
-			// answer for b, so relay-1 can send to relay-2 now.
+			// The address of b, and an address in its route.
 			inRoute := netip.MustParseAddr("fd99::5")
 			b.netstack(t, b.binding(), inRoute, false)
-			watcher.resolved(t, eb.addr)
 			for _, dst := range []netip.Addr{eb.addr, inRoute} {
 				echo(t, b.stack, dst, 9000)
 				ping(t, a.stack, ea.addr, dst, 9000, "to another relay")
 			}
 			assert.Zero(t, unreachableIn(a), "ICMP errors")
-			// The packets start the peer session after they went on the default route.
-			// b can open it also, when the packets come to b first.
-			require.Eventually(t, func() bool { return peerCount(a.a) == 1 }, 5*time.Second, 10*time.Millisecond, "one peer session")
-			if !tc.dials {
-				a.a.mu.Lock()
-				dialed := slices.ContainsFunc(slices.Collect(maps.Values(a.a.peers)), func(p *peer) bool { return p.dialer })
-				a.a.mu.Unlock()
-				assert.False(t, dialed, "a opened a peer session")
-			}
-			assert.NoError(t, a.current().qc.Context().Err(), "relay session of a")
+			assert.False(t, a.current().ended(), "relay session of a")
 
 			b.stop()
 			has(watcher, ea.prefixes[0], ec.prefixes[0])

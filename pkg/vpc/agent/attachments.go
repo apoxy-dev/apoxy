@@ -12,8 +12,6 @@ import (
 	"math/rand/v2"
 	"net/netip"
 	"slices"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
@@ -78,416 +76,320 @@ func (s *AttachmentSpec) attachment() Attachment {
 	return Attachment{Name: s.Name, Labels: maps.Clone(s.Labels), Routes: slices.Clone(s.Routes)}
 }
 
-// attachmentOf returns the extra attachment x of rc.
-func (rc *relayConn) attachmentOf(x *extra) Attachment {
-	at := x.spec.attachment()
-	at.ID, at.Address, at.Prefixes, at.Relay = x.id, overlayAddr(x.prefixes), slices.Clone(x.prefixes), rc.addr
-	return at
-}
-
-// base returns the attachment of Config on the attached session rc.
-func (rc *relayConn) base() Attachment {
-	cfg := &rc.a.cfg
-	return Attachment{
-		Name: cfg.Name, Labels: maps.Clone(cfg.Labels), Routes: slices.Clone(cfg.Routes),
-		ID: rc.attachmentID, Address: rc.self, Prefixes: slices.Clone(rc.prefixes), Base: true, Relay: rc.addr,
-	}
-}
-
-// attachments returns the attachment of Config on rc, then the extra
-// attachments of rc by name. Agent.attMu must be held.
-func (rc *relayConn) attachments() []Attachment {
-	out := []Attachment{rc.base()}
-	for _, x := range rc.extras {
-		out = append(out, rc.attachmentOf(x))
-	}
-	slices.SortFunc(out[1:], func(x, y Attachment) int { return cmp.Compare(x.Name, y.Name) })
-	return out
-}
-
 // Attach adds an attachment on each relay session until Detach. It returns the
-// one on the lowest-rank session that took it. ctx limits the wait.
+// one on the lowest-rank session that took it. ctx limits the wait for a free
+// Attach call; a call that started runs to its end.
 func (a *Agent) Attach(ctx context.Context, s AttachmentSpec) (Attachment, error) {
 	if err := s.validate(); err != nil {
 		return Attachment{}, err
 	}
 	sp := &AttachmentSpec{Name: s.Name, Labels: maps.Clone(s.Labels), Routes: slices.Clone(s.Routes)}
-	a.attMu.Lock()
-	rcs := a.sessions(connAttached)
-	switch {
-	case s.Name == a.cfg.Name || a.specs[s.Name] != nil:
-		a.attMu.Unlock()
-		return Attachment{}, fmt.Errorf("%w: %s", ErrAttachmentExists, s.Name)
-	case len(rcs) == 0:
-		a.attMu.Unlock()
-		return Attachment{}, errNoRelay
+	for {
+		snap := a.snap.Load()
+		if !snap.running {
+			if s.Name == a.cfg.Name || snap.specs[s.Name] != nil {
+				return Attachment{}, fmt.Errorf("%w: %s", ErrAttachmentExists, s.Name)
+			}
+			return Attachment{}, errNoRelay
+		}
+		ref := a.run.Load()
+		if ref == nil {
+			continue
+		}
+		reply := make(chan attachReply, 1)
+		ref.mb.send(attachReqMsg{sp, ctx, reply})
+		done := ctx.Done()
+	wait:
+		for {
+			select {
+			case r := <-reply:
+				return r.at, r.err
+			case <-ref.stopped:
+				select {
+				case r := <-reply:
+					return r.at, r.err
+				default:
+				}
+				break wait
+			case <-done:
+				ref.mb.send(cancelReqMsg{sp})
+				done = nil
+			}
+		}
 	}
-	a.specs[s.Name] = sp
-	// A new spec is on no session yet, so claim marks it.
-	for _, rc := range rcs {
-		a.claim(rc, []*AttachmentSpec{sp})
-	}
-	a.attMu.Unlock()
-
-	xs, errs := make([]*extra, len(rcs)), make([]error, len(rcs))
-	var wg sync.WaitGroup
-	for i, rc := range rcs {
-		wg.Go(func() { xs[i], errs[i] = a.attachOne(ctx, rc, sp) })
-	}
-	wg.Wait()
-	i := slices.IndexFunc(xs, func(x *extra) bool { return x != nil })
-	if i < 0 {
-		a.attMu.Lock()
-		gone := a.forget(sp)
-		a.attMu.Unlock()
-		a.detachRelay(context.WithoutCancel(ctx), gone)
-		a.deliver()
-		return Attachment{}, errors.Join(errs...)
-	}
-	a.deliver()
-	// keepAttachments attaches it on the sessions that failed.
-	a.wakeAttach()
-	return rcs[i].attachmentOf(xs[i]), nil
 }
 
-// Detach removes the extra attachment name from the relay sessions and from
-// the peers, then runs OnDetach for each session.
+// Detach removes the extra attachment name from the relay sessions, then runs
+// OnDetach for each session.
 func (a *Agent) Detach(ctx context.Context, name string) error {
-	a.attMu.Lock()
-	s := a.specs[name]
-	switch {
-	case name == a.cfg.Name:
-		a.attMu.Unlock()
-		return ErrBaseAttachment
-	case s == nil:
-		a.attMu.Unlock()
-		return fmt.Errorf("%w: %s", ErrNoAttachment, name)
-	}
-	gone := a.forget(s)
-	a.attMu.Unlock()
-	a.detachRelay(ctx, gone)
-	a.deliver()
-	return nil
-}
-
-// Attachments returns the attachment of Config on each relay session in rank
-// order, then the extras by name. One with no session has no address.
-func (a *Agent) Attachments() []Attachment {
-	a.attMu.Lock()
-	defer a.attMu.Unlock()
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	rcs := a.sessions(connAttached, connDraining)
-	var out []Attachment
-	for _, rc := range rcs {
-		out = append(out, rc.base())
-	}
-	if len(rcs) == 0 {
-		out = append(out, Attachment{Name: a.cfg.Name, Labels: maps.Clone(a.cfg.Labels), Routes: slices.Clone(a.cfg.Routes), Base: true})
-	}
-	n := len(out)
-	for _, s := range a.specs {
-		on := false
-		for _, rc := range rcs {
-			if x := rc.named(s.Name); x != nil {
-				out, on = append(out, rc.attachmentOf(x)), true
-			}
-		}
-		if !on {
-			out = append(out, s.attachment())
-		}
-	}
-	slices.SortStableFunc(out[n:], func(x, y Attachment) int { return cmp.Compare(x.Name, y.Name) })
-	return out
-}
-
-// claim returns the specs that rc does not have and does not attach now, and
-// marks them as attaching on rc. attMu must be held.
-func (a *Agent) claim(rc *relayConn, specs []*AttachmentSpec) []*AttachmentSpec {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	has := make(map[string]bool, len(rc.extras))
-	for _, x := range rc.extras {
-		has[x.spec.Name] = true
-	}
-	if rc.attaching == nil {
-		rc.attaching = map[*AttachmentSpec]bool{}
-	}
-	var out []*AttachmentSpec
-	for _, s := range specs {
-		if !has[s.Name] && !rc.attaching[s] {
-			rc.attaching[s] = true
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func (a *Agent) unclaim(rc *relayConn, specs ...*AttachmentSpec) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, s := range specs {
-		delete(rc.attaching, s)
-	}
-}
-
-// acquire waits for a free Attach call on rc.
-func (rc *relayConn) acquire(ctx context.Context) error {
-	select {
-	case rc.sem <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-rc.ctx.Done():
-		return errors.New("relay session closed")
-	}
-}
-
-func (rc *relayConn) release() { <-rc.sem }
-
-// attachOne attaches s, which the caller claimed on rc, when an Attach call
-// is free. ctx limits the wait for it.
-func (a *Agent) attachOne(ctx context.Context, rc *relayConn, s *AttachmentSpec) (*extra, error) {
-	if err := rc.acquire(ctx); err != nil {
-		a.unclaim(rc, s)
-		return nil, err
-	}
-	defer rc.release()
-	return a.attachClaimed(rc, s)
-}
-
-// attachClaimed attaches s, which the caller claimed, on rc. If Detach removed
-// s while the call ran, it detaches the attachment again.
-func (a *Agent) attachClaimed(rc *relayConn, s *AttachmentSpec) (*extra, error) {
-	ctx, cancel := context.WithTimeout(rc.ctx, openTimeout)
-	defer cancel()
-	x, err := rc.attachExtra(ctx, s)
-	a.attMu.Lock()
-	a.unclaim(rc, s)
-	a.mu.Lock()
-	if err == nil && !rc.live() {
-		// The session ended, and the relay removed the attachment with it.
-		x, err = nil, errors.New("relay session closed")
-	}
-	a.mu.Unlock()
-	stale := err == nil && a.specs[s.Name] != s
-	var visitors []*relayConn
-	if err == nil && !stale {
-		a.addExtra(rc, x)
-		visitors = a.visitorsOf(rc)
-		a.queueAttached(rc, x)
-	}
-	a.attMu.Unlock()
-	if stale {
-		a.detachRelay(ctx, []placed{{rc, x}})
-		return nil, fmt.Errorf("%w: %s", ErrNoAttachment, s.Name)
-	}
-	// The peers of each visit of rc reach the new attachment too.
-	for _, v := range visitors {
-		if err := a.joinVisit(ctx, v, x); err != nil {
-			slog.Warn("Failed to put an attachment in a visit; the peers of the visit do not reach it",
-				"relay", v.addr, "name", s.Name, "error", err)
-		}
-	}
-	return x, err
-}
-
-// attachAll attaches the claimed specs on rc, at most maxInFlight at a time. It
-// returns the count that failed or did not start, and one error.
-func (a *Agent) attachAll(ctx context.Context, rc *relayConn, specs []*AttachmentSpec) (int, error) {
-	var (
-		mu     sync.Mutex
-		failed int
-		first  error
-		wg     sync.WaitGroup
-	)
-	fail := func(n int, err error) {
-		mu.Lock()
-		defer mu.Unlock()
-		failed += n
-		if first == nil {
-			first = err
-		}
-	}
-	for i, s := range specs {
-		if err := rc.acquire(ctx); err != nil {
-			a.unclaim(rc, specs[i:]...)
-			fail(len(specs)-i, err)
-			break
-		}
-		wg.Go(func() {
-			_, err := a.attachClaimed(rc, s)
-			rc.release()
-			if err != nil && !errors.Is(err, ErrNoAttachment) {
-				fail(1, err)
-			}
-			a.deliver()
-		})
-	}
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	return failed, first
-}
-
-// wanted returns the extra attachments to keep. attMu must be held.
-func (a *Agent) wanted() []*AttachmentSpec {
-	return slices.Collect(maps.Values(a.specs))
-}
-
-func (a *Agent) wakeAttach() {
-	select {
-	case a.attachWake <- struct{}{}:
-	default:
-	}
-}
-
-// keepAttachments attaches the extra attachments that an attached relay session
-// does not have: after each attach, and with backoff after a failure.
-func (a *Agent) keepAttachments(ctx context.Context) {
-	retry := time.NewTimer(maxBackoff)
-	retry.Stop()
-	defer retry.Stop()
-	backoff := minBackoff
 	for {
+		snap := a.snap.Load()
+		if !snap.running {
+			switch {
+			case name == a.cfg.Name:
+				return ErrBaseAttachment
+			case snap.specs[name] == nil:
+				return fmt.Errorf("%w: %s", ErrNoAttachment, name)
+			}
+			n := *snap
+			n.specs = maps.Clone(snap.specs)
+			delete(n.specs, name)
+			if a.snap.CompareAndSwap(snap, &n) {
+				return nil
+			}
+			continue
+		}
+		ref := a.run.Load()
+		if ref == nil {
+			continue
+		}
+		reply := make(chan error, 1)
+		ref.mb.send(detachReqMsg{name, ctx, reply})
 		select {
-		case <-ctx.Done():
-			return
-		case <-a.attachWake:
-		case <-retry.C:
-		}
-		if a.attachMissing(ctx) {
-			backoff = minBackoff
-			continue
-		}
-		retry.Reset(rand.N(backoff) + 1)
-		backoff = min(2*backoff, maxBackoff)
-	}
-}
-
-// attachMissing attaches on each attached session the extra attachments that
-// it does not have. It reports false when one failed on a session that is open.
-func (a *Agent) attachMissing(ctx context.Context) bool {
-	var wg sync.WaitGroup
-	var failed atomic.Bool
-	for _, rc := range a.sessions(connAttached) {
-		a.attMu.Lock()
-		specs := a.claim(rc, a.wanted())
-		a.attMu.Unlock()
-		if len(specs) == 0 {
-			continue
-		}
-		wg.Go(func() {
-			n, err := a.attachAll(ctx, rc, specs)
-			if n > 0 && ctx.Err() == nil && !rc.ended() {
-				failed.Store(true)
-				slog.Warn("Failed to attach extra attachments", "relay", rc.addr, "failed", n, "error", err)
+		case err := <-reply:
+			return err
+		case <-ref.stopped:
+			select {
+			case err := <-reply:
+				return err
+			default:
 			}
-		})
-	}
-	wg.Wait()
-	return !failed.Load()
-}
-
-// placed is an extra attachment on a relay session.
-type placed struct {
-	rc *relayConn
-	x  *extra
-}
-
-// forget removes s and its attachments from the relay sessions and their peers,
-// and queues OnDetach for each one. attMu must be held.
-func (a *Agent) forget(s *AttachmentSpec) []placed {
-	if a.specs[s.Name] == s {
-		delete(a.specs, s.Name)
-	}
-	a.mu.Lock()
-	var out []placed
-	for _, rc := range a.conns {
-		if x := rc.named(s.Name); x != nil {
-			out = append(out, placed{rc, x})
 		}
 	}
-	a.mu.Unlock()
-	for _, p := range out {
-		a.removeExtra(p.rc, p.x.id)
-		if !p.rc.visitor() {
-			a.queueDetached(p.rc, p.x)
+}
+
+// attachReq is a public Attach that waits in the root.
+type attachReq struct {
+	spec  *AttachmentSpec
+	reply chan attachReply
+	// wait are the sessions whose answer is not in yet, rank their rank.
+	wait  map[*session]bool
+	rank  map[*session]uint32
+	ok    map[*session]Attachment
+	errs  []error
+	stale bool // Detach forgot the spec during the call.
+	// rollback is set after no session took the spec: rolling are the
+	// sessions whose detach is not done yet.
+	rollback bool
+	rolling  map[*session]bool
+	lastSeq  uint64 // The last callback of this request.
+}
+
+// detachReq is a public Detach that waits in the root.
+type detachReq struct {
+	spec    *AttachmentSpec
+	reply   chan error
+	wait    map[*session]bool
+	lastSeq uint64
+}
+
+func (r *root) attachRequest(m attachReqMsg) {
+	name := m.spec.Name
+	if r.ending {
+		m.reply <- attachReply{err: errNoRelay}
+		return
+	}
+	if name == r.a.cfg.Name || r.specs[name] != nil {
+		m.reply <- attachReply{err: fmt.Errorf("%w: %s", ErrAttachmentExists, name)}
+		return
+	}
+	hs := r.attachedHomes()
+	if len(hs) == 0 {
+		m.reply <- attachReply{err: errNoRelay}
+		return
+	}
+	r.specs[name] = m.spec
+	q := &attachReq{
+		spec: m.spec, reply: m.reply,
+		wait: map[*session]bool{}, rank: map[*session]uint32{}, ok: map[*session]Attachment{},
+	}
+	for _, h := range hs {
+		h.pending[name] = m.spec
+		h.s.mb.send(attachX{m.spec, m.ctx})
+		q.wait[h.s], q.rank[h.s] = true, h.rank
+	}
+	r.attaches[m.spec] = q
+}
+
+func (r *root) cancelRequest(m cancelReqMsg) {
+	if q := r.attaches[m.spec]; q != nil {
+		for s := range q.wait {
+			s.mb.send(cancelX{m.spec})
 		}
+	}
+}
+
+func (r *root) detachRequest(m detachReqMsg) {
+	if r.ending {
+		m.reply <- errNoRelay
+		return
+	}
+	spec := r.specs[m.name]
+	switch {
+	case m.name == r.a.cfg.Name:
+		m.reply <- ErrBaseAttachment
+		return
+	case spec == nil:
+		m.reply <- fmt.Errorf("%w: %s", ErrNoAttachment, m.name)
+		return
+	}
+	if q := r.attaches[spec]; q != nil {
+		q.stale = true
+	}
+	q := &detachReq{spec: spec, reply: m.reply, wait: r.forget(spec, m.ctx), lastSeq: r.seq}
+	if !r.detachProgress(q) {
+		r.detaches = append(r.detaches, q)
+	}
+}
+
+// forget removes spec from the wanted set, sends detachX to each session that
+// has it or attaches it, and queues OnDetach for each session that has it. It
+// returns the sessions that got detachX.
+func (r *root) forget(spec *AttachmentSpec, ctx context.Context) map[*session]bool {
+	name := spec.Name
+	if r.specs[name] == spec {
+		delete(r.specs, name)
+	}
+	out := map[*session]bool{}
+	for _, h := range r.homes {
+		if x, ok := h.held[name]; ok && x.spec == spec {
+			delete(h.held, name)
+			if f := r.a.cfg.OnDetach; f != nil {
+				r.queue(func() { f(x.at) })
+			}
+		} else if h.pending[name] == spec {
+			delete(h.pending, name)
+		} else {
+			continue
+		}
+		h.s.mb.send(detachX{spec, ctx})
+		out[h.s] = true
 	}
 	return out
 }
 
-// named returns the extra attachment of rc with name. The caller holds
-// Agent.routeMu or Agent.mu.
-func (rc *relayConn) named(name string) *extra {
-	for _, x := range rc.extras {
-		if x.spec.Name == name {
-			return x
-		}
+// attached takes the result of an attachX.
+func (r *root) attached(m attachedX) {
+	name := m.spec.Name
+	h := r.homeOf(m.s)
+	if h != nil && h.pending[name] == m.spec {
+		delete(h.pending, name)
 	}
-	return nil
+	wanted := r.specs[name] == m.spec
+	err := m.err
+	switch {
+	case err == nil && (!wanted || h == nil || r.ending):
+		// The spec was forgotten during the call; the session got its detachX.
+		err = fmt.Errorf("%w: %s", ErrNoAttachment, name)
+	case err == nil:
+		h.held[name] = heldX{m.spec, m.at}
+		if f := r.a.cfg.OnAttachment; f != nil {
+			r.queue(func() { f(m.at) })
+		}
+		if f := r.a.cfg.OnDeprecated; f != nil && h.deprecated {
+			r.queue(func() { f(m.at) })
+		}
+		r.retryWait = minBackoff
+	case wanted && h != nil && !r.ending:
+		slog.Warn("Failed to attach an extra attachment", "relay", h.ep.addr, "name", name, "error", err)
+		r.armRetry()
+	}
+	q := r.attaches[m.spec]
+	if q == nil || !q.wait[m.s] {
+		return
+	}
+	delete(q.wait, m.s)
+	if err == nil {
+		q.ok[m.s] = m.at
+		q.lastSeq = r.seq
+	} else {
+		q.errs = append(q.errs, err)
+	}
+	r.attachProgress(q)
 }
 
-// detachRelay runs Detach for the attachments on their relay sessions.
-func (a *Agent) detachRelay(ctx context.Context, ps []placed) {
-	for _, p := range ps {
-		if p.rc.ended() {
-			continue
+// detached takes the end of a detachX.
+func (r *root) detached(m detachedX) {
+	for _, q := range r.attaches {
+		if q.spec == m.spec && q.rolling[m.s] {
+			delete(q.rolling, m.s)
+			r.attachProgress(q)
 		}
-		dctx, cancel := context.WithTimeout(ctx, openTimeout)
-		err := p.rc.detachExtra(dctx, p.x.id)
-		cancel()
-		if err != nil && !p.rc.ended() {
-			slog.Warn("Failed to detach an attachment at the relay; the relay keeps it until the session ends",
-				"relay", p.rc.addr, "name", p.x.spec.Name, "error", err)
+	}
+	r.detaches = slices.DeleteFunc(r.detaches, func(q *detachReq) bool {
+		if q.spec == m.spec {
+			delete(q.wait, m.s)
+		}
+		return r.detachProgress(q)
+	})
+}
+
+// sessEnded counts the end of s as the failed answer of s.
+func (q *attachReq) sessEnded(s *session) {
+	if q.wait[s] {
+		delete(q.wait, s)
+		q.errs = append(q.errs, errSessionClosed)
+	}
+	delete(q.rolling, s)
+}
+
+// attachProgress replies to q when each session answered and the callbacks of
+// q ran: the attachment on the lowest rank, or the errors after the rollback.
+func (r *root) attachProgress(q *attachReq) {
+	if r.attaches[q.spec] != q || len(q.wait) > 0 {
+		return
+	}
+	if len(q.ok) == 0 && !q.stale && !q.rollback {
+		q.rollback = true
+		q.rolling = r.forget(q.spec, nil)
+		q.lastSeq = r.seq
+	}
+	if len(q.rolling) > 0 || r.done < q.lastSeq {
+		return
+	}
+	delete(r.attaches, q.spec)
+	if len(q.ok) == 0 {
+		q.reply <- attachReply{err: errors.Join(q.errs...)}
+		return
+	}
+	best := slices.MinFunc(slices.Collect(maps.Keys(q.ok)), func(x, y *session) int { return cmp.Compare(q.rank[x], q.rank[y]) })
+	q.reply <- attachReply{at: q.ok[best]}
+	// The sessions that failed get the spec again.
+	r.attachMissing()
+}
+
+// detachProgress replies nil to q when each session detached and the
+// callbacks of q ran. It reports whether it replied.
+func (r *root) detachProgress(q *detachReq) bool {
+	if len(q.wait) > 0 || r.done < q.lastSeq {
+		return false
+	}
+	q.reply <- nil
+	return true
+}
+
+// attachMissing sends attachX for each wanted extra attachment that an
+// attached session does not have and does not attach now.
+func (r *root) attachMissing() {
+	if r.ending {
+		return
+	}
+	for _, h := range r.attachedHomes() {
+		for name, spec := range r.specs {
+			if _, ok := h.held[name]; ok || h.pending[name] != nil {
+				continue
+			}
+			h.pending[name] = spec
+			h.s.mb.send(attachX{spec: spec})
 		}
 	}
 }
 
-// queueAttached queues OnAttachment for x on rc, and OnDeprecated when the
-// addresses of rc are deprecated. attMu must be held.
-func (a *Agent) queueAttached(rc *relayConn, x *extra) {
-	at := rc.attachmentOf(x)
-	if f := a.cfg.OnAttachment; f != nil {
-		a.events = append(a.events, func() { f(at) })
+// armRetry starts the wait for the next attachMissing after a failure.
+func (r *root) armRetry() {
+	if r.attachRetry != nil {
+		return
 	}
-	if f := a.cfg.OnDeprecated; f != nil && rc.deprecated {
-		a.events = append(a.events, func() { f(at) })
-	}
-}
-
-// queueDetached queues OnDetach for x on rc. attMu must be held.
-func (a *Agent) queueDetached(rc *relayConn, x *extra) {
-	if f := a.cfg.OnDetach; f != nil {
-		at := rc.attachmentOf(x)
-		a.events = append(a.events, func() { f(at) })
-	}
-}
-
-// deliver runs the queued callbacks in order, one at a time. It returns after
-// the callbacks that were queued before the call ran.
-func (a *Agent) deliver() {
-	a.cbMu.Lock()
-	defer a.cbMu.Unlock()
-	for {
-		a.attMu.Lock()
-		events := a.events
-		a.events = nil
-		a.attMu.Unlock()
-		if len(events) == 0 {
-			return
-		}
-		for _, f := range events {
-			f()
-		}
-	}
+	r.attachRetry = time.NewTimer(rand.N(r.retryWait) + 1)
+	r.retryWait = min(2*r.retryWait, maxBackoff)
 }

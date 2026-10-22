@@ -1556,21 +1556,18 @@ func TestRelay_MeshAgents(t *testing.T) {
 			require.Eventually(t, func() bool { return laptop.hasRoute(server.prefix) && server.hasRoute(laptop.prefix) },
 				10*time.Second, 10*time.Millisecond, "each agent has the route of the other")
 
-			// The first packet goes on the default route at once and opens the peer
-			// session through the two relays.
+			// The packets go on the default route through the two relays.
 			for _, size := range []int{5, 1200} {
 				msg := bytes.Repeat([]byte{byte(size)}, size)
 				laptop.ping(t, server, 9000, msg)
 				server.ping(t, laptop, 9000, msg)
 			}
-			require.Eventually(t, func() bool { return laptop.a.Status().Peers == 1 && server.a.Status().Peers == 1 },
-				5*time.Second, 10*time.Millisecond, "one peer session of laptop and of server")
 			assert.Empty(t, pathDrops(t, a, b), "drops between the relays")
 
-			// When server stops, laptop loses its route and closes the session.
+			// When server stops, laptop loses its route.
 			server.stop()
-			require.Eventually(t, func() bool { return !laptop.hasRoute(server.prefix) && laptop.a.Status().Peers == 0 },
-				10*time.Second, 10*time.Millisecond, "laptop has no route and no session")
+			require.Eventually(t, func() bool { return !laptop.hasRoute(server.prefix) },
+				10*time.Second, 10*time.Millisecond, "laptop has no route")
 		})
 	}
 }
@@ -1621,13 +1618,11 @@ func TestRelay_MeshAgentsDrain(t *testing.T) {
 			assert.Len(t, b.router.AttachmentStats(), 2, "attachments on relay-b")
 			assert.Equal(t, mode, laptop.a.Status().Mode)
 
-			// The peer session through relay-a ended. The new one is on relay-b.
+			// UDP passes on the new attachment on relay-b.
 			laptop.ping(t, server, 9000, msg)
 			server.ping(t, laptop, 9000, msg)
 			t.Logf("laptop attached on relay-b %d ms after the stop of relay-a, and UDP passed both ways after %d ms",
 				moved.Milliseconds(), time.Since(start).Milliseconds())
-			require.Eventually(t, func() bool { return laptop.a.Status().Peers == 1 && server.a.Status().Peers == 1 },
-				10*time.Second, 10*time.Millisecond, "one peer session for each agent")
 		})
 	}
 }

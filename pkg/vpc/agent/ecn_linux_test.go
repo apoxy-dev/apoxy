@@ -5,12 +5,10 @@
 package agent
 
 import (
-	"context"
 	"net"
 	"net/netip"
 	"sync"
 	"testing"
-	"time"
 
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"github.com/stretchr/testify/assert"
@@ -206,10 +204,6 @@ func TestNotECT(t *testing.T) {
 	b := w.agent(t, "b", r, agentOptions{mode: TransportQUIC, relays: relays})
 	c := w.agent(t, "c", r, agentOptions{mode: TransportAuto, relays: relays})
 	ea, eb, ec := a.attached(t), b.attached(t), c.attached(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	require.NoError(t, a.a.Connect(ctx, eb.addr))
-	require.NoError(t, a.a.Connect(ctx, ec.addr))
 	echo(t, b.stack, eb.addr, 9000)
 	echo(t, c.stack, ec.addr, 9000)
 	for range 20 {

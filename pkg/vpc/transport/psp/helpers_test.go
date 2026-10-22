@@ -107,8 +107,8 @@ func newPairMTU(t testing.TB, mtu int) (*node, *node) {
 	return newPairLanes(t, mtu, 1)
 }
 
-// newPairLanes returns two nodes with the inner MTU mtu. Each node receives
-// from the other on lanes SAs.
+// newPairLanes returns two nodes with the inner MTU mtu. Each node adds the
+// other as its relay, and receives from it on lanes SAs.
 func newPairLanes(t testing.TB, mtu, lanes int) (*node, *node) {
 	t.Helper()
 	a := &node{v4: netip.MustParseAddr("10.0.0.1"), v6: netip.MustParseAddr("fd00::1")}
@@ -126,12 +126,30 @@ func newPairLanes(t testing.TB, mtu, lanes int) (*node, *node) {
 		var err error
 		n.l, err = n.b.AddLink()
 		require.NoError(t, err)
-		n.peer, err = n.l.AddPeerLanes(addrOf(n.other.tr), lanes)
+		n.peer, err = n.l.AddRelay(addrOf(n.other.tr))
 		require.NoError(t, err)
+		if lanes > 1 {
+			receiveLanes(t, n.peer, lanes)
+		}
 		require.NoError(t, n.b.AddRoute(netip.PrefixFrom(n.other.v4, 32), n.peer))
 		require.NoError(t, n.b.AddRoute(netip.PrefixFrom(n.other.v6, 128), n.peer))
 	}
 	return a, b
+}
+
+// receiveLanes makes p receive on lanes SAs, as the receive side of a relay
+// with send lanes does. An agent receives from its relay on one lane.
+func receiveLanes(t testing.TB, p *Peer, lanes int) {
+	t.Helper()
+	b := p.b
+	rx, err := b.recv.NewPeer(keys.PeerConfig{VNI: b.vni, MTU: b.mtu, Lanes: lanes, Sources: p.l.routed})
+	require.NoError(t, err)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.peers, p.rx)
+	p.rx.Revoke()
+	p.rx = rx
+	b.peers[rx] = p
 }
 
 // offer gives each node SAs from the other one.

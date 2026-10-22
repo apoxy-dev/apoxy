@@ -26,16 +26,18 @@ func TestRekeyFromQUIC(t *testing.T) {
 		noBridge bool
 		prep     func(t *testing.T, r *Router, s *Session)
 		req      keys.Request
+		gen      uint64 // Key attempt of the request.
 		code     rpc.Code
 		refused  []uint32
 		mode     dp.Mode // Mode after the call.
 		rekeys   int     // Rekey messages for the Session stream, and mode changes.
 	}{
 		{name: "change", req: offer(0x1001, testVNI), mode: dp.Mode_MODE_PSP, rekeys: 1},
+		{name: "change with a key attempt", req: offer(0x1001, testVNI), gen: 3, mode: dp.Mode_MODE_PSP, rekeys: 1},
 		{name: "each SPI refused", req: offer(0x1001, testVNI), refused: []uint32{0x1001}, mode: dp.Mode_MODE_QUIC,
 			prep: func(t *testing.T, r *Router, _ *Session) {
 				p := localSession(t, r, "p", "192.0.2.2:1", "fd00:2::/96", dp.Mode_MODE_PSP)
-				_, err := r.rekey(p, offer(0x1001, testVNI), t0)
+				_, err := r.rekey(p, offer(0x1001, testVNI), 0, t0)
 				require.NoError(t, err)
 			}},
 		{name: "no SA", req: keys.Request{Op: keys.OpRevoke, SPIs: []uint32{0x1001}}, mode: dp.Mode_MODE_QUIC},
@@ -55,7 +57,7 @@ func TestRekeyFromQUIC(t *testing.T) {
 		{name: "relay with no bridge", noBridge: true, req: offer(0x1001, testVNI), code: rpc.Unavailable, mode: dp.Mode_MODE_QUIC},
 		{name: "second Rekey", req: offer(0x1002, testVNI), mode: dp.Mode_MODE_PSP,
 			prep: func(t *testing.T, r *Router, s *Session) {
-				_, err := r.rekey(s, offer(0x1001, testVNI), t0)
+				_, err := r.rekey(s, offer(0x1001, testVNI), 0, t0)
 				require.NoError(t, err)
 				r.takeSync(s)
 			}},
@@ -73,7 +75,7 @@ func TestRekeyFromQUIC(t *testing.T) {
 			}
 			changes := testutil.ToFloat64(modeChanges)
 
-			refused, err := r.rekey(s, tc.req, t0)
+			refused, err := r.rekey(s, tc.req, tc.gen, t0)
 			require.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
 			assert.Equal(t, tc.refused, refused)
 			r.mu.RLock()
@@ -84,6 +86,7 @@ func TestRekeyFromQUIC(t *testing.T) {
 			for _, m := range r.takeSync(s) {
 				if m.GetRekey() != nil {
 					rekeys++
+					assert.Equal(t, tc.gen, m.GetRekey().GetGeneration(), "the Offer has the key attempt of the request")
 				}
 			}
 			assert.Equal(t, tc.rekeys, rekeys)

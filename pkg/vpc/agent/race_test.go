@@ -3,13 +3,9 @@
 package agent
 
 import (
-	"context"
-	"errors"
-	"net/netip"
 	"slices"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -42,111 +38,67 @@ func TestOneEach(t *testing.T) {
 	}
 }
 
-// fakeRelay is a relay of TestChoose. Its dial uses no network. rtt is the
-// lowest QUIC time of its session and hello is its time from Hello to Welcome.
-// Zero is not known.
-type fakeRelay struct {
-	open     time.Duration // Time from the dial to the open session.
-	rtt      time.Duration
-	hello    time.Duration
-	fails    bool // The dial fails at open.
-	silent   bool // The relay does not answer.
-	sameName bool // The entry has the name and the address of the entry before it.
-}
-
-// TestChoose checks the order of the sessions that choose gives and the time of
-// the choice, with the band and the wait of an agent.
-func TestChoose(t *testing.T) {
+// TestChoiceWait checks the wait for the other relays after the first answer.
+func TestChoiceWait(t *testing.T) {
 	cases := []struct {
-		name   string
-		relays []fakeRelay
-		want   []int         // The relays of the sessions, best first.
-		at     time.Duration // Time of the choice.
-		failed int
+		name       string
+		rtt, hello time.Duration // Of the first answer. Zero is not known.
+		want       time.Duration
 	}{
-		{name: "lowest time is first, a late relay is not in the choice", relays: []fakeRelay{{open: 60 * ms, rtt: 60 * ms}, {open: 5 * ms, rtt: 5 * ms}},
-			want: []int{1}, at: 5*ms + rttWaitMin},
-		{name: "times in the band use the order of the list", relays: []fakeRelay{{open: 12 * ms, rtt: 12 * ms}, {open: 5 * ms, rtt: 5 * ms}},
-			want: []int{0, 1}, at: 12 * ms},
-		{name: "time above the band", relays: []fakeRelay{{open: 16 * ms, rtt: 16 * ms}, {open: 5 * ms, rtt: 5 * ms}},
-			want: []int{1, 0}, at: 16 * ms},
-		{name: "first relay at 1 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {open: 1 * ms, rtt: 1 * ms}},
-			want: []int{1}, at: 1*ms + rttWaitMin},
-		{name: "first relay at 15 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {open: 15 * ms, rtt: 15 * ms}},
-			want: []int{1}, at: 15*ms + 30*ms},
-		{name: "first relay at 30 ms, the other relay does not answer", relays: []fakeRelay{{silent: true}, {open: 30 * ms, rtt: 30 * ms}},
-			want: []int{1}, at: 30*ms + rttWaitMax},
-		{name: "first relay with no known time, the other relay does not answer", relays: []fakeRelay{{silent: true}, {open: 5 * ms}},
-			want: []int{1}, at: 5*ms + rttWaitMax},
-		{name: "time not known is last", relays: []fakeRelay{{open: 5 * ms}, {open: 8 * ms, rtt: 30 * ms}},
-			want: []int{1, 0}, at: 8 * ms},
-		{name: "time from Hello to Welcome below a QUIC time with a late start", relays: []fakeRelay{{open: 60 * ms, rtt: 60 * ms, hello: 62 * ms}, {open: 50 * ms, rtt: 110 * ms, hello: 30 * ms}},
-			want: []int{1, 0}, at: 60 * ms},
-		{name: "QUIC time below a late time from Hello to Welcome", relays: []fakeRelay{{open: 60 * ms, rtt: 60 * ms, hello: 62 * ms}, {open: 50 * ms, rtt: 30 * ms, hello: 110 * ms}},
-			want: []int{1, 0}, at: 60 * ms},
-		{name: "only the time from Hello to Welcome is known", relays: []fakeRelay{{open: 60 * ms, rtt: 60 * ms}, {open: 50 * ms, hello: 30 * ms}},
-			want: []int{1, 0}, at: 60 * ms},
-		{name: "three relays in the order of their times", relays: []fakeRelay{{open: 58 * ms, rtt: 58 * ms}, {open: 20 * ms, rtt: 20 * ms}, {open: 45 * ms, rtt: 45 * ms}},
-			want: []int{1, 2, 0}, at: 58 * ms},
-		{name: "later places in the band use the order of the list", relays: []fakeRelay{{open: 20 * ms, rtt: 20 * ms}, {open: 50 * ms, rtt: 50 * ms}, {open: 44 * ms, rtt: 44 * ms}},
-			want: []int{0, 1, 2}, at: 50 * ms},
-		{name: "relay with the lowest time answers after the wait", relays: []fakeRelay{{open: 5 * ms, rtt: 20 * ms}, {open: 60 * ms, rtt: 2 * ms}, {open: 6 * ms, rtt: 30 * ms}},
-			want: []int{0, 2}, at: 5*ms + rttWaitMax},
-		{name: "relay that fails", relays: []fakeRelay{{open: 3 * ms, fails: true}, {open: 5 * ms, rtt: 5 * ms}},
-			want: []int{1}, at: 5 * ms, failed: 1},
-		{name: "all relays fail", relays: []fakeRelay{{open: 3 * ms, fails: true}, {open: 5 * ms, fails: true}},
-			at: 5 * ms, failed: 2},
-		{name: "two entries with one name are one relay", relays: []fakeRelay{{open: 5 * ms, rtt: 5 * ms}, {sameName: true}, {open: 8 * ms, rtt: 8 * ms}},
-			want: []int{0, 2}, at: 8 * ms},
+		{name: "first relay at 1 ms", rtt: 1 * ms, want: defaultRTTWaitMin},
+		{name: "first relay at 15 ms", rtt: 15 * ms, want: 30 * ms},
+		{name: "first relay at 30 ms", rtt: 30 * ms, want: defaultRTTWaitMax},
+		{name: "first relay with no known time", want: defaultRTTWaitMax},
+		{name: "only the time from Hello to Welcome is known", hello: 15 * ms, want: 30 * ms},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				a := &Agent{rttBand: rttBand, rttWaitMin: rttWaitMin, rttWaitMax: rttWaitMax}
-				var eps []endpoint
-				index := map[string]int{}
-				for i := range tc.relays {
-					e := endpoint{id: string(rune('a' + i)), addr: netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, byte(i)}), 1).String()}
-					if tc.relays[i].sameName {
-						e = eps[i-1]
-					} else {
-						index[e.addr] = i
-					}
-					eps = append(eps, e)
-				}
-				var dials atomic.Int32
-				dial := func(ctx context.Context, e endpoint) (*relayConn, error) {
-					dials.Add(1)
-					r := tc.relays[index[e.addr]]
-					if r.silent {
-						r.open = time.Hour
-					}
-					// The choice stops the dial of a relay that answers late.
-					select {
-					case <-ctx.Done():
-						return nil, ctx.Err()
-					case <-time.After(r.open):
-					}
-					if r.fails {
-						return nil, errors.New("relay refused the session")
-					}
-					rc := &relayConn{ep: e, addr: e.addr, rtt: new(atomic.Int64)}
-					rc.lowRTT.Store(int64(r.rtt))
-					rc.helloRTT.Store(int64(r.hello))
-					return rc, nil
-				}
-				start := time.Now()
-				conns, failed, err := a.choose(t.Context(), eps, dial)
-				assert.Equal(t, tc.at, time.Since(start), "time of the choice")
-				assert.Equal(t, tc.failed, failed, "relays that failed")
-				assert.Equal(t, tc.failed > 0, err != nil, "error of the relays that failed: %v", err)
-				var got []int
-				for _, rc := range conns {
-					got = append(got, index[rc.addr])
-				}
-				assert.Equal(t, tc.want, got, "relays of the sessions")
-				assert.EqualValues(t, len(index), dials.Load(), "one dial for each relay")
-			})
+			r := &root{a: New(Config{})}
+			d := &dialed{lowRTT: new(atomic.Int64), helloRTT: tc.hello}
+			d.lowRTT.Store(int64(tc.rtt))
+			assert.Equal(t, tc.want, r.choiceWait(d))
+		})
+	}
+}
+
+// TestRankDialed checks the order of the relays that answered in the choice,
+// with the band of an agent.
+func TestRankDialed(t *testing.T) {
+	type answer struct{ rtt, hello time.Duration } // Zero is not known.
+	cases := []struct {
+		name    string
+		answers []answer // In the order of the relay list.
+		want    []int
+	}{
+		{name: "times in the band use the order of the list", answers: []answer{{rtt: 12 * ms}, {rtt: 5 * ms}}, want: []int{0, 1}},
+		{name: "time above the band", answers: []answer{{rtt: 16 * ms}, {rtt: 5 * ms}}, want: []int{1, 0}},
+		{name: "time not known is last", answers: []answer{{}, {rtt: 30 * ms}}, want: []int{1, 0}},
+		{name: "time from Hello to Welcome below a QUIC time with a late start",
+			answers: []answer{{rtt: 60 * ms, hello: 62 * ms}, {rtt: 110 * ms, hello: 30 * ms}}, want: []int{1, 0}},
+		{name: "QUIC time below a late time from Hello to Welcome",
+			answers: []answer{{rtt: 60 * ms, hello: 62 * ms}, {rtt: 30 * ms, hello: 110 * ms}}, want: []int{1, 0}},
+		{name: "only the time from Hello to Welcome is known", answers: []answer{{rtt: 60 * ms}, {hello: 30 * ms}}, want: []int{1, 0}},
+		{name: "three relays in the order of their times", answers: []answer{{rtt: 58 * ms}, {rtt: 20 * ms}, {rtt: 45 * ms}}, want: []int{1, 2, 0}},
+		{name: "later places in the band use the order of the list", answers: []answer{{rtt: 20 * ms}, {rtt: 50 * ms}, {rtt: 44 * ms}}, want: []int{0, 1, 2}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &root{a: New(Config{})}
+			var got []*dialed
+			index := map[*dialed]int{}
+			for i, an := range tc.answers {
+				d := &dialed{lowRTT: new(atomic.Int64), helloRTT: an.hello}
+				d.lowRTT.Store(int64(an.rtt))
+				got = append(got, d)
+				index[d] = i
+			}
+			// A relay with no answer has no connection.
+			got = append(got, nil)
+			var order []int
+			for _, d := range r.rankDialed(got) {
+				order = append(order, index[d])
+			}
+			assert.Equal(t, tc.want, order)
 		})
 	}
 }
@@ -160,7 +112,7 @@ func TestRelayChoice(t *testing.T) {
 		name string
 		// delays has the delay of the packets to each relay at the start.
 		delays []time.Duration
-		twice  bool // The list has the first relay two times, and the relays are equal.
+		twice  bool // The list has its one relay two times.
 		silent bool // The list starts with a relay that does not answer.
 		// swap gives the first two relays the delay of the other after the attach,
 		// and ends the attached session after that.
@@ -169,7 +121,7 @@ func TestRelayChoice(t *testing.T) {
 	}{
 		{name: "lowest time wins", delays: []time.Duration{far, 0}, first: 1, then: 1},
 		{name: "lowest time of three wins", delays: []time.Duration{2 * far, 0, 20 * ms}, first: 1, then: 1},
-		{name: "two entries with one name are one relay", delays: []time.Duration{0, 0}, twice: true, first: 0, then: 0},
+		{name: "two entries with one name are one relay", delays: []time.Duration{0}, twice: true, first: 0, then: 0},
 		{name: "relay that does not answer", delays: []time.Duration{0}, silent: true, first: 0, then: 0},
 		{name: "a new attach chooses again", delays: []time.Duration{far, 0}, swap: true, first: 1, then: 0},
 	}
@@ -199,7 +151,7 @@ func TestRelayChoice(t *testing.T) {
 			if tc.silent {
 				assert.Less(t, time.Since(start), openTimeout/2, "the attach does not wait for the dial of the relay with no answer")
 			}
-			on := func(rc *relayConn) int {
+			on := func(rc sessionRef) int {
 				return slices.IndexFunc(relays, func(r *testRelay) bool { return r.addr == rc.addr })
 			}
 			require.Equal(t, tc.first, on(a.current()), "relay of the attachment")
@@ -211,9 +163,11 @@ func TestRelayChoice(t *testing.T) {
 			}
 			assert.Equal(t, tc.then, on(a.current()), "relay of the attachment at the end")
 			require.Eventually(t, func() bool {
-				a.a.mu.Lock()
-				defer a.a.mu.Unlock()
-				return len(a.a.conns) == 1
+				open := 0
+				for _, r := range relays {
+					open += len(r.agentConns(a.tr.Conn.LocalAddr(), true))
+				}
+				return len(a.a.Status().Connections) == 1 && open == 1
 			}, 10*time.Second, 10*ms, "the sessions to the other relays end")
 		})
 	}

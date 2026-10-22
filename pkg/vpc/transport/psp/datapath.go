@@ -21,7 +21,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/udpbatch"
 )
@@ -29,7 +28,7 @@ import (
 const (
 	// A send frame is the destination address (16 B and the port), the send
 	// lane (1 B), then the PSP packet. Port 0 marks a QUIC data frame for the
-	// relay session.
+	// relay session, and bytes 0 and 1 of its cleared address have its slot.
 	laneOff = 18
 	addrLen = 19
 	// maxBatch is the most packets in one send batch.
@@ -95,7 +94,7 @@ var (
 func (b *Binding) Netstack(ep *channel.Endpoint) (*netstack.Datapath, error) {
 	d := newDriver(b, func(buf []byte, off int) bool { return inject(ep, buf[off:]) })
 	procs := runtime.GOMAXPROCS(0)
-	j := newInjectBatch(ep, &b.stats, b.seed, min(procs, maxInjectWorkers), d.done, b.ctx.Done())
+	j := newInjectBatch(ep, &b.stats, b.seed, min(procs, maxInjectWorkers), d.done, b.ctx.Done(), &b.workers)
 	d.batch = j
 	if procs > 1 {
 		d.pipe = newRxPipe(d, j, openWorkers(procs), d.done, b.ctx.Done())
@@ -312,9 +311,7 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	if !ok {
 		return ErrNoRoute
 	}
-	if p.relay {
-		b.toRelay(l, virt, dst)
-	}
+	b.heads.capture(l, virt, dst)
 	slot := p.slot.Load()
 	if mtu := b.pathMTU(slot != 0); len(virt) > mtu {
 		b.tooBig(virt, mtu)
@@ -358,9 +355,7 @@ func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFram
 	if !ok {
 		return false
 	}
-	if p.relay {
-		b.toRelay(l, hdr, dst)
-	}
+	b.heads.capture(l, hdr, dst)
 	slot := p.slot.Load()
 	if size > b.pathMTU(slot != 0) {
 		return false
@@ -386,14 +381,6 @@ func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFram
 	return true
 }
 
-// toRelay gives NoPeer an inner packet that a relay route sends because no agent
-// peer of l has its destination dst.
-func (b *Binding) toRelay(l *Link, pkt []byte, dst netip.Addr) {
-	if b.noPeer != nil && l.noPeer(dst) {
-		b.noPeer(l, pkt, false)
-	}
-}
-
 // seal writes the send frame that prepare reserved in f to phy and returns its length. It
 // can lower the MSS of a TCP SYN in virt.
 func (b *Binding) seal(f *netstack.TxFrame, virt, phy []byte) (int, error) {
@@ -404,7 +391,7 @@ func (b *Binding) seal(f *netstack.TxFrame, virt, phy []byte) (int, error) {
 	b.clampMSS(virt, quic)
 	if quic {
 		clear(phy[:addrLen])
-		phy[laneOff] = byte(f.Lane)
+		binary.BigEndian.PutUint16(phy[:2], uint16(f.Lane))
 		return addrLen + len(peerconn.EncodeData(phy[addrLen:addrLen], b.vni, virt)), nil
 	}
 	n, err := f.SA.SealSeq(f.Seq, phy[addrLen:], virt)
@@ -447,38 +434,6 @@ func (b *Binding) Send(pkts [][]byte) (int, error) {
 		sent++
 	}
 	return sent, nil
-}
-
-// Send seals one inner packet with a transmit SA of p and sends it to p with no route
-// lookup, for example a BFD packet of the path to p before its route is up.
-func (p *Peer) Send(inner []byte) error {
-	b := p.b
-	if b.ctx.Err() != nil {
-		return ErrClosed
-	}
-	if len(inner) > b.mtu {
-		return errDrop
-	}
-	sa, lane := p.txSA(inner)
-	if sa == nil {
-		return ErrNoRoute
-	}
-	seq, err := sa.Reserve()
-	if err != nil {
-		return err
-	}
-	f := netstack.TxFrame{SA: sa, Seq: seq, Dst: *p.addr.Load(), Lane: p.SendLane(lane)}
-	phy := make([]byte, addrLen+pspwire.Overhead+len(inner))
-	n, err := b.seal(&f, inner, phy)
-	if err == nil {
-		err = b.write(phy[:n], &net.UDPAddr{IP: make(net.IP, net.IPv6len)})
-	}
-	if err != nil {
-		b.stats.txDrops.Add(1)
-		return err
-	}
-	b.stats.txPackets.Add(1)
-	return nil
 }
 
 // Deliver gives an inner packet from the agent, for example an ICMP error, to the driver.
@@ -834,12 +789,12 @@ func (b *Binding) flush(tx *udpbatch.Batch, lane int) error {
 	return err
 }
 
-// write sends one frame: a data frame on the relay session shard of its flow,
+// write sends one frame: a data frame on the relay connection of its flow,
 // or a PSP packet from the socket of its lane. ua needs a 16-byte IP.
 func (b *Binding) write(f []byte, ua *net.UDPAddr) error {
 	port := binary.BigEndian.Uint16(f[16:laneOff])
 	if port == 0 {
-		pc := b.dataConn(f[laneOff])
+		pc := b.dataConn(int(binary.BigEndian.Uint16(f[:2])))
 		if pc == nil {
 			return errNoRelay
 		}
@@ -874,20 +829,6 @@ func innerSrc(pkt []byte) (netip.Addr, bool) {
 		return netip.AddrFrom16([16]byte(pkt[8:24])), true
 	}
 	return netip.Addr{}, false
-}
-
-// isBFD reports whether an inner packet is UDP to the BFD port of RFC 5881. An
-// IPv6 packet with an extension header is not.
-func isBFD(pkt []byte) bool {
-	switch {
-	case len(pkt) >= 20 && pkt[0]>>4 == 4 && pkt[9] == 17:
-		ihl := int(pkt[0]&0x0f) * 4
-		return binary.BigEndian.Uint16(pkt[6:8])&0x1fff == 0 && len(pkt) >= ihl+8 &&
-			binary.BigEndian.Uint16(pkt[ihl+2:ihl+4]) == bfdl.BFDPort
-	case len(pkt) >= 48 && pkt[0]>>4 == 6 && pkt[6] == 17:
-		return binary.BigEndian.Uint16(pkt[42:44]) == bfdl.BFDPort
-	}
-	return false
 }
 
 // innerDst returns the destination address of an IPv4 or IPv6 packet.

@@ -11,362 +11,70 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 )
 
 const (
 	defaultSessions = 2
 	maxSessions     = 3
-	// rttBand is the difference of two round-trip times that counts as equal. It
+	// defaultRTTBand is the difference of two round-trip times that counts as equal. It
 	// is above the error of one handshake sample and below the time between regions.
-	rttBand = 10 * time.Millisecond
-	// rttWaitMin is the shortest wait for the other relays after the first answer. A
-	// relay in rttBand answers at most two times rttBand later.
-	rttWaitMin = 20 * time.Millisecond
-	// rttWaitMax is the longest wait. A relay that answers later than two times
-	// rttBand plus 20 ms of noise cannot change the choice.
-	rttWaitMax = 40 * time.Millisecond
+	defaultRTTBand = 10 * time.Millisecond
+	// defaultRTTWaitMin is the shortest wait for the other relays after the first answer. A
+	// relay in the band answers at most two times the band later.
+	defaultRTTWaitMin = 20 * time.Millisecond
+	// defaultRTTWaitMax is the longest wait. A relay that answers later than two times
+	// the band plus 20 ms of noise cannot change the choice.
+	defaultRTTWaitMax = 40 * time.Millisecond
 	// rttRounds is the number of round trips of the first relay in the wait.
 	rttRounds = 2
-)
-
-// Tests change these values.
-var (
-	// shuffleRelays orders the relays with a random seed for each agent, so
-	// agents do not all dial the first relay.
-	shuffleRelays = true
 	// After all relays fail, the agent enrolls again for a new relay list each
-	// relistMin. A failed enroll doubles the wait up to relistMax.
-	relistMin = time.Minute
-	relistMax = 10 * time.Minute
+	// defaultRelistMin. A failed enroll doubles the wait up to defaultRelistMax.
+	defaultRelistMin = time.Minute
+	defaultRelistMax = 10 * time.Minute
 )
-
-// Run keeps Config.Sessions relay sessions, each on its own relay, until ctx
-// ends. It returns ErrUpgrade or identity.ExpiredError with no session.
-func (a *Agent) Run(ctx context.Context) error {
-	if m := a.cfg.MTU; m != 0 && (m < psp.DefaultMTU || m > psp.MaxMTU) {
-		return fmt.Errorf("MTU must be %d to %d, got %d", psp.DefaultMTU, psp.MaxMTU, m)
-	}
-	if n := a.cfg.Sessions; n < 0 || n > maxSessions {
-		return fmt.Errorf("sessions must be 1 to %d, got %d", maxSessions, n)
-	}
-	if err := a.cfg.Identity.Start(ctx); err != nil {
-		return fmt.Errorf("agent cert: %w", err)
-	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	var wg sync.WaitGroup
-	defer func() {
-		cancel(nil)
-		wg.Wait()
-		a.close()
-		a.watchers.Wait()
-	}()
-	wg.Go(func() { a.tick(ctx) })
-	wg.Go(func() { a.readBFD(ctx) })
-	wg.Go(func() { a.followCert(ctx) })
-	wg.Go(func() { a.keepAttachments(ctx) })
-	wg.Go(func() {
-		// The manager renews the cert, so that the next handshake has a valid one.
-		// After the cert of an identity file expires, the sessions stay, and Run opens none.
-		var expired *identity.ExpiredError
-		if errors.As(a.cfg.Identity.Run(ctx), &expired) {
-			a.expired.Store(expired)
-			a.wakeRun()
-		}
-	})
-
-	k := keeper{a: a, backoff: minBackoff, relist: relister{wait: relistMin}}
-	for ctx.Err() == nil {
-		var err error
-		n, eps := a.missing()
-		none := a.primary() == nil
-		switch expired := a.fileExpired(); {
-		case expired != nil && none:
-			return expired
-		case expired != nil:
-			k.warnExpired(n)
-			a.waitWake(ctx)
-		case n > 0:
-			err = k.fill(ctx, n, eps)
-		case none:
-			// The agent has no session and no relay to dial.
-			err = k.retry(ctx, 0, errNoRelays)
-		default:
-			a.waitWake(ctx)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// fileExpired returns the error of the identity file whose cert expired, or
-// nil when the agent has a cert of a newer file.
-func (a *Agent) fileExpired() *identity.ExpiredError {
-	e := a.expired.Load()
-	if e == nil || !e.At.Equal(a.cfg.Identity.Current().Cert.NotAfter) {
-		return nil
-	}
-	return e
-}
-
-// waitWake waits until a relay session ends or starts to drain, or the relay
-// list changes.
-func (a *Agent) waitWake(ctx context.Context) {
-	select {
-	case <-ctx.Done():
-	case <-a.wake:
-	}
-}
-
-// missing returns the count of sessions to open and the relays with no session.
-// A draining session does not count, and its alternates are first.
-func (a *Agent) missing() (int, []endpoint) {
-	eps := a.endpoints()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	n := cmp.Or(a.cfg.Sessions, defaultSessions)
-	var alts []endpoint
-	busy, live := map[string]bool{}, map[string]bool{}
-	for _, rc := range a.conns {
-		if rc.visitor() {
-			continue
-		}
-		busy[rc.ep.key()] = true
-		if rc.state == connDraining {
-			alts = append(alts, rc.alternates...)
-			continue
-		}
-		live[rc.ep.key()] = true
-		n--
-	}
-	alts = slices.DeleteFunc(alts, func(e endpoint) bool { return live[e.key()] })
-	eps = slices.DeleteFunc(eps, func(e endpoint) bool { return busy[e.key()] })
-	free := slices.Concat(alts, eps)
-	return max(min(n, len(oneEach(free))), 0), free
-}
 
 // errNoRelays is the failure of Run when it has no relay to dial.
 var errNoRelays = errors.New("no relays")
 
-// keeper opens the sessions that Run misses.
+// keeper is the dial plan of the root: it opens the home sessions that the
+// agent misses, with backoff after failures.
 type keeper struct {
-	a        *Agent
 	backoff  time.Duration
 	next     int           // The relay to dial first.
 	rank     uint32        // Rank of the next session.
-	failed   int           // Relays that failed in a row.
+	failed   int           // Relays that failed one after the other.
 	refused  *upgradeError // A relay refused the agent as too old since the last session.
-	relist   relister
-	since    time.Time // Start of the last session.
-	unfilled int       // Sessions that Run did not open because the cert expired.
+	since    time.Time     // Start of the last session.
+	unfilled int           // Sessions that the root did not open because the cert expired.
+
+	round   *dialRound
+	wait    *time.Timer // The next round after a failure. Nil when none waits.
+	relist  relister
+	listing bool // The relist task runs.
 }
 
-// warnExpired logs one warning for each session that Run cannot open because
-// the cert of the identity file expired. n is the number of such sessions.
-func (k *keeper) warnExpired(n int) {
-	if n > k.unfilled {
-		slog.Warn("Cannot open a relay session because the certificate of the identity file expired; the open sessions stay",
-			"missing", n, "expired_at", k.a.expired.Load().At)
-	}
-	k.unfilled = n
+// dialRound dials the relays of eps at the same time and chooses the ones with
+// the lowest round-trip times.
+type dialRound struct {
+	n      int
+	eps    []endpoint
+	ctx    context.Context
+	cancel context.CancelFunc
+	got    []*dialed
+	errs   []error
+	left   int
+	choice *time.Timer // Set at the first answer.
 }
 
-// fill opens n attached sessions on the relays of eps. After a failure it
-// goes to retry, and returns its error.
-func (k *keeper) fill(ctx context.Context, n int, eps []endpoint) error {
-	if !k.since.IsZero() && time.Since(k.since) > stableSession {
-		k.backoff = minBackoff
-	}
-	opened, tried, err := k.open(ctx, n, eps)
-	if opened > 0 {
-		k.failed, k.refused, k.since = 0, nil, time.Now()
-	}
-	if opened == n || ctx.Err() != nil {
-		return nil
-	}
-	return k.retry(ctx, tried, err)
-}
-
-// retry waits with backoff, and gets a new relay list when the agent has no
-// session and each relay failed. It returns an error when Run must stop.
-func (k *keeper) retry(ctx context.Context, tried int, err error) error {
-	a := k.a
-	slog.Warn("Failed to open relay session", "error", err)
-	if ue := (*upgradeError)(nil); errors.As(err, &ue) {
-		k.refused = ue
-	}
-	if certRefused(err) {
-		a.renew(ctx)
-	}
-	k.next += tried
-	if k.failed += tried; a.primary() == nil && k.failed >= len(a.endpoints()) {
-		// More dials do not help when a relay needs a newer agent, so Run stops.
-		if k.refused != nil {
-			return k.refused
-		}
-		k.failed = 0
-		if k.relist.run(ctx, a) {
-			// Dial the new relays now.
-			k.backoff = minBackoff
-			return nil
-		}
-	}
-	wait := rand.N(k.backoff) + 1
-	k.backoff = min(2*k.backoff, maxBackoff)
-	select {
-	case <-ctx.Done():
-	case <-time.After(wait):
-	}
-	return nil
-}
-
-// open dials eps and attaches on the n relays with the lowest round-trip times;
-// the other sessions end. It returns the attached and failed counts.
-func (k *keeper) open(ctx context.Context, n int, eps []endpoint) (opened, failed int, err error) {
-	a := k.a
-	begin := time.Now()
-	i := k.next % len(eps)
-	conns, failed, err := a.choose(ctx, slices.Concat(eps[i:], eps[:i]), func(ctx context.Context, e endpoint) (*relayConn, error) {
-		return a.dialRelay(ctx, e, nil)
-	})
-	for _, rc := range conns {
-		if opened == n {
-			a.end(rc)
-			continue
-		}
-		// The agent does not visit a relay on which it has an attached session.
-		a.endVisitTo(rc.ep.key(), "agent attaches to the relay")
-		if aerr := a.attach(ctx, rc, k.rank, begin); aerr != nil {
-			failed, err = failed+1, errors.Join(err, aerr)
-			continue
-		}
-		opened++
-		k.rank++
-	}
-	return opened, failed, err
-}
-
-// choose dials each relay of eps at the same time and returns the sessions,
-// lowest round-trip time first. It stops the dials that answer late.
-func (a *Agent) choose(ctx context.Context, eps []endpoint, dial func(context.Context, endpoint) (*relayConn, error)) ([]*relayConn, int, error) {
-	type result struct {
-		i   int
-		rc  *relayConn
-		err error
-	}
-	eps = oneEach(eps)
-	ctx, cancel := context.WithCancel(ctx)
-	results := make(chan result, len(eps))
-	for i, e := range eps {
-		go func() {
-			rc, err := dial(ctx, e)
-			results <- result{i, rc, err}
-		}()
-	}
-	conns := make([]*relayConn, len(eps))
-	var errs []error
-	var timer <-chan time.Time
-	left := len(eps)
-wait:
-	for ; left > 0; left-- {
-		select {
-		case r := <-results:
-			if r.err != nil {
-				errs = append(errs, fmt.Errorf("relay %s: %w", eps[r.i].addr, r.err))
-				continue
-			}
-			conns[r.i] = r.rc
-			if timer == nil {
-				t := time.NewTimer(a.choiceWait(r.rc))
-				defer t.Stop()
-				timer = t.C
-			}
-		case <-timer:
-			break wait
-		}
-	}
-	cancel()
-	go func() {
-		// A late dial can pass before it sees the stop.
-		for ; left > 0; left-- {
-			if r := <-results; r.err == nil {
-				a.end(r.rc)
-			}
-		}
-	}()
-	order := a.rank(conns)
-	if len(order) > 1 {
-		slog.Info("Ordered the relays by round-trip time", "first", order[0].addr, "rtt", order[0].choiceRTT(), "relays", len(order))
-	}
-	return order, len(errs), errors.Join(errs...)
-}
-
-// choiceWait returns the wait for the other relays after rc answered first.
-func (a *Agent) choiceWait(rc *relayConn) time.Duration {
-	rtt := rc.choiceRTT()
-	if rtt <= 0 {
-		// A time that is not known uses the longest wait.
-		return a.rttWaitMax
-	}
-	return min(max(rttRounds*rtt, a.rttWaitMin), a.rttWaitMax)
-}
-
-// choiceRTT returns the round-trip time of rc for the choice: the lower known
-// time of the lowest QUIC time and the time from Hello to Welcome. After a late
-// start of the path, QUIC can have no sample of the Hello exchange at the choice.
-func (rc *relayConn) choiceRTT() time.Duration {
-	low, hello := time.Duration(rc.lowRTT.Load()), time.Duration(rc.helloRTT.Load())
-	if low <= 0 || hello > 0 && hello < low {
-		return hello
-	}
-	return low
-}
-
-// rank returns the sessions of conns in the order of the choice. Within rttBand
-// of the lowest time, the relay order of the agent decides.
-func (a *Agent) rank(conns []*relayConn) []*relayConn {
-	left := slices.DeleteFunc(slices.Clone(conns), func(rc *relayConn) bool { return rc == nil })
-	// A session with no time is after each session with a time.
-	rtt := func(rc *relayConn) time.Duration {
-		if t := rc.choiceRTT(); t > 0 {
-			return t
-		}
-		return time.Duration(1<<63 - 1 - int64(a.rttBand))
-	}
-	var order []*relayConn
-	for len(left) > 0 {
-		low := rtt(slices.MinFunc(left, func(x, y *relayConn) int { return cmp.Compare(rtt(x), rtt(y)) }))
-		k := slices.IndexFunc(left, func(rc *relayConn) bool { return rtt(rc) <= low+a.rttBand })
-		order = append(order, left[k])
-		left = slices.Delete(left, k, k+1)
-	}
-	return order
-}
-
-// followCert makes Run count again after each new agent cert, which can have
-// a new relay list. The open sessions keep their connections.
-func (a *Agent) followCert(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-a.cfg.Identity.Changed():
-			a.wakeRun()
-		}
-	}
-}
-
-// renew gets a new agent cert after a relay refused the cert in use.
-func (a *Agent) renew(ctx context.Context) {
-	if err := a.cfg.Identity.Renew(ctx); err != nil {
-		slog.Warn("Failed to renew agent cert", "error", err)
-	}
+// dialResult is the result of one dial of a round.
+type dialResult struct {
+	round *dialRound
+	i     int
+	d     *dialed
+	err   error
 }
 
 // relister enrolls again for a new relay list after all relays failed. With
@@ -376,27 +84,298 @@ type relister struct {
 	wait time.Duration // Doubles after a failed enroll.
 }
 
-// run enrolls again if the wait ended. It reports whether it got a new list.
-func (l *relister) run(ctx context.Context, a *Agent) bool {
-	if len(a.cfg.Relays) > 0 || time.Now().Before(l.at) {
-		return false
+// relisted is the result of the relist task.
+type relisted struct {
+	got bool
+	err error
+}
+
+// warnExpired logs one warning for each session that the root cannot open
+// because the cert of the identity file expired. n is the number of such sessions.
+func (k *keeper) warnExpired(n int, at time.Time) {
+	if n > k.unfilled {
+		slog.Warn("Cannot open a relay session because the certificate of the identity file expired; the open sessions stay",
+			"missing", n, "expired_at", at)
 	}
-	old := a.cfg.Identity.Current()
-	rctx, cancel := context.WithTimeout(ctx, openTimeout)
-	err := a.cfg.Identity.Renew(rctx)
-	cancel()
-	// An identity file that did not change gives no error and no new list.
-	got := err == nil && a.cfg.Identity.Current() != old
+	k.unfilled = n
+}
+
+// missing returns the count of home sessions to open and the relays with no
+// session. A draining session does not count, and its alternates are first.
+func (r *root) missing() (int, []endpoint) {
+	eps := r.endpoints()
+	n := cmp.Or(r.a.cfg.Sessions, defaultSessions)
+	var alts []endpoint
+	busy, live := map[string]bool{}, map[string]bool{}
+	for _, h := range r.homes {
+		busy[h.ep.key()] = true
+		if h.draining {
+			alts = append(alts, h.alternates...)
+			continue
+		}
+		live[h.ep.key()] = true
+		n--
+	}
+	alts = slices.DeleteFunc(alts, func(e endpoint) bool { return live[e.key()] })
+	eps = slices.DeleteFunc(eps, func(e endpoint) bool { return busy[e.key()] })
+	free := slices.Concat(alts, eps)
+	return max(min(n, len(oneEach(free))), 0), free
+}
+
+// plan starts the next dial round when the agent misses sessions, or ends Run
+// when the cert expired and no session is left.
+func (r *root) plan() {
+	k := &r.keep
+	if r.ending || k.round != nil || k.wait != nil || k.listing {
+		return
+	}
+	n, eps := r.missing()
+	none := r.primary() == nil
+	switch exp := r.fileExpired(); {
+	case exp != nil && none && !r.renewing:
+		r.stop(exp)
+	case exp != nil:
+		k.warnExpired(n, exp.At)
+	case n > 0:
+		r.startRound(n, eps)
+	case none && len(r.homes) == 0:
+		// The agent has no session and no relay to dial.
+		r.retry(0, errNoRelays)
+	}
+}
+
+// startRound dials eps for n sessions.
+func (r *root) startRound(n int, eps []endpoint) {
+	k := &r.keep
+	if !k.since.IsZero() && time.Since(k.since) > stableSession {
+		k.backoff = minBackoff
+	}
+	i := k.next % len(eps)
+	eps = oneEach(slices.Concat(eps[i:], eps[:i]))
+	ctx, cancel := context.WithCancel(r.ctx)
+	rd := &dialRound{n: n, eps: eps, ctx: ctx, cancel: cancel, got: make([]*dialed, len(eps)), left: len(eps)}
+	k.round = rd
+	cred := r.a.cfg.Identity.Current()
+	for i, e := range eps {
+		r.task(func() any {
+			d, err := r.a.dial(ctx, e, r.a.relayRoots(cred), false)
+			return dialResult{round: rd, i: i, d: d, err: err}
+		})
+	}
+}
+
+// dialDone takes the result of one dial. A result of a closed round closes
+// its connection.
+func (r *root) dialDone(m dialResult) {
+	rd := r.keep.round
+	if rd != m.round {
+		if m.d != nil {
+			m.d.close("relay was not chosen")
+		}
+		return
+	}
+	rd.left--
+	if m.err != nil {
+		rd.errs = append(rd.errs, fmt.Errorf("relay %s: %w", rd.eps[m.i].addr, m.err))
+	} else {
+		rd.got[m.i] = m.d
+		if rd.choice == nil {
+			rd.choice = time.NewTimer(r.choiceWait(m.d))
+		}
+	}
+	if rd.left == 0 {
+		r.closeRound()
+	}
+}
+
+// closeRound starts a home session on each of the n relays with the lowest
+// round-trip times, and closes the other connections.
+func (r *root) closeRound() {
+	k := &r.keep
+	rd := k.round
+	k.round = nil
+	rd.cancel()
+	if rd.choice != nil {
+		rd.choice.Stop()
+	}
+	order := r.rankDialed(rd.got)
+	if len(order) > 1 {
+		slog.Info("Ordered the relays by round-trip time", "first", order[0].ep.addr, "rtt", order[0].choiceRTT(), "relays", len(order))
+	}
+	started := 0
+	for _, d := range order {
+		if started == rd.n || r.ending {
+			d.close("relay was not chosen")
+			continue
+		}
+		r.startHome(d, k.rank)
+		k.rank++
+		started++
+	}
+	if started < rd.n && len(rd.errs) > 0 {
+		r.retry(len(rd.errs), errors.Join(rd.errs...))
+	}
+	// Relays that answered after the choice get the next round at once.
+	r.plan()
+}
+
+// choiceTimer returns the channel of the wait for the other relays of the round, or nil.
+func (k *keeper) choiceTimer() <-chan time.Time {
+	if k.round == nil || k.round.choice == nil {
+		return nil
+	}
+	return k.round.choice.C
+}
+
+// waitTimer returns the channel of the backoff wait, or nil.
+func (k *keeper) waitTimer() <-chan time.Time {
+	if k.wait == nil {
+		return nil
+	}
+	return k.wait.C
+}
+
+// retry waits with backoff after tried relays failed, and gets a new relay
+// list when the agent has no session and each relay failed.
+func (r *root) retry(tried int, err error) {
+	k := &r.keep
+	slog.Warn("Failed to open relay session", "error", err)
+	if ue := (*upgradeError)(nil); errors.As(err, &ue) {
+		k.refused = ue
+	}
+	if certRefused(err) {
+		r.renew()
+	}
+	k.next += tried
+	if k.failed += tried; r.primary() == nil && k.failed >= len(r.endpoints()) {
+		// More dials do not help when a relay needs a newer agent, so Run stops.
+		if k.refused != nil {
+			r.stop(k.refused)
+			return
+		}
+		k.failed = 0
+		if len(r.a.cfg.Relays) == 0 && !time.Now().Before(k.relist.at) && !k.listing {
+			r.relist()
+			return
+		}
+	}
+	r.backoff()
+}
+
+// backoff arms the wait for the next round.
+func (r *root) backoff() {
+	k := &r.keep
+	if k.wait != nil {
+		k.wait.Stop()
+	}
+	k.wait = time.NewTimer(rand.N(k.backoff) + 1)
+	k.backoff = min(2*k.backoff, maxBackoff)
+}
+
+// relist starts the relist task: it enrolls again for a new relay list.
+func (r *root) relist() {
+	r.keep.listing = true
+	id := r.a.cfg.Identity
+	r.task(func() any {
+		old := id.Current()
+		ctx, cancel := context.WithTimeout(r.ctx, openTimeout)
+		defer cancel()
+		err := id.Renew(ctx)
+		// An identity file that did not change gives no error and no new list.
+		return relisted{got: err == nil && id.Current() != old, err: err}
+	})
+}
+
+// relistDone takes the result of the relist task. With a new list the root
+// dials at once, else after the backoff.
+func (r *root) relistDone(m relisted) {
+	k := &r.keep
+	k.listing = false
+	if k.relist.wait == 0 {
+		k.relist.wait = r.a.relistMin
+	}
 	switch {
-	case err != nil:
-		l.wait = min(2*l.wait, relistMax)
-		slog.Warn("Failed to get a new relay list; keeping the cached list", "error", err)
-	case got:
-		l.wait = relistMin
-		slog.Info("Got a new relay list after all relays failed", "relays", len(a.cfg.Identity.Current().Relays))
+	case m.err != nil:
+		k.relist.wait = min(2*k.relist.wait, r.a.relistMax)
+		slog.Warn("Failed to get a new relay list; keeping the cached list", "error", m.err)
+	case m.got:
+		k.relist.wait = r.a.relistMin
+		slog.Info("Got a new relay list after all relays failed", "relays", len(r.a.cfg.Identity.Current().Relays))
 	}
-	l.at = time.Now().Add(l.wait + rand.N(l.wait/2+1))
-	return got
+	k.relist.at = time.Now().Add(k.relist.wait + rand.N(k.relist.wait/2+1))
+	if m.got {
+		k.backoff = minBackoff
+		return
+	}
+	r.backoff()
+}
+
+// fileExpired returns the error of the identity file whose cert expired, or
+// nil when the agent has a cert of a newer file.
+func (r *root) fileExpired() *identity.ExpiredError {
+	e := r.expired
+	if e == nil || !e.At.Equal(r.a.cfg.Identity.Current().Cert.NotAfter) {
+		return nil
+	}
+	return e
+}
+
+// renew starts the renew task, or runs it once more after the one that runs.
+func (r *root) renew() {
+	if r.renewing {
+		r.renewAgain = true
+		return
+	}
+	r.renewing = true
+	id := r.a.cfg.Identity
+	r.task(func() any { return renewed{err: id.Renew(r.ctx)} })
+}
+
+// renewed is the result of the renew task.
+type renewed struct{ err error }
+
+func (r *root) renewDone(m renewed) {
+	r.renewing = false
+	if m.err != nil {
+		slog.Warn("Failed to renew agent cert", "error", m.err)
+	}
+	if r.renewAgain && !r.ending {
+		r.renewAgain = false
+		r.renew()
+	}
+}
+
+// choiceWait returns the wait for the other relays after d answered first.
+func (r *root) choiceWait(d *dialed) time.Duration {
+	a := r.a
+	rtt := d.choiceRTT()
+	if rtt <= 0 {
+		// A time that is not known uses the longest wait.
+		return a.rttWaitMax
+	}
+	return min(max(rttRounds*rtt, a.rttWaitMin), a.rttWaitMax)
+}
+
+// rankDialed returns the connections of got in the order of the choice. Within
+// the band of the lowest time, the relay order of the agent decides.
+func (r *root) rankDialed(got []*dialed) []*dialed {
+	band := r.a.rttBand
+	left := slices.DeleteFunc(slices.Clone(got), func(d *dialed) bool { return d == nil })
+	// A connection with no time is after each connection with a time.
+	rtt := func(d *dialed) time.Duration {
+		if t := d.choiceRTT(); t > 0 {
+			return t
+		}
+		return time.Duration(1<<63 - 1 - int64(band))
+	}
+	var order []*dialed
+	for len(left) > 0 {
+		low := rtt(slices.MinFunc(left, func(x, y *dialed) int { return cmp.Compare(rtt(x), rtt(y)) }))
+		k := slices.IndexFunc(left, func(d *dialed) bool { return rtt(d) <= low+band })
+		order = append(order, left[k])
+		left = slices.Delete(left, k, k+1)
+	}
+	return order
 }
 
 // endpoint is one address of a relay.
@@ -412,7 +391,8 @@ func (e endpoint) key() string {
 
 // endpoints returns the addresses of the relays in the order of this agent.
 // The addresses of one relay stay in their order.
-func (a *Agent) endpoints() []endpoint {
+func (r *root) endpoints() []endpoint {
+	a := r.a
 	relays := a.cfg.Relays
 	if len(relays) == 0 {
 		if c := a.cfg.Identity.Current(); c != nil {
@@ -420,16 +400,15 @@ func (a *Agent) endpoints() []endpoint {
 		}
 	}
 	var out []endpoint
-	for _, r := range relays {
-		for _, addr := range r.Addresses {
-			out = append(out, endpoint{id: r.ID, addr: addr})
+	for _, rl := range relays {
+		for _, addr := range rl.Addresses {
+			out = append(out, endpoint{id: rl.ID, addr: addr})
 		}
 	}
-	if shuffleRelays {
-		slices.SortStableFunc(out, func(x, y endpoint) int {
-			return cmp.Compare(maphash.String(a.seed, x.key()), maphash.String(a.seed, y.key()))
-		})
-	}
+	// Agents do not all dial the first relay.
+	slices.SortStableFunc(out, func(x, y endpoint) int {
+		return cmp.Compare(maphash.String(a.seed, x.key()), maphash.String(a.seed, y.key()))
+	})
 	return out
 }
 

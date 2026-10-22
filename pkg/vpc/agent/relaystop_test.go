@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"context"
 	"net"
 	"net/netip"
 	"slices"
@@ -11,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -45,8 +43,10 @@ func (c *muteConn) ReadFrom(p []byte) (int, net.Addr, error) {
 // QUIC idle timeout and data goes through the other session, and that a
 // session whose PSP port alone stops stays in QUIC mode with its address.
 func TestRelayStops(t *testing.T) {
-	// The QUIC idle timeout is 6 s, and the test gives 1 s more.
-	const within = 7 * time.Second
+	// The QUIC idle timeout is 6 s. A keepalive that the agent sends after the
+	// last packet from the relay starts it again (RFC 9000 10.1), which adds up
+	// to the 2 s keepalive period, and the test gives 1 s more.
+	const within = 9 * time.Second
 	cases := []struct {
 		name    string
 		mode    TransportMode
@@ -68,7 +68,13 @@ func TestRelayStops(t *testing.T) {
 			// The relays send trunk data on their PSP sockets, so the agent drops
 			// the PSP packets of relay 1 when only the PSP port stops.
 			block := &blockConn{relay: r1.psp}
-			a, rcs := w.agentOn(t, "a", agentOptions{mode: tc.mode, block: block, routes: []netip.Prefix{route}}, 2, r1, r2)
+			// The agent shuffles its relays, so relay 2 answers late at the start
+			// and the session on relay 1 gets rank 0.
+			slow := &slowConn{}
+			slow.set(r2, 150*time.Millisecond)
+			a, rcs := w.agentOn(t, "a", agentOptions{mode: tc.mode, block: block, slow: slow, rttChoice: true, routes: []netip.Prefix{route}}, 2, r1, r2)
+			slow.set(r2, 0)
+			require.Equal(t, r1.addr, rcs[0].addr, "relay of rank 0")
 			b := w.agent(t, "b", r2, agentOptions{})
 			eb := b.attached(t)
 			echo(t, b.stack, eb.addr, 9000)
@@ -76,22 +82,22 @@ func TestRelayStops(t *testing.T) {
 			a.hasRoutes(t, eb.prefixes[0])
 			b.hasRoutes(t, route)
 			lost := rcs[0]
-			require.Same(t, lost, a.current())
+			require.True(t, sameSession(t, lost, a.current()))
 			ping(t, a.stack, far, eb.addr, 9000, "from the advertised network before")
 			want := dp.Mode_MODE_PSP
 			if tc.mode == TransportQUIC {
 				want = dp.Mode_MODE_QUIC
 			}
-			require.Equal(t, want, lost.dataMode())
+			require.Equal(t, want, a.modeOf(lost.self))
 
 			if tc.pspOnly {
 				block.out.Store(true)
 				block.in.Store(true)
-				require.Eventually(t, func() bool { return lost.dataMode() == dp.Mode_MODE_QUIC }, 10*time.Second, 10*time.Millisecond,
+				require.Eventually(t, func() bool { return a.modeOf(lost.self) == dp.Mode_MODE_QUIC }, 10*time.Second, 10*time.Millisecond,
 					"the session did not change to QUIC mode")
-				require.Never(t, func() bool { return lost.qc.Context().Err() != nil }, within, 50*time.Millisecond,
+				require.Never(t, func() bool { return stateOf(a, lost) == stEnded }, within, 50*time.Millisecond,
 					"the session ended while its QUIC port answers")
-				assert.Same(t, lost, a.current(), "the session keeps the default address")
+				sameSession(t, lost, a.current(), "the session keeps the default address")
 				assert.Equal(t, lost.self, a.a.Status().Connections[0].Address)
 				assert.NotContains(t, a.events("a"), "detach a "+lost.self.String())
 				ping(t, a.stack, far, eb.addr, 9000, "from the advertised network in QUIC mode")
@@ -100,14 +106,9 @@ func TestRelayStops(t *testing.T) {
 			stopped := time.Now()
 			quic1.mute.Store(true)
 			psp1.mute.Store(true)
-			select {
-			case <-lost.qc.Context().Done():
-			case <-time.After(within):
-				t.Fatalf("the session on the relay that stopped did not end in %v", within)
-			}
+			require.Eventually(t, func() bool { return stateOf(a, lost) == stEnded }, within, 10*time.Millisecond,
+				"the session on the relay that stopped did not end in %v", within)
 			t.Logf("The session ended %v after the relay stopped.", time.Since(stopped))
-			var idle *quic.IdleTimeoutError
-			assert.ErrorAs(t, context.Cause(lost.qc.Context()), &idle)
 			require.Eventually(t, func() bool { return a.current() == rcs[1] }, time.Second, 10*time.Millisecond,
 				"the session on relay 2 did not get the default address")
 			require.Eventually(t, func() bool { return slices.Contains(a.events("a"), "detach a "+lost.self.String()) }, time.Second, 10*time.Millisecond,

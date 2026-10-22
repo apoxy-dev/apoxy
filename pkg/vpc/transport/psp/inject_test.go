@@ -104,7 +104,7 @@ func TestInjectBatch(t *testing.T) {
 			var b Binding
 			done := make(chan struct{})
 			defer close(done)
-			j := newInjectBatch(ep, &b.stats, maphash.MakeSeed(), tc.workers, done, nil)
+			j := newInjectBatch(ep, &b.stats, maphash.MakeSeed(), tc.workers, done, nil, new(sync.WaitGroup))
 			for range tc.bad {
 				j.add([]byte{0})
 			}
@@ -156,7 +156,7 @@ func TestInjectBatchFullQueue(t *testing.T) {
 			closeDone := sync.OnceFunc(func() { close(done) })
 			defer closeDone()
 			defer release()
-			j := newInjectBatch(ep, &b.stats, maphash.MakeSeed(), 1, done, nil)
+			j := newInjectBatch(ep, &b.stats, maphash.MakeSeed(), 1, done, nil, new(sync.WaitGroup))
 
 			// The worker takes the first batch and waits in the netstack. The
 			// next injectQueue batches fill its queue.
@@ -379,7 +379,7 @@ func TestInjectGRO(t *testing.T) {
 				var b Binding
 				done := make(chan struct{})
 				defer close(done)
-				j := newInjectBatch(ep, &b.stats, maphash.MakeSeed(), 1, done, nil)
+				j := newInjectBatch(ep, &b.stats, maphash.MakeSeed(), 1, done, nil, new(sync.WaitGroup))
 				for _, s := range tc.in {
 					if s.flow < 0 {
 						j.add(packet(src, dst, 17, 1, 2, 64))
@@ -467,7 +467,7 @@ func TestInjectChecksum(t *testing.T) {
 					var b Binding
 					done := make(chan struct{})
 					defer close(done)
-					j := newInjectBatch(ep, &b.stats, maphash.MakeSeed(), 1, done, nil)
+					j := newInjectBatch(ep, &b.stats, maphash.MakeSeed(), 1, done, nil, new(sync.WaitGroup))
 					j.add(syn)
 					j.flush()
 					require.Eventually(t, func() bool { return ep.NumQueued() > 0 }, 5*time.Second, time.Millisecond)

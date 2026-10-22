@@ -72,68 +72,8 @@ func ping(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16, msg st
 	t.Fatalf("no answer from %s", dst)
 }
 
-func peerCount(a *Agent) int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return len(a.peers)
-}
-
-// TestConnect sends UDP both ways in PSP after Connect.
-func TestConnect(t *testing.T) {
-	cases := []struct {
-		name string
-		both bool // Both agents dial at the same time.
-	}{
-		{name: "one agent dials"},
-		{name: "both agents dial", both: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newWorld(t)
-			r := w.relay(t, "relay-1")
-			// New agents each round. With both, some rounds have crossed dials.
-			for round := range 5 {
-				a, b := w.agent(t, "a", r, agentOptions{}), w.agent(t, "b", r, agentOptions{})
-				ea, eb := a.attached(t), b.attached(t)
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				var errA, errB error
-				if tc.both {
-					var wg sync.WaitGroup
-					wg.Go(func() { errA = a.a.Connect(ctx, eb.addr) })
-					wg.Go(func() { errB = b.a.Connect(ctx, ea.addr) })
-					wg.Wait()
-				} else {
-					errA = a.a.Connect(ctx, eb.addr)
-					errB = b.a.Connect(ctx, ea.addr)
-				}
-				require.NoError(t, errA, "round %d", round)
-				require.NoError(t, errB, "round %d", round)
-				echo(t, b.stack, eb.addr, 9000)
-				echo(t, a.stack, ea.addr, 9001)
-				ping(t, a.stack, ea.addr, eb.addr, 9000, "from a")
-				ping(t, b.stack, eb.addr, ea.addr, 9001, "from b")
-				require.Eventually(t, func() bool { return peerCount(a.a) == 1 && peerCount(b.a) == 1 },
-					5*time.Second, 10*time.Millisecond, "one session stays")
-
-				// When b leaves, a closes its peer session.
-				b.stop()
-				require.Eventually(t, func() bool { return peerCount(a.a) == 0 }, 5*time.Second, 10*time.Millisecond)
-				// The relay can remove the session of b after that. Until it does, a dial
-				// to b waits 5 s.
-				require.Eventually(t, func() bool {
-					_, err := a.current().resolve(ctx, eb.addr)
-					return err != nil
-				}, 5*time.Second, 10*time.Millisecond)
-				assert.Error(t, a.a.Connect(ctx, eb.addr))
-				a.stop()
-			}
-		})
-	}
-}
-
 // TestSharedIdentity runs agents a1 and a2 with one cert name and their own
-// attachment names. Agent c, a1 and a2 keep a peer session for each agent.
+// attachment names. Each agent reaches the other two.
 func TestSharedIdentity(t *testing.T) {
 	cases := []struct {
 		name string
@@ -154,55 +94,16 @@ func TestSharedIdentity(t *testing.T) {
 			echo(t, a2.stack, e2.addr, 9002)
 			echo(t, c.stack, ec.addr, 9000)
 
-			// a1 dials c, then a2 dials c. The session of a2 does not replace
-			// the session of a1.
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			require.NoError(t, a1.a.Connect(ctx, ec.addr))
 			ping(t, a1.stack, e1.addr, ec.addr, 9000, "a1 to c")
-			p1 := onlyPeer(t, a1.a)
-			require.NoError(t, a2.a.Connect(ctx, ec.addr))
 			ping(t, a2.stack, e2.addr, ec.addr, 9000, "a2 to c")
-			for range 2 {
-				ping(t, c.stack, ec.addr, e1.addr, 9001, "c to a1")
-				ping(t, c.stack, ec.addr, e2.addr, 9002, "c to a2")
-			}
-			assert.Equal(t, 2, c.a.Status().Peers, "c has a peer session for each agent")
-			assert.Same(t, p1, onlyPeer(t, a1.a), "a1 keeps its peer session")
-			assert.NoError(t, p1.qc.Context().Err(), "the peer session of a1 is open")
-
-			// d dials a1, then a2. The address of a2 is not a second attachment
-			// of a1, so d does not wait for a grant from a1.
-			d := w.agent(t, "d", r, agentOptions{})
-			d.attached(t)
-			require.NoError(t, d.a.Connect(ctx, e1.addr))
-			start := time.Now()
-			require.NoError(t, d.a.Connect(ctx, e2.addr))
-			assert.Less(t, time.Since(start), duplicateWait/2, "first connect to a second agent of the subject")
-			assert.Equal(t, 2, d.a.Status().Peers, "d has a peer session for each agent")
-
+			ping(t, c.stack, ec.addr, e1.addr, 9001, "c to a1")
+			ping(t, c.stack, ec.addr, e2.addr, 9002, "c to a2")
 			// Each agent of the subject gets the address route of the other.
 			require.Eventually(t, func() bool {
 				return slices.Contains(a1.routeSet(), e2.prefixes[0]) && slices.Contains(a2.routeSet(), e1.prefixes[0])
 			}, 5*time.Second, 10*time.Millisecond, "a1 and a2 get the address route of each other")
-
-			// a1 and a2 dial each other at the same time.
-			n1, n2 := peerCount(a1.a), peerCount(a2.a)
-			var err1, err2 error
-			var wg sync.WaitGroup
-			wg.Go(func() { err1 = a1.a.Connect(ctx, e2.addr) })
-			wg.Go(func() { err2 = a2.a.Connect(ctx, e1.addr) })
-			wg.Wait()
-			require.NoError(t, err1)
-			require.NoError(t, err2)
 			ping(t, a1.stack, e1.addr, e2.addr, 9002, "a1 to a2")
 			ping(t, a2.stack, e2.addr, e1.addr, 9001, "a2 to a1")
-			if tc.mode == TransportQUIC {
-				// A QUIC pair keeps the two sessions of crossed dials.
-				return
-			}
-			require.Eventually(t, func() bool { return peerCount(a1.a) == n1+1 && peerCount(a2.a) == n2+1 },
-				5*time.Second, 10*time.Millisecond, "one session between a1 and a2 stays")
 		})
 	}
 }
@@ -247,20 +148,10 @@ func TestTransportModes(t *testing.T) {
 				assert.Less(t, st.Connect, openTimeout)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			require.NoError(t, a.a.Connect(ctx, eb.addr))
-			require.NoError(t, b.a.Connect(ctx, ea.addr))
 			echo(t, b.stack, eb.addr, 9000)
 			echo(t, a.stack, ea.addr, 9001)
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "from a")
 			ping(t, b.stack, eb.addr, ea.addr, 9001, "from b")
-			assert.Equal(t, 1, peerCount(a.a))
-			assert.Equal(t, 1, peerCount(b.a))
-
-			// When b leaves, a closes its peer session.
-			b.stop()
-			require.Eventually(t, func() bool { return peerCount(a.a) == 0 }, 5*time.Second, 10*time.Millisecond)
 		})
 	}
 }
@@ -288,10 +179,6 @@ func TestDualStackSocket(t *testing.T) {
 			ea, eb := a.attached(t), b.attached(t)
 			assert.Equal(t, tc.want, a.a.Status().Mode)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			require.NoError(t, a.a.Connect(ctx, eb.addr))
-			require.NoError(t, b.a.Connect(ctx, ea.addr))
 			echo(t, b.stack, eb.addr, 9000)
 			echo(t, a.stack, ea.addr, 9001)
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "from a")
@@ -331,14 +218,14 @@ func TestStatusRTT(t *testing.T) {
 				return
 			}
 			r.stopAccept()
-			_ = a.a.primary().qc.CloseWithError(0, "test ends the session")
+			a.reconnect()
 			require.Eventually(t, func() bool { return a.a.Status().RTT == 0 }, 5*time.Second, 10*time.Millisecond)
 		})
 	}
 }
 
 // TestPSPAfterQUIC sends UDP in a PSP session that follows a QUIC session.
-// The shards of the QUIC session must not dial again while the PSP session opens.
+// The extra connections of the QUIC session must not dial again while the PSP session opens.
 func TestPSPAfterQUIC(t *testing.T) {
 	w := newWorld(t)
 	w.mtu = 1400
@@ -348,12 +235,9 @@ func TestPSPAfterQUIC(t *testing.T) {
 	a, b := w.agent(t, "a", r, agentOptions{conn: conn}), w.agent(t, "b", r, agentOptions{})
 	a.attached(t)
 	require.Equal(t, dp.Mode_MODE_QUIC, a.a.Status().Mode)
-	shards := func() bool {
-		a.a.mu.Lock()
-		defer a.a.mu.Unlock()
-		return a.a.primaryLocked().pc.Shards() == quicShards
-	}
-	require.Eventually(t, shards, 10*time.Second, 10*time.Millisecond)
+	// The relay has the session and its extra connections.
+	extras := func() bool { return len(r.agentConns(a.tr.Conn.LocalAddr(), true)) == quicConns }
+	require.Eventually(t, extras, 10*time.Second, 10*time.Millisecond)
 
 	// The path probe of the PSP session fails, so the open takes more than 1 s.
 	conn.limitProbes.Store(false)
@@ -362,13 +246,11 @@ func TestPSPAfterQUIC(t *testing.T) {
 	ea, eb := a.attached(t), b.attached(t)
 	require.Equal(t, dp.Mode_MODE_PSP, a.a.Status().Mode)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	require.NoError(t, a.a.Connect(ctx, eb.addr))
 	echo(t, b.stack, eb.addr, 9000)
 	echo(t, a.stack, ea.addr, 9001)
 	ping(t, a.stack, ea.addr, eb.addr, 9000, "from a")
 	ping(t, b.stack, eb.addr, ea.addr, 9001, "from b")
+	assert.Len(t, r.agentConns(a.tr.Conn.LocalAddr(), true), 1, "the PSP session has no extra connections")
 }
 
 // stream sends from src to dst:port until stop or the cleanup runs. stop logs
@@ -424,7 +306,7 @@ func dialTCP(t *testing.T, ta *testAgent, dst netip.Addr, port uint16) net.Conn 
 // newCert waits until the agent uses another cert than old.
 func (ta *testAgent) newCert(t *testing.T, old *identity.Credential) {
 	t.Helper()
-	require.Eventually(t, func() bool { return ta.a.cfg.Identity.Current() != old }, 10*time.Second, 10*time.Millisecond,
+	require.Eventually(t, func() bool { return ta.ids.Current() != old }, 10*time.Second, 10*time.Millisecond,
 		"the agent did not get a new cert")
 }
 
@@ -453,7 +335,7 @@ func TestRenew(t *testing.T) {
 			c := dialTCP(t, a, eb.addr, 9000)
 			roundTrip(t, c, "before the renew")
 
-			old, cred := a.current(), a.a.cfg.Identity.Current()
+			old, cred := a.current(), a.ids.Current()
 			if tc.file {
 				// The new cert must expire later than the cert in use.
 				a.writeIdentity(25 * time.Hour)
@@ -462,7 +344,7 @@ func TestRenew(t *testing.T) {
 			require.Never(t, func() bool { return len(a.attach) > 0 }, 500*time.Millisecond, 20*time.Millisecond,
 				"the agent attached again after the renew")
 			roundTrip(t, c, "after the renew")
-			assert.Same(t, old, a.current(), "the agent has the same relay session")
+			assert.Equal(t, old, a.current(), "the agent has the same relay session")
 			assert.NoError(t, old.qc.Context().Err(), "the relay connection is open")
 			assert.Equal(t, ea.addr, a.current().self)
 			assert.Equal(t, []string{"attach a " + ea.addr.String()}, a.events("a"), "no callback after the first attach")
@@ -475,14 +357,14 @@ func TestRenew(t *testing.T) {
 	}
 }
 
-// TestSessionAfterCertExpiry checks that a relay session carries data, opens a
-// peer session and starts a visit after its cert expired.
+// TestSessionAfterCertExpiry checks that a relay session carries data to a new
+// destination and starts a visit after its cert expired.
 func TestSessionAfterCertExpiry(t *testing.T) {
 	cases := []struct {
 		name  string
 		visit bool // The relays of a and b have no path, so a visits the relay of b.
 	}{
-		{name: "new peer session"},
+		{name: "new destination"},
 		{name: "visit", visit: true},
 	}
 	for _, tc := range cases {
@@ -490,7 +372,7 @@ func TestSessionAfterCertExpiry(t *testing.T) {
 			w, r1, r2 := meshRelays(t)
 			a := w.agent(t, "a", r1, agentOptions{tcp: true, life: 3 * time.Second, visitCheck: time.Hour})
 			near := w.agent(t, "near", r1, agentOptions{tcp: true})
-			b := w.agent(t, "b", r2, agentOptions{visitCheck: time.Hour, visitWait: time.Hour})
+			b := w.agent(t, "b", r2, agentOptions{visitCheck: time.Hour})
 			ea, en, eb := a.attached(t), near.attached(t), b.attached(t)
 			echo(t, b.stack, eb.addr, 9000)
 			a.hasRoutes(t, eb.prefixes[0])
@@ -499,19 +381,16 @@ func TestSessionAfterCertExpiry(t *testing.T) {
 			roundTrip(t, c, "before the expiry")
 
 			old := a.current()
-			first := a.a.cfg.Identity.Current().Cert.NotAfter
+			first := a.ids.Current().Cert.NotAfter
 			require.Eventually(t, func() bool { return time.Now().After(first) }, 10*time.Second, 50*time.Millisecond)
 			roundTrip(t, c, "after the expiry")
 			if tc.visit {
 				t.Cleanup(cutMesh(r1, r2))
-				waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				_, err := dialOnVisit(t, ctx, a, r2, eb.addr)
-				require.NoError(t, err)
+				waitCut(t, r1, r2)
 			}
-			ping(t, a.stack, ea.addr, eb.addr, 9000, "to a new peer")
-			assert.Same(t, old, a.current(), "the agent has the same relay session")
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "to a new destination")
+			assert.Equal(t, tc.visit, len(a.visitRoutes()) > 0, "a visits the relay of b")
+			assert.Equal(t, old, a.current(), "the agent has the same relay session")
 			assert.Equal(t, []string{"attach a " + ea.addr.String()}, a.events("a"))
 		})
 	}
@@ -542,13 +421,13 @@ func TestSharedIdentityFile(t *testing.T) {
 		ping(t, c.stack, ec.addr, e2.addr, 9002, "c to a2")
 	}
 	traffic()
-	first := a1.a.cfg.Identity.Current()
-	require.True(t, first.Cert.Equal(a2.a.cfg.Identity.Current().Cert), "a1 and a2 have one cert")
+	first := a1.ids.Current()
+	require.True(t, first.Cert.Equal(a2.ids.Current().Cert), "a1 and a2 have one cert")
 
 	a1.writeIdentity(25 * time.Hour)
 	a1.newCert(t, first)
 	require.Eventually(t, func() bool {
-		return a1.a.cfg.Identity.Current().Cert.Equal(a2.a.cfg.Identity.Current().Cert)
+		return a1.ids.Current().Cert.Equal(a2.ids.Current().Cert)
 	}, 10*time.Second, 10*time.Millisecond, "a2 has the cert of the new file")
 	traffic()
 	assert.Zero(t, len(a1.attach)+len(a2.attach), "the relay sessions stay")
@@ -575,12 +454,12 @@ func TestIdentityFileExpires(t *testing.T) {
 			ea, eb := a.attached(t), b.attached(t)
 			echo(t, b.stack, eb.addr, 9000)
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "before the expiry")
-			old, want := a.current(), a.a.cfg.Identity.Current().Cert.NotAfter
+			old, want := a.current(), a.ids.Current().Cert.NotAfter
 			require.Eventually(t, func() bool { return time.Now().After(want) }, 10*time.Second, 50*time.Millisecond)
 			require.Never(t, func() bool { return len(runErr) > 0 }, 500*time.Millisecond, 20*time.Millisecond,
 				"Run stopped while the agent has a relay session")
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "after the expiry")
-			assert.Same(t, old, a.current())
+			assert.Equal(t, old, a.current())
 			assert.Zero(t, a.enrolls.Load(), "an agent with an identity file does not enroll")
 			if !tc.lose {
 				return
@@ -599,7 +478,7 @@ func TestIdentityFileExpires(t *testing.T) {
 }
 
 // closeOf waits for the end of the session rc and returns its close.
-func closeOf(t *testing.T, rc *relayConn) *quic.ApplicationError {
+func closeOf(t *testing.T, rc sessionRef) *quic.ApplicationError {
 	t.Helper()
 	select {
 	case <-rc.qc.Context().Done():
@@ -613,10 +492,10 @@ func closeOf(t *testing.T, rc *relayConn) *quic.ApplicationError {
 
 // closedByDrain checks that the relay closed the session rc at the end of its
 // drain, and that the agent did not close it.
-func closedByDrain(t *testing.T, rc *relayConn) {
+func closedByDrain(t *testing.T, rc sessionRef) {
 	t.Helper()
 	ae := closeOf(t, rc)
-	assert.True(t, ae.Remote, "the agent closed the session of a draining relay: %v", ae)
+	assert.False(t, ae.Remote, "the agent closed the session of a draining relay: %v", ae)
 	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), ae.ErrorCode)
 }
 
@@ -634,11 +513,24 @@ func drain(t *testing.T, r *testRelay, alts []*dp.RelayRef) (end func()) {
 	return end
 }
 
-// stateOf returns the state of the session rc of a.
-func stateOf(a *testAgent, rc *relayConn) connState {
-	a.a.mu.Lock()
-	defer a.a.mu.Unlock()
-	return rc.state
+// States of a session in Status.
+const (
+	stAttached = "attached"
+	stDraining = "draining"
+	stEnded    = "ended" // Not in Status.
+)
+
+// stateOf returns the state of the session rc of a, from Status.
+func stateOf(a *testAgent, rc sessionRef) string {
+	for _, c := range a.a.Status().Connections {
+		if c.Relay == rc.addr && c.Address == rc.self {
+			if c.Draining {
+				return stDraining
+			}
+			return stAttached
+		}
+	}
+	return stEnded
 }
 
 // TestDrain checks that the agent opens a session on an alternate relay when its
@@ -688,23 +580,23 @@ func TestDrain(t *testing.T) {
 				alts = []*dp.RelayRef{{Id: to.id, Addresses: []string{deadRelay(t)}}}
 			}
 			prev := a.current()
-			require.Equal(t, connAttached, stateOf(a, prev))
+			require.Equal(t, stAttached, stateOf(a, prev))
 			end := drain(t, from, alts)
 
 			if tc.dead {
-				require.Eventually(t, func() bool { return stateOf(a, prev) == connDraining }, 5*time.Second, 10*time.Millisecond)
-				assert.Same(t, prev, a.current(), "the draining session keeps the default address")
+				require.Eventually(t, func() bool { return stateOf(a, prev) == stDraining }, 5*time.Second, 10*time.Millisecond)
+				assert.Equal(t, prev, a.current(), "the draining session keeps the default address")
 				assert.NoError(t, prev.qc.Context().Err(), "the draining session stays open")
 				end()
 				closedByDrain(t, prev)
-				require.Eventually(t, func() bool { return stateOf(a, prev) == connEnded }, 5*time.Second, 10*time.Millisecond)
+				require.Eventually(t, func() bool { return stateOf(a, prev) == stEnded }, 5*time.Second, 10*time.Millisecond)
 				return
 			}
 			second := a.attached(t)
 			next := a.current()
 			assert.Equal(t, to.addr, next.addr, "the new session has the default address")
-			assert.Equal(t, connAttached, stateOf(a, next))
-			assert.Equal(t, connDraining, stateOf(a, prev))
+			assert.Equal(t, stAttached, stateOf(a, next))
+			assert.Equal(t, stDraining, stateOf(a, prev))
 			assert.NoError(t, prev.qc.Context().Err(), "the draining session stays open")
 			want := []ConnStatus{
 				{Relay: from.addr, Address: first.addr, Rank: 0, Draining: true, Mode: dp.Mode_MODE_PSP},
@@ -719,12 +611,13 @@ func TestDrain(t *testing.T) {
 
 			end()
 			closedByDrain(t, prev)
-			require.Eventually(t, func() bool { return stateOf(a, prev) == connEnded }, 5*time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool { return stateOf(a, prev) == stEnded }, 5*time.Second, 10*time.Millisecond)
 			require.Eventually(t, func() bool { return len(a.events("a")) == 4 }, 5*time.Second, 10*time.Millisecond)
 			assert.Equal(t, "detach a "+first.addr.String(), a.events("a")[3])
-			a.a.mu.Lock()
-			defer a.a.mu.Unlock()
-			assert.Equal(t, []*relayConn{next}, a.a.conns, "only the old session ended")
+			if ss := a.sessions(); assert.Len(t, ss, 1, "only the old session ended") {
+				sameSession(t, next, ss[0])
+			}
+			assert.Len(t, a.a.Status().Connections, 1)
 		})
 	}
 }
@@ -737,14 +630,10 @@ func TestDrainNoAlternate(t *testing.T) {
 	a := w.agent(t, "a", r, agentOptions{})
 	a.attached(t)
 	prev := a.current()
-	sessions := func() int {
-		a.a.mu.Lock()
-		defer a.a.mu.Unlock()
-		return len(a.a.conns)
-	}
+	sessions := func() int { return len(a.a.Status().Connections) }
 
 	end := drain(t, r, nil)
-	require.Eventually(t, func() bool { return stateOf(a, prev) == connDraining }, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return stateOf(a, prev) == stDraining }, 5*time.Second, 10*time.Millisecond)
 	require.Never(t, func() bool { return sessions() != 1 || prev.qc.Context().Err() != nil },
 		time.Second, 20*time.Millisecond, "the agent opened or closed a session while its relay drains")
 	end()
@@ -765,7 +654,7 @@ func TestDrainLocalRoutesOnly(t *testing.T) {
 	r1.srv.Drain(ctx, []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}})
 	// The relay closed the session at the end of the drain time.
 	ae := closeOf(t, prev)
-	assert.True(t, ae.Remote)
+	assert.False(t, ae.Remote)
 	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), ae.ErrorCode)
 	assert.Empty(t, r2.r.AttachmentStats(), "the agent has no attachment on the other relay")
 }
@@ -795,9 +684,6 @@ func TestDrainMesh(t *testing.T) {
 // TestRelist checks that the agent enrolls again when all relays fail or the
 // list is empty, and keeps the cached list while the enroll fails.
 func TestRelist(t *testing.T) {
-	oldMin, oldMax := relistMin, relistMax
-	relistMin, relistMax = 100*time.Millisecond, 400*time.Millisecond
-	t.Cleanup(func() { relistMin, relistMax = oldMin, oldMax })
 	noPort := []identity.Relay{{ID: "relay-0", Addresses: []string{"no-port"}}}
 	cases := []struct {
 		name  string
@@ -812,7 +698,7 @@ func TestRelist(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a := w.agent(t, "a", nil, agentOptions{enrolled: func(n int32) ([]identity.Relay, []byte, error) {
+			a := w.agent(t, "a", nil, agentOptions{relist: [2]time.Duration{100 * time.Millisecond, 400 * time.Millisecond}, enrolled: func(n int32) ([]identity.Relay, []byte, error) {
 				switch {
 				case n == 1:
 					return tc.first, nil, nil

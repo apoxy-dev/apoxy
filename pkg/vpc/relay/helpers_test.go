@@ -512,7 +512,7 @@ func (r *Router) offer(s *Session, n Network, now time.Time) (*dp.SessionRespons
 	if s.closed {
 		return nil, rpc.Errorf(rpc.Unauthenticated, "relay session closed")
 	}
-	return r.offerLocked(br, s, n, now)
+	return r.offerLocked(br, s, n, 0, now)
 }
 
 // addProbed adds s with the address of its QUIC connection as its PSP address,

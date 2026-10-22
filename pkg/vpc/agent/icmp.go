@@ -10,35 +10,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 )
 
-// maxICMPBody is the most bytes of the packet that an ICMP error carries.
-const maxICMPBody = psp.MaxICMPv6 - header.IPv6MinimumSize - header.ICMPv6DstUnreachableMinimumSize
-
-// unicastDst returns the destination of an IPv4 or IPv6 packet if it is a
-// unicast address.
-func unicastDst(pkt []byte) (netip.Addr, bool) {
-	var dst netip.Addr
-	switch {
-	case len(pkt) >= header.IPv4MinimumSize && pkt[0]>>4 == 4:
-		dst = netip.AddrFrom4([4]byte(pkt[16:20]))
-	case len(pkt) >= header.IPv6MinimumSize && pkt[0]>>4 == 6:
-		dst = netip.AddrFrom16([16]byte(pkt[24:40]))
-	}
-	return dst, dst.IsGlobalUnicast()
-}
-
-// unicastSrc returns the source of an IPv4 or IPv6 packet if it is a unicast
-// address.
-func unicastSrc(pkt []byte) (netip.Addr, bool) {
-	var src netip.Addr
-	switch {
-	case len(pkt) >= header.IPv4MinimumSize && pkt[0]>>4 == 4:
-		src = netip.AddrFrom4([4]byte(pkt[12:16]))
-	case len(pkt) >= header.IPv6MinimumSize && pkt[0]>>4 == 6:
-		src = netip.AddrFrom16([16]byte(pkt[8:24]))
-	}
-	return src, src.IsGlobalUnicast()
-}
-
 // unreachable returns an ICMP unreachable error for pkt, or nil for none.
 // ICMPv6 comes from the address from, ICMPv4 from the destination of pkt.
 func unreachable(pkt []byte, from netip.Addr, denied bool) []byte {

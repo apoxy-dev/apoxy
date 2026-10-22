@@ -18,7 +18,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
-// TestIPv4Sources checks that a peer takes IPv4 only from a source in a route
+// TestIPv4Sources checks that an agent gets IPv4 only from a source in a route
 // of the sender, and that a sender with no IPv4 route uses the /96.
 func TestIPv4Sources(t *testing.T) {
 	lan, far := netip.MustParsePrefix("10.1.0.0/24"), netip.MustParseAddr("10.1.0.5")
@@ -60,12 +60,8 @@ func TestIPv4Sources(t *testing.T) {
 			echo(t, b.stack, to, 9000)
 			require.Equal(t, tc.answer, answers(a.stack, from, to, 9000))
 			if !tc.answer {
-				// PSP drops at the destination, QUIC at the relay.
-				st := b.binding().Stats()
-				assert.Zero(t, st.RxPackets)
-				if tc.mode == TransportAuto {
-					assert.NotZero(t, st.RxDrops)
-				}
+				// All data goes through the relay, which drops it in each mode.
+				assert.Zero(t, b.binding().Stats().RxPackets)
 			}
 		})
 	}

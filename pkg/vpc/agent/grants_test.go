@@ -3,17 +3,14 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
-	"errors"
-	"maps"
-	"net/netip"
 	"slices"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/apoxy-dev/softpsp/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -42,267 +39,17 @@ func extraGrant(t *testing.T, cert *tls.Certificate, name, id, prefix string, ch
 	return g
 }
 
-// routedIn reports whether the binding of a routes pfx to a peer.
-func routedIn(t *testing.T, a *Agent, pfx string) bool {
-	t.Helper()
-	other, err := a.primary().link.AddPeer(netip.MustParseAddrPort("127.0.0.1:445"))
-	require.NoError(t, err)
-	defer a.bind.RemovePeer(other)
-	p := netip.MustParsePrefix(pfx)
-	err = a.bind.AddRoute(p, other)
-	if err == nil {
-		a.bind.RemoveRoute(p, other)
-	}
-	return errors.Is(err, engine.ErrRouteTaken)
-}
-
-func TestAddGrants(t *testing.T) {
-	w := newWorld(t)
-	cert := w.relayCA.relayCert(t, "relay-1")
-	const b2 = "fd00:b2::/96"
-	cases := []struct {
-		name     string
-		mode     dp.Mode // Of the peer session.
-		grants   func(t *testing.T) []*dp.AttachmentGrant
-		taken    bool // Another peer routes b2.
-		wantText string
-		want     []string // Attachment IDs in p.extra.
-	}{
-		{
-			name: "good",
-			grants: func(t *testing.T) []*dp.AttachmentGrant {
-				return []*dp.AttachmentGrant{extraGrant(t, cert, "b", "b-2", b2, nil)}
-			},
-			want: []string{"b-2"},
-		},
-		{
-			name: "QUIC pair",
-			mode: dp.Mode_MODE_QUIC,
-			grants: func(t *testing.T) []*dp.AttachmentGrant {
-				return []*dp.AttachmentGrant{extraGrant(t, cert, "b", "b-2", b2, nil)}
-			},
-			want: []string{"b-2"},
-		},
-		{
-			name: "same grant twice",
-			grants: func(t *testing.T) []*dp.AttachmentGrant {
-				g := extraGrant(t, cert, "b", "b-2", b2, nil)
-				return []*dp.AttachmentGrant{g, g}
-			},
-			want: []string{"b-2"},
-		},
-		{
-			name: "grant of the attachment of Open",
-			grants: func(t *testing.T) []*dp.AttachmentGrant {
-				return []*dp.AttachmentGrant{signGrant(t, cert, "b", "fd00:b::/96")}
-			},
-		},
-		{
-			name: "other subject",
-			grants: func(t *testing.T) []*dp.AttachmentGrant {
-				return []*dp.AttachmentGrant{extraGrant(t, cert, "c", "c-2", b2, nil), extraGrant(t, cert, "b", "b-3", "fd00:b3::/96", nil)}
-			},
-			wantText: "not for the peer cert",
-			want:     []string{"b-3"},
-		},
-		{
-			name: "other VPC",
-			grants: func(t *testing.T) []*dp.AttachmentGrant {
-				return []*dp.AttachmentGrant{extraGrant(t, cert, "b", "b-2", b2, func(c *dp.GrantClaims) { c.Vpc.VpcUid = "vpc-2" })}
-			},
-			wantText: "another VPC",
-		},
-		{
-			name: "route taken",
-			grants: func(t *testing.T) []*dp.AttachmentGrant {
-				return []*dp.AttachmentGrant{extraGrant(t, cert, "b", "b-2", b2, nil)}
-			},
-			taken:    true,
-			wantText: engine.ErrRouteTaken.Error(),
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			a := w.stubAgent(t, "a")
-			if tc.taken {
-				bp, err := a.primary().link.AddPeer(netip.MustParseAddrPort("127.0.0.1:446"))
-				require.NoError(t, err)
-				require.NoError(t, a.bind.AddRoute(netip.MustParsePrefix(b2), bp))
-			}
-			p, _ := stubPeer(a, "b", true)
-			mode := dp.Mode_MODE_PSP
-			if tc.mode != dp.Mode_MODE_UNSPECIFIED {
-				mode = tc.mode
-			}
-			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, mode, 1))
-
-			err := a.addGrants(p, tc.grants(t))
-			if tc.wantText != "" {
-				assert.ErrorContains(t, err, tc.wantText)
-			} else {
-				assert.NoError(t, err)
-			}
-			a.mu.Lock()
-			got := slices.Sorted(maps.Keys(p.extra))
-			a.mu.Unlock()
-			assert.Equal(t, tc.want, got)
-			if slices.Contains(tc.want, "b-2") {
-				assert.True(t, routedIn(t, a, b2))
-				assert.True(t, p.routes(netip.MustParseAddr("fd00:b2::1")))
-				assert.True(t, p.origin("b-2"))
-			}
-
-			// A remove of an ID that p does not hold does nothing.
-			a.removeGrants(p, append(slices.Clone(tc.want), "unknown"))
-			assert.Empty(t, p.extra)
-			assert.Equal(t, tc.taken, routedIn(t, a, b2), "only the other peer keeps the route")
-			assert.True(t, routedIn(t, a, "fd00:b::/96"), "the grant of Open stays")
-		})
-	}
-}
-
-func TestWaitGrant(t *testing.T) {
-	w := newWorld(t)
-	cert := w.relayCA.relayCert(t, "relay-1")
-	dst := netip.MustParseAddr("fd00:b2::1")
-	// The open session with b has the attachment "attachment-b".
-	cases := []struct {
-		name    string
-		relay   func() *dp.Version // Nil means a relay of this build.
-		subject string             // From ResolvePeer.
-		ids     []string           // Attachment IDs from ResolvePeer. A relay of revision 1 gives none.
-		grant   bool               // The grant of b-2 comes after 50 ms.
-		want    bool               // waitGrant returns the session with b.
-	}{
-		{name: "grant comes late", subject: "b", ids: []string{"attachment-b", "b-2"}, grant: true, want: true},
-		{name: "grant does not come", subject: "b", ids: []string{"attachment-b", "b-2"}},
-		{name: "no session with the subject", subject: "c", ids: []string{"attachment-c"}, grant: true},
-		{name: "no subject", grant: true},
-		// Another agent with the subject of b has the address. Its grant never comes on the session with b.
-		{name: "other agent of the subject", subject: "b", ids: []string{"attachment-b9"}, grant: true},
-		{name: "no attachments in the answer", subject: "b", grant: true},
-		// A relay of revision 1 gives only the subject, so the agent waits as before.
-		{name: "relay of revision 1, grant comes late", relay: revision1, subject: "b", grant: true, want: true},
-		{name: "relay of revision 1, grant does not come", relay: revision1, subject: "b"},
-		{name: "relay of revision 1, no session with the subject", relay: revision1, subject: "c", grant: true},
-		{name: "relay from before revisions, grant comes late", relay: beforeRevisions, subject: "b", grant: true, want: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			a := w.stubAgent(t, "a")
-			a.primary().version = dp.LocalVersion("relay")
-			if tc.relay != nil {
-				a.primary().version = tc.relay()
-			}
-			p, _ := stubPeer(a, "b", true)
-			require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
-			if tc.grant {
-				g := extraGrant(t, cert, "b", "b-2", "fd00:b2::/96", nil)
-				added := make(chan error, 1)
-				time.AfterFunc(50*time.Millisecond, func() { added <- a.addGrants(p, []*dp.AttachmentGrant{g}) })
-				t.Cleanup(func() { assert.NoError(t, <-added) })
-			}
-			res := &dp.ResolvePeerResponse{Reach: dp.Reach_REACH_LOCAL, AttachmentIds: tc.ids}
-			if tc.subject != "" {
-				res.Subject = identity.ID{Project: testProject, VPC: testVPC, Agent: tc.subject}.String()
-			}
-			// The context ends the wait of the case with no grant before duplicateWait.
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
-			start := time.Now()
-			got := a.waitGrant(ctx, a.primary(), dst, res)
-			if tc.want {
-				assert.Same(t, p, got)
-			} else {
-				assert.Nil(t, got)
-			}
-			if !tc.grant || tc.want {
-				return
-			}
-			assert.Less(t, time.Since(start), 50*time.Millisecond, "no wait with no session to wait on")
-		})
-	}
-}
-
-func TestQueueGrants(t *testing.T) {
-	x := func(id string) *extra { return &extra{id: id} }
-	type op struct {
-		add    string
-		remove string
-	}
-	cases := []struct {
-		name       string
-		noGrants   bool // The peer does not serve Grants.
-		ops        []op
-		wantAdd    []string
-		wantRemove []string
-	}{
-		{name: "add", ops: []op{{add: "x"}, {add: "y"}}, wantAdd: []string{"x", "y"}},
-		{name: "remove", ops: []op{{remove: "x"}}, wantRemove: []string{"x"}},
-		// The peer can have x from Open.
-		{name: "add then remove", ops: []op{{add: "x"}, {remove: "x"}}, wantRemove: []string{"x"}},
-		{name: "remove then add", ops: []op{{remove: "x"}, {add: "x"}}, wantAdd: []string{"x"}},
-		{name: "peer with no Grants call", noGrants: true, ops: []op{{add: "x"}, {remove: "y"}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			p := &peer{sending: true, noGrants: tc.noGrants} // No sender starts.
-			for _, o := range tc.ops {
-				if o.add != "" {
-					p.queueGrants(x(o.add), "")
-				} else {
-					p.queueGrants(nil, o.remove)
-				}
-			}
-			assert.Equal(t, tc.wantAdd, sortedKeys(p.sendAdd))
-			assert.Equal(t, tc.wantRemove, sortedKeys(p.sendRemove))
-		})
-	}
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	if len(m) == 0 {
-		return nil
-	}
-	return slices.Sorted(maps.Keys(m))
-}
-
-// TestRemoveRoutesOfExtra checks that a peer session stays when another
-// attachment of the peer leaves, and closes when the attachment of Open leaves.
-func TestRemoveRoutesOfExtra(t *testing.T) {
-	w := newWorld(t)
-	cert := w.relayCA.relayCert(t, "relay-1")
-	a := w.stubAgent(t, "a")
-	p, qc := stubPeer(a, "b", true)
-	require.NoError(t, a.admit(p, nil, signGrant(t, cert, "b", "fd00:b::/96"), 7, dp.Mode_MODE_PSP, 1))
-	require.NoError(t, a.addGrants(p, []*dp.AttachmentGrant{extraGrant(t, cert, "b", "b-2", "fd00:b2::/96", nil)}))
-
-	// Another origin that takes a prefix does not end the grant.
-	a.removeRoutes(a.primary(), []*dp.Route{{Prefix: "10.0.0.0/8", Origin: "b-2"}})
-	assert.True(t, p.origin("b-2"))
-	a.removeRoutes(a.primary(), []*dp.Route{{Prefix: "fd00:b2::/96", Origin: "b-2"}})
-	assert.False(t, p.origin("b-2"))
-	assert.False(t, routedIn(t, a, "fd00:b2::/96"))
-	assert.False(t, qc.closed())
-
-	a.removeRoutes(a.primary(), []*dp.Route{{Prefix: "fd00:b::/96", Origin: "attachment-b"}})
-	assert.True(t, qc.closed())
-}
-
-// TestExtraAttachments sends UDP to and from another attachment of agent a,
-// on the peer session of the attachment of Config.
+// TestExtraAttachments sends UDP to and from another attachment of agent a.
 func TestExtraAttachments(t *testing.T) {
 	cases := []struct {
 		name   string
 		mode   TransportMode
-		before bool // a attaches the extra before the peer session opens.
-		aDials bool // a dials the peer session, else b.
+		before bool // a attaches the extra before the first packet.
 	}{
-		{name: "PSP, extra after Open"},
-		{name: "PSP, extra in the Open answer", before: true},
-		{name: "PSP, extra in the Open call", before: true, aDials: true},
-		{name: "QUIC, extra after Open", mode: TransportQUIC},
-		{name: "QUIC, extra in the Open answer", mode: TransportQUIC, before: true},
+		{name: "PSP, extra after the first packet"},
+		{name: "PSP, extra before the first packet", before: true},
+		{name: "QUIC, extra after the first packet", mode: TransportQUIC},
+		{name: "QUIC, extra before the first packet", mode: TransportQUIC, before: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -325,176 +72,77 @@ func TestExtraAttachments(t *testing.T) {
 			if tc.before {
 				attach()
 			}
-			// The dialer opens the peer session first, so the packets start no second one.
-			if tc.aDials {
-				require.NoError(t, a.a.Connect(ctx, eb.addr))
-				ping(t, a.stack, ea.addr, eb.addr, 9001, "to b")
-			} else {
-				require.NoError(t, b.a.Connect(ctx, ea.addr))
-				ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
-			}
-			pa, pb := onlyPeer(t, a.a), onlyPeer(t, b.a)
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
 			if !tc.before {
 				attach()
 			}
 			ping(t, b.stack, eb.addr, x.Address, 9002, "to a-2")
 			ping(t, a.stack, x.Address, eb.addr, 9001, "from a-2")
-			assert.Same(t, pa, onlyPeer(t, a.a), "a keeps its peer session")
-			assert.Same(t, pb, onlyPeer(t, b.a), "b keeps its peer session")
-			// b can send to a-2 with the grant from a. The route of a-2 comes
-			// from the relay and can come later.
+			// The route of a-2 comes from the relay and can come later.
 			require.Eventually(t, func() bool { return slices.Contains(b.routeSet(), x.Prefixes[0]) },
 				5*time.Second, 10*time.Millisecond, "OnRoutes of b has the routes of a")
 			assert.NotContains(t, a.routeSet(), x.Prefixes[0], "OnRoutes of a has no routes of a")
 
-			// After a detaches the extra, b drops its routes and keeps the session.
+			// After a detaches the extra, b drops its routes, and the base stays.
 			require.NoError(t, a.a.Detach(ctx, "a-2"))
 			assert.Equal(t, []string{"attach a-2 " + x.Address.String(), "detach a-2 " + x.Address.String()}, a.events("a-2"))
 			require.Eventually(t, func() bool { return !slices.Contains(b.routeSet(), x.Prefixes[0]) },
 				5*time.Second, 10*time.Millisecond, "the relay removes the route of a-2")
-			require.Eventually(t, func() bool {
-				b.a.mu.Lock()
-				defer b.a.mu.Unlock()
-				return !pb.origin(x.ID)
-			}, 5*time.Second, 10*time.Millisecond, "b removes the grant of a-2")
 			ping(t, b.stack, eb.addr, ea.addr, 9000, "to a again")
-			assert.Same(t, pb, onlyPeer(t, b.a), "b keeps its peer session")
 		})
 	}
 }
 
-// onlyPeer waits until a has one peer session and returns it. A packet goes on
-// the default route at once and starts the peer session, so the session comes later.
-func onlyPeer(t *testing.T, a *Agent) *peer {
-	t.Helper()
-	require.Eventually(t, func() bool { return peerCount(a) == 1 }, 5*time.Second, time.Millisecond, "one peer session")
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	require.Len(t, a.peers, 1)
-	for _, p := range a.peers {
-		return p
-	}
-	return nil
+// grantClient is a relay client that answers Grant with a new grant.
+type grantClient struct {
+	dp.RelayClient
+	t     *testing.T
+	cert  *tls.Certificate
+	calls atomic.Int32
 }
 
-// age makes the stored grant as old as a grant that the agent got d ago.
-func (g *ownGrant) age(d time.Duration) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.got = time.Now().Add(-d)
+func (c *grantClient) Grant(_ context.Context, in *dp.GrantRequest) (*dp.GrantResponse, error) {
+	c.calls.Add(1)
+	return &dp.GrantResponse{Grant: extraGrant(c.t, c.cert, "a", in.GetAttachmentId(), "fd00:a::/96", nil)}, nil
 }
 
 // TestOwnGrant checks that the agent asks its relay for a new grant only at the
-// refresh age, by its own elapsed time, and stores it.
+// refresh age, by its own elapsed time.
 func TestOwnGrant(t *testing.T) {
 	cases := []struct {
 		name    string
 		age     time.Duration // Time since the agent got the stored grant.
 		left    time.Duration // If set, the stored grant ends this long after the time of the host.
-		callers int
 		wantNew bool
 	}{
-		{name: "new grant", callers: 1},
-		{name: "below the refresh age", age: grantRefreshAge - 10*time.Second, callers: 1},
-		{name: "above the refresh age", age: grantRefreshAge + time.Second, callers: 1, wantNew: true},
-		{name: "two callers", age: grantRefreshAge + time.Second, callers: 2, wantNew: true},
+		{name: "new grant"},
+		{name: "below the refresh age", age: grantRefreshAge - 10*time.Second},
+		{name: "above the refresh age", age: grantRefreshAge + time.Second, wantNew: true},
 		// The end time of a new grant is 3 minutes nearer on a host with such a clock.
-		{name: "host clock 3 minutes ahead of the relay", left: grantRefreshAge, callers: 1},
-		{name: "host clock ahead, above the refresh age", age: grantRefreshAge + time.Second, left: time.Minute, callers: 1, wantNew: true},
+		{name: "host clock 3 minutes ahead of the relay", left: grantRefreshAge},
+		{name: "host clock ahead, above the refresh age", age: grantRefreshAge + time.Second, left: time.Minute, wantNew: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
-			a := w.agent(t, "a", w.relay(t, "relay-1"), agentOptions{})
-			ea := a.attached(t)
-			rc := a.current()
-			g := rc.grant
-			if tc.left != 0 {
-				g.cur = extraGrant(t, w.relayCA.relayCert(t, "relay-1"), "a", g.id, ea.prefixes[0].String(),
-					func(c *dp.GrantClaims) { c.NotAfter = timestamppb.New(time.Now().Add(tc.left)) })
-			}
-			old := g.cur
-			g.age(tc.age)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			got := make([]*dp.AttachmentGrant, tc.callers)
-			var wg sync.WaitGroup
-			for i := range got {
-				wg.Go(func() {
-					var err error
-					got[i], err = g.get(ctx)
-					assert.NoError(t, err)
-				})
-			}
-			wg.Wait()
-			for _, x := range got {
-				assert.Same(t, got[0], x, "each caller gets the grant of one call")
-			}
-			assert.Same(t, got[0], g.cur, "the agent stores the grant that it returns")
+			cert := w.relayCA.relayCert(t, "relay-1")
+			left := cmp.Or(tc.left, time.Hour)
+			stored := extraGrant(t, cert, "a", "attachment-a", "fd00:a::/96",
+				func(c *dp.GrantClaims) { c.NotAfter = timestamppb.New(time.Now().Add(left)) })
+			g := ownGrant{id: "attachment-a", cur: stored, got: time.Now().Add(-tc.age)}
+			c := &grantClient{t: t, cert: cert}
+			got, err := g.get(context.Background(), c, "192.0.2.1:443", w.relayCA.Pool())
+			require.NoError(t, err)
 			if !tc.wantNew {
-				assert.Same(t, old, got[0], "the agent made a Grant call below the refresh age")
+				assert.Same(t, stored, got, "the agent made a Grant call below the refresh age")
+				assert.Zero(t, c.calls.Load())
 				return
 			}
-			require.NotSame(t, old, got[0], "the agent made no Grant call")
-			claims, err := relay.VerifyGrant(got[0], rc.roots, time.Now())
+			assert.NotSame(t, stored, got, "the agent made no Grant call")
+			assert.Equal(t, int32(1), c.calls.Load())
+			claims, err := relay.VerifyGrant(got, w.relayCA.Pool(), time.Now())
 			require.NoError(t, err)
-			assert.Equal(t, rc.claims.GetAttachmentId(), claims.GetAttachmentId())
-			again, err := g.get(ctx)
-			require.NoError(t, err)
-			assert.Same(t, got[0], again, "the agent made a second Grant call")
-		})
-	}
-}
-
-// TestSendAfterGrantEnd checks that an agent whose grant of Attach has ended
-// opens a peer session, answers one and starts a visit: it sends a new grant.
-func TestSendAfterGrantEnd(t *testing.T) {
-	cases := []struct {
-		name  string
-		visit bool // The relays of a and b have no path, so a visits the relay of b.
-		fromB bool // b sends the first packet, so a answers the Open call.
-	}{
-		{name: "dialer of a peer session"},
-		{name: "answer to a peer session", fromB: true},
-		{name: "visit", visit: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w, r1, r2 := meshRelays(t)
-			a := w.agent(t, "a", r1, agentOptions{visitCheck: time.Hour})
-			ea := a.attached(t)
-			b := w.agent(t, "b", r2, agentOptions{visitCheck: time.Hour, visitWait: time.Hour})
-			eb := b.attached(t)
-			echo(t, a.stack, ea.addr, 9000)
-			echo(t, b.stack, eb.addr, 9000)
-			a.hasRoutes(t, eb.prefixes[0])
-			b.hasRoutes(t, ea.prefixes[0])
-			// A peer and a relay refuse the stored grant, which has ended.
-			g := a.current().grant
-			old := extraGrant(t, w.relayCA.relayCert(t, "relay-1"), "a", g.id, ea.prefixes[0].String(),
-				func(c *dp.GrantClaims) { c.NotAfter = timestamppb.New(time.Now().Add(-time.Minute)) })
-			g.cur = old
-			g.age(time.Hour)
-			switch {
-			case tc.visit:
-				t.Cleanup(cutMesh(r1, r2))
-				waitReach(t, a, eb.addr, dp.Reach_REACH_VISIT)
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				_, err := dialOnVisit(t, ctx, a, r2, eb.addr)
-				require.NoError(t, err)
-				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b on the visit")
-			case tc.fromB:
-				ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
-			default:
-				ping(t, a.stack, ea.addr, eb.addr, 9000, "to b")
-			}
-			// The packet starts the peer session after it went on the default route.
-			assert.Eventually(t, func() bool {
-				g.mu.Lock()
-				defer g.mu.Unlock()
-				return g.cur != old
-			}, 5*time.Second, 10*time.Millisecond, "a sent the grant that has ended")
+			assert.Equal(t, "attachment-a", claims.GetAttachmentId())
 		})
 	}
 }

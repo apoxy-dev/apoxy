@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net/netip"
 	"os"
@@ -17,8 +16,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/emptypb"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -27,40 +24,114 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
+// TestAttachErrors checks the errors of Attach and Detach before Run, while
+// Run runs and after it returned.
 func TestAttachErrors(t *testing.T) {
-	w := newWorld(t)
+	const before, running, after = "before Run", "while Run runs", "after Run"
 	cases := []struct {
+		phase  string
 		name   string
 		spec   AttachmentSpec
-		noRC   bool // The agent has no relay session.
 		detach string
-		want   error
+		want   error // Of the call. Nil means success.
 	}{
-		{name: "name is not a DNS-1123 subdomain", spec: AttachmentSpec{Name: "X_1"}, want: ErrInvalidAttachment},
-		{name: "label is not valid", spec: AttachmentSpec{Name: "x", Labels: map[string]string{"a b": "c"}}, want: ErrInvalidAttachment},
-		{name: "route is not valid", spec: AttachmentSpec{Name: "x", Routes: []netip.Prefix{{}}}, want: ErrInvalidAttachment},
-		{name: "name of the base", spec: AttachmentSpec{Name: "base"}, want: ErrAttachmentExists},
-		{name: "name in use", spec: AttachmentSpec{Name: "used"}, want: ErrAttachmentExists},
-		{name: "no relay session", spec: AttachmentSpec{Name: "x"}, noRC: true, want: errNoRelay},
-		{name: "detach the base", detach: "base", want: ErrBaseAttachment},
-		{name: "detach an unknown name", detach: "x", want: ErrNoAttachment},
+		{phase: before, name: "name is not a DNS-1123 subdomain", spec: AttachmentSpec{Name: "X_1"}, want: ErrInvalidAttachment},
+		{phase: before, name: "label is not valid", spec: AttachmentSpec{Name: "x", Labels: map[string]string{"a b": "c"}}, want: ErrInvalidAttachment},
+		{phase: before, name: "route is not valid", spec: AttachmentSpec{Name: "x", Routes: []netip.Prefix{{}}}, want: ErrInvalidAttachment},
+		{phase: before, name: "name of the base", spec: AttachmentSpec{Name: "base"}, want: ErrAttachmentExists},
+		{phase: before, name: "no relay session", spec: AttachmentSpec{Name: "x"}, want: errNoRelay},
+		{phase: before, name: "detach the base", detach: "base", want: ErrBaseAttachment},
+		{phase: before, name: "detach an unknown name", detach: "x", want: ErrNoAttachment},
+		{phase: running, name: "name is not a DNS-1123 subdomain", spec: AttachmentSpec{Name: "X_1"}, want: ErrInvalidAttachment},
+		{phase: running, name: "name of the base", spec: AttachmentSpec{Name: "base"}, want: ErrAttachmentExists},
+		{phase: running, name: "name in use", spec: AttachmentSpec{Name: "used"}, want: ErrAttachmentExists},
+		{phase: running, name: "detach the base", detach: "base", want: ErrBaseAttachment},
+		{phase: running, name: "detach an unknown name", detach: "x", want: ErrNoAttachment},
+		{phase: after, name: "name is not a DNS-1123 subdomain", spec: AttachmentSpec{Name: "X_1"}, want: ErrInvalidAttachment},
+		{phase: after, name: "label is not valid", spec: AttachmentSpec{Name: "x", Labels: map[string]string{"a b": "c"}}, want: ErrInvalidAttachment},
+		{phase: after, name: "route is not valid", spec: AttachmentSpec{Name: "x", Routes: []netip.Prefix{{}}}, want: ErrInvalidAttachment},
+		{phase: after, name: "name of a previous Run", spec: AttachmentSpec{Name: "used"}, want: ErrAttachmentExists},
+		{phase: after, name: "no relay session", spec: AttachmentSpec{Name: "x"}, want: errNoRelay},
+		{phase: after, name: "detach the base", detach: "base", want: ErrBaseAttachment},
+		{phase: after, name: "detach a name of a previous Run", detach: "used"},
+		{phase: after, name: "detach an unknown name", detach: "x", want: ErrNoAttachment},
+	}
+	for _, tc := range cases {
+		t.Run(tc.phase+"/"+tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var a *Agent
+			if tc.phase == before {
+				a = New(Config{Name: "base"})
+			} else {
+				w := newWorld(t)
+				ta := w.agent(t, "base", w.relay(t, "relay-1"), agentOptions{})
+				ta.attached(t)
+				_, err := ta.a.Attach(ctx, AttachmentSpec{Name: "used"})
+				require.NoError(t, err)
+				if tc.phase == after {
+					ta.stop()
+				}
+				a = ta.a
+			}
+			names := func() []string {
+				var out []string
+				for _, at := range a.Attachments() {
+					out = append(out, at.Name)
+				}
+				return out
+			}
+			old := names()
+			start := time.Now()
+			var err error
+			if tc.detach != "" {
+				err = a.Detach(ctx, tc.detach)
+			} else {
+				_, err = a.Attach(ctx, tc.spec)
+			}
+			assert.Less(t, time.Since(start), time.Second, "the call waits")
+			if tc.want == nil {
+				require.NoError(t, err)
+				assert.NotContains(t, names(), tc.detach)
+				assert.ErrorIs(t, a.Detach(ctx, tc.detach), ErrNoAttachment, "second Detach")
+				return
+			}
+			assert.ErrorIs(t, err, tc.want)
+			assert.Equal(t, old, names(), "a failed call changes no attachment")
+		})
+	}
+}
+
+// TestReadsOutsideRun checks the public reads of an agent that does not run.
+func TestReadsOutsideRun(t *testing.T) {
+	cases := []struct {
+		name string
+		ran  bool // Run ran and returned.
+	}{
+		{name: "before Run"},
+		{name: "after Run", ran: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a := w.stubAgent(t, "a")
-			a.cfg.Name = "base"
-			a.specs["used"] = &AttachmentSpec{Name: "used"}
-			if tc.noRC {
-				a.conns = nil
+			a := New(Config{Name: "base"})
+			if tc.ran {
+				w := newWorld(t)
+				ta := w.agent(t, "base", w.relay(t, "relay-1"), agentOptions{})
+				ta.attached(t)
+				ta.stop()
+				a = ta.a
 			}
-			var err error
-			if tc.detach != "" {
-				err = a.Detach(context.Background(), tc.detach)
-			} else {
-				_, err = a.Attach(context.Background(), tc.spec)
-			}
-			assert.ErrorIs(t, err, tc.want)
-			assert.Len(t, a.specs, 1, "a failed call keeps no attachment")
+			st := a.Status()
+			assert.Zero(t, st.RTT)
+			assert.Empty(t, st.Connections)
+			ats := a.Attachments()
+			require.Len(t, ats, 1)
+			assert.Equal(t, "base", ats[0].Name)
+			assert.False(t, ats[0].Address.IsValid(), "address of the base")
+			assert.Empty(t, a.Routes())
+			servers, search := a.DNS()
+			assert.Nil(t, servers)
+			assert.Nil(t, search)
 		})
 	}
 }
@@ -200,9 +271,7 @@ func TestDetachDialedAttachment(t *testing.T) {
 			x1, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-1"})
 			require.NoError(t, err)
 			echo(t, a.stack, x1.Address, 9002)
-			require.NoError(t, b.a.Connect(ctx, x1.Address))
 			ping(t, b.stack, eb.addr, x1.Address, 9002, "to x-1")
-			require.Equal(t, x1.Address, onlyPeer(t, b.a).dst, "b dialed its peer session to x-1")
 
 			start := time.Now()
 			require.NoError(t, a.a.Detach(ctx, "x-1"))
@@ -236,39 +305,6 @@ func reachBy(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16, dea
 	t.Fatalf("no answer from %s by the deadline", dst)
 }
 
-// grantRelay answers Attach with grants that it signed before. Each answer is
-// a new copy from bytes, as from the wire.
-type grantRelay struct {
-	dp.RelayClient
-	mu      sync.Mutex
-	answers [][]byte
-}
-
-func newGrantRelay(t *testing.T, cert *tls.Certificate, n int) *grantRelay {
-	g := &grantRelay{}
-	for i := range n {
-		id := fmt.Sprintf("attachment-%d", i)
-		grant := extraGrant(t, cert, "a", id, fmt.Sprintf("fd61:706f:7879:12:3400:%x::/96", i+1), nil)
-		b, err := proto.Marshal(&dp.AttachResponse{AttachmentId: id, Grant: grant})
-		require.NoError(t, err)
-		g.answers = append(g.answers, b)
-	}
-	return g
-}
-
-func (g *grantRelay) Attach(context.Context, *dp.AttachRequest) (*dp.AttachResponse, error) {
-	g.mu.Lock()
-	b := g.answers[0]
-	g.answers = g.answers[1:]
-	g.mu.Unlock()
-	res := &dp.AttachResponse{}
-	return res, proto.Unmarshal(b, res)
-}
-
-func (g *grantRelay) Detach(context.Context, *dp.DetachRequest) (*emptypb.Empty, error) {
-	return &emptypb.Empty{}, nil
-}
-
 // TestAttachmentMemory checks the heap and the goroutines that each extra
 // attachment keeps.
 func TestAttachmentMemory(t *testing.T) {
@@ -283,9 +319,9 @@ func TestAttachmentMemory(t *testing.T) {
 		return
 	}
 	w := newWorld(t)
-	a := w.stubAgent(t, "a")
-	cert := w.relayCA.relayCert(t, "relay-1")
-	a.primary().c = newGrantRelay(t, cert, n)
+	ta := w.agent(t, "a", w.relay(t, "relay-1"), agentOptions{mode: TransportQUIC})
+	ta.attached(t)
+	a := ta.a
 	ctx := context.Background()
 
 	heap := func() uint64 {
@@ -309,14 +345,14 @@ func TestAttachmentMemory(t *testing.T) {
 	wg.Wait()
 	after := heap()
 	per := (int64(after) - int64(before)) / n
-	t.Logf("Heap for each extra attachment: %d bytes (grant relay chain: %d bytes)", per, len(cert.Certificate[0]))
+	t.Logf("Heap for each extra attachment, the relay state too: %d bytes", per)
 	assert.LessOrEqual(t, per, int64(budget))
 	assert.Len(t, a.Attachments(), n+1)
-	assert.LessOrEqual(t, runtime.NumGoroutine(), goroutines, "no goroutine for each attachment")
+	// The extra QUIC connections can open in this time, so a small number of new goroutines is OK.
+	assert.LessOrEqual(t, runtime.NumGoroutine(), goroutines+32, "no goroutine for each attachment")
 
 	for i := range n {
 		require.NoError(t, a.Detach(ctx, fmt.Sprintf("x-%d", i)))
 	}
 	assert.Len(t, a.Attachments(), 1)
-	assert.Empty(t, a.primary().extras)
 }

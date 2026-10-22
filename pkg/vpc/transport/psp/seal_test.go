@@ -63,7 +63,7 @@ func TestPrepareSeal(t *testing.T) {
 
 	t.Run("QUIC data frame", func(t *testing.T) {
 		qa, _ := quicPair(t, a.tr, b.tr)
-		pc := peerconn.New(qa, a.v4)
+		pc := peerconn.New(qa)
 		t.Cleanup(func() { _ = pc.Close() })
 		require.NoError(t, a.peer.UseQUIC(pc))
 		defer func() { _ = a.peer.UseQUIC(nil) }()
@@ -171,17 +171,14 @@ func TestPrepareSegs(t *testing.T) {
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				hooks := 0
-				a.b.noPeer = func(*Link, []byte, bool) { hooks++ }
 				g.rate.Store(tc.rate)
-				defer func() { a.b.noPeer = nil; g.rate.Store(0); g.tat.Store(0) }()
+				defer func() { g.rate.Store(0); g.tat.Store(0) }()
 				var before, f, after netstack.TxFrame
 				require.True(t, d.Prepare(one, &before))
 				sent, stats := g.sent.Load(), a.b.Stats()
 				assert.False(t, d.PrepareSegs(tc.hdr, n, tc.size, n*tc.size, &f))
 				assert.Equal(t, Stats{}, sub(a.b.Stats(), stats))
 				assert.Equal(t, sent, g.sent.Load())
-				assert.Zero(t, hooks)
 				// It took no sequence numbers.
 				require.True(t, d.Prepare(one, &after))
 				assert.Equal(t, before.Seq+1, after.Seq)
@@ -213,7 +210,7 @@ func TestPrepareSegs(t *testing.T) {
 
 	t.Run("QUIC data frames", func(t *testing.T) {
 		qa, _ := quicPair(t, a.tr, b.tr)
-		pc := peerconn.New(qa, a.v4)
+		pc := peerconn.New(qa)
 		t.Cleanup(func() { _ = pc.Close() })
 		require.NoError(t, a.peer.UseQUIC(pc))
 		defer func() { _ = a.peer.UseQUIC(nil) }()

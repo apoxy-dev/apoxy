@@ -15,13 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 	vnetns "github.com/vishvananda/netns"
-
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // roamChild is set in the process that runs a row of TestRoamNetns.
@@ -90,19 +87,9 @@ func roam(t *testing.T, noRoute time.Duration) {
 	b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), mode: TransportAuto})
 	a := w.agent(t, "a", r, agentOptions{udp: udp, mode: TransportAuto})
 	ea, eb := a.attached(t), b.attached(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	require.NoError(t, a.a.Connect(ctx, eb.addr))
 	echo(t, b.stack, eb.addr, 7)
 	ping(t, a.stack, ea.addr, eb.addr, 7, "before the move")
-
-	a.a.mu.Lock()
-	rc := a.a.primaryLocked()
-	var peers []quic.Connection
-	for _, p := range a.a.peers {
-		peers = append(peers, p.qc)
-	}
-	a.a.mu.Unlock()
+	rc := a.current()
 	a0, err := ah.LinkByName("a0")
 	require.NoError(t, err)
 	a1, err := ah.LinkByName("a1")
@@ -114,7 +101,7 @@ func roam(t *testing.T, noRoute time.Duration) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err := rc.c.ResolvePeer(ctx, &dp.ResolvePeerRequest{Vpc: rc.ref, Address: eb.addr.String()})
+			_, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-1"})
 			resolved <- err
 		}()
 		time.Sleep(noRoute)
@@ -131,15 +118,8 @@ func roam(t *testing.T, noRoute time.Duration) {
 	if noRoute > 0 {
 		// QUIC sends the RPC again when the route comes back, on the same session.
 		require.NoError(t, <-resolved, "RPC that started with no route")
-		a.a.mu.Lock()
-		same := a.a.primaryLocked() == rc
-		a.a.mu.Unlock()
-		assert.True(t, same, "agent opened a new relay session")
-		assert.NoError(t, context.Cause(rc.qc.Context()), "relay session closed")
-		require.NotEmpty(t, peers)
-		for _, qc := range peers {
-			assert.NoError(t, context.Cause(qc.Context()), "peer session closed")
-		}
+		sameSession(t, rc, a.current(), "agent opened a new relay session")
+		assert.False(t, rc.ended(), "relay session closed")
 		t.Logf("No route for %v: data works %v after the route came back", noRoute, at.Sub(tr))
 		assert.Less(t, at.Sub(tr), 2*time.Second)
 		return

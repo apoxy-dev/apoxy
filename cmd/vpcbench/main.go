@@ -137,7 +137,7 @@ type options struct {
 	MTU, Streams, Lanes        int
 	Omit, Duration             time.Duration
 	Idle, ProbeInterval        time.Duration
-	// StartTimeout limits each wait for the relay, an attach or a peer session.
+	// StartTimeout limits each wait for the relay, an attach or PSP mode.
 	StartTimeout time.Duration
 	// StopRelay makes the client stop the relay at the end.
 	StopRelay bool
@@ -179,7 +179,7 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.StringVar(&o.Driver, "driver", "netstack", "data path driver: netstack or tun")
 		fs.StringVar(&o.Transport, "transport", "psp", "data transport through the relay: psp or quic")
 		fs.StringVar(&o.Via, "via", "relay", "data path: relay, or direct with no relay and no agent")
-		fs.DurationVar(&o.StartTimeout, "start-timeout", 30*time.Second, "time limit of each wait for the relay, the server, an attach, PSP mode or a peer session")
+		fs.DurationVar(&o.StartTimeout, "start-timeout", 30*time.Second, "time limit of each wait for the relay, the server, an attach or PSP mode")
 	}
 	if cmd == "client" {
 		fs.StringVar(&o.Server, "server", "", "server control address host:port")
@@ -408,8 +408,7 @@ func listenUDPFor(addr string) (*net.UDPConn, error) {
 }
 
 // newDirect makes a binding on uc with one peer at peerAddr that routes the
-// overlay address peer. It is the -via direct side, with no agent. The peer
-// sends on one lane for each RX queue of the link to it.
+// overlay address peer. It is the -via direct side, with no agent.
 func newDirect(o options, uc *net.UDPConn, self, peer netip.Addr, peerAddr netip.AddrPort) (*side, *psp.Peer, error) {
 	dm := &psp.Demux{}
 	tr := &quic.Transport{Conn: uc, EnableGRO: true, NonQUICPacketHandler: dm.Handle, NonQUICBatchEnd: dm.BatchEnd}
@@ -421,12 +420,11 @@ func newDirect(o options, uc *net.UDPConn, self, peer netip.Addr, peerAddr netip
 		_ = b.Close()
 		_ = tr.Close()
 	}}}
-	lanes := psp.RxLanes(peerAddr.Addr())
-	slog.Info("Adding the direct peer", "addr", peerAddr, "rx_lanes", lanes)
+	slog.Info("Adding the direct peer", "addr", peerAddr)
 	l, err := b.AddLink()
 	var p *psp.Peer
 	if err == nil {
-		p, err = l.AddPeerLanes(peerAddr, lanes)
+		p, err = l.AddRelay(peerAddr)
 	}
 	if err == nil {
 		err = b.AddRoute(netip.PrefixFrom(peer, peer.BitLen()), p)
@@ -583,24 +581,6 @@ func relayCA(ctx context.Context, o options) (*vpctest.CA, *ctl, error) {
 		select {
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
-		case <-time.After(joinRetry):
-		}
-	}
-}
-
-// connect opens the peer session of s to peer. With two relays, the relay of
-// the client knows the server only after the mesh session, so it tries again.
-func connect(ctx context.Context, o options, s *side, peer netip.Addr) error {
-	ctx, cancel := context.WithTimeout(ctx, o.StartTimeout)
-	defer cancel()
-	for {
-		err := s.a.Connect(ctx, peer)
-		if err == nil || o.ServerRelay == "" {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%w (last error: %w)", ctx.Err(), err)
 		case <-time.After(joinRetry):
 		}
 	}
@@ -835,9 +815,6 @@ func runClient(parent context.Context, o options, out io.Writer) error {
 		}
 		if peer, err = netip.ParseAddr(rep.Addr); err != nil {
 			return fmt.Errorf("server overlay address: %w", err)
-		}
-		if err := connect(ctx, o, s, peer); err != nil {
-			return runErr(ctx, fmt.Errorf("peer session to the server: %w", err))
 		}
 	} else {
 		if s, err = clientDirect(ctx, fail, o, srv); err != nil {

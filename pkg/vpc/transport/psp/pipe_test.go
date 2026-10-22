@@ -29,7 +29,7 @@ const noPipe = -1
 func useNetstack(t testing.TB, n *node, ep *channel.Endpoint, workers, opens int) *driver {
 	t.Helper()
 	d := newDriver(n.b, func(buf []byte, off int) bool { return inject(ep, buf[off:]) })
-	j := newInjectBatch(ep, &n.b.stats, n.b.seed, workers, d.done, n.b.ctx.Done())
+	j := newInjectBatch(ep, &n.b.stats, n.b.seed, workers, d.done, n.b.ctx.Done(), new(sync.WaitGroup))
 	d.batch = j
 	if opens >= 0 {
 		d.pipe = newRxPipe(d, j, opens, d.done, n.b.ctx.Done())

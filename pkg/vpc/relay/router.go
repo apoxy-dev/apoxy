@@ -238,15 +238,15 @@ type Session struct {
 	tag         uint32      // Trunk tag, from the first attach to the removal. Zero is no tag.
 	home        string      // Relay name of the mesh member that has the session. Empty for a session of this relay.
 	sync        syncState
-	visit       atomic.Pointer[visitor]      // Visits of s, or nil. Router.mu guards each write.
-	shardOf     *Session                     // The owner session of a shard.
-	twin        *Session                     // Older session of the agent socket. Forward also uses its rows.
-	shards      [peerconn.MaxShards]*Session // Shards 1 and up of an owner.
-	rx          *keys.Peer                   // Relay SAs for PSP packets from s.
-	tx          *keys.TxPeer                 // SAs of s for PSP packets from the relay.
-	relaySAs    map[uint32]time.Time         // End of each relay SA of s.
-	rxRows      tally                        // Counts of the rows of s that ended.
-	rxBase      counts                       // RX of s that its oldest attachment does not get.
+	visit       atomic.Pointer[visitor]     // Visits of s, or nil. Router.mu guards each write.
+	shardOf     *Session                    // The owner session of a shard.
+	twin        *Session                    // Older session of the agent socket. Forward also uses its rows.
+	shards      [peerconn.MaxConns]*Session // Shards 1 and up of an owner.
+	rx          *keys.Peer                  // Relay SAs for PSP packets from s.
+	tx          *keys.TxPeer                // SAs of s for PSP packets from the relay.
+	relaySAs    map[uint32]time.Time        // End of each relay SA of s.
+	rxRows      tally                       // Counts of the rows of s that ended.
+	rxBase      counts                      // RX of s that its oldest attachment does not get.
 
 	dropUnknownSPI, dropMeter, dropTunnel atomic.Uint64
 	dropTrunk                             atomic.Uint64 // Packets that a trunk did not carry.

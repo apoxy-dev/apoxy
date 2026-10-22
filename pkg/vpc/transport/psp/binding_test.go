@@ -349,7 +349,7 @@ func TestRemovePeer(t *testing.T) {
 
 func TestRoutes(t *testing.T) {
 	a, b := newPair(t)
-	p2, err := a.l.AddPeer(addrOf(b.tr))
+	p2, err := a.l.AddRelay(addrOf(b.tr))
 	require.NoError(t, err)
 	pfx := netip.MustParsePrefix("10.1.0.0/24")
 	steps := []struct {
@@ -624,7 +624,7 @@ func TestLinks(t *testing.T) {
 
 	l2, err := a.b.AddLink()
 	require.NoError(t, err)
-	p2, err := l2.AddPeer(netip.MustParseAddrPort("192.0.2.1:1"))
+	p2, err := l2.AddRelay(netip.MustParseAddrPort("192.0.2.1:1"))
 	require.NoError(t, err)
 	require.NoError(t, a.b.AddRoute(netip.PrefixFrom(b.v4, 32), p2))
 	require.NoError(t, a.l.AddSource(netip.PrefixFrom(a.v4, 32)))
@@ -675,7 +675,7 @@ func TestLinks(t *testing.T) {
 		assert.Same(t, a.peer, route(own), "one link sends each packet")
 		assert.Nil(t, a.b.def.Load())
 		assert.ErrorIs(t, l2.AddSource(netip.PrefixFrom(own, 32)), ErrClosed)
-		_, err := l2.AddPeer(netip.MustParseAddrPort("192.0.2.1:1"))
+		_, err := l2.AddRelay(netip.MustParseAddrPort("192.0.2.1:1"))
 		assert.ErrorIs(t, err, ErrClosed)
 	})
 }
@@ -687,7 +687,7 @@ func TestLinkReceive(t *testing.T) {
 	offer(t, time.Now(), a, b)
 	l2, err := b.b.AddLink()
 	require.NoError(t, err)
-	p2, err := l2.AddPeer(netip.MustParseAddrPort("192.0.2.1:1"))
+	p2, err := l2.AddRelay(netip.MustParseAddrPort("192.0.2.1:1"))
 	require.NoError(t, err)
 	src := netip.MustParseAddr("10.5.0.1")
 	require.NoError(t, b.b.AddRoute(netip.PrefixFrom(src, 32), p2))

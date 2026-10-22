@@ -59,8 +59,8 @@ func (srv *Server) serveShard(ctx context.Context, s *Session, sh *dp.Shard, st 
 // returns that session and the shard that s replaces. A shard has no routes,
 // rows, Sync or source address.
 func (r *Router) joinShard(s *Session, attachment string, index uint32) (owner, old *Session, err error) {
-	if index == 0 || index >= peerconn.MaxShards {
-		return nil, nil, rpc.Errorf(rpc.InvalidArgument, "shard index %d is not from 1 to %d", index, peerconn.MaxShards-1)
+	if index == 0 || index >= peerconn.MaxConns {
+		return nil, nil, rpc.Errorf(rpc.InvalidArgument, "shard index %d is not from 1 to %d", index, peerconn.MaxConns-1)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

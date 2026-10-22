@@ -89,7 +89,7 @@ func TestShardJoinRefused(t *testing.T) {
 		{
 			name: "index not below the limit",
 			prep: func(t *testing.T, w *shardWorld) (agent, string, uint32) {
-				return w.dial(t, w.cert), w.att, peerconn.MaxShards
+				return w.dial(t, w.cert), w.att, peerconn.MaxConns
 			},
 			code: rpc.InvalidArgument,
 		},
@@ -160,8 +160,8 @@ func TestShards(t *testing.T) {
 	w := newShardWorld(t)
 	r := w.h.r
 	owner := w.h.session(t, w.owner)
-	shards := make([]agent, peerconn.MaxShards)
-	for i := 1; i < peerconn.MaxShards; i++ {
+	shards := make([]agent, peerconn.MaxConns)
+	for i := 1; i < peerconn.MaxConns; i++ {
 		shards[i] = w.dial(t, w.cert)
 		_, err := join(t, shards[i], w.att, uint32(i))
 		require.NoError(t, err)
@@ -174,7 +174,7 @@ func TestShards(t *testing.T) {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		assert.Same(t, owner, r.bySource[w.owner.src])
-		for i := 1; i < peerconn.MaxShards; i++ {
+		for i := 1; i < peerconn.MaxConns; i++ {
 			s := owner.shards[i]
 			require.NotNil(t, s, "shard %d", i)
 			assert.Same(t, owner, s.shardOf)

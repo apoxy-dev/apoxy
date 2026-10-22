@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,54 +13,21 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 )
 
-// pspPeer returns the binding peer of the PSP peer session of a.
-func pspPeer(t *testing.T, a *Agent) *psp.Peer {
-	t.Helper()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, p := range a.peers {
-		if p.bp != nil && !p.quic {
-			return p.bp
-		}
-	}
-	t.Fatal("no PSP peer session")
-	return nil
-}
-
-// rxCount is the sum of the receive counters of the SAs of p.
-type rxCount struct{ packets, seq uint64 }
-
-func rxCountOf(p *psp.Peer) rxCount {
-	var c rxCount
-	for _, sa := range p.RxReport() {
-		c.packets += sa.Packets
-		c.seq += uint64(sa.Seq)
-	}
-	return c
-}
-
-// lossBetween is the loss from x to y: the packets that did not arrive.
-func lossBetween(x, y rxCount) float64 {
-	return 1 - float64(y.packets-x.packets)/float64(y.seq-x.seq)
-}
-
 // TestBreaker sends UDP at twice the meter rate of the relay. The breaker of
-// the sender trips on the receive reports, so the meter drops no more.
+// the relay peer trips on the receive reports of the relay, so the meter of the
+// relay drops no more and the limiter of the sender drops the excess.
 func TestBreaker(t *testing.T) {
 	const meter = 250_000 // Bytes per second.
 	w := newWorld(t)
 	w.relayCfg = relay.Config{LaneRate: meter}
 	r := w.relay(t, "relay-1")
+	// The sweep of the relay sends the receive reports.
+	runRouter(t, r)
 	a := w.agent(t, "a", r, agentOptions{mode: TransportAuto})
 	b := w.agent(t, "b", r, agentOptions{mode: TransportAuto})
 	ea, eb := a.attached(t), b.attached(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	require.NoError(t, a.a.Connect(ctx, eb.addr))
-	toB, fromA := pspPeer(t, a.a), pspPeer(t, b.a)
 
 	sink, err := gonet.DialUDP(b.stack, fullAddr(eb.addr, 9000), nil, ipv6.ProtocolNumber)
 	require.NoError(t, err)
@@ -107,20 +73,17 @@ func TestBreaker(t *testing.T) {
 		}
 	}()
 
-	start := rxCountOf(fromA)
-	require.Eventually(t, func() bool { return toB.Limit() > 0 }, 20*time.Second, 50*time.Millisecond, "breaker did not trip")
-	tripped, limitDrops := rxCountOf(fromA), a.binding().Stats().TxLimitDrops
-	assert.GreaterOrEqual(t, lossBetween(start, tripped), 0.2, "loss at the relay meter before the trip")
-	assert.LessOrEqual(t, toB.Limit(), int64(meter*3/4), "about half of the rate that arrived")
+	meterDrops := func() uint64 { return relayDrops(t, r)["lane_meter"] }
+	limitDrops := func() uint64 { return a.binding().Stats().TxLimitDrops }
+	require.Eventually(t, func() bool { return limitDrops() > 0 }, 20*time.Second, 50*time.Millisecond, "breaker did not trip")
+	assert.Positive(t, meterDrops(), "the meter of the relay dropped before the trip")
 
 	// The packets sent before the limit was set can still meet an empty meter.
-	require.Eventually(t, func() bool { return rxCountOf(fromA).seq-tripped.seq >= 100 }, 10*time.Second, 50*time.Millisecond)
-	settled := rxCountOf(fromA)
-	require.Eventually(t, func() bool { return rxCountOf(fromA).seq-settled.seq >= 300 }, 10*time.Second, 50*time.Millisecond)
-	after := rxCountOf(fromA)
-	assert.Less(t, lossBetween(settled, after), 0.05, "loss at the relay meter after the trip")
-	assert.Greater(t, a.binding().Stats().TxLimitDrops, limitDrops, "the limiter drops the excess")
-	t.Logf("loss before %.3f, limit %d B/s, loss after %.3f, limit drops %d, sent %.0f/s", lossBetween(start, tripped),
-		toB.Limit(), lossBetween(settled, after), a.binding().Stats().TxLimitDrops-limitDrops,
-		float64(sent.Load())/time.Since(begin).Seconds())
+	time.Sleep(time.Second)
+	m0, s0, l0 := meterDrops(), sent.Load(), limitDrops()
+	time.Sleep(2 * time.Second)
+	m1, s1, l1 := meterDrops(), sent.Load(), limitDrops()
+	assert.Less(t, float64(m1-m0), 0.05*float64(s1-s0), "drops of the relay meter after the trip")
+	assert.Greater(t, l1, l0, "the limiter drops the excess")
+	t.Logf("meter drops %d, limit drops %d of %d packets after the trip", m1-m0, l1-l0, s1-s0)
 }

@@ -461,7 +461,7 @@ func TestTun(t *testing.T) {
 func TestQUIC(t *testing.T) {
 	a, b := newPair(t)
 	qa, qb := quicPair(t, a.tr, b.tr)
-	pa, pb := peerconn.New(qa, a.v4), peerconn.New(qb, b.v4)
+	pa, pb := peerconn.New(qa), peerconn.New(qb)
 	t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
 	pb.HandleData(b.l.HandleData)
 	got := &capture{}
@@ -542,7 +542,7 @@ func TestPeerQUIC(t *testing.T) {
 	}
 	var onPeer, onOther frames
 	conn := func(qa, qb quic.Connection, f *frames) *peerconn.Conn {
-		pa, pb := peerconn.New(qa, a.v4), peerconn.New(qb, b.v4)
+		pa, pb := peerconn.New(qa), peerconn.New(qb)
 		t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
 		pb.HandleData(func(frame []byte) {
 			_, inner, err := peerconn.DecodeData(frame)
@@ -556,7 +556,7 @@ func TestPeerQUIC(t *testing.T) {
 	}
 	ofPeer, ofOther := conn(qa1, qb1, &onPeer), conn(qa2, qb2, &onOther)
 	far := netip.MustParseAddr("10.9.9.9")
-	other, err := a.l.AddPeer(netip.MustParseAddrPort("192.0.2.1:1"))
+	other, err := a.l.AddRelay(netip.MustParseAddrPort("192.0.2.1:1"))
 	require.NoError(t, err)
 	require.NoError(t, a.b.AddRoute(netip.PrefixFrom(far, 32), other))
 	toPeer, toOther := packet(a.v4, b.v4, 17, 1, 2, 500), packet(a.v4, far, 17, 1, 2, 500)
@@ -615,20 +615,34 @@ func TestPeerQUIC(t *testing.T) {
 		})
 	}
 
-	t.Run("limit of the sessions", func(t *testing.T) {
+	t.Run("many sessions", func(t *testing.T) {
 		require.NoError(t, other.UseQUIC(nil))
+		// More sessions than a one-byte slot index has.
+		const n = 300
 		var peers []*Peer
-		for i := range dataSlots {
-			p, err := a.l.AddPeer(netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), uint16(1+i)))
+		for i := range n {
+			p, err := a.l.AddRelay(netip.AddrPortFrom(netip.MustParseAddr("192.0.2.2"), uint16(1+i)))
 			require.NoError(t, err)
 			require.NoError(t, p.UseQUIC(ofPeer))
 			peers = append(peers, p)
 		}
-		require.Error(t, a.peer.UseQUIC(ofPeer), "no session is free")
+		last := peers[n-1]
+		require.NoError(t, last.UseQUIC(ofOther))
+		toLast := packet(a.v4, netip.MustParseAddr("10.9.9.10"), 17, 1, 2, 500)
+		require.NoError(t, a.b.AddRoute(netip.MustParsePrefix("10.9.9.10/32"), last))
+		onOther.mu.Lock()
+		onOther.got = nil
+		onOther.mu.Unlock()
+		_, err := a.b.Send([][]byte{toLast})
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			onOther.mu.Lock()
+			defer onOther.mu.Unlock()
+			return len(onOther.got) == 1
+		}, 5*time.Second, time.Millisecond, "the session of the last peer gets the frame")
 		// A peer that is removed gives its session back.
 		a.b.RemovePeer(peers[0])
 		require.ErrorIs(t, peers[0].UseQUIC(ofPeer), ErrClosed)
-		require.NoError(t, a.peer.UseQUIC(ofPeer))
 		for _, p := range peers[1:] {
 			a.b.RemovePeer(p)
 		}
@@ -638,7 +652,7 @@ func TestPeerQUIC(t *testing.T) {
 }
 
 // TestHandleDataConcurrent gives data frames to a tun driver from several
-// readers at once, as the readers of QUIC connection shards do.
+// readers at once, as the readers of the extra QUIC connections do.
 func TestHandleDataConcurrent(t *testing.T) {
 	a, b := newPair(t)
 	const readers, frames = 4, 200
@@ -669,7 +683,7 @@ func relayOf(t *testing.T, n *node) *Peer {
 	for _, pfx := range []string{"0.0.0.0/0", "::/0"} {
 		require.NoError(t, n.b.AddRoute(netip.MustParsePrefix(pfx), r))
 	}
-	rx, err := n.other.l.AddPeer(addrOf(n.tr))
+	rx, err := n.other.l.AddRelay(addrOf(n.tr))
 	require.NoError(t, err)
 	req, err := rx.Offer(time.Now())
 	require.NoError(t, err)
@@ -678,48 +692,30 @@ func relayOf(t *testing.T, n *node) *Peer {
 	return r
 }
 
-// TestRelayRoutes checks the send routes of a link with a relay. A packet with no
-// up agent peer goes to the relay, and NoPeer gets the ones with no agent peer.
+// TestRelayRoutes checks the send routes of a link with two relays: a packet
+// goes to the relay with the longest prefix of its destination.
 func TestRelayRoutes(t *testing.T) {
 	a, b := newPair(t)
 	offer(t, time.Now(), a, b)
 	r := relayOf(t, a)
-	var got []netip.Addr
-	a.b.noPeer = func(l *Link, pkt []byte, rx bool) {
-		assert.Same(t, a.l, l)
-		assert.False(t, rx)
-		dst, _ := innerDst(pkt)
-		got = append(got, dst)
-	}
 	far := netip.MustParseAddr("10.9.9.9")
 	host := netip.PrefixFrom(b.v4, 32)
 	steps := []struct {
 		name string
-		do   func() error
+		do   func()
 		dst  netip.Addr
 		want *Peer
-		hook bool // NoPeer gets the packet.
 	}{
-		{name: "agent peer up", dst: b.v4, want: a.peer},
-		{name: "agent peer down", do: func() error { return a.peer.SetUp(false) }, dst: b.v4, want: r},
-		{name: "no agent peer", dst: far, want: r, hook: true},
-		{name: "relay route of a prefix of the agent peer", do: func() error { return a.b.AddRoute(host, r) }, dst: b.v4, want: r},
-		{name: "agent peer up again", do: func() error { return a.peer.SetUp(true) }, dst: b.v4, want: a.peer},
-		{name: "agent peer down again", do: func() error { return a.peer.SetUp(false) }, dst: b.v6, want: r},
-		{name: "agent peer up, relay route removed", do: func() error {
-			_ = a.b.RemoveRoute(host, r)
-			return a.peer.SetUp(true)
-		}, dst: b.v4, want: a.peer},
-		{name: "agent peer removed", do: func() error {
-			a.b.RemovePeer(a.peer)
-			return nil
-		}, dst: b.v4, want: r, hook: true},
+		{name: "host route", dst: b.v4, want: a.peer},
+		{name: "default route", dst: far, want: r},
+		{name: "host route removed", do: func() { a.b.RemoveRoute(host, a.peer) }, dst: b.v4, want: r},
+		{name: "host route of the other relay", do: func() { require.NoError(t, a.b.AddRoute(host, r)) }, dst: b.v4, want: r},
+		{name: "relay removed", do: func() { a.b.RemovePeer(r) }, dst: b.v6, want: a.peer},
 	}
 	for _, st := range steps {
 		if st.do != nil {
-			require.NoError(t, st.do(), st.name)
+			st.do()
 		}
-		got = nil
 		pkt := packet(a.v4, st.dst, 17, 1, 2, 100)
 		if st.dst.Is6() {
 			pkt = packet(a.v6, st.dst, 17, 1, 2, 100)
@@ -728,49 +724,6 @@ func TestRelayRoutes(t *testing.T) {
 		require.NoError(t, a.b.prepare(pkt, &f), st.name)
 		sa, _ := st.want.txSA(pkt)
 		assert.Same(t, sa, f.SA, st.name)
-		if st.hook {
-			assert.Equal(t, []netip.Addr{st.dst}, got, st.name)
-		} else {
-			assert.Empty(t, got, st.name)
-		}
-	}
-	assert.ErrorIs(t, a.peer.SetUp(true), ErrClosed)
-}
-
-// TestTake checks the received inner packets that the driver does not get, and
-// the ones that NoPeer gets.
-func TestTake(t *testing.T) {
-	a, b := newPair(t)
-	far := netip.MustParseAddr("10.9.9.9")
-	far6 := netip.MustParseAddr("fd00::9")
-	frag := packet(far, a.v4, 17, 1, 3784, 100)
-	frag[7] = 8 // A fragment after the first one has no UDP header.
-	cases := []struct {
-		name string
-		pkt  []byte
-		bfd  bool // OnBFD gets the packet, and the driver does not.
-		hook bool // NoPeer gets the packet.
-	}{
-		{name: "BFD from an agent peer", pkt: packet(b.v4, a.v4, 17, 49152, 3784, 52), bfd: true},
-		{name: "IPv6 BFD from a relay", pkt: packet(far6, a.v6, 17, 49152, 3784, 72), bfd: true},
-		{name: "from an agent peer", pkt: packet(b.v6, a.v6, 17, 1, 2, 100)},
-		{name: "from a relay", pkt: packet(far, a.v4, 17, 1, 2, 100), hook: true},
-		{name: "TCP to the BFD port", pkt: packet(far6, a.v6, 6, 1, 3784, 100), hook: true},
-		{name: "fragment", pkt: frag, hook: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var bfd, hook [][]byte
-			a.b.onBFD = func(pkt []byte) { bfd = append(bfd, pkt) }
-			a.b.noPeer = func(l *Link, pkt []byte, rx bool) {
-				assert.Same(t, a.l, l)
-				assert.True(t, rx)
-				hook = append(hook, pkt)
-			}
-			assert.Equal(t, !tc.bfd, a.b.take(tc.pkt))
-			assert.Equal(t, tc.bfd, len(bfd) == 1)
-			assert.Equal(t, tc.hook, len(hook) == 1)
-		})
 	}
 }
 

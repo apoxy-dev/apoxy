@@ -3,7 +3,6 @@
 package agent
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -14,7 +13,6 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
@@ -22,86 +20,6 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
-
-// beforeRevisions is the version of a build from before revisions: it sends
-// no Version.
-func beforeRevisions() *dp.Version { return nil }
-
-// revision1 is the version of a build of revision 1: it has no agent names.
-func revision1() *dp.Version { return &dp.Version{Revision: 1, Build: "revision-1"} }
-
-// revision5 is the version of a build of revision 5: it gets no routes of the
-// attachments of other relays.
-func revision5() *dp.Version { return &dp.Version{Revision: 5, Build: "revision-5"} }
-
-// needsThis is the version of a build of this revision that does not work
-// with an older revision.
-func needsThis() *dp.Version {
-	return &dp.Version{Revision: dp.Revision, MinRevision: dp.Revision, Build: "needs-this"}
-}
-
-// needsLater is the version of a build of the next revision that does not
-// work with this revision.
-func needsLater() *dp.Version {
-	return &dp.Version{Revision: dp.Revision + 1, MinRevision: dp.Revision + 1, Build: "needs-later"}
-}
-
-// revisionOf returns the revision of the version that v gives. Nil means the
-// version of this build.
-func revisionOf(v func() *dp.Version) uint32 {
-	if v == nil {
-		return dp.Revision
-	}
-	return v().GetRevision()
-}
-
-// TestRevisionSkew sends UDP both ways between agents of different revisions
-// on a relay of this build. An agent from before revisions sends no Version.
-func TestRevisionSkew(t *testing.T) {
-	cases := []struct {
-		name string
-		a, b func() *dp.Version // Nil means an agent of this build.
-		mode TransportMode      // Mode of a.
-	}{
-		{name: "all of this revision"},
-		{name: "agent from before revisions", a: beforeRevisions},
-		{name: "agent of revision 1", a: revision1},
-		{name: "agent from before revisions in QUIC mode", a: beforeRevisions, mode: TransportQUIC},
-		{name: "both agents from before revisions", a: beforeRevisions, b: beforeRevisions},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newWorld(t)
-			r := w.relay(t, "relay-1")
-			a := w.agent(t, "a", r, agentOptions{version: tc.a, mode: tc.mode})
-			b := w.agent(t, "b", r, agentOptions{version: tc.b})
-			ea, eb := a.attached(t), b.attached(t)
-
-			// Each agent knows the revision of the relay from Welcome.
-			for _, ta := range []*testAgent{a, b} {
-				for n := range dp.Revision + 3 {
-					assert.Equal(t, dp.Revision >= n, ta.current().relayAtLeast(n), "relay at revision %d or later", n)
-				}
-			}
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			require.NoError(t, a.a.Connect(ctx, eb.addr))
-			require.NoError(t, b.a.Connect(ctx, ea.addr))
-			echo(t, b.stack, eb.addr, 9000)
-			echo(t, a.stack, ea.addr, 9001)
-			ping(t, a.stack, ea.addr, eb.addr, 9000, "from a")
-			ping(t, b.stack, eb.addr, ea.addr, 9001, "from b")
-
-			// Each agent knows the revision of the other agent from Open.
-			pa, pb := onlyPeer(t, a.a), onlyPeer(t, b.a)
-			for n := range dp.Revision + 3 {
-				assert.Equal(t, revisionOf(tc.b) >= n, pa.atLeast(n), "b at revision %d or later", n)
-				assert.Equal(t, revisionOf(tc.a) >= n, pb.atLeast(n), "a at revision %d or later", n)
-			}
-		})
-	}
-}
 
 // TestRelayAtLeast checks the relay revision that the agent has from Welcome.
 // A relay from before revisions sends no Version and is at revision 0.
@@ -120,33 +38,53 @@ func TestRelayAtLeast(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rc := &relayConn{version: tc.version}
-			assert.Equal(t, tc.want, rc.relayAtLeast(tc.n))
+			d := &dialed{version: tc.version}
+			assert.Equal(t, tc.want, d.relayAtLeast(tc.n))
+		})
+	}
+}
+
+// TestRelayRevision checks the relay revision against the minimum of the agent.
+func TestRelayRevision(t *testing.T) {
+	cases := []struct {
+		name         string
+		relay, agent *dp.Version
+		want         string // Error text. Empty means no error.
+	}{
+		{name: "equal revisions", relay: &dp.Version{Revision: 21}, agent: &dp.Version{Revision: 21, MinRevision: 21}},
+		{name: "relay one below the minimum", relay: &dp.Version{Revision: 20}, agent: &dp.Version{Revision: 21, MinRevision: 21},
+			want: "relay revision 20 is below the agent minimum 21"},
+		{name: "no relay version against minimum 0", agent: &dp.Version{Revision: 21}},
+		{name: "no relay version against minimum 1", agent: &dp.Version{Revision: 21, MinRevision: 1},
+			want: "relay revision 0 is below the agent minimum 1"},
+		{name: "relay above the minimum", relay: &dp.Version{Revision: 22}, agent: &dp.Version{Revision: 21, MinRevision: 21}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := relayRevision(tc.relay, tc.agent)
+			if tc.want == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.EqualError(t, err, tc.want)
 		})
 	}
 }
 
 // TestRelayRevisions dials relays that refuse the agent as too old, and relays
-// below the minimum of the agent. Run ends when no relay takes the agent and
-// one refuses it. An agent that needs a newer relay dials the next relay.
+// Run ends when no relay takes the agent and one refuses it.
 func TestRelayRevisions(t *testing.T) {
 	reason := fmt.Sprintf("agent revision %d is below the relay minimum %d", dp.Revision, dp.Revision+1)
 	cases := []struct {
 		name    string
-		relays  int                // Number of relays.
-		refuse  int                // The first relays refuse the agent as too old.
-		agent   func() *dp.Version // Nil means an agent of this build.
-		upgrade bool               // Run ends with ErrUpgrade.
-		attach  int                // Number of the relay that the agent attaches to. 0 is no relay.
-		// dials is the number of dials that relay-1 refuses. 0 is no check.
-		dials int32
+		relays  int  // Number of relays.
+		refuse  int  // The first relays refuse the agent as too old.
+		upgrade bool // Run ends with ErrUpgrade.
 	}{
 		{name: "the relay refuses the agent", relays: 1, refuse: 1, upgrade: true},
 		{name: "all relays refuse the agent", relays: 2, refuse: 2, upgrade: true},
-		{name: "next relay takes the agent", relays: 2, refuse: 1, attach: 2, dials: 1},
-		{name: "last relay takes the agent", relays: 3, refuse: 2, attach: 3},
-		{name: "agent minimum is the relay revision", relays: 1, agent: needsThis, attach: 1},
-		{name: "all relays below the agent minimum", relays: 2, agent: needsLater},
+		{name: "next relay takes the agent", relays: 2, refuse: 1},
+		{name: "last relay takes the agent", relays: 3, refuse: 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -165,7 +103,7 @@ func TestRelayRevisions(t *testing.T) {
 			runErr := make(chan error, 1)
 			// A relay that refuses the agent answers no path probe, so the agent sends
 			// PSP with no probe before Hello.
-			a := w.agent(t, "a", relays[0], agentOptions{relays: refs, version: tc.agent, runErr: runErr, mode: TransportAuto})
+			a := w.agent(t, "a", relays[0], agentOptions{relays: refs, runErr: runErr, mode: TransportAuto})
 
 			if tc.upgrade {
 				select {
@@ -180,119 +118,36 @@ func TestRelayRevisions(t *testing.T) {
 				assert.Empty(t, a.attach, "agent attached")
 				return
 			}
-			if tc.attach == 0 {
-				// The agent continues to dial: a relay upgrade can make it pass.
-				select {
-				case <-a.attach:
-					t.Fatal("agent attached to a relay below its minimum")
-				case err := <-runErr:
-					t.Fatalf("Run returned: %v", err)
-				case <-time.After(time.Second):
-				}
-				return
-			}
 			a.attached(t)
 			rc := a.current()
-			assert.Equal(t, relays[tc.attach-1].addr, rc.addr)
-			assert.True(t, rc.relayAtLeast(a.a.ver.GetMinRevision()))
-			if tc.dials != 0 {
-				// The attached agent does not dial the relay that refused it again.
-				refused := &relays[0].refused
-				assert.Never(t, func() bool { return refused.Load() != tc.dials },
-					minBackoff+300*time.Millisecond, 50*time.Millisecond, "dials that relay-1 refused")
+			var takes []string
+			for _, r := range relays[tc.refuse:] {
+				takes = append(takes, r.addr)
 			}
+			assert.Contains(t, takes, rc.addr, "the agent attached to a relay that did not refuse it")
+			// The attached agent does not dial a relay that refused it again.
+			var refused []int32
+			for _, r := range relays[:tc.refuse] {
+				refused = append(refused, r.refused.Load())
+			}
+			assert.Never(t, func() bool {
+				for i, r := range relays[:tc.refuse] {
+					if r.refused.Load() != refused[i] {
+						return true
+					}
+				}
+				return false
+			}, minBackoff+300*time.Millisecond, 50*time.Millisecond, "dials that a relay refused")
 			// The agent stays attached after another relay refused it.
 			select {
 			case err := <-runErr:
 				t.Fatalf("Run returned: %v", err)
 			case <-time.After(200 * time.Millisecond):
 			}
-			assert.Same(t, rc, a.current())
-			assert.NoError(t, rc.qc.Context().Err())
+			sameSession(t, rc, a.current())
+			assert.False(t, rc.ended())
 		})
 	}
-}
-
-// TestPeerRevisions opens a peer session where one agent needs a newer
-// revision than the other has. No peer session stays, and the relay sessions do.
-func TestPeerRevisions(t *testing.T) {
-	cases := []struct {
-		name    string
-		a, b    func() *dp.Version // a dials b.
-		upgrade bool               // a is the agent that is too old.
-		want    string             // Text in the Connect error of a.
-	}{
-		{
-			name: "listener minimum above the dialer", a: beforeRevisions, b: needsThis, upgrade: true,
-			want: fmt.Sprintf("dialer revision 0 is below the listener minimum %d", dp.Revision),
-		},
-		{
-			name: "dialer minimum above the listener", a: needsThis, b: beforeRevisions,
-			want: fmt.Sprintf("listener revision 0 is below the dialer minimum %d", dp.Revision),
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newWorld(t)
-			// A relay of this build takes the two agents.
-			r := w.relay(t, "relay-1")
-			a := w.agent(t, "a", r, agentOptions{version: tc.a})
-			b := w.agent(t, "b", r, agentOptions{version: tc.b})
-			a.attached(t)
-			eb := b.attached(t)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			err := a.a.Connect(ctx, eb.addr)
-			require.ErrorContains(t, err, tc.want)
-			assert.Equal(t, tc.upgrade, errors.Is(err, ErrUpgrade), "error: %v", err)
-			assert.Equal(t, !tc.upgrade, errors.Is(err, errRevision), "error: %v", err)
-			require.Eventually(t, func() bool { return peerCount(a.a) == 0 && peerCount(b.a) == 0 },
-				5*time.Second, 10*time.Millisecond, "no peer session stays")
-			assert.NoError(t, a.current().qc.Context().Err(), "relay session of a")
-			assert.NoError(t, b.current().qc.Context().Err(), "relay session of b")
-		})
-	}
-}
-
-// TestGrantsUnimplemented checks that a peer session stays when the peer has
-// no Grants call. The peer gets no grant changes.
-func TestGrantsUnimplemented(t *testing.T) {
-	w := newWorld(t)
-	r := w.relay(t, "relay-1")
-	a, b := w.agent(t, "a", r, agentOptions{}), w.agent(t, "b", r, agentOptions{noGrants: true})
-	ea, eb := a.attached(t), b.attached(t)
-	echo(t, a.stack, ea.addr, 9000)
-	echo(t, b.stack, eb.addr, 9001)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	// b opens the peer session first, so the packets of a start no second one.
-	require.NoError(t, b.a.Connect(ctx, ea.addr))
-	ping(t, b.stack, eb.addr, ea.addr, 9000, "to a")
-	pa, pb := onlyPeer(t, a.a), onlyPeer(t, b.a)
-
-	noGrants := func() bool {
-		pa.mu.Lock()
-		defer pa.mu.Unlock()
-		return pa.noGrants
-	}
-	require.False(t, noGrants())
-	_, err := a.a.Attach(ctx, AttachmentSpec{Name: "a-2"})
-	require.NoError(t, err)
-	require.Eventually(t, noGrants, 5*time.Second, 10*time.Millisecond, "a learns that b has no Grants call")
-	// The next change makes no call.
-	require.NoError(t, a.a.Detach(ctx, "a-2"))
-
-	ping(t, b.stack, eb.addr, ea.addr, 9000, "to a again")
-	ping(t, a.stack, ea.addr, eb.addr, 9001, "to b")
-	assert.Same(t, pa, onlyPeer(t, a.a), "a keeps its peer session")
-	assert.Same(t, pb, onlyPeer(t, b.a), "b keeps its peer session")
-	assert.NoError(t, pa.qc.Context().Err())
-	pa.mu.Lock()
-	assert.False(t, pa.sending)
-	assert.Empty(t, pa.sendAdd)
-	assert.Empty(t, pa.sendRemove)
-	pa.mu.Unlock()
 }
 
 // TestAttachGrant checks the attach errors for a grant that the agent refuses.
@@ -318,14 +173,11 @@ func TestAttachGrant(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			const addr = "192.0.2.1:443"
 			w := newWorld(t)
-			a := w.stubAgent(t, "a")
 			grant := extraGrant(t, w.relayCA.relayCert(t, "relay-1"), "a", "attachment-a", "fd00:a::/96", tc.claims)
-			b, err := proto.Marshal(&dp.AttachResponse{AttachmentId: "attachment-a", Grant: grant})
-			require.NoError(t, err)
-			a.primary().addr, a.primary().c = "192.0.2.1:443", &grantRelay{answers: [][]byte{b}}
-
-			err = a.primary().attach(context.Background(), time.Now())
+			_, err := verifyOwn(addr, w.relayCA.Pool(), grant)
+			err = relayUpgrade(addr, err)
 			require.ErrorContains(t, err, tc.want)
 			var ue *upgradeError
 			assert.Equal(t, tc.upgrade, errors.As(err, &ue), "error: %v", err)
@@ -375,61 +227,6 @@ func TestRelayUpgrade(t *testing.T) {
 			require.ErrorIs(t, got, ErrUpgrade)
 			require.True(t, errors.As(got, &ue))
 			assert.EqualError(t, ue, tc.want)
-		})
-	}
-}
-
-func TestRefusedUpgrade(t *testing.T) {
-	upgrade := quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_UPGRADE)
-	bad := quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_BAD_GRANT)
-	const reason = "dialer revision 0 is below the listener minimum 1"
-	cases := []struct {
-		name  string
-		err   error // Error of the Open call. Nil means no call.
-		close error // Cause of the connection close; nil if open.
-		want  bool
-	}{
-		{name: "remote close UPGRADE", err: errors.New("stream reset"), close: &quic.ApplicationError{Remote: true, ErrorCode: upgrade, ErrorMessage: reason}, want: true},
-		{name: "remote close UPGRADE with no call", close: &quic.ApplicationError{Remote: true, ErrorCode: upgrade, ErrorMessage: reason}, want: true},
-		{name: "local close UPGRADE", err: errors.New("stream reset"), close: &quic.ApplicationError{ErrorCode: upgrade, ErrorMessage: reason}},
-		{name: "remote close BAD_GRANT", err: errors.New("stream reset"), close: &quic.ApplicationError{Remote: true, ErrorCode: bad, ErrorMessage: reason}},
-		{name: "status FailedPrecondition", err: rpc.Errorf(rpc.FailedPrecondition, "%s", reason)},
-		{name: "open connection with no call"},
-		// The call can end before the close cause is set.
-		{name: "remote UPGRADE in the call error", err: rpc.Errorf(rpc.Unavailable, "%w", &quic.ApplicationError{Remote: true, ErrorCode: upgrade, ErrorMessage: reason}), want: true},
-		{name: "local UPGRADE in the call error", err: rpc.Errorf(rpc.Unavailable, "%w", &quic.ApplicationError{ErrorCode: upgrade, ErrorMessage: reason})},
-		{name: "remote BAD_GRANT in the call error", err: rpc.Errorf(rpc.Unavailable, "%w", &quic.ApplicationError{Remote: true, ErrorCode: bad, ErrorMessage: reason})},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			qc := newFakeConn()
-			if tc.close != nil {
-				qc.cancel(tc.close)
-			}
-			got, ok := refusedUpgrade(qc, tc.err)
-			assert.Equal(t, tc.want, ok)
-			if tc.want {
-				assert.Equal(t, reason, got)
-			}
-		})
-	}
-}
-
-func TestCloseCode(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want dp.PeerCloseCode
-	}{
-		{name: "duplicate", err: fmt.Errorf("peer: %w", errDuplicate), want: dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE},
-		{name: "peer below the minimum", err: fmt.Errorf("%w: dialer revision 0 is below the listener minimum 1", errRevision), want: dp.PeerCloseCode_PEER_CLOSE_CODE_UPGRADE},
-		// This agent is the old side, so the peer does not get UPGRADE.
-		{name: "grant needs a newer revision", err: fmt.Errorf("%w: %w", ErrUpgrade, relay.ErrGrantRevision), want: dp.PeerCloseCode_PEER_CLOSE_CODE_BAD_GRANT},
-		{name: "bad grant", err: errors.New("grant has ended"), want: dp.PeerCloseCode_PEER_CLOSE_CODE_BAD_GRANT},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, quic.ApplicationErrorCode(tc.want), closeCode(tc.err))
 		})
 	}
 }

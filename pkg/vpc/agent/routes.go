@@ -3,9 +3,7 @@
 package agent
 
 import (
-	"log/slog"
 	"net/netip"
-	"slices"
 
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -105,139 +103,14 @@ func prefixChanges(changes []routeChange) (add, remove []netip.Prefix) {
 	return add, remove
 }
 
-// applyRoutes applies a route change of rc to the binding, and gives OnRoutes
-// the change if OnRoutes has the routes of rc.
-func (a *Agent) applyRoutes(rc *relayConn, d *dp.RouteDelta) {
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	first := !rc.routes.synced
-	changes := rc.routes.apply(d, rc.ownOrigin)
-	a.bindRoutes(rc, changes)
-	switch {
-	case a.routesOf != rc:
-	case first:
-		a.syncRoutes()
-	default:
-		a.report(prefixChanges(changes))
-	}
-}
-
-// setAttachment sets the attachment and the addresses of rc. The routes that
-// came for it before the attach leave the route table of rc.
-func (a *Agent) setAttachment(rc *relayConn, id string, prefixes []netip.Prefix) {
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	rc.attachmentID, rc.prefixes, rc.self = id, prefixes, overlayAddr(prefixes)
-	rc.routes.drop(id)
-}
-
-// syncRoutes gives OnRoutes the change from the prefixes that it has to the
-// routes of a.routesOf. a.routeMu must be held.
-func (a *Agent) syncRoutes() {
-	want := a.routesOf.routes.origins
-	var add, remove []netip.Prefix
-	for p := range want {
-		if !a.reported[p] {
-			add = append(add, p)
-		}
-	}
-	for p := range a.reported {
-		if _, ok := want[p]; !ok {
-			remove = append(remove, p)
-		}
-	}
-	a.report(add, remove)
-}
-
-// report gives a change to OnRoutes. a.routeMu must be held.
-func (a *Agent) report(add, remove []netip.Prefix) {
-	if len(add)+len(remove) == 0 {
-		return
-	}
-	if a.reported == nil {
-		a.reported = map[netip.Prefix]bool{}
-	}
-	for _, p := range remove {
-		delete(a.reported, p)
-	}
-	for _, p := range add {
-		a.reported[p] = true
-	}
-	if a.cfg.OnRoutes != nil {
-		a.cfg.OnRoutes(add, remove)
-	}
-}
-
-// routeAdvertised routes the prefixes that the attachments of p advertise to p
-// in the binding. Call it after p opens.
-func (a *Agent) routeAdvertised(p *peer) {
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	vpc := tunnet.NetworkPrefixOf(p.rc.self)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.peers[p.conn] != p || p.bp == nil {
-		return
-	}
-	for pfx, origin := range p.rc.routes.origins {
-		if p.origin(origin) {
-			a.addAdvertised(p, pfx, vpc)
-		}
-	}
-}
-
-// bindRoutes gives route changes of rc to the binding, for the open peers of
-// their origins. a.routeMu must be held.
-func (a *Agent) bindRoutes(rc *relayConn, changes []routeChange) {
-	vpc := tunnet.NetworkPrefixOf(rc.self)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, c := range changes {
-		for _, p := range a.peers {
-			if p.rc != rc || p.bp == nil || !p.origin(c.origin) {
-				continue
-			}
-			if c.add {
-				a.addAdvertised(p, c.prefix, vpc)
-			} else {
-				a.removeAdvertised(p, c.prefix)
-			}
-		}
-	}
-}
-
-// addAdvertised routes pfx to p if pfx is routable. a.mu must be held.
-func (a *Agent) addAdvertised(p *peer, pfx, vpc netip.Prefix) {
-	if !Routable(pfx, vpc) || p.has(pfx) {
-		return
-	}
-	if err := a.bind.AddRoute(pfx, p.bp); err != nil {
-		slog.Warn("Failed to route an advertised prefix to a peer", "peer", p.subject, "prefix", pfx, "error", err)
-		return
-	}
-	p.advertised = append(p.advertised, pfx)
-}
-
-// removeAdvertised removes the route of pfx to p. a.mu must be held.
-func (a *Agent) removeAdvertised(p *peer, pfx netip.Prefix) {
-	i := slices.Index(p.advertised, pfx)
-	if i < 0 {
-		return
-	}
-	p.advertised = slices.Delete(p.advertised, i, i+1)
-	a.bind.RemoveRoute(pfx, p.bp)
-}
-
-// peerAddr returns the overlay address that gets the packets to dst on rc: the
-// origin of the longest route, or dst itself in the VPC network.
-func (a *Agent) peerAddr(rc *relayConn, dst netip.Addr) (netip.Addr, bool) {
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	vpc := tunnet.NetworkPrefixOf(rc.self)
-	if best := rc.bestRoute(dst, vpc); best.IsValid() {
+// peerAddr returns the overlay address that gets the packets to dst: the
+// origin of the longest route, or dst itself in the VPC network of self.
+func (t *routeTable) peerAddr(dst, self netip.Addr) (netip.Addr, bool) {
+	vpc := tunnet.NetworkPrefixOf(self)
+	if best := t.bestRoute(dst, vpc); best.IsValid() {
 		// The lowest prefix of the origin in the VPC network gives its address.
-		origin, own := rc.routes.origins[best], netip.Prefix{}
-		for p, o := range rc.routes.origins {
+		origin, own := t.origins[best], netip.Prefix{}
+		for p, o := range t.origins {
 			if o == origin && inNetwork(p, vpc) && (!own.IsValid() || p.Addr().Less(own.Addr())) {
 				own = p
 			}
@@ -249,11 +122,10 @@ func (a *Agent) peerAddr(rc *relayConn, dst netip.Addr) (netip.Addr, bool) {
 	return dst, vpc.Contains(dst)
 }
 
-// bestRoute returns the longest prefix of the route table of rc that covers
-// dst, or none. Agent.routeMu must be held.
-func (rc *relayConn) bestRoute(dst netip.Addr, vpc netip.Prefix) netip.Prefix {
+// bestRoute returns the longest prefix of the table that covers dst, or none.
+func (t *routeTable) bestRoute(dst netip.Addr, vpc netip.Prefix) netip.Prefix {
 	best := netip.Prefix{}
-	for p := range rc.routes.origins {
+	for p := range t.origins {
 		if p.Contains(dst) && p.Bits() > best.Bits() && (Routable(p, vpc) || inNetwork(p, vpc)) {
 			best = p
 		}
@@ -261,12 +133,10 @@ func (rc *relayConn) bestRoute(dst netip.Addr, vpc netip.Prefix) netip.Prefix {
 	return best
 }
 
-// routeOf returns the prefix of the route of rc that covers dst, or else the
-// prefix of dst alone.
-func (a *Agent) routeOf(rc *relayConn, dst netip.Addr) netip.Prefix {
-	a.routeMu.Lock()
-	defer a.routeMu.Unlock()
-	if best := rc.bestRoute(dst, tunnet.NetworkPrefixOf(rc.self)); best.IsValid() {
+// routeOf returns the prefix of the route that covers dst, or else the prefix
+// of dst alone.
+func (t *routeTable) routeOf(dst, self netip.Addr) netip.Prefix {
+	if best := t.bestRoute(dst, tunnet.NetworkPrefixOf(self)); best.IsValid() {
 		return best
 	}
 	return netip.PrefixFrom(dst, dst.BitLen())

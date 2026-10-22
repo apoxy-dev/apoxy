@@ -9,13 +9,12 @@ import (
 	"net"
 	"net/netip"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	pspwire "github.com/apoxy-dev/softpsp/psp"
+	"github.com/quic-go/quic-go"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 )
 
 const (
@@ -24,138 +23,114 @@ const (
 	probeWait     = time.Second
 )
 
-// probeTaker gets the path probe packets of one SID from the agent socket.
-type probeTaker interface {
-	reply(pkt []byte)
+// probeRegistry gives the path probe packets on the agent socket to the probe
+// or check of their SID. A probe or check adds its entry before its first
+// packet and removes it at its end; the packet path reads it.
+type probeRegistry struct {
+	mu sync.Mutex
+	m  map[[8]byte]*probeTaker
 }
 
-// pathProbe is one probe run on the path to the relay.
-type pathProbe struct {
-	keys p2p.ProbeKeys
-	txid [12]byte
-	size int
-	ok   chan struct{} // Closed at the first good reply.
-	once sync.Once
-	seen *atomic.Pointer[netip.AddrPort] // Gets the source address that the relay saw.
-}
+// probeTaker gets the probe packets of one SID.
+type probeTaker struct{ f func(pkt []byte) }
 
-// probeMTU returns the inner MTU that the path probe at the change to PSP mode
-// tests: the device MTU, or 0 for no probe.
-func (a *Agent) probeMTU() int {
-	a.mu.Lock()
-	dev := a.bind.DeviceMTU()
-	a.mu.Unlock()
-	if dev <= psp.DefaultMTU {
-		return 0
+// add makes f the taker of sid and returns the entry for remove.
+func (r *probeRegistry) add(sid [8]byte, f func([]byte)) *probeTaker {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.m == nil {
+		r.m = map[[8]byte]*probeTaker{}
 	}
-	return dev
+	t := &probeTaker{f}
+	r.m[sid] = t
+	return t
 }
 
-// probe tests whether the path to the PSP socket of the relay carries PSP packets with inner
-// packets of mtu B: true at the first reply, false after 1 s or at the end of the session.
-func (rc *relayConn) probe(ctx context.Context, mtu int) <-chan bool {
-	out := make(chan bool, 1)
-	keys, err := p2p.NewProbeKeys(rc.qc.ConnectionState().TLS)
-	if err != nil {
-		slog.Warn("Failed to get the path probe keys", "relay", rc.addr, "error", err)
-		out <- false
-		return out
+// remove removes the entry t of sid, if a newer one did not replace it.
+func (r *probeRegistry) remove(sid [8]byte, t *probeTaker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.m[sid] == t {
+		delete(r.m, sid)
 	}
-	p := &pathProbe{keys: keys, size: mtu + pspwire.Overhead, ok: make(chan struct{})}
-	p.seen = &rc.seen
-	_, _ = rand.Read(p.txid[:])
-	a := rc.a
-	a.probeMu.Lock()
-	a.probes[keys.SID] = p
-	a.probeMu.Unlock()
-	go func() {
-		defer func() {
-			a.probeMu.Lock()
-			if a.probes[keys.SID] == p {
-				delete(a.probes, keys.SID)
-			}
-			a.probeMu.Unlock()
-		}()
-		to := net.UDPAddrFromAddrPort(rc.relayAddr)
-		buf := make([]byte, 0, p.size)
-		wait := time.NewTimer(probeWait)
-		defer wait.Stop()
-		tick := time.NewTicker(probeInterval)
-		defer tick.Stop()
-		for round := uint32(0); ; {
-			if round < probeRounds {
-				buf = p2p.AppendProbe(buf[:0], p2p.Probe{SID: keys.SID, TxID: p.txid, Round: round, Counter: rc.probeSeq.Add(1)}, p.size, &keys.Dialer)
-				if _, err := a.cfg.Transport.WriteTo(buf, to); err != nil {
-					slog.Debug("Failed to send a path probe", "relay", rc.addr, "error", err)
-				}
-				round++
-			}
-			select {
-			case <-p.ok:
-				out <- true
-				return
-			case <-wait.C:
-				out <- false
-				return
-			case <-ctx.Done():
-				out <- false
-				return
-			case <-rc.qc.Context().Done():
-				// A relay that closed the session sends no reply.
-				out <- false
-				return
-			case <-tick.C:
-			}
-		}
-	}()
-	return out
 }
 
-// onProbe gets the path probes on the agent socket.
-func (a *Agent) onProbe(pkt []byte, _ net.Addr) {
+// take gives a path probe packet to the taker of its SID. It must not block.
+func (r *probeRegistry) take(pkt []byte, _ net.Addr) {
 	sid, ok := p2p.ProbeSID(pkt)
 	if !ok {
 		return
 	}
-	a.probeMu.Lock()
-	p := a.probes[sid]
-	a.probeMu.Unlock()
-	if p != nil {
-		p.reply(pkt)
+	r.mu.Lock()
+	t := r.m[sid]
+	r.mu.Unlock()
+	if t != nil {
+		t.f(pkt)
 	}
 }
 
-// reply accepts a reply from the relay of the same size as the probe.
-func (p *pathProbe) reply(pkt []byte) {
-	if len(pkt) != p.size {
-		return
+// probeResult is the result of a probe task.
+type probeResult struct {
+	ok      bool
+	seen    netip.AddrPort // The address of the agent socket that the relay saw.
+	counter uint64         // The counter of the last probe packet.
+}
+
+// probe tests whether the path to the PSP socket of the relay at to carries
+// PSP packets with inner packets of mtu B: true at the first reply, false
+// after probeWait or when ctx or qc ends. counter is the last probe counter.
+func (a *Agent) probe(ctx context.Context, qc quic.Connection, to netip.AddrPort, mtu int, counter uint64) probeResult {
+	res := probeResult{counter: counter}
+	keys, err := p2p.NewProbeKeys(qc.ConnectionState().TLS)
+	if err != nil {
+		slog.Warn("Failed to get the path probe keys", "relay", to, "error", err)
+		return res
 	}
-	if sid, ok := p2p.ProbeSID(pkt); !ok || sid != p.keys.SID {
-		return
-	}
-	r, err := p2p.OpenProbe(pkt, &p.keys.Listener)
-	if err != nil || !r.Reply || r.TxID != p.txid {
-		return
-	}
-	p.once.Do(func() {
-		p.seen.Store(&r.Seen)
-		close(p.ok)
+	size := mtu + pspwire.Overhead
+	var txid [12]byte
+	_, _ = rand.Read(txid[:])
+	got := make(chan netip.AddrPort, 1)
+	t := a.probes.add(keys.SID, func(pkt []byte) {
+		if len(pkt) != size {
+			return
+		}
+		r, err := p2p.OpenProbe(pkt, &keys.Listener)
+		if err != nil || !r.Reply || r.TxID != txid {
+			return
+		}
+		select {
+		case got <- r.Seen:
+		default:
+		}
 	})
-}
-
-// setClamp sets the MSS clamp of the binding from the result of a later path
-// probe. a.mu is held.
-func (a *Agent) setClamp(pathMTU int) {
-	dev, clamp := a.bind.DeviceMTU(), 0
-	if pathMTU < dev {
-		clamp = pathMTU
-	}
-	if a.bind.SetClampMTU(clamp) == clamp {
-		return
-	}
-	if clamp == 0 {
-		slog.Info("Path to the relay carries the device MTU; removed the TCP MSS clamp", "device_mtu", dev)
-	} else {
-		slog.Info("Path to the relay does not carry the device MTU; clamped the TCP MSS", "mtu", clamp, "device_mtu", dev)
+	defer a.probes.remove(keys.SID, t)
+	ua := net.UDPAddrFromAddrPort(to)
+	buf := make([]byte, 0, size)
+	wait := time.NewTimer(probeWait)
+	defer wait.Stop()
+	tick := time.NewTicker(probeInterval)
+	defer tick.Stop()
+	for round := uint32(0); ; {
+		if round < probeRounds {
+			res.counter++
+			buf = p2p.AppendProbe(buf[:0], p2p.Probe{SID: keys.SID, TxID: txid, Round: round, Counter: res.counter}, size, &keys.Dialer)
+			if _, err := a.cfg.Transport.WriteTo(buf, ua); err != nil {
+				slog.Debug("Failed to send a path probe", "relay", to, "error", err)
+			}
+			round++
+		}
+		select {
+		case res.seen = <-got:
+			res.ok = true
+			return res
+		case <-wait.C:
+			return res
+		case <-ctx.Done():
+			return res
+		case <-qc.Context().Done():
+			// A relay that closed the session sends no reply.
+			return res
+		case <-tick.C:
+		}
 	}
 }

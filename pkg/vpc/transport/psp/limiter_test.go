@@ -85,7 +85,7 @@ func TestLimiterDatapath(t *testing.T) {
 			g := &a.peer.br.limiter
 			if tc.quic {
 				qa, qb := quicPair(t, a.tr, b.tr)
-				pa, pb := peerconn.New(qa, a.v4), peerconn.New(qb, b.v4)
+				pa, pb := peerconn.New(qa), peerconn.New(qb)
 				t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
 				pb.HandleData(b.l.HandleData)
 				require.NoError(t, a.peer.UseQUIC(pa))
