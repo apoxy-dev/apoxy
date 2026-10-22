@@ -142,7 +142,7 @@ func (v *vpcProc) handle(e any) {
 		for _, a := range v.as {
 			a.box.send(e)
 		}
-	case vAssign, vKeys, vAttachmentStart, vAttachmentEnd:
+	case vAssign, vKeys, vAttachmentStart, vAttachmentEnd, vLanes:
 		v.up(e)
 	case aAttach:
 		v.attach(e)

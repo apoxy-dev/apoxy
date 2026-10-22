@@ -107,6 +107,9 @@ type connProc struct {
 	prev    netip.AddrPort
 	prevT   *time.Timer
 	lanes   []uint16
+	receive bool   // The agent reads the lane ports.
+	seen    uint8  // Bit i is set after a keepalive from lane port i.
+	told    vLanes // The lane ports that the root has.
 	probes  uint64 // The largest counter of a valid path probe.
 	limit   *rate.Limiter
 	check   *checkProc
@@ -166,6 +169,7 @@ func startConn(r *Router, vbox *mailbox, e toConn, down, up *valueMap, draining 
 		state:   stateNormal,
 		drained: draining,
 		alts:    alts,
+		told:    vLanes{port: e.port},
 	}
 	// The first change has each key: A checks the cert with the trust data of now.
 	watch(ctx, down, func(keys []string) { a.box.send(valuesChanged{keys: keys}) })
@@ -397,7 +401,7 @@ func (a *connProc) call(e aCall) {
 		a.rekey(e.in.(*dpv1.KeysRequest), e.res)
 	case callLanes:
 		in := e.in.(*dpv1.RegisterLanesRequest)
-		e.res <- callResult{out: &emptypb.Empty{}, err: a.registerLanes(in.GetPorts())}
+		e.res <- callResult{out: &emptypb.Empty{}, err: a.registerLanes(in.GetPorts(), in.GetReceive())}
 	}
 }
 
@@ -705,8 +709,9 @@ func (a *connProc) answerKeys(j *keyJob, e toKeysDone) {
 	j.res <- callResult{out: &dpv1.KeysResponse{RefusedSpis: e.refused}}
 }
 
-// registerLanes replaces the lane ports of the connection: all or none.
-func (a *connProc) registerLanes(ports []uint32) error {
+// registerLanes replaces the lane ports of the connection: all or none. With receive, a lane goes
+// to its lane port after a keepalive from that port.
+func (a *connProc) registerLanes(ports []uint32, receive bool) error {
 	if len(ports) > a.r.cfg.LaneSources {
 		return rpc.Errorf(rpc.InvalidArgument, "%d lane ports is above the limit of %d", len(ports), a.r.cfg.LaneSources)
 	}
@@ -724,17 +729,17 @@ func (a *connProc) registerLanes(ports []uint32) error {
 		}
 		lanes = append(lanes, uint16(p))
 	}
-	a.lanes = lanes
+	a.lanes, a.receive, a.seen = lanes, receive && len(lanes) > 0, 0
 	a.writePort()
 	return nil
 }
 
 // portAction returns the ports entry action of the connection now: in PSP mode with the address,
-// the previous address and the lane ports.
+// the previous address, the lane ports and the lanes that had a keepalive.
 func (a *connProc) portAction() dp.PortAction {
 	pa := dp.PortAction{Session: accessSession, Tag: a.tag, MTU: uint16(a.net.MTU), MeterIndex: a.meter}
 	if a.mode == dpv1.Mode_MODE_PSP {
-		pa.Addr, pa.Prev = a.addr, a.prev
+		pa.Addr, pa.Prev, pa.Seen = a.addr, a.prev, a.seen
 		for i, port := range a.lanes {
 			pa.Lanes |= uint64(port) << (48 - 16*(i+1))
 		}
@@ -742,19 +747,35 @@ func (a *connProc) portAction() dp.PortAction {
 	return pa
 }
 
-// writePort writes the ports entry of the connection now.
+// writePort writes the ports entry of the connection now, and tells the root its lane ports.
 func (a *connProc) writePort() {
+	pa := a.portAction()
 	var b batch
-	b.modify(dp.PortsKey{Port: a.port}.Entry(a.portAction()), portKey(a.port))
+	b.modify(dp.PortsKey{Port: a.port}.Entry(pa), portKey(a.port))
 	if err := b.write(bg, a.t); err != nil {
 		slog.Error("Failed to write the ports entry of an agent connection", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
+		return
+	}
+	m := vLanes{port: a.port, seen: pa.Seen}
+	for i := range m.lanes {
+		if port := uint16(pa.Lanes >> (48 - 16*(i+1))); port != 0 {
+			m.lanes[i] = netip.AddrPortFrom(pa.Addr.Addr(), port)
+		}
+	}
+	if m != a.told {
+		a.told = m
+		a.vbox.send(m)
 	}
 }
 
-// packetIn takes a probe or a MISS of the connection.
+// packetIn takes a probe, a keepalive or a MISS of the connection.
 func (a *connProc) packetIn(pin packetIn, now time.Time) {
 	switch pin.md.kind {
 	case dp.KindPunt:
+		if isKeepalive(pin.payload) {
+			a.keepalive(pin.md.from)
+			return
+		}
 		a.probe(pin.payload, pin.md.from, now)
 	case dp.KindMiss:
 		dst, ok := innerDst(pin.payload)
@@ -765,6 +786,20 @@ func (a *connProc) packetIn(pin packetIn, now time.Time) {
 		a.out.queue(&dpv1.SessionResponse{Msg: &dpv1.SessionResponse_NoRoute{NoRoute: &dpv1.NoRoute{Vpc: a.ref, Address: dst.String()}}})
 	}
 }
+
+// keepalive takes a keepalive from a lane port of the connection. When the agent reads the lane
+// ports, the relay then sends that lane to the lane port.
+func (a *connProc) keepalive(src netip.AddrPort) {
+	i := slices.Index(a.lanes, src.Port())
+	if !a.receive || i < 0 || src.Addr() != a.addr.Addr() || a.seen&(1<<i) != 0 {
+		return
+	}
+	a.seen |= 1 << i
+	a.writePort()
+}
+
+// isKeepalive reports whether b is a lane keepalive.
+func isKeepalive(b []byte) bool { return len(b) == 1 && b[0] == p2p.TypeKeepalive }
 
 // probe answers a path probe from the IP address of the QUIC connection. A newer probe from a new
 // source moves the PSP address. A probe with a BFD packet goes to the check.
@@ -806,7 +841,7 @@ func (a *connProc) setAddr(src netip.AddrPort) {
 		}
 		a.prevT = time.AfterFunc(rebindOverlap, func() { a.box.send(prevExpired{addr: prev}) })
 	}
-	a.addr, a.lanes = src, nil
+	a.addr, a.lanes, a.receive, a.seen = src, nil, false, 0
 	if a.check != nil {
 		a.check.box.send(checkAddr{addr: src})
 	}

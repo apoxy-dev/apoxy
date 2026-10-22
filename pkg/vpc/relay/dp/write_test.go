@@ -228,6 +228,38 @@ func TestRxRekey(t *testing.T) {
 	}
 }
 
+// TestRxCount checks that open moves seq and that check_in counts a packet only after the meters.
+func TestRxCount(t *testing.T) {
+	red := &p4.MeterConfig{Cir: 1, Cburst: 64, Pir: 1, Pburst: 64}
+	cases := []struct {
+		name  string
+		extra []*p4.Update
+		from  netip.AddrPort
+		dst   string
+		drop  uint8
+		rx    [2]uint64 // packets, seq
+	}{
+		{name: "pass", from: addrA1, dst: "100.64.2.5", rx: [2]uint64{1, 3}},
+		{name: "a drop after check_in counts", from: addrA1, dst: "100.64.4.5", drop: dp.ReasonNoTarget, rx: [2]uint64{1, 3}},
+		{name: "unknown_source", from: netip.MustParseAddrPort("192.0.2.99:4000"), dst: "100.64.2.5", drop: dp.ReasonUnknownSource, rx: [2]uint64{0, 3}},
+		{name: "lane meter", extra: []*p4.Update{meterUpdate(dp.MeterLane, 4, red)}, from: addrA1, dst: "100.64.2.5", drop: dp.ReasonMeter, rx: [2]uint64{0, 3}},
+		{name: "port meter", extra: []*p4.Update{meterUpdate(dp.MeterPort, 1, red)}, from: addrA1, dst: "100.64.2.5", drop: dp.ReasonMeter, rx: [2]uint64{0, 3}},
+		{name: "old_session", extra: []*p4.Update{remove(dp.PortsKey{Port: 1}.Entry(nil))}, from: addrA1, dst: "100.64.2.5", drop: dp.ReasonOldSession, rx: [2]uint64{0, 3}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRelay(t, tc.extra...)
+			r.Receive(tc.from, seal(spiA1In, vniA, 3, ipv4("100.64.1.5", tc.dst, 100)))
+			want := map[int64]int64{}
+			if tc.drop != 0 {
+				want[int64(tc.drop)] = 1
+			}
+			assert.Equal(t, want, counts(t, r, dp.CounterDrops))
+			assert.Equal(t, tc.rx, readRx(t, r)[spiA1In])
+		})
+	}
+}
+
 // TestSchema reads each object of the built-in schema.
 func TestSchema(t *testing.T) {
 	info, err := dp.P4Info()

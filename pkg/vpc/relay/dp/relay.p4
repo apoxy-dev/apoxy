@@ -41,7 +41,8 @@ const bit<8> R_QUIC_FULL = 20;
 @p4runtime_translation("apoxy.dev/relay/name", string)
 type bit<32> name_t;
 // kind: 1 PUNT, 2 MISS (to the root), 4 FRAME (to the port's frame writer). hash: the
-// QUIC connection. from: the outer address and port of a probe (port 0: the root uses the SID).
+// QUIC connection. from: the outer address and port of a probe or a keepalive (port 0: the root
+// uses the SID).
 @controller_header("packet_in")
 header packet_in_t {
     bit<8> kind;
@@ -76,6 +77,7 @@ struct port_t {
     bit<144> addr;
     bit<144> prev;
     bit<48> lanes;
+    bit<3> seen;
     bit<16> mtu;
     bit<32> meter_index;
 }
@@ -95,6 +97,7 @@ struct local_t {
 struct meta_t {
     bit<64> port;
     bit<64> sa_session;
+    bit<32> spi;
     bit<2> lane;
     bit<24> vni;
     bit<24> tag;
@@ -111,8 +114,12 @@ struct meta_t {
 // for an RX entry it also gives the packet count and the highest accepted sequence number.
 extern PspSa {
     PspSa(bit<32> size);
-    // Opens in place by SPI. Sets m.port, m.sa_session, m.lane (RX keys entry) and m.vni (packet).
+    // Opens in place by SPI and moves seq. Sets m.port, m.sa_session, m.spi, m.lane (RX keys entry)
+    // and m.vni (packet). It does not count the packet.
     bool open(in bit<32> spi, inout meta_t m);
+    // Counts a packet in the RX keys entry of spi. check_in calls it after the meters pass, so
+    // seq minus packets includes the meter drops (as today's reportRx).
+    void count(in bit<32> spi);
     // Seals with the TX keys entry of a lane (flow hash). vni: the outgoing VNI field (trunk port:
     // the sender's tag; access port: m.c.vni).
     bool seal(in bit<64> port, in bit<24> vni);
@@ -148,7 +155,8 @@ control Relay(inout headers_t h,
         exit;
     }
     // hide:end
-    // Writer: A (access) or M (trunk). addr 0: data on QUIC. lanes: 3 ports at addr's IP. prev
+    // Writer: A (access) or M (trunk). addr 0: data on QUIC. lanes: 3 ports at addr's IP. seen:
+    // bit i is set after a keepalive from lane i; seal sends lane i to addr until then. prev
     // (access): cleared 5 s after the agent moves. tag: the session tag of an access port.
     action port(bit<1> trunk,
                 bit<64> session,
@@ -156,9 +164,10 @@ control Relay(inout headers_t h,
                 bit<144> addr,
                 bit<144> prev,
                 bit<48> lanes,
+                bit<3> seen,
                 bit<16> mtu,
                 bit<32> meter_index) {
-        m.p = {trunk, session, tag, addr, prev, lanes, mtu, meter_index};
+        m.p = {trunk, session, tag, addr, prev, lanes, seen, mtu, meter_index};
     }
     // One classify entry for each access port, or each (trunk port, MS, tag). cell: receive cell.
     action context(name_t vpc, bit<24> vni, bit<32> cell) {
@@ -209,11 +218,12 @@ control Relay(inout headers_t h,
         actions = { forward; drop; }
     }
     apply {
-        // 1. UDP 1000 from the Go demux: the parser drops keepalives and punts probes. 2. FRAME in
+        // 1. UDP 1000 from the Go demux: the parser punts probes and keepalives. 2. FRAME in
         // (a PacketOut from a frame reader) starts at ports, with its port and session.
         open_psp();
         ports.apply();
-        // sa_session must be m.p.session. PSP from addr, prev or a lane. Lane and port meters.
+        // sa_session must be m.p.session. PSP from addr, prev or a lane. Lane and port meters,
+        // then keys.count(m.spi).
         check_in();
         // 3. Tag: the VNI field (sender's session tag) on a trunk port, else 0. Trunk tag 0: PUNT.
         read_tag();

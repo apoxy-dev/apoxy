@@ -19,7 +19,6 @@ import (
 // the relay peer trips on the receive reports of the relay, so the meter of the
 // relay drops no more and the limiter of the sender drops the excess.
 func TestBreaker(t *testing.T) {
-	t.Skip("The data plane counts a packet in its receive SA before the meters, so RxReport does not show the meter drops.")
 	const meter = 250_000 // Bytes per second.
 	w := newWorld(t)
 	w.relayCfg = relay.Config{LaneRate: meter}

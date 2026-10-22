@@ -91,8 +91,9 @@ func newAEAD(key []byte) (cipher.AEAD, psp.Version, error) {
 	return aead, v, err
 }
 
-// open opens the PSP packet b with header h in place. It returns the payload, or false when the
-// packet does not authenticate, has no sequence number or is a replay.
+// open opens the PSP packet b with header h in place and moves seq. It returns the payload, or
+// false when the packet does not authenticate, has no sequence number or is a replay. It does not
+// count the packet: check_in counts it after the meters.
 func (sa *rxSA) open(h psp.Header, b []byte) ([]byte, bool) {
 	if h.Version != sa.version || h.Flags&psp.FlagSeq == 0 {
 		return nil, false
@@ -108,9 +109,15 @@ func (sa *rxSA) open(h psp.Header, b []byte) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	sa.packets.Add(1)
 	sa.seq.Store(last)
 	return payload, true
+}
+
+// count adds a packet to the RX entry of spi. Then seq minus packets includes the meter drops.
+func (s *state) count(spi uint32) {
+	if sa := s.rx[spi]; sa != nil {
+		sa.packets.Add(1)
+	}
 }
 
 var errSeqLimit = errors.New("dp: the TX entry has used all sequence numbers")

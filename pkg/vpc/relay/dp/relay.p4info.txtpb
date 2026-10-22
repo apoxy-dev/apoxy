@@ -215,11 +215,16 @@ actions {
   }
   params {
     id: 7
+    name: "seen"
+    bitwidth: 3
+  }
+  params {
+    id: 8
     name: "mtu"
     bitwidth: 16
   }
   params {
-    id: 8
+    id: 9
     name: "meter_index"
     bitwidth: 32
   }

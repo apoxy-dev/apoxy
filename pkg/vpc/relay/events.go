@@ -157,6 +157,13 @@ type (
 		port uint64
 		ends []vAttachmentEnd
 	}
+	// vLanes gives the root the lane ports in the ports entry of the A of port. Bit i of seen is
+	// set after a keepalive from lanes[i].
+	vLanes struct {
+		port  uint64
+		lanes [MaxLaneSources]netip.AddrPort
+		seen  uint8
+	}
 	vStatsAnswer struct {
 		ask   uint64
 		stats []AttachmentStats

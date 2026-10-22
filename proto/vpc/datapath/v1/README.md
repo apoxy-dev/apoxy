@@ -709,12 +709,13 @@ agent registers lane ports only when `Welcome.max_lanes` is not 0 and the
 reflexive port is its local port. `Welcome.max_lanes` is the limit of the
 relay in each data mode, because a session in QUIC mode can change to PSP mode.
 
-The relay sends the PSP packets that it seals with the agent SA of lane i to
-lane port i of the agent. Lane 0, and a lane with no lane port, go to the
-session address. The relay sends from its own port. The agent sends the one
-byte 0x03 from each lane port to the relay after `RegisterLanes`, then every
-5 s, so that its NAT keeps the ports open. The relay drops each keepalive.
-`receive` has no effect.
+With `receive`, the relay sends the PSP packets that it seals with the agent SA
+of lane i to lane port i of the agent, after the first keepalive from that lane
+port. Lane 0, a lane with no lane port, a lane port with no keepalive yet, and
+all lanes without `receive` go to the session address. The relay sends from its
+own port. The agent sends the one byte 0x03 from each lane port to the relay
+after `RegisterLanes`, then every 5 s, so that its NAT keeps the ports open.
+New lane ports, and a new session address, need a new keepalive.
 
 ### Mesh (`apoxy-mesh/1`)
 

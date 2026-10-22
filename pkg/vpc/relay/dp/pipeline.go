@@ -24,6 +24,7 @@ const maxPacket = 65535
 type meta struct {
 	port    uint64
 	session uint64 // The session of the RX entry, or of the FRAME in.
+	spi     uint32 // The SPI of the RX entry.
 	lane    uint8
 	vni     uint32
 	from    netip.AddrPort
@@ -32,14 +33,11 @@ type meta struct {
 }
 
 // Receive runs the pipeline on one UDP payload b of port 1000 from the outer address from. It
-// changes b. Keepalives drop with no count, and probes go to the root.
+// changes b. Probes and keepalives go to the root.
 func (p *Pipeline) Receive(from netip.AddrPort, b []byte) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	if len(b) == 1 && b[0] == p2p.TypeKeepalive {
-		return
-	}
-	if _, ok := p2p.ProbeSID(b); ok {
+	if _, ok := p2p.ProbeSID(b); ok || (len(b) == 1 && b[0] == p2p.TypeKeepalive) {
 		p.toRoot(PacketInMeta{Kind: KindPunt, From: from}, 0, len(b), b)
 		return
 	}
@@ -59,7 +57,7 @@ func (p *Pipeline) Receive(from netip.AddrPort, b []byte) {
 		p.drop(ReasonOpen, len(b))
 		return
 	}
-	p.apply(&meta{port: sa.port, session: sa.session, lane: sa.lane, vni: h.VNI, from: from, psp: true, size: len(b)}, payload)
+	p.apply(&meta{port: sa.port, session: sa.session, spi: sa.spi, lane: sa.lane, vni: h.VNI, from: from, psp: true, size: len(b)}, payload)
 }
 
 // PacketOut takes FRAME in, SEAL and RAW. An error is only for a bad request; a packet that the
@@ -143,6 +141,9 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 	if !p.meter(MeterPort, pa.MeterIndex, m.size) {
 		p.drop(ReasonMeter, m.size)
 		return
+	}
+	if m.psp {
+		p.st.count(m.spi)
 	}
 
 	// read_tag: a trunk packet carries the sender's session tag in the VNI field. Tag 0 is for M.
@@ -268,7 +269,8 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 }
 
 // seal seals payload with a TX entry of the port session of o on a lane by hash, and sends it to
-// the address of that lane. It counts the drop when it fails.
+// the address of that lane. Lane i of 1 to 3 goes to the port address until bit i-1 of seen is set
+// (a keepalive from the lane port). It counts the drop when it fails.
 func (p *Pipeline) seal(port uint64, o PortAction, vni, hash uint32, payload []byte) bool {
 	sa := p.st.tx[portSession{port, o.Session}].pick(hash)
 	if sa == nil || len(payload)+psp.Overhead > maxPacket {
@@ -282,7 +284,11 @@ func (p *Pipeline) seal(port uint64, o PortAction, vni, hash uint32, payload []b
 		p.drop(ReasonNoKeys, len(payload))
 		return false
 	}
-	p.send(laneAddr(o, sa.lane), (*bp)[:n])
+	to := o.Addr
+	if sa.lane > 0 && o.Seen&(1<<(sa.lane-1)) != 0 {
+		to = laneAddr(o, sa.lane)
+	}
+	p.send(to, (*bp)[:n])
 	return true
 }
 

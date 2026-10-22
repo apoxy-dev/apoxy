@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
+	"net/netip"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -64,6 +65,7 @@ type Router struct {
 	vs       map[VPCKey]*vChild
 	conns    map[uint64]*rootConn
 	sids     map[[8]byte]uint64
+	lanes    map[netip.AddrPort]uint64 // The access port of each lane port in a ports entry.
 	lastPort uint64
 	tag      uint32
 	tags     map[uint32]struct{}
@@ -103,6 +105,10 @@ type rootConn struct {
 	ended bool
 	// rx is the sum of the receive counts that V has for the port, or -1 for none.
 	rx int64
+	// lanes and seen are the lane ports in the ports entry of A, and the lanes that had a
+	// keepalive.
+	lanes [MaxLaneSources]netip.AddrPort
+	seen  uint8
 }
 
 type rootAtt struct {
@@ -156,6 +162,7 @@ func NewRouter(cfg Config) (*Router, error) {
 		vs:     map[VPCKey]*vChild{},
 		conns:  map[uint64]*rootConn{},
 		sids:   map[[8]byte]uint64{},
+		lanes:  map[netip.AddrPort]uint64{},
 		tags:   map[uint32]struct{}{},
 		cells:  pool{max: maxCells},
 		meters: pool{max: maxMeters},
@@ -287,14 +294,51 @@ func (r *Router) keyOf(e any) any {
 func (r *Router) pinKey(pin packetIn) any {
 	port := pin.md.port
 	if port == 0 {
-		if sid, ok := p2p.ProbeSID(pin.payload); ok {
-			port = r.sids[sid]
-		}
+		port = r.puntPort(pin)
 	}
 	if c := r.conns[port]; c != nil {
 		return c.v.key
 	}
 	return nil
+}
+
+// puntPort returns the access port of a PUNT with no port: the port of the SID of a probe, or the
+// port of the lane port of a keepalive. It returns 0 for a keepalive of a lane that had one.
+func (r *Router) puntPort(pin packetIn) uint64 {
+	if sid, ok := p2p.ProbeSID(pin.payload); ok {
+		return r.sids[sid]
+	}
+	if !isKeepalive(pin.payload) {
+		return 0
+	}
+	c := r.conns[r.lanes[pin.md.from]]
+	if c == nil {
+		return 0
+	}
+	if i := slices.Index(c.lanes[:], pin.md.from); i >= 0 && c.seen&(1<<i) == 0 {
+		return c.port
+	}
+	return 0
+}
+
+// setLanes keeps the lane ports in the ports entry of an access port. A lane port that two ports
+// have goes to the port that added it last.
+func (r *Router) setLanes(m vLanes) {
+	c := r.conns[m.port]
+	if c == nil || c.ended {
+		return
+	}
+	for _, a := range c.lanes {
+		if a.IsValid() && !slices.Contains(m.lanes[:], a) && r.lanes[a] == c.port {
+			delete(r.lanes, a)
+		}
+	}
+	for _, a := range m.lanes {
+		if a.IsValid() && !slices.Contains(c.lanes[:], a) {
+			r.lanes[a] = c.port
+		}
+	}
+	c.lanes, c.seen = m.lanes, m.seen
 }
 
 // refuse answers an event that the root did not take, at its end.
@@ -573,12 +617,8 @@ func (r *Router) packetIn(pin packetIn) {
 	}
 	port := pin.md.port
 	if pin.md.kind == dp.KindPunt && port == 0 {
-		// A probe: the port of its SID.
-		sid, ok := p2p.ProbeSID(pin.payload)
-		if !ok {
-			return
-		}
-		port = r.sids[sid]
+		// A probe or a keepalive.
+		port = r.puntPort(pin)
 	}
 	if c := r.conns[port]; c != nil && !c.ended {
 		c.v.box.send(toPacketIn{port: port, pin: pin})
@@ -665,6 +705,8 @@ func (r *Router) fromV(v *vChild, msg any) {
 		r.hook(m.port, func() { r.cfg.Addresses.Attached(m.att) })
 	case vAttachmentEnd:
 		r.attachmentEnd(m)
+	case vLanes:
+		r.setLanes(m)
 	case vConnEnded:
 		r.connEnded(m)
 	case vStatsAnswer:
@@ -759,6 +801,11 @@ func (r *Router) connEnded(m vConnEnded) {
 		return
 	}
 	c.ended = true
+	for _, a := range c.lanes {
+		if r.lanes[a] == c.port {
+			delete(r.lanes, a)
+		}
+	}
 	for _, end := range m.ends {
 		r.attachmentEnd(end)
 	}

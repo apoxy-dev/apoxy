@@ -95,6 +95,15 @@ func access(port uint64, addr netip.AddrPort, tag uint32, lanes uint64) *p4.Tabl
 	return dp.PortsKey{Port: port}.Entry(dp.PortAction{Session: 1, Tag: tag, Addr: addr, Lanes: lanes, MTU: 1400, MeterIndex: uint32(port)})
 }
 
+// lane2 gives A1 only a TX entry of lane 2 (lane port 4002), and the seen bits of its ports entry.
+func lane2(seen uint8) []*p4.Update {
+	return []*p4.Update{
+		keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_TX, Spi: spiA1Out, Port: 1, Session: 1}),
+		tx(0x113, 1, 1, 2),
+		modify(dp.PortsKey{Port: 1}.Entry(dp.PortAction{Session: 1, Tag: 7, Addr: addrA1, Lanes: 4001<<32 | 4002<<16, Seen: seen, MTU: 1400, MeterIndex: 1})),
+	}
+}
+
 func context_(port, session uint64, tag uint32, vpc string, vni, cell uint32) *p4.TableEntry {
 	return dp.ClassifyKey{Port: port, Session: session, Tag: tag}.Entry(dp.ContextAction{VPC: vpc, VNI: vni, Cell: cell})
 }
@@ -317,13 +326,22 @@ func TestPipeline(t *testing.T) {
 			out:  &out{to: addrA1, spi: spiA1Out, vni: vniA, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
-			name: "a TX entry of a lane sends to the lane port",
-			extra: []*p4.Update{
-				keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_TX, Spi: spiA1Out, Port: 1, Session: 1}),
-				tx(0x113, 1, 1, 2),
-			},
-			po:  frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
-			out: &out{to: netip.AddrPortFrom(addrA1.Addr(), 4002), spi: 0x113, vni: vniA, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
+			name:  "a TX entry of a lane sends to the port address before a keepalive of the lane",
+			extra: lane2(0),
+			po:    frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
+			out:   &out{to: addrA1, spi: 0x113, vni: vniA, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
+		},
+		{
+			name:  "a keepalive of another lane does not move the lane",
+			extra: lane2(0b101),
+			po:    frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
+			out:   &out{to: addrA1, spi: 0x113, vni: vniA, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
+		},
+		{
+			name:  "a TX entry of a lane sends to the lane port after its keepalive",
+			extra: lane2(0b010),
+			po:    frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
+			out:   &out{to: netip.AddrPortFrom(addrA1.Addr(), 4002), spi: 0x113, vni: vniA, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
 			name: "PUNT of a probe",
@@ -355,7 +373,11 @@ func TestPipeline(t *testing.T) {
 			po:   &p4.PacketOut{Payload: []byte("probe reply"), Metadata: dp.PacketOutMeta{Kind: dp.KindRaw, To: addrA1}.Metadata()},
 			out:  &out{to: addrA1, inner: []byte("probe reply")},
 		},
-		{name: "keepalive", from: netip.AddrPortFrom(addrA1.Addr(), 4001), wire: []byte{p2p.TypeKeepalive}},
+		{
+			name: "PUNT of a keepalive",
+			from: netip.AddrPortFrom(addrA1.Addr(), 4001), wire: []byte{p2p.TypeKeepalive},
+			in: &pin{meta: dp.PacketInMeta{Kind: dp.KindPunt, From: netip.AddrPortFrom(addrA1.Addr(), 4001)}, payload: []byte{p2p.TypeKeepalive}},
+		},
 		{name: "malformed", from: stranger, wire: []byte("not a packet of the relay"), drop: dp.ReasonMalformed},
 		{name: "unknown_spi", from: addrA1, wire: seal(0x999, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)), drop: dp.ReasonUnknownSPI},
 		{

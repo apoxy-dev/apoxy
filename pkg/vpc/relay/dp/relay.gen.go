@@ -179,6 +179,7 @@ type PortAction struct {
 	Addr       netip.AddrPort // addr, 144 bits
 	Prev       netip.AddrPort // prev, 144 bits
 	Lanes      uint64         // lanes, 48 bits
+	Seen       uint8          // seen, 3 bits
 	MTU        uint16         // mtu, 16 bits
 	MeterIndex uint32         // meter_index, 32 bits
 }
@@ -194,8 +195,9 @@ func (a PortAction) params() []*p4.Action_Param {
 		{ParamId: 4, Value: encodeAddrPort(a.Addr)},
 		{ParamId: 5, Value: encodeAddrPort(a.Prev)},
 		{ParamId: 6, Value: encodeUint(uint64(a.Lanes), 48)},
-		{ParamId: 7, Value: encodeUint(uint64(a.MTU), 16)},
-		{ParamId: 8, Value: encodeUint(uint64(a.MeterIndex), 32)},
+		{ParamId: 7, Value: encodeUint(uint64(a.Seen), 3)},
+		{ParamId: 8, Value: encodeUint(uint64(a.MTU), 16)},
+		{ParamId: 9, Value: encodeUint(uint64(a.MeterIndex), 32)},
 	}
 }
 
@@ -246,12 +248,18 @@ func decodePortAction(ps []*p4.Action_Param) (PortAction, error) {
 			}
 			a.Lanes = uint64(v)
 		case 7:
+			v, err := decodeUint(prm.GetValue(), 3)
+			if err != nil {
+				return a, fmt.Errorf("port seen: %w", err)
+			}
+			a.Seen = uint8(v)
+		case 8:
 			v, err := decodeUint(prm.GetValue(), 16)
 			if err != nil {
 				return a, fmt.Errorf("port mtu: %w", err)
 			}
 			a.MTU = uint16(v)
-		case 8:
+		case 9:
 			v, err := decodeUint(prm.GetValue(), 32)
 			if err != nil {
 				return a, fmt.Errorf("port meter_index: %w", err)
@@ -261,7 +269,7 @@ func decodePortAction(ps []*p4.Action_Param) (PortAction, error) {
 			return a, fmt.Errorf("port: unknown parameter %d", id)
 		}
 	}
-	if seen != 0x1fe {
+	if seen != 0x3fe {
 		return a, fmt.Errorf("port: a parameter is missing")
 	}
 	return a, nil
