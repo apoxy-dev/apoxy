@@ -475,3 +475,5 @@ replace github.com/quic-go/qpack => github.com/quic-go/qpack v0.5.1
 // which go.temporal.io/server v1.23.0 still calls. cloud.google.com/go/auth wants v0.61.0
 // but only uses NewClientHandler, which exists in both.
 replace go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc => go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.59.0
+
+replace github.com/buraksezer/olric => github.com/apoxy-dev/olric v0.5.7-0.20261021235425-d0050ba08461
