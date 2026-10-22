@@ -91,8 +91,6 @@
       "name": "proto/vpc/datapath/v1/mesh.proto",
       "package": "apoxy.vpc.datapath.v1",
       "dependency": [
-        "google/protobuf/duration.proto",
-        "google/protobuf/empty.proto",
         "google/protobuf/timestamp.proto",
         "proto/vpc/datapath/v1/types.proto"
       ],
@@ -284,24 +282,53 @@
           "name": "PresenceUpdate",
           "field": [
             {
-              "name": "entries",
-              "number": 1,
-              "label": "LABEL_REPEATED",
-              "type": "TYPE_MESSAGE",
-              "typeName": ".apoxy.vpc.datapath.v1.Presence",
-              "jsonName": "entries"
+              "name": "seq",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "seq"
             },
             {
-              "name": "end_of_full_set",
-              "number": 2,
+              "name": "parts",
+              "number": 4,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.PresencePart",
+              "jsonName": "parts"
+            },
+            {
+              "name": "vpcs",
+              "number": 5,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpcs"
+            },
+            {
+              "name": "end_of_vpcs",
+              "number": 6,
               "label": "LABEL_OPTIONAL",
               "type": "TYPE_BOOL",
-              "jsonName": "endOfFullSet"
+              "jsonName": "endOfVpcs"
             }
+          ],
+          "reservedRange": [
+            {
+              "start": 1,
+              "end": 2
+            },
+            {
+              "start": 2,
+              "end": 3
+            }
+          ],
+          "reservedName": [
+            "entries",
+            "end_of_full_set"
           ]
         },
         {
-          "name": "SPIRow",
+          "name": "PresencePart",
           "field": [
             {
               "name": "vpc",
@@ -312,53 +339,31 @@
               "jsonName": "vpc"
             },
             {
-              "name": "sender_tag",
+              "name": "end_of_full_set",
               "number": 2,
               "label": "LABEL_OPTIONAL",
-              "type": "TYPE_UINT32",
-              "jsonName": "senderTag"
-            },
-            {
-              "name": "spi",
-              "number": 3,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_UINT32",
-              "jsonName": "spi"
-            },
-            {
-              "name": "destination",
-              "number": 4,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_STRING",
-              "jsonName": "destination"
-            },
-            {
-              "name": "expires_in",
-              "number": 5,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_MESSAGE",
-              "typeName": ".google.protobuf.Duration",
-              "jsonName": "expiresIn"
-            },
-            {
-              "name": "removed",
-              "number": 6,
-              "label": "LABEL_OPTIONAL",
               "type": "TYPE_BOOL",
-              "jsonName": "removed"
+              "jsonName": "endOfFullSet"
+            },
+            {
+              "name": "entries",
+              "number": 3,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Presence",
+              "jsonName": "entries"
             }
           ]
         },
         {
-          "name": "SPIRowUpdate",
+          "name": "PresenceControl",
           "field": [
             {
-              "name": "rows",
+              "name": "ack",
               "number": 1,
-              "label": "LABEL_REPEATED",
-              "type": "TYPE_MESSAGE",
-              "typeName": ".apoxy.vpc.datapath.v1.SPIRow",
-              "jsonName": "rows"
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT64",
+              "jsonName": "ack"
             }
           ]
         },
@@ -437,14 +442,9 @@
             {
               "name": "Presence",
               "inputType": ".apoxy.vpc.datapath.v1.PresenceUpdate",
-              "outputType": ".google.protobuf.Empty",
-              "clientStreaming": true
-            },
-            {
-              "name": "SPIRows",
-              "inputType": ".apoxy.vpc.datapath.v1.SPIRowUpdate",
-              "outputType": ".google.protobuf.Empty",
-              "clientStreaming": true
+              "outputType": ".apoxy.vpc.datapath.v1.PresenceControl",
+              "clientStreaming": true,
+              "serverStreaming": true
             },
             {
               "name": "TrunkKeys",

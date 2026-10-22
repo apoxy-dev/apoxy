@@ -460,8 +460,9 @@ func (a *connProc) assigned(e toAssigned) {
 	ca.assigned, ca.cell, ca.instance = true, e.cell, e.instance
 	ca.att.Addresses = e.addrs
 	ca.statuses = acceptRoutes(ca.att, ca.routes)
-	if n := len(ca.att.Addresses) + len(ca.att.Routes); n > maxEntryPrefixes {
-		a.fail(ca, rpc.Errorf(rpc.InvalidArgument, "attachment has %d addresses and routes, and a relay takes at most %d", n, maxEntryPrefixes))
+	// The other relays of a mesh refuse an announcement with more prefixes.
+	if n := len(ca.att.Addresses) + len(ca.att.Routes); a.r.mesh != nil && n > maxEntryPrefixes {
+		a.fail(ca, rpc.Errorf(rpc.InvalidArgument, "attachment has %d addresses and routes, and a relay with a mesh takes at most %d", n, maxEntryPrefixes))
 		return
 	}
 	for _, p := range ca.att.prefixes() {
@@ -1115,6 +1116,7 @@ func (a *connProc) close(code dpv1.RelayCloseCode, msg string) {
 		b.remove(dp.SourceKey{Port: a.port, Session: accessSession, Src: p}.Entry(nil))
 	}
 	b.zeroCell(a.cell)
+	b.zeroPortDrops(a.meter)
 	for _, ca := range a.atts {
 		b.zeroCell(ca.cell)
 	}

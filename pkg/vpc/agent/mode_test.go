@@ -61,7 +61,7 @@ func TestPSPRetry(t *testing.T) {
 
 			rc, bind, id := a.current(), a.binding(), a.a.Attachments()[0].ID
 			if tc.drain {
-				drain(t, r, nil)
+				drain(t, r)
 				require.Eventually(t, func() bool { return stateOf(a, rc) == stDraining }, 5*time.Second, 5*time.Millisecond)
 			}
 			sent, psp := conn.probes.Load(), pspPackets(bind.LanePackets())

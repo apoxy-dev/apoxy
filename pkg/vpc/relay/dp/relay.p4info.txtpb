@@ -307,7 +307,18 @@ counters {
   spec {
     unit: BOTH
   }
-  size: 64
+  size: 32
+}
+counters {
+  preamble {
+    id: 306017222
+    name: "Relay.port_drops"
+    alias: "port_drops"
+  }
+  spec {
+    unit: PACKETS
+  }
+  size: 2097152
 }
 meters {
   preamble {

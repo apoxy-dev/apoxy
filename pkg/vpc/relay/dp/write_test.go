@@ -39,6 +39,9 @@ func TestWrite(t *testing.T) {
 	port50 := withMetadata(access(50, netip.MustParseAddrPort("192.0.2.50:4000"), 50, 0), md)
 	ctx50 := withMetadata(context_(50, 1, 0, "uid-c/1", 300, 50), md)
 	route50 := withMetadata(route("uid-c/1", "2001:db8::/64", 50, 50, 50, 50), md)
+	dropRoute := func(reason uint8) *p4.TableEntry {
+		return withMetadata(dp.RouteKey{VPC: "uid-c/1", Dst: pfx("2001:db8:1::/64")}.Entry(dp.DropAction{Reason: reason}), md)
+	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -100,6 +103,17 @@ func TestWrite(t *testing.T) {
 			updates: []*p4.Update{insert(context_(50, 1, 0, vpcA, vniA, 1<<20))},
 			err:     codes.Unknown,
 			details: []codes.Code{codes.OutOfRange},
+		},
+		{
+			name:    "a drop action with reason 31",
+			updates: []*p4.Update{insert(port50), insert(ctx50), insert(dropRoute(31))},
+			read:    []*p4.TableEntry{port50, ctx50, dropRoute(31)},
+		},
+		{
+			name:    "a drop action with reason 32 is out of range",
+			updates: []*p4.Update{insert(port50), insert(ctx50), insert(dropRoute(32))},
+			err:     codes.Unknown,
+			details: []codes.Code{codes.Aborted, codes.Aborted, codes.OutOfRange},
 		},
 		{
 			name:    "a meter needs cir = pir",
@@ -279,7 +293,7 @@ func TestSchema(t *testing.T) {
 			reads = append(reads, &p4.Entity{Entity: &p4.Entity_ExternEntry{ExternEntry: &p4.ExternEntry{ExternTypeId: x.GetExternTypeId(), ExternId: i.GetPreamble().GetId()}}})
 		}
 	}
-	require.Len(t, reads, 4+2+3+1)
+	require.Len(t, reads, 4+3+3+1)
 	r := newRelay(t)
 	for _, e := range reads {
 		assert.NoError(t, r.Read(t.Context(), &p4.ReadRequest{Entities: []*p4.Entity{e}}, func(*p4.Entity) {}), "%v", e)

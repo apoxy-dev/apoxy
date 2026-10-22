@@ -27,6 +27,8 @@ const (
 	keyTrust   = "trust"   // *trustGen, root to V and V to A.
 	keyRx      = "rx"      // *rxValue, V to A. The root stores rxKey(port) in the map of V.
 	keyState   = "state"   // *stateValue, A to V.
+	// keyAnnounce is the key of the announcement set of V in its up map: *annSet, V to root.
+	keyAnnounce = "announce"
 )
 
 // rxKey is the key of the receive counts of a port in the map of V.
@@ -94,7 +96,7 @@ type (
 		att  string
 		done chan struct{}
 	}
-	drainEv  struct{ alternates []*dpv1.RelayRef }
+	drainEv  struct{}
 	endAllEv struct {
 		code dpv1.RelayCloseCode
 		msg  string
@@ -122,9 +124,10 @@ type (
 
 // pinMeta is the metadata of a PacketIn.
 type pinMeta struct {
-	kind uint8
-	port uint64
-	from netip.AddrPort
+	kind    uint8
+	port    uint64
+	session uint64
+	from    netip.AddrPort
 }
 
 // Messages of V and A to the root. A sends them to V, and V sends them on.
@@ -204,7 +207,9 @@ type (
 		offer   keys.Request
 		refused []uint32
 		ok      bool
-		err     error
+		// tx is true when a trunk port has a TX SA for lane 0 after the operation.
+		tx  bool
+		err error
 	}
 	toRekeyed struct {
 		port uint64
@@ -286,5 +291,5 @@ func pinOf(p *p4.PacketIn) (packetIn, bool) {
 	if err != nil {
 		return packetIn{}, false
 	}
-	return packetIn{md: pinMeta{kind: md.Kind, port: md.Port, from: md.From}, payload: p.GetPayload()}, true
+	return packetIn{md: pinMeta{kind: md.Kind, port: md.Port, session: md.Session, from: md.From}, payload: p.GetPayload()}, true
 }

@@ -47,10 +47,11 @@ var (
 	vpcRef = &dpv1.VPCRef{ProjectId: project, VpcUid: vpcUID}
 )
 
-// addresses gives each attachment the next /96 of the VPC network, and keeps the hooks that the
-// relay called.
+// addresses gives each attachment the next /96 of its slot of the VPC network, and keeps the
+// hooks that the relay called.
 type addresses struct {
 	mu       sync.Mutex
+	slot     int
 	next     int
 	lost     map[string]func()
 	attached []string
@@ -75,7 +76,7 @@ func (a *addresses) Assign(ctx context.Context, att *relay.Attachment, onLost fu
 		a.lost = map[string]func(){}
 	}
 	a.lost[att.ID] = onLost
-	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd61:706f:7879:12:3400:%x::/96", a.next))}, nil
+	return []netip.Prefix{netip.MustParsePrefix(fmt.Sprintf("fd61:706f:7879:12:3400:%x::/96", a.slot<<8+a.next))}, nil
 }
 
 func (a *addresses) Attached(att *relay.Attachment) {
@@ -159,6 +160,7 @@ func (t *trust) setErr(err error) {
 
 // env is a relay on a loopback data plane with the Relay service on real QUIC.
 type env struct {
+	id    string
 	ca    *vpctest.CA
 	r     *relay.Router
 	srv   *relay.Server
@@ -167,25 +169,61 @@ type env struct {
 	quic  *net.UDPAddr
 	data  *net.UDPAddr
 	ends  chan relay.AttachmentStats
+	// changes and sessions get the mesh changes and the mesh sessions of the relay.
+	changes  chan relay.MeshChange
+	sessions chan *relay.MeshSession
+	// stop stops the relay: its root ends, then its listener.
+	stop func()
+}
+
+// envOpts are the options of a test relay.
+type envOpts struct {
+	id   string // Relay ID, and the name in the mesh. Empty is relayID.
+	ca   *vpctest.CA
+	slot int    // The slot of the addresses that the relay gives.
+	mtu  uint32 // The MTU of the VPC network. Zero is the default MTU.
+	// mesh makes the relay a mesh member, with its name id and the certificates of ca.
+	mesh     bool
+	snapshot func() []byte
+	// dataSend wraps the data socket for the packets that the data plane sends.
+	dataSend func(net.PacketConn) net.PacketConn
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	ca, err := vpctest.NewCA()
-	require.NoError(t, err)
+	return newEnvWith(t, envOpts{})
+}
+
+func newEnvWith(t *testing.T, o envOpts) *env {
+	t.Helper()
+	if o.id == "" {
+		o.id = relayID
+	}
+	ca := o.ca
+	if ca == nil {
+		var err error
+		ca, err = vpctest.NewCA()
+		require.NoError(t, err)
+	}
 	lo, err := vpctest.NewLoopback()
 	require.NoError(t, err)
+	if o.dataSend != nil {
+		lo.Target = vpctest.NewSocketTarget(o.dataSend(lo.Data))
+	}
 	go func() { _ = lo.Run() }()
 	e := &env{
-		ca:    ca,
-		addrs: &addresses{},
-		trust: &trust{pool: ca.Pool()},
-		quic:  lo.QUIC.LocalAddr().(*net.UDPAddr),
-		data:  &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(lo.DataPort())},
-		ends:  make(chan relay.AttachmentStats, 64),
+		id:       o.id,
+		ca:       ca,
+		addrs:    &addresses{slot: o.slot},
+		trust:    &trust{pool: ca.Pool()},
+		quic:     lo.QUIC.LocalAddr().(*net.UDPAddr),
+		data:     &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(lo.DataPort())},
+		ends:     make(chan relay.AttachmentStats, 64),
+		changes:  make(chan relay.MeshChange, 64),
+		sessions: make(chan *relay.MeshSession, 64),
 	}
 	e.r, err = relay.NewRouter(relay.Config{
-		Relay:       &dpv1.RelayRef{Id: relayID, Addresses: []string{"192.0.2.1"}},
+		Relay:       &dpv1.RelayRef{Id: o.id, Addresses: []string{fmt.Sprintf("192.0.2.%d", 1+o.slot)}},
 		Trust:       e.trust,
 		Addresses:   e.addrs,
 		Target:      lo.Target,
@@ -194,7 +232,19 @@ func newEnv(t *testing.T) *env {
 	require.NoError(t, err)
 	e.r.OnAttachmentEnd(func(s relay.AttachmentStats) { e.ends <- s })
 	e.r.AddTenant(project)
-	e.r.AddVPC(vpcKey, relay.Network{ID: netID, Name: "net-a"})
+	e.r.AddVPC(vpcKey, relay.Network{ID: netID, Name: "net-a", MTU: o.mtu})
+	cert, err := ca.RelayCert(o.id)
+	require.NoError(t, err)
+	tr := &quic.Transport{Conn: lo.QUIC, ConnContext: relay.TraceContext}
+	if o.mesh {
+		require.NoError(t, e.r.SetMesh(o.id, relay.MeshConfig{
+			TLS:      &tls.Config{Certificates: []tls.Certificate{*cert}, InsecureSkipVerify: true},
+			Verify:   verifyRelay(ca),
+			Snapshot: o.snapshot,
+		}, tr, &quic.Config{EnableDatagrams: true}))
+		e.r.OnMeshChange(func(c relay.MeshChange) { e.changes <- c })
+		e.r.OnMeshSession(func(s *relay.MeshSession) { e.sessions <- s })
+	}
 	runCtx, stopRun := context.WithCancel(context.Background())
 	runDone := make(chan struct{})
 	go func() {
@@ -202,11 +252,8 @@ func newEnv(t *testing.T) *env {
 		_ = e.r.Run(runCtx)
 	}()
 
-	cert, err := ca.RelayCert(relayID)
-	require.NoError(t, err)
-	tr := &quic.Transport{Conn: lo.QUIC, ConnContext: relay.TraceContext}
 	ln, err := tr.Listen(e.r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}),
-		&quic.Config{EnableDatagrams: true, Tracer: relay.TraceRTT, KeepAlivePeriod: relay.AgentKeepAlive})
+		e.r.ListenConfig(&quic.Config{EnableDatagrams: true, Tracer: relay.TraceRTT, KeepAlivePeriod: relay.AgentKeepAlive}))
 	require.NoError(t, err)
 	e.srv = &relay.Server{R: e.r}
 	serveCtx, stopServe := context.WithCancel(context.Background())
@@ -215,16 +262,31 @@ func newEnv(t *testing.T) *env {
 		defer close(serveDone)
 		_ = e.srv.Serve(serveCtx, ln)
 	}()
-	t.Cleanup(func() {
-		stopRun()
-		<-runDone
-		_ = ln.Close()
-		stopServe()
-		<-serveDone
-		_ = tr.Close()
-		_ = lo.Close()
-	})
+	var once sync.Once
+	e.stop = func() {
+		once.Do(func() {
+			stopRun()
+			<-runDone
+			_ = ln.Close()
+			stopServe()
+			<-serveDone
+			_ = tr.Close()
+			_ = lo.Close()
+		})
+	}
+	t.Cleanup(e.stop)
 	return e
+}
+
+// verifyRelay accepts a relay certificate of ca that names the relay.
+func verifyRelay(ca *vpctest.CA) relay.MeshVerify {
+	return func(chain []*x509.Certificate, name string, _ netip.AddrPort) error {
+		if len(chain) == 0 {
+			return errors.New("no certificate")
+		}
+		_, err := chain[0].Verify(x509.VerifyOptions{Roots: ca.Pool(), DNSName: name, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+		return err
+	}
 }
 
 // agent is the agent end of one QUIC connection to the relay.

@@ -139,20 +139,6 @@ func answer[T proto.Message](s *stub, method string, in proto.Message) (T, error
 	return zero, rpc.Errorf(rpc.Internal, "no answer for %s", method)
 }
 
-// recvAll records each message of a client stream.
-func recvAll[Req any](s *stub, method string, st rpc.ClientStreamServer[Req]) (*emptypb.Empty, error) {
-	for {
-		in, err := st.Recv()
-		if err == io.EOF {
-			return &emptypb.Empty{}, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		s.record(method, any(in).(proto.Message))
-	}
-}
-
 type relayStub struct {
 	*stub
 	welcome *dp.SessionResponse
@@ -218,12 +204,21 @@ func (m meshStub) Open(ctx context.Context, in *dp.MeshOpenRequest) (*dp.MeshOpe
 	return answer[*dp.MeshOpenResponse](m.stub, "Open", in)
 }
 
-func (m meshStub) Presence(ctx context.Context, st rpc.ClientStreamServer[dp.PresenceUpdate]) (*emptypb.Empty, error) {
-	return recvAll(m.stub, "Presence", st)
-}
-
-func (m meshStub) SPIRows(ctx context.Context, st rpc.ClientStreamServer[dp.SPIRowUpdate]) (*emptypb.Empty, error) {
-	return recvAll(m.stub, "SPIRows", st)
+// Presence acks each message.
+func (m meshStub) Presence(ctx context.Context, st rpc.BidiStreamServer[dp.PresenceUpdate, dp.PresenceControl]) error {
+	for {
+		in, err := st.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		m.record("Presence", in)
+		if err := st.Send(&dp.PresenceControl{Ack: in.GetSeq()}); err != nil {
+			return err
+		}
+	}
 }
 
 func (m meshStub) TrunkKeys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysResponse, error) {
@@ -268,8 +263,10 @@ func unary[C any, Req, Res proto.Message](name string, client func(rpc.Caller) C
 	}
 }
 
-func clientStream[C, Req, Res any](name string, client func(rpc.Caller) C, open func(C, context.Context) (rpc.ClientStreamClient[Req, Res], error), in ...*Req) call {
-	tc := call{name: name, answer: &emptypb.Empty{}}
+// bidiStream sends in and reads one answer after each message. It returns the
+// last answer.
+func bidiStream[C, Req, Res any](name string, client func(rpc.Caller) C, open func(C, context.Context) (rpc.BidiStreamClient[Req, Res], error), answer any, in ...*Req) call {
+	tc := call{name: name, answer: answer}
 	for _, m := range in {
 		tc.sent = append(tc.sent, any(m).(proto.Message))
 	}
@@ -278,13 +275,22 @@ func clientStream[C, Req, Res any](name string, client func(rpc.Caller) C, open 
 		if err != nil {
 			return nil, err
 		}
+		var last *Res
 		for _, m := range in {
 			if err := st.Send(m); err != nil {
 				return nil, err
 			}
+			if last, err = st.Recv(); err != nil {
+				return nil, err
+			}
 		}
-		out, err := st.CloseAndRecv()
-		return any(out).(proto.Message), err
+		if err := st.CloseSend(); err != nil {
+			return nil, err
+		}
+		if _, err := st.Recv(); err != io.EOF {
+			return nil, fmt.Errorf("got %v after the end, not EOF", err)
+		}
+		return any(last).(proto.Message), nil
 	}
 	return tc
 }
@@ -423,15 +429,13 @@ func TestMeshCalls(t *testing.T) {
 		unary("Open not a member", c, dp.MeshClient.Open,
 			&dp.MeshOpenRequest{Version: dp.LocalVersion("build-a"), Name: "relay-c-0"},
 			rpc.Errorf(rpc.PermissionDenied, "relay relay-c-0 is not a member")),
-		clientStream("Presence", c, dp.MeshClient.Presence,
-			&dp.PresenceUpdate{EndOfFullSet: true, Entries: []*dp.Presence{{
+		bidiStream("Presence", c, dp.MeshClient.Presence, &dp.PresenceControl{Ack: 3},
+			&dp.PresenceUpdate{Seq: 1, Vpcs: []*dp.VPCRef{vpc}, EndOfVpcs: true},
+			&dp.PresenceUpdate{Seq: 2, Parts: []*dp.PresencePart{{Vpc: vpc, EndOfFullSet: true, Entries: []*dp.Presence{{
 				Vpc: vpc, AttachmentId: "att-1", Generation: 1, Prefixes: []string{"fd61:a0b:c00:1::/96"},
 				Subject: "spiffe://p-1/vpc/u-1/agent/laptop", AgentName: "base", SenderTag: 1<<24 - 1,
-			}}},
-			&dp.PresenceUpdate{Entries: []*dp.Presence{{Vpc: vpc, AttachmentId: "att-1", Generation: 2, Gone: true}}}),
-		clientStream("SPIRows", c, dp.MeshClient.SPIRows,
-			&dp.SPIRowUpdate{Rows: []*dp.SPIRow{{Vpc: vpc, SenderTag: 9, Spi: sa.Spi, Destination: "fd61:a0b:c00:2::9", ExpiresIn: durationpb.New(5 * time.Minute)}}},
-			&dp.SPIRowUpdate{Rows: []*dp.SPIRow{{Vpc: vpc, SenderTag: 9, Spi: sa.Spi, Removed: true}}}),
+			}}}}},
+			&dp.PresenceUpdate{Seq: 3, Parts: []*dp.PresencePart{{Vpc: vpc, Entries: []*dp.Presence{{AttachmentId: "att-1", Generation: 2, Gone: true}}}}}),
 		unary("TrunkKeys", c, dp.MeshClient.TrunkKeys, offer, &dp.KeysResponse{}),
 		serverStream("Snapshot", c, dp.MeshClient.Snapshot, &dp.SnapshotRequest{},
 			&dp.SnapshotPart{Data: []byte("bytes of the host"), TotalSize: 17}),

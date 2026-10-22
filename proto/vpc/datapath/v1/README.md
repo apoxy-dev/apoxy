@@ -16,12 +16,10 @@ service that each side serves:
 | `apoxy-mesh/1` | relay and relay          | `Mesh`  | both      |
 
 A relay has a second UDP socket, the PSP socket (UDP 1000). It carries the
-PSP packets (first byte `0x04` or `0x29`), which relays forward by SPI rows
-without decryption, the path probes and the lane keep-alives of agents. Only
-PSP packets to the relay itself are opened (see "QUIC and PSP bridge"). The
-PSP socket also carries the packets of the other relays of the mesh: the PSP
-packets of their agents and trunk packets (see "Trunk"). The QUIC socket drops
-each packet that is not QUIC.
+PSP packets of agents (first byte `0x04` or `0x29`), which the relay opens
+(see "QUIC and PSP bridge"), the path probes and the lane keep-alives of
+agents, and the trunk packets of the other relays of the mesh (see "Trunk").
+The QUIC socket drops each packet that is not QUIC.
 
 `Welcome.psp_host` and `Welcome.psp_port` tell an agent where the PSP socket
 is. `psp_host` is an IP address, and when it is empty, the PSP socket is at the
@@ -32,7 +30,8 @@ that is not an IP address and on a `psp_port` of 0. `MeshOpenRequest` and
 `MeshOpenResponse` have the same two fields for the PSP sockets of two relays:
 the dialer sends to the host that it dialed, and the listener sends to the
 remote IP address of the mesh session, each at the port that the other relay
-gave. A relay that gives port 0 has no PSP socket and gets no trunk.
+gave. A relay refuses a mesh session with a relay that gives port 0, because
+each relay at revision 22 or later has a PSP socket.
 An agent has one UDP socket for the two relay ports.
 
 ### Relay datagrams
@@ -182,92 +181,40 @@ network drops packets and does not mark them.
 
 ### Trunk
 
-Two relays of a mesh send two kinds of packets to the PSP socket of each
-other. The PSP packet of an agent for a PSP-mode agent of the other relay goes
-with no change: no relay opens it, and no relay seals it again. A clear inner
-packet that a relay holds, and a message of the relay itself, go in a trunk
-packet, which the relay seals with a trunk SA. Thus each packet between two
-relays has the 40 B of PSP one time.
+Two relays of a mesh send each other only trunk packets, to the PSP socket of
+each other. A relay opens each packet that its own agents send to it (see
+"QUIC and PSP bridge"), so no PSP packet of an agent goes to another relay. A
+clear inner packet for an agent of another relay, and a message of the relay
+itself, go in a trunk packet, which the relay seals with a trunk SA. Thus each
+packet between two relays has the 40 B of PSP one time. There is no NAT
+between two relays.
 
-A trunk SA is a PSP SA with VNI 0, and the VNI field of its packets carries a
-tag. Each relay makes the SAs for the trunk packets that it receives, and
-gives them to the other relay with `TrunkKeys`. A trunk has one SA lane, and
-its SAs have a replay window.
+A trunk SA is a PSP SA with VNI 0 on lane 0, and the VNI field of its packets
+carries a tag. A trunk has one SA lane, and its SAs have a replay window.
 
 ```
 trunk packet:    PSP header and VC, with the tag (24 bits) in the VNI field | payload
 tag 0:           a message of the relay itself
-tag 1 and up:    a sender tag, with a clear inner packet of that sender
+tag 1 and up:    the sender tag of the session of the sender, with a clear inner packet
 message:         type (1 B) | run ID (8 B) | zero padding
 type:            0x01 full-size probe, 0x02 answer
 ```
 
-A trunk packet with a message has the next header value 63, so its first byte
-is `0x3f`. A trunk packet with a clear inner packet has the next header value
-of that packet: 4 for IPv4 and 41 for IPv6. The PSP packet of an agent has the
-same form, so only the SPI tells the two apart. A relay decides by the SPI of
-each packet from the address of its mesh session with another relay:
+A trunk packet with a message has the next header value 63. A trunk packet
+with a clear inner packet has the next header value of that packet: 4 for
+IPv4 and 41 for IPv6.
 
-1. The SPI is of a trunk SA that this relay gave to that relay: it opens the
-   trunk packet.
-2. The SPI is of a row that that relay gave in `SPIRows` (see "Mesh"): it
-   sends the packet with no change to the receiver of the row.
-3. Each other SPI: it drops the packet (`trunk_no_row`).
-
-A relay does not use the SA or the row of one member for a packet from the
-address of another member.
-
-A relay knows the other relay by the source IP address of a packet, which is
-the IP address of the mesh session. The source port can be different from the
-PSP port: a NAT on the host of the other relay can give its packets a new
-source port, and the XDP program of that relay sends from the PSP port and does
-not use the NAT. So a relay takes a PSP packet from each port of the IP address
-of the session, if that address and port are not the PSP address of one of its
-agent sessions. A relay sends its own packets to the PSP socket that the other
-relay gave in `Open`. When two relays of a mesh have one IP address, a relay
-knows each of them only by the full address of its PSP socket, so their
-packets must come from their PSP ports.
-
-An SPI thus has one use for the packets from one relay to another. The relay
-of the receiver cannot keep this rule: the SPIs of the rows come from agents.
-The relay of the sender keeps it, because it has each row to the other relay
-and each trunk SA that the other relay gave:
-
-- `RegisterSPI` for an address of another relay returns `AlreadyExists` when
-  another row to that relay has one of the SPIs, or when a trunk SA of that
-  relay has it. The call then makes no row. The agent returns the SPIs of the
-  key change in `refused_spis`, and its peer offers SAs with new SPIs, at most
-  3 times for one key change.
-- When the address of a row goes to a relay that has the SPI of the row in
-  use, the row ends. The next `RegisterSPI` of the agent for the row returns
-  `AlreadyExists`. The agent then closes the peer session, and its next packet
-  opens a peer session with new SAs.
-- `TrunkKeys` returns in `refused_spis` the SPI of an SA that a row to the
-  caller has, and the caller offers an SA with a new SPI. In the time of that
-  one call the caller has the SA, so it drops the packets of that row
-  (`malformed`).
-- An SPI of a trunk SA stays in use until the end time of the SA, also after
-  the other relay revoked the SA and while that relay is down. That relay can
-  open packets with an SA for some time after it replaced the SA.
-
-A relay counts the rows that it refuses or ends for this rule in
-`apoxy_vpc_relay_refused_rows_total`, with the `reason` `row` or `trunk_sa`.
-
-On each new session with a relay at revision 13 or later, a relay offers a new
-trunk SA (`OfferSAs`). It sends a new SA before the SA expires (`RekeySA`), as
-for the relay SAs of an agent. The called relay returns in `refused_spis` the
-SPIs that it holds from another receiver or in a row to the caller, and the
-caller offers a new SA. After a call that failed, the caller waits as before a
-dial (200 ms, doubling to 10 s, each with up to 50% more) and offers a new SA.
-`Unimplemented` tells that the called relay has no trunk, and the caller makes
-no more calls on that session. The SAs stay while the other relay is up, so
-also in the 3 s after the session ended. When the other relay is down, a relay
-deletes the SAs of the two directions.
-
-A relay has no trunk with a relay below revision 13. It makes no `TrunkKeys`
-call and no `SPIRows` call to that relay, refuses those calls of that relay
-with `FailedPrecondition`, sends it no packet of a sender, and keeps the
-session. No released relay had the trunk formats of the revisions 5, 8 and 9.
+Each relay makes the SAs for the trunk packets that it receives, and gives
+them to the other relay with `TrunkKeys` on the open mesh session. On each new
+session, a relay offers a new trunk SA (`OfferSAs`). It sends a new SA before
+the SA expires (`RekeySA`), as for the relay SAs of an agent. The called relay
+returns in `refused_spis` the SPIs that it does not take, and the caller
+offers SAs with new SPIs, at most 4 times for one change. After a call that
+failed, the caller waits as before a dial (200 ms, doubling to 10 s, each with
+up to 50% more) and offers a new SA. `Unimplemented` tells that the called
+relay has no trunk, and the caller makes no more calls on that session. When
+the session ends, or a new session replaces it, the relay deletes the trunk
+SAs of the two directions of that session at once.
 
 When each relay gave its SA on a session, each relay sends a full-size probe:
 a message of 1412 B, so that the UDP payload is 1452 B, the largest that a
@@ -275,137 +222,63 @@ relay reads. The other relay answers with a message of the same size and run
 ID. It answers at most 10 probes each second. A probe run sends up to 3
 packets 300 ms apart. If no answer comes in 1 s, the relay has the trunk as
 limited to an inner MTU of 1280, and it starts a new run each 30 s until one
-passes. After a run that passes, the trunk carries an inner MTU of 1412.
-Before the first result, the limit of 1280 applies. The limit is for the PSP
-packets of the agents and for the clear inner packets: they use one path.
+passes. After a run that passes, the trunk carries an inner MTU of 1412. The
+relay makes the routes of the other relay only after the first result of a
+session (see "Mesh").
 
 The largest MTU of a VPC network is also 1412. A relay gives an agent at most
 1412 as the MTU of the network, also for a network object with a larger number
 from before a check of its spec. The sizes on a path that carries 1500 B, with
 an IPv6 header of 40 B and a UDP header of 8 B:
 
-| Packet between two relays | PSP overhead | Largest inner packet | UDP payload |
-|---------------------------|--------------|----------------------|-------------|
-| PSP packet of an agent, with no change | 40 B, from the agent | 1412 B | 1452 B |
-| Trunk packet with a clear inner packet | 40 B, from the relay of the sender | 1412 B | 1452 B |
-| The two kinds, with no full-size probe that passed | 40 B | 1280 B | 1320 B |
+| Trunk packet | PSP overhead | Largest inner packet | UDP payload |
+|--------------|--------------|----------------------|-------------|
+| After a full-size probe that passed | 40 B | 1412 B | 1452 B |
+| With no full-size probe that passed | 40 B | 1280 B | 1320 B |
 
-`RegisterSPI` for an address of a route of another relay makes a row to that
-relay. The session of the caller needs a sender tag, which it has from its
-first attachment. If not, the call returns `NotFound`, as for an address with
-no route. The call needs no trunk SA and does not wait for the other relay.
-The relay applies the source address check, the meter of the row and the
-tunnel limit to each packet of the row, as for a row to one of its own
-sessions, and it does not open the packet. It sends the packet with no change
-from its PSP socket to the PSP socket of the other relay. It drops a PSP
-packet with an inner packet above the inner MTU of the trunk (`trunk_mtu`),
-and it does not send the packet in parts. The relay gives each such row to the
-other relay with `SPIRows` (see "Mesh").
+A relay sends a clear inner packet to another relay when the active announcer
+of the destination is an attachment of that relay. It holds the inner packet
+of a data frame of a QUIC-mode session, and of a PSP packet that an agent
+sealed with a relay SA. The checks of the data frame or of the relay SA come
+first. The relay seals the inner packet with the trunk SA of the session of
+that relay, with the sender tag of the session of the sender in the VNI field.
+It sends the trunk packet from its PSP socket to the PSP socket that the other
+relay gave in `Open`. It sends no `NoRoute` for such a packet, because the
+address has a route. It drops the inner packet, and counts the drop in
+`apoxy_vpc_relay_dropped_packets_total`, in these cases:
 
-The XDP program forwards the packets of such a row as it forwards the packets
-of a row to an agent, with the PSP socket of the other relay as the next
-hop. The other relay knows this relay by the source IP address of a packet, and
-the program sends from the address that the packet of the agent came to. So
-the row is in the program only while the trunk has a full path and the
-program has one address of that family, the address that the host sends from
-to the other relay. In each other case the socket path sends the packets. The
-program of the relay of the receiver has no row for a packet from another
-relay, so its socket path gets each such packet.
+- The relay has no trunk SA of the other relay on the session (`no_keys`).
+- The inner packet is above the inner MTU of the trunk (`mtu`). The relay
+  does not send the packet in parts, and the agent gets no message for this
+  drop.
 
-The row stays while the relay has no session of the other relay, and the relay
-drops the packets of the row in that time (`trunk_keys`). The sender gets a
-`NoRoute` for such a packet only when it must visit the other relay (see
-"Mesh"). When the other relay has a session again, from the same address or
-from a new one, the row carries packets again with no call of the agent. It
-needs no trunk SA.
+The relay that gets a trunk packet drops it at the first of these checks that
+fails:
 
-The relay that gets the PSP packet of a row from another relay (rule 2) does
-not open it. It drops the packet at the first of these checks that fails:
-
-1. The packet has the form of a PSP packet with an IP packet in it
-   (`malformed`).
-2. The row of the SPI has not ended (`trunk_expired`).
-3. An entry of the other relay has the sender tag of the row in the VPC of the
-   row (`trunk_sender`). The rule of "Mesh datagrams" for the session of an
-   entry applies, with the session that gave the row. That session does not
-   have to be open.
-4. Permit allows the destination of the row for the VPC and the SPIFFE ID of
-   that entry (`trunk_permit`).
-5. A session of this relay routes the destination of the row in that VPC
-   (`trunk_not_local`). A relay sends no packet of a member to another member,
-   so a PSP packet goes between relays one time at most.
-
-Then it sends the PSP packet, with no change, from its own port to the address
-of that session. It applies no meter and no tunnel limit, because the relay of
-the sender applied them. It counts the packet and its inner bytes as sent to
-the attachment of the destination. The relay does the checks 3 to 5 for each
-packet, so a row that fails one of them carries packets again when the entry,
-Permit or the route changes. It holds no packet: a packet that comes before
-its row or before the entry of its sender drops. A relay counts each packet
-that it drops on these paths in `apoxy_vpc_relay_dropped_packets_total`, with
-a `reason` that starts with `trunk_`.
-
-A relay does not authenticate the PSP packet of an agent that comes from
-another relay, because it has no key of that packet. It takes the packet for
-the source address of the member and the SPI of a row, as it takes the packet
-of one of its own agents for the source address of the agent and the SPI of a
-row. The exposure is thus the same as with one relay: a host that can send
-from that address, and that knows an SPI, makes the relay send a packet to the
-receiver of the row. The receiver drops it: the ICV of its SA fails, and the
-replay window of its SA refuses a copy of a real packet.
-
-A relay sends the clear inner packets that it holds to a receiver on another
-relay in trunk packets. It holds the inner packet of a data frame of a
-QUIC-mode session, and of a PSP packet that an agent sealed with a relay SA
-(see "QUIC and PSP bridge"). The checks of the data frame or of the relay SA
-come first. When Permit allows the inner destination and an attachment of
-another relay has its route, the relay seals the inner packet with the trunk
-SA of that relay, with the sender tag of the session of the sender in the VNI
-field. It sends the trunk packet, which is 40 B longer than the inner packet,
-from its PSP socket to the PSP socket of the other relay. It sends no
-`NoRoute` for such a packet, because the address has a route. The one exception
-is a sender that must visit the other relay (see "Mesh"). It drops the
-inner packet, and counts the drop, in these cases:
-
-- The relay has no session of the other relay at revision 13 or later, or no
-  trunk SA of it (`trunk_keys`).
-- The inner packet is above the inner MTU of the trunk (`trunk_mtu`). The
-  relay does not send the packet in parts, and the agent gets no message for
-  this drop.
-- The session of the sender has no sender tag.
-
-The tunnel limit applies to a data frame after these checks, so a frame that
-the trunk does not carry takes nothing from it. For a PSP packet with a relay
-SA, the meter of its row and the tunnel limit apply before them.
-
-The relay that gets a trunk packet with a sender tag (rule 1) opens it. The
-replay window of the SA drops a packet that the relay had before
-(`trunk_replay`), and a payload that is no IP packet drops (`trunk_payload`):
-a relay seals no PSP packet of an agent. The relay drops the inner packet at
-the first of these checks that fails:
-
-1. An entry of the other relay has the sender tag (`trunk_sender`). The rule
-   of "Mesh datagrams" for the session of an entry applies, with the session
-   on which this relay gave the SA of the trunk packet to the other relay.
-   That session does not have to be open.
-2. The route of the inner source address in the VPC of that entry is from
-   that entry, as for a peer frame (`trunk_source`).
-3. Permit allows the inner destination for the VPC and the SPIFFE ID of that
-   entry (`trunk_permit`).
-4. A session of this relay routes the inner destination in that VPC
-   (`trunk_not_local`). An inner packet goes over one trunk at most.
+1. The packet has the form of a PSP packet (`malformed`).
+2. A trunk SA that this relay gave has its SPI (`unknown_spi`), and the ICV
+   and the replay window of the SA pass (`open`).
+3. The SA is of the open mesh session with the other relay (`old_session`).
+4. The packet comes from the PSP socket that the other relay gave in `Open`:
+   the same IP address and port (`unknown_source`).
+5. A trunk packet with tag 0 goes to the relay itself: a probe gets its
+   answer, and an answer ends the probe run with the same ID.
+6. A record of the other relay on that session has the tag (`no_context`).
+   The packets of one tag go to the VPC of its first record. A record with
+   the tag of another VPC gets a warning and no packets.
+7. A record of the tag has the inner source address (`source`).
+8. An attachment of this relay announces the inner destination in that VPC
+   (`no_route`). The relay takes its first announcer in the order of "Relay",
+   also when the active announcer is on another relay.
+9. The target is not a trunk (`trunk_to_trunk`), so an inner packet goes over
+   one trunk at most.
 
 Then it sends the inner packet as it sends the inner packet of a data frame
-of one of its own sessions: in a data frame to a QUIC-mode agent, on the
-main or extra connection of its flow, or sealed with the SA that a PSP-mode agent gave with
-`Rekey`. The data frame has the network ID of the VPC and zero flags, because
-a trunk packet has no VNI word. The inner packet drops when the session does
-not take the data frame, and when the relay has no SA of the PSP-mode agent
-(`trunk_not_sent`). The relay applies no tunnel limit, because the relay of
-the sender applied it, and it counts the packet and its bytes as sent to the
-attachment of the destination. The relay of the receiver does not know the
-mode of the sender. It seals the inner packet of a PSP-mode sender for a
-PSP-mode receiver, as it does for two of its own sessions.
+of one of its own sessions: in a data frame to a QUIC-mode agent, on the main
+or extra connection of its flow, or sealed with the SA that a PSP-mode agent
+gave with `Rekey` (`no_keys` when it has none). The data frame has the network
+ID of the VPC and zero flags, because a trunk packet has no VNI word. The
+relay of the receiver does not know the mode of the sender.
 
 A relay also counts the packets of agents between it and each mesh member.
 These metrics have one set of series for each member that the mesh has now,
@@ -414,63 +287,19 @@ member, `peer_relay_id`, the last relay ID that the member gave (empty if it
 gave none), and `direction`: `tx` to the member, `rx` from it.
 
 - `apoxy_vpc_relay_trunk_packets_total` and `apoxy_vpc_relay_trunk_bytes_total`:
-  the PSP packets of agents with no change and the trunk packets with a sender
-  tag, and their UDP payload bytes. The `tx` counts include the packets that
-  the XDP program sent. The `rx` counts have only the packets that the relay
-  sent on. The probes and their answers do not count.
-- `apoxy_vpc_relay_trunk_dropped_packets_total`, with the label `reason`:
-  `trunk_mtu` and `trunk_keys` for `tx`, and `malformed` and the other
-  `trunk_` reasons for `rx`.
+  the trunk packets with a sender tag, and their UDP payload bytes. The `tx`
+  counts have the packets that the relay sealed for the member. The `rx`
+  counts have the packets of the member that passed check 6. The probes and
+  their answers do not count.
+- `apoxy_vpc_relay_trunk_dropped_packets_total`, also with the label `reason`:
+  `tx` has the packets to the member that the relay dropped after it found the
+  `ports` entry of the trunk port (`mtu`, `no_keys`, `trunk_to_trunk`,
+  `local_only`). `rx` has the packets of the member that the relay dropped
+  before it found the `ports` entry of the out port (`malformed`,
+  `old_session`, `unknown_source`, `no_context`, `source`, `no_route`,
+  `no_target`, `punt_full`). Each of these series is there from the start.
 - `apoxy_vpc_relay_mesh_rtt_seconds`: the smoothed RTT of the QUIC connection
   of the mesh session. A member with no session has no value.
-
-### Mesh datagrams
-
-QUIC DATAGRAM frames on a mesh session carry the peer frames between an agent
-of one relay and an agent of the other relay. They need no trunk SA. The first
-byte of a datagram is its type, so that other types can come later, and a
-relay drops a datagram with a type that it does not know.
-
-```
-relay -> relay:  type (1 B) | sender tag (3 B) | dst address (16 B) | src address (16 B) | packet
-type:            0x01 peer frame
-```
-
-The sender tag is the `sender_tag` of the `Presence` entries of the session
-that sent the frame, with the high byte first. The addresses and the packet
-are those of the frame of the agent. Both relays use a QUIC InitialPacketSize
-of 1273 B or more on a mesh session, so that each packet of a peer session
-fits in one datagram.
-
-A relay sends a peer frame of an agent in this form when an attachment of
-another relay has the route of the destination, and that relay is at revision
-7 or later. The checks of "Relay datagrams" come first. The relay does not
-split a frame. It drops a frame that does not fit in a datagram of the mesh
-session, a frame for a relay with no open mesh session, and a frame for a
-relay below revision 7. It sends no `NoRoute` for these frames, because the
-address has a route. The one exception is a sender that must visit the other
-relay (see "Mesh").
-
-The relay that gets the datagram drops it at the first of these checks that
-fails:
-
-1. The datagram has the full header and the type `0x01`.
-2. An entry of the other relay has the sender tag. The other relay sent the
-   entry, or sent it again, in the `Presence` call of the session of the
-   datagram, that session is open, and no later session of that relay has a
-   `Presence` call. An entry from an older session does not count, because
-   the other relay can have given its tag to another agent.
-3. The route of the source address in the VPC of that entry is from that
-   entry. This is the source check of "Relay datagrams" on the entries.
-4. Permit allows the destination for the VPC and the SPIFFE ID of the entry.
-5. A session of this relay routes the destination in that VPC. A relay sends
-   no frame from a mesh session to another relay, so a frame goes over one
-   mesh session at most.
-
-Then it sends the frame to that session in the "relay -> agent" form. A relay
-counts each frame that it drops on these paths in
-`apoxy_vpc_relay_dropped_packets_total`, with a `reason` that starts with
-`mesh_`.
 
 ## Calls
 
@@ -492,7 +321,9 @@ kind:              0x01 CallHeader, 0x02 message, 0x03 Status
   in `pkg/vpc/rpc/internal/wirepb/wire.proto`.
 - A unary call has one message in each direction. A client-stream call sends
   messages until FIN and gets one message. A server-stream call sends one
-  message and gets messages until the status.
+  message and gets messages until the status. A bidirectional call sends and
+  gets messages at the same time: the caller until its FIN, and the called
+  side until the status.
 - Default limits: 16 KiB for a header or status frame, 4 MiB for a message.
 - Cancel is RESET_STREAM and STOP_SENDING with a stream error code: `0x0` no
   error, `0x1` canceled, `0x2` deadline exceeded, `0x3` protocol error, `0x4`
@@ -522,9 +353,10 @@ for its attachment. `KeysRequest.generation` is the key attempt of the agent,
 from 1. The relay copies it from the `Rekey` request that changes the mode
 into its `OfferSAs`, and its own renewals carry 0.
 
-A relay refuses an `Attach` with more than 64 prefixes, the addresses and the
-advertised routes together (`InvalidArgument`), because the other relays
-refuse an entry with more prefixes (see "Mesh").
+A relay with a mesh refuses an `Attach` with more than 64 prefixes, the
+addresses and the advertised routes together, or whose entry does not fit in
+one `PresenceUpdate` (`InvalidArgument`), because the other relays refuse
+such an entry (see "Mesh"). A relay with no mesh has no such limit.
 
 Many agents can have one SPIFFE ID. `Hello.name` is the name of the base
 attachment of the agent, and `Hello.instance` is a random number that the
@@ -721,54 +553,55 @@ New lane ports, and a new session address, need a new keepalive.
 
 | Method      | Kind          | Messages |
 |-------------|---------------|----------|
-| `Open`      | unary         | Dialer and listener each send `{version, name, relay, psp_host, psp_port}`. First call on a session. Errors: `InvalidArgument` (a `psp_host` that is not an IP address, or a `psp_port` above 65535). |
-| `Presence`  | client stream | `PresenceUpdate`: the full set of the attachments of the caller, then each change. One call on a session. |
-| `SPIRows`   | client stream | `SPIRowUpdate`: the SPI rows of the senders on the caller for receivers on the called relay. A row with a new end time comes again, and a row that ended comes with `removed`. One call on a session. Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 13, the session is not the open session of a member, or the session already has an `SPIRows` call). |
-| `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse`: trunk SAs for packets from the called relay to the caller (see "Trunk"). `refused_spis` has the SPIs that the called relay holds from another receiver or in a row to the caller. Errors: `Unimplemented` (the called relay serves no VPC relay sessions), `FailedPrecondition` (the caller is below revision 13, or the session is not the open session of a member), `InvalidArgument` (an SA VNI is not 0, or an SA lane is not 0). |
-| `Snapshot`  | server stream | `SnapshotRequest` -> `SnapshotPart`: the snapshot of the host of the called relay, in parts of at most 1 MiB. The first part has `total_size`. Errors: `NotFound` (the host of the called relay gives no snapshot), `ResourceExhausted` (the snapshot is above 64 MiB), `FailedPrecondition` (the session is not the open session of a member), `Unimplemented` (the called relay is below revision 14). |
+| `Open`      | unary         | Dialer and listener each send `{version, name, relay, psp_host, psp_port}`. First call on a session; only the relay that dialed calls it. Errors: `PermissionDenied` (the certificate failed the check), `FailedPrecondition` (the caller has the higher name, is below the minimum revision or is not a member, or the session is already open), `InvalidArgument` (a `psp_host` that is not an IP address, or a `psp_port` of 0 or above 65535), `Unavailable` (the relay stops). |
+| `Presence`  | bidi          | Caller: `PresenceUpdate{seq, vpcs, end_of_vpcs, parts}`, the attachments of one tenant of the caller. Called relay: `PresenceControl{ack}`. One call for each tenant and direction on a session. Errors: `InvalidArgument` (a message that breaks a rule below), `PermissionDenied` (a VPC of another tenant), `Unavailable` (the session ended). |
+| `TrunkKeys` | unary         | `KeysRequest` -> `KeysResponse`: trunk SAs for packets from the called relay to the caller (see "Trunk"). `refused_spis` has the SPIs that the called relay does not take. Errors: `FailedPrecondition` (the session is not the open session of a member), `InvalidArgument` (an SA VNI is not 0, or an SA lane is not 0). |
+| `Snapshot`  | server stream | `SnapshotRequest` -> `SnapshotPart`: the snapshot of the host of the called relay, in parts of at most 1 MiB. The first part has `total_size`. Errors: `NotFound` (the host of the called relay gives no snapshot), `ResourceExhausted` (the snapshot is above 64 MiB), `FailedPrecondition` (the session is not the open session of a member). |
 
 A member of a mesh is one relay process, and its relay name identifies it.
 Many relays can have one relay ID, so the mesh does not use the ID to tell
 members apart. Two members have one session. The relay with the lower name
 dials, from its listening socket, and calls `Open`. The other relay refuses a
 session that the relay with the higher name dialed. A new session of the two
-relays replaces the session before it. The other calls of a session are valid
-only after `Open` passes. A relay keeps the relay ID that each member gave in
-`Open`, to check the grant of a `Visit` call (see "Relay").
+relays replaces the session before it: the relay first ends the old session,
+its `Presence` calls and its trunk SAs. The other calls of a session wait for
+the end of `Open`. A relay keeps the `RelayRef` that each member gave in
+`Open`: `Route.relay` of the routes of the member and the alternates of
+`Drain` have it.
 
 A relay closes a session with a `MeshCloseCode`: `NOT_MEMBER` (the name of the
 other relay is not in its member set, is not the name that it dialed, or the
 certificate failed the check of the relay host), `UPGRADE` (the revision of the
-other relay is below its minimum, or below 3, the first revision with `Open`;
-see "Revisions") or `RESTART` (the relay stops on purpose, and its attachments
-are gone).
+other relay is below 22 or below its minimum; see "Revisions"), `RESTART` (the
+relay stops on purpose, and its attachments are gone) or no code
+(`UNSPECIFIED`: a normal close, or a new session replaced this one).
 
 A relay closes with `RESTART` when it stops: at the end of a drain, and not
 at its start. During the drain its mesh sessions stay open, and the other
-relays keep its entries, in the state `DRAINING`, with their routes and SPI
-rows. Thus an agent of the draining
-relay gets the packets of the agents of other relays on its address of that
-relay until the drain ends (see `Drain` in "Relay"). If its attachment on
-another relay has a prefix of that one, the rules for one prefix (below) give
-the route to the other one.
+relays keep its records, in the state `DRAINING`, with their routes. Thus an
+agent of the draining relay gets the packets of the agents of other relays on
+its address of that relay until the drain ends (see `Drain` in "Relay"). If
+its attachment on another relay has a prefix of that one, the rules for one
+prefix give the route to the other one.
 
 Both relays send a QUIC keep-alive each second and use an idle timeout of 5 s,
 so a relay sees a lost path 5 s to 6 s after the last packet of the other
-relay. After a session ends, the relay that dials waits 200 ms and dials
-again. The wait doubles after each failed dial, up to 10 s, and each wait gets
-up to 50% more at random. A relay has the other relay as down 3 s after the
-session ended, if no new session opened. After `RESTART` it is down at once.
+relay. The dial and `Open` have 5 s together. After a session ends, the relay
+that dials waits 200 ms and dials again. The wait doubles after each failed
+dial, up to 10 s, and each wait gets up to 50% more at random. When the
+session ends, for each cause, the relay deletes the records of the other relay
+and the trunk SAs of the session at once, and has the other relay as down.
 
 The host of a relay can keep a snapshot: the data that it needs to accept
 agents while its own sources are down. The relays carry it as bytes and do not
 read it. The host of a relay with no snapshot can ask the mesh for one. The
-relay then calls `Snapshot` on each member with an open session at revision 14
-or later, in name order, and takes the first snapshot. It does not wait for a
-session to open, and it calls no member by itself. Each member has 10 s for
-the whole call: the caller sends that limit in the call header, so the call
-ends on the two relays. A member with no open session, or below revision 14,
-gets no call and costs no time. When a member answers with an error, the relay
-asks the next member, and it keeps the session.
+relay then calls `Snapshot` on each member with an open session, in name
+order, and takes the first snapshot. It does not wait for a session to open,
+and it calls no member by itself. Each member has 10 s for the whole call: the
+caller sends that limit in the call header, so the call ends on the two
+relays. A member with no open session gets no call and costs no time. When a
+member answers with an error, the relay asks the next member, and it keeps
+the session.
 
 The called relay serves `Snapshot` only on the open session of a member, after
 `Open` passed, and never on a relay session of an agent. It asks its host for
@@ -784,82 +617,89 @@ The call has no signature of its own: the calling relay trusts the bytes as
 much as it trusts a member of the mesh. So a member that an attacker controls
 can give a relay with no snapshot a false one.
 
-A relay tells each other relay of its attachments. On each new session with a
-relay at revision 4 or later, it opens one `Presence` call. It first sends the
-full set: an entry for each attachment that it has, in one or more
-`PresenceUpdate` messages, with `end_of_full_set` in the last of them. Then it
-sends each change: an entry for a new attachment, an entry for each change of
-its state, and an entry with `gone` for an attachment that ended. Only the
-generation, the state and `active_from` of an attachment change between its
-first entry and its `gone` entry. A session that replaces an older one gets the full set again. A relay
-at revision 3 gets no `Presence` call, and its session stays open.
+A relay tells each other relay of its attachments, one tenant (project) at a
+time. On each mesh session, it opens one `Presence` call for each tenant with
+attachments, and a new call when a tenant gets its first attachment. The call
+is bidirectional: the caller sends `PresenceUpdate` messages, and the called
+relay sends only `PresenceControl{ack}`, so an ack never waits behind data.
+The caller sends:
+
+1. The list of the VPCs of the tenant that have attachments, in `vpcs` of one
+   or more messages with no part, with `end_of_vpcs` in the last one.
+2. Parts. A message has at most one `PresencePart` of each VPC, and the VPCs
+   with data take turns. The first parts of a VPC have its full set: an entry
+   for each attachment of the caller in the VPC, with `end_of_full_set` in
+   the last part of the set.
+3. Then each change of a VPC: an entry for a new attachment, an entry for each
+   change of its state, and an entry with `gone` for an attachment that ended.
+   A VPC that gets its first attachment during the call gets its full set.
+
+`seq` is 1 in the first message of a call, and each message adds 1. `ack` is
+the highest `seq` that the called relay took in. The limits:
+
+| Limit | Value |
+|-------|-------|
+| One message | At most 256 entries, 4096 parts or VPCs, and 1 MiB. |
+| One VPC in one message | One part of at most 64 entries, so each VPC gets a turn. |
+| Flow control | For each call: at most 1 MiB that has no ack, 2 messages in the writer of the caller, and 8 messages that the called relay did not take in. |
+| Stall | A message with no ack for 5 s ends that call only. The session and the calls of the other tenants go on. |
+| One entry | With a mesh, `Attach` refuses an attachment with more than 64 prefixes, or whose entry does not fit in one message. |
+
+When a call ends with a stall while the session stays, the caller opens it
+again at once, and the new call sends the list and the full sets again. When a
+call ends for a different cause, the tenant gets no call on that session; the
+next session opens it again. The caller ends a call when the tenant has no
+attachments.
+
+The called relay names the tenant of the call by the project of the first VPC
+of the first message. It ends the call with `InvalidArgument` when the first
+message has no VPC, when a `seq` is not the last one plus 1, when a message is
+above a limit, when a VPC list comes after its end, when a part comes before
+the end of the list, and when a message has two parts of one VPC. It ends the
+call with `PermissionDenied` when a VPC is of another tenant. A new call of a
+tenant on a session ends the old one.
 
 An entry has the VPC, the attachment ID, the prefixes (the addresses and the
-advertised routes), the SPIFFE ID and the `Hello.name` of the agent, and the
-sender tag. From revision 16 it also has the `Hello.instance` of the agent,
-the `rank` of the attach, `state`, and `attached`: the generation of the
-first entry of the attachment. A later entry of the attachment with a new
-state has a higher generation and the same `attached`. It also has
-`active_from`, the end of the hold time of the attachment. The state is a fact of
-the sending relay about the attachment. No entry tells which announcer is
-active: each relay selects that. An entry with none of these fields, as a
-relay below revision 16 sends it, reads as instance 0, rank 0, state `NORMAL`,
-`attached` equal to the generation, and no hold time. The sending relay gives the sender tag, a number from 1 to
-2^24 - 1, to the session of the agent at the first attachment of the session.
-All attachments of one session have the same tag, and no other session of the
-sending relay has it at the same time. The session keeps its tag until it
-ends. The relay gives a tag again only after all the other tags. `generation`
-is the time of the change in Unix milliseconds: the attach, a state change, or
-the end for a `gone` entry. A relay sends each generation one time: when the clock is not
-above the last generation, the next one is the last one plus 1. For one
-attachment ID, the entry with the higher generation wins.
+advertised routes), the SPIFFE ID and the `Hello.name` of the agent, the
+sender tag, the `Hello.instance` of the agent, the `rank` of the attach,
+`state`, `attached` (the generation of the first entry of the attachment) and
+`active_from` (the end of the hold time of the attachment). A later entry of
+the attachment with a new state has a higher generation and the same
+`attached`. The state is a fact of the sending relay about the attachment. No
+entry tells which announcer is active: each relay selects that. The sending
+relay gives the sender tag, a number from 1 to 2^24 - 1, to the session of the
+agent when the session starts. All attachments of one session have the same
+tag, and no other session of the sending relay has it at the same time. The
+relay gives a tag again only after all the other tags. `generation` is the
+time of the change in Unix milliseconds: the attach or a state change. A
+relay sends each generation one time: when the clock is not above the last
+generation, the next one is the last one plus 1. A `gone` entry has the
+generation of the last entry of the attachment on the call plus 1.
 
-The called relay keeps the entries of each member. It ignores an entry with a
-generation below the one that it has for the attachment ID, and a `gone` entry
-for an attachment that it does not have. It refuses an entry with no
-attachment ID, with an ID of more than 128 bytes or with no generation. It
-also refuses an entry without `gone` that has no VPC, a network ID above 24
-bits, a subject that is not an agent ID of that VPC, a tag out of range, a
-prefix that does not parse, more than 64 prefixes or an `active_from` that is
-not a valid time. A refused entry does not
-end the call. A second `Presence` call on a session gets `FailedPrecondition`.
+The called relay keeps a record for each entry that it takes. It refuses an
+entry with no attachment ID, with an ID of more than 128 bytes or with no
+generation. It also refuses an entry without `gone` that has more than 64
+prefixes, a VPC that is not the VPC of its part, a network ID above 24 bits, a
+subject that is not an agent ID of that VPC, an `attached` above the
+generation, an `active_from` that is not a valid time, a sender tag out of
+range or a prefix that does not parse. A refused entry does not end the call,
+and the refused entries of one part get one warning.
 
-An entry with a higher generation replaces the entry that the relay has. When
-the new entry has the same session, generation of the attach, rank and
-prefixes, it is a state change: the relay changes the state and `active_from`
-of the entry in place, and does not remove its routes.
+A record lives with its call. A later entry of the attachment replaces it, a
+`gone` entry removes it, and the end of the call removes each record of the
+call. When the session ends, each of its calls ends, so the routes of the
+records go to other announcers at once. A new call sends its full set, and
+the records come again. The called relay does not use `end_of_full_set`.
 
-The relay keeps at most 65536 entries of one member, and it refuses each new
-entry above that number. Before it refuses one, it drops the entries of that
-member that the session of the call did not send.
-
-The entries of a member stay after its session ends, with their routes. When
-the member is down as lost (3 s after its session ended with no new session),
-the relay reads each of its entries as `SUSPECT`. This state is local: the
-relay sends it to no other relay. An entry has the state of its relay again
-when a new session of the member sends it again or replaces it. The relay
-drops the entries of a member that is still down 5 minutes after it was lost.
-It drops them at once when the member closes with
-`RESTART` or leaves the member set, also when the member was down before it
-left. A member whose address changes leaves the member set and comes back.
-When the member has a new session, the relay keeps each entry of an older
-session until the new session sends it again (the same attachment ID and
-generation) or replaces it with a higher generation. At `end_of_full_set` it
-drops the entries that the new session did not send. It also drops them 10 s
-after the new session opened, if no `end_of_full_set` came in that time, with
-or without a `Presence` call. If the new session ends first, the entries stay,
-and the 10 s start again when the next session opens.
-
-A relay makes routes from the entries that it keeps. An entry gives a route
-for each of its prefixes in its VPC, with the attachment ID as the origin,
-when two conditions are true: an agent of the VPC has sent `Hello` to this
-relay, and the network ID of the entry is the network ID of the VPC on this
-relay. An entry with another network ID gets one warning and no route. Each
-such entry is an announcer of each of its prefixes, together with the
-attachments of this relay, and the selection of "Relay" gives the active
-announcer and the order of the standby ones. An attachment of this relay has
-no advantage in the selection. When the active announcer ends, the next one in
-the order gets the prefix.
+A relay makes routes from the records after the first probe result of the
+trunk of their session (see "Trunk"). A record gives a route for each of its
+prefixes in its VPC, with the attachment ID as the origin, when this relay
+serves the VPC and the network ID of the record is the network ID of the VPC
+on this relay. Each such record is an announcer of each of its prefixes,
+together with the attachments of this relay, and the selection of "Relay"
+gives the active announcer and the order of the standby ones. An attachment
+of this relay has no advantage in the selection. When the active announcer
+ends, the next one in the order gets the prefix.
 
 Two relays can have different sets for a short time, and then they can select
 different announcers. A relay thus gives a packet that comes from another
@@ -867,135 +707,12 @@ relay to its own announcer of the prefix, the first one in the order, also
 when its active announcer is on another relay.
 
 The relay sends these routes in `RouteDelta`, as it sends its own, to each
-session at revision 6 or later whose `Hello` has no `local_routes_only`. A
-session with `local_routes_only` gets the route of a prefix only while the
-active announcer is on this relay. A session gets no route for a prefix that
-an attachment of its own agent process announces on another relay: the SPIFFE
-ID, the agent name and the instance of the entry tell.
-The route goes away with its entry: at a `gone` entry, and when the relay
-drops the entry for one of the reasons above. The route of an entry stays
-while the relay of the entry has no session. A peer frame for the route then
-drops (see "Mesh datagrams"), and the PSP packets of an SPI row and the clear
-inner packets to that relay drop when it is down (see below).
-
-A relay tells each other relay at revision 13 or later of the SPI rows that it
-has for receivers on that relay (see "Trunk"). It opens one `SPIRows` call on a
-mesh session, at the first such row. An `SPIRow` has the VPC, the sender tag
-of the session of the sender on the calling relay, the SPI, the overlay
-address of the receiver and `expires_in`, the time that the row has left. The
-SPI names the row: the calling relay has each SPI in one row to the called
-relay. The sender tag tells which entry is the sender, for the checks of the
-packets. The calling relay sends a row when
-`RegisterSPI` makes it, and again with the new `expires_in` at each later
-`RegisterSPI` for it. It sends the row with `removed`, and with no address and
-no `expires_in`, when the row ends on the calling relay or goes to a receiver
-that is not on the called relay. The rows of one change go in one or more
-messages of at most 256 rows.
-
-`RegisterSPI` does not wait for the called relay, so the first packets of a
-row can come before the row. On a new session, the calling relay sends each
-row that it has for the called relay again. It does not send the rows that
-ended while it had no session. If the call fails, the calling relay makes no
-new call on that session, and it keeps its rows.
-
-The called relay keeps the rows of each member by SPI. It takes the member
-from the session, never from the message. A row replaces the row of that
-member with the same SPI. The called relay refuses a row with a sender
-tag out of range, with a reserved SPI or, without `removed`, with a VPC or an
-address that does not parse or an `expires_in` that is not positive. A refused
-row does not end the call. The other checks of a row are those of its packets
-(see "Trunk"), so a row can come before the entry of its sender or before the
-route of its destination. A row ends at `removed`, when its `expires_in`
-passes, when the member opens a new session, and when the member closes with
-`RESTART` or leaves the member set. The rows stay when the session ends for
-another cause, as the entries do. They have no idle time.
-
-When the other relay is down, a relay has no trunk to it, so the packets of
-its rows and the clear inner packets to that relay drop at once. The rows
-stay, and they carry packets again when the other relay has a session again.
-A clear inner packet also needs the new trunk SA of that relay. The sender of
-such a packet gets no `NoRoute` while the route of the destination stays,
-unless it must visit the other relay (see below).
-
-For an address of a route of another relay, `ResolvePeer` answers
-`REACH_TRUNK` only when all of these are true:
-
-- The session of the caller is at revision 10 or later. It gets the routes of
-  other relays: it has a `Session` call, and its `Hello` has no
-  `local_routes_only`. It has a sender tag, which it has from its first
-  attachment.
-- The newest mesh session with the other relay is open, and each of the two
-  relays has the trunk SA of the other on that session.
-- The other relay is at revision 13 or later. The rule is the same for a
-  caller in PSP mode and in QUIC mode: the relay does not know the mode of the
-  peer, and a PSP-mode caller sends to a QUIC-mode peer in trunk packets.
-
-In each other case the call returns `NotFound`, as for an address with no
-route. This is also the answer in the 3 s after the session with the other
-relay ended, and on a new session before the two relays have its SAs. The peer
-sessions that are open in that time keep their paths, because the SAs stay for
-those 3 s (see "Trunk"). The answer has the `subject` and the attachment IDs
-of the entries of the session that has the address, the lowest generation
-first.
-
-`ResolvePeer` answers `REACH_VISIT` with `home_relay` only when all of these
-are true. The same rule sets `home_relay` in `NoRoute`.
-
-- The session of the caller is at revision 12 or later, gets the routes of
-  other relays and has a sender tag, as for `REACH_TRUNK`.
-- The home relay of the address is a member that is down: its session ended
-  3 s ago or more, and no new session opened. Thus the answer never comes
-  while the trunk can carry the traffic.
-- That session did not close with `RESTART`, and the member gave a relay ID in
-  `Open` on it.
-- No other member gave the same relay ID on its last session, and it is not
-  the relay ID of this relay. An agent cannot choose one of two relays that
-  have one ID.
-
-The home relay of an address is the member whose entry has the route of the
-address, because a relay keeps the entries of a member that is down. For an
-address with no route, the host of the relay can tell the home relay.
-`home_relay` is the `RelayRef` that the member gave in `Open`. The answer has
-no `subject`, no `attachment_ids` and no `p2p`. When the member is up again,
-the answer is `NotFound` until the two relays have the trunk SAs, and then
-`REACH_TRUNK`. When the member stops with `RESTART` or leaves the member set,
-its entries go, and the answer is `NotFound`.
-
-When the rule is true for a sender, the relay sends it `NoRoute` with
-`home_relay` for a peer frame, a data frame and a PSP packet with the relay SA
-to the address, and for the PSP packet of an SPI row to the home relay, at
-most one each second for each address. The relay does not open the packet of
-a row: the address in `NoRoute` is the `destination` of the `RegisterSPI` call
-of the row, and the home relay is the member that the row sends to. On a host
-with the XDP program, the first such `NoRoute` can come up to 1 s later: the
-program has the row until the relay looks at its rows again, which it does
-each second. A sender below revision 12 gets no `NoRoute` for an address with
-a route, as before. A sender that Permit denies gets `NoRoute` with no
-`home_relay`. The agent can then attach to the home relay as a visitor (see
-`Visit` in "Relay").
-
-An agent opens a peer session to an address with the answer `REACH_TRUNK` as
-to an address of its own relay, and it sends all its packets to its own relay.
-The packets of the peer session go in peer frames, and between the relays in
-mesh datagrams (see "Mesh datagrams"). The agents learn the mode of each other
-in `Open`, so an entry has no mode. Two PSP-mode agents make SAs for each
-other, and each one calls `RegisterSPI` on its own relay: their PSP packets go
-between the relays with no change, and no relay opens them. When one of the
-agents is in QUIC mode, each agent sends through its relay, in data frames or
-with its relay SA, and the inner packets go between the relays in trunk
-packets (see "Trunk"). The grant of the peer is from the other relay, so the roots that an
-agent checks grants with must cover the certs of all relays of the mesh.
-
-A peer session belongs to the relay session that it started on, and it
-carries the packets from the addresses of that relay session. When a relay
-session ends, the agent closes its peer sessions. A packet to the peer from
-the address of another relay session opens a new one with the answer of the
-relay of that session: `REACH_LOCAL` if the peer is on that relay, and
-`REACH_TRUNK` if it is on another relay of the mesh.
-
-An agent below revision 10, or with `local_routes_only`, opens no peer session
-to such an address. It accepts the peer session that an agent of another relay
-opens, and then the two agents send to each other.
+session whose `Hello` has no `local_routes_only`. A session with
+`local_routes_only` gets the route of a prefix only while the active
+announcer is on this relay. A session gets no route for a prefix that an
+attachment of its own agent process announces on another relay: the SPIFFE
+ID, the agent name and the instance of the record tell. The route goes away
+with its record.
 
 ### Keys entry of the relay data plane
 
@@ -1044,10 +761,14 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 19 | `Welcome.psp_host` and `Welcome.psp_port`, and the same two fields in `MeshOpenRequest` and `MeshOpenResponse`. The `Moved` message is gone. The counter of a path probe, and probe version 2. A QUIC socket and a PSP socket on each relay. | Starts each session in QUIC mode. After `Welcome`, sends its path probes, with a counter that grows, to the PSP socket of the relay (`Welcome.psp_host`, or the host that it dialed when that is empty, at `Welcome.psp_port`), and calls `Rekey` when a probe passes. Sends its PSP packets and lane keep-alives to that address. In PSP mode, sends a probe each 5 s. Sends no probe before `Hello` and opens no new session for PSP mode. | No duty. | Reads QUIC on one socket and drops each other packet there. Reads PSP packets, probes, lane keep-alives and the packets of other relays on its PSP socket, and sends to another relay at the PSP socket that this relay gave in `Open`. Sends `psp_host` empty and `psp_port` with the local port of its PSP socket in `Welcome` and in `Open`. Starts each session in QUIC mode, also for a `Hello` with PSP mode, and sends no relay SAs after `Config`. Takes the PSP address of a session from the path probe with the largest counter, when its IP address is that of the QUIC connection. Keeps no probe that comes before its session. The two sides must be at revision 19: there is no code for an older agent or relay. |
 | 20 | The BFD packet in a path probe, with the probe flag `0x02`. The change of an open session from PSP mode to QUIC mode. | In PSP mode, sends a BFD packet to the PSP socket of the relay each 2 s, in place of the probe each 5 s, and at each change of its state. Changes the session to QUIC mode when the PSP path is lost, as in "PSP path check", and probes with backoff for the return to PSP mode. | No duty. | Runs one BFD session for each session in PSP mode, sends its BFD packets to the PSP address of the session, and sends no reply to a probe with a BFD packet. Changes the session to QUIC mode when the PSP path is lost, as in "PSP path check", and takes a later `Rekey` as on each session in QUIC mode. The two sides must be at revision 20: there is no code for an older agent or relay. |
 | 21 | `Relay.ResolvePeer`, `RegisterSPI`, `UnregisterSPI`, `Visit` and `Grant`, the `Peer` service (`apoxy-peer/1`), `AttachmentGrant` and `GrantClaims` are gone; `AttachResponse.grant` and `NoRoute.home_relay` are reserved. `Welcome.relay_id`, `Route.relay`, `AttachResponse.addresses`, `RemoteAddresses` and `KeysRequest.generation`. `ROUTE_RESULT_IPV4`. A Route for each slot. The first route table in parts. The minimum revision of each side is 21. | Opens no peer session and makes none of the removed calls. Sends the number of its key attempt in `KeysRequest.generation` of each `Rekey` that changes the mode. Takes the first route table in `RouteDelta` parts, up to the first one with no routes. | No duty. | Answers the removed calls with `Unimplemented`. Sends its ID in `Welcome.relay_id`, the `RelayRef` of the relay of the origin in `Route.relay`, and the addresses of an attachment in `AttachResponse.addresses`. Copies `generation` of the `Rekey` that changes the mode into its `OfferSAs`. Refuses each IPv4 prefix that is not a default route with `ROUTE_RESULT_IPV4`. Sends one Route for each /88 slot of the network of the VPC in place of the /96 routes of its attachments, with the ID of the relay that holds the slot as its origin. Sends the first route table in `RouteDelta` parts of at most 256 routes and 1 MiB, then one `RouteDelta` with no routes. Closes a session below revision 21 with `UPGRADE`. |
+| 22 | `Mesh.Presence` is a bidirectional call, one for each tenant and direction, with `PresenceUpdate{seq, vpcs, end_of_vpcs, parts}`, `PresencePart` and `PresenceControl{ack}`; `PresenceUpdate` fields 1 and 2 (`entries`, `end_of_full_set`) are reserved. `Mesh.SPIRows` and `SPIRowUpdate` are gone. A record lives with its call. Each packet between two relays is a trunk packet. The minimum revision of a relay on a mesh session is 22. | No duty. | No duty. | Opens one `Presence` call for each tenant with attachments on each mesh session, with the flow control and the limits of "Mesh", ends a call that has a message with no ack for 5 s and opens it again, and opens no new call of a tenant whose call ended for a different cause until the next session. Keeps the records of a call until the call ends, and deletes the records and the trunk SAs of a member at once when its session ends. Makes the routes of a member after the first probe result of its trunk. Takes a trunk packet only from the PSP socket that the member gave in `Open`, and refuses a member that gives no PSP port. With a mesh, refuses an `Attach` with more than 64 prefixes, or whose entry does not fit in one `PresenceUpdate`. Closes a mesh session with a relay below revision 22 with `UPGRADE`. |
 
 ### Minimum revision
 
-Each side has a minimum for the revision of the other side. It is 21 now.
+Each side has a minimum for the revision of the other side. A relay takes an
+agent at revision 21 or later, and another relay of its mesh at revision 22
+or later. It closes a mesh session below that with the `MeshCloseCode`
+`UPGRADE`.
 
 - A relay closes a session below its minimum with the `RelayCloseCode`
   `UPGRADE`, and the close reason gives the minimum. When no other relay takes

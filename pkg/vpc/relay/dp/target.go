@@ -62,8 +62,9 @@ type Pipeline struct {
 	packetIn atomic.Pointer[func(*p4.PacketIn) bool]
 	bufs     sync.Pool
 
-	cells []counter
-	drops []counter
+	cells     []counter
+	drops     []counter
+	portDrops []counter // Packets only.
 
 	mu      sync.RWMutex
 	st      state
@@ -75,12 +76,13 @@ var _ Target = (*Pipeline)(nil)
 // New returns an empty pipeline with the built-in schema. send gets the sealed PSP and RAW packets.
 func New(send Sender) *Pipeline {
 	p := &Pipeline{
-		send:     send,
-		defaults: map[uint32]Action{},
-		cells:    make([]counter, counterSizes[CounterCells]),
-		drops:    make([]counter, counterSizes[CounterDrops]),
-		st:       newState(),
-		writers:  map[uint64]func([]byte) error{},
+		send:      send,
+		defaults:  map[uint32]Action{},
+		cells:     make([]counter, counterSizes[CounterCells]),
+		drops:     make([]counter, counterSizes[CounterDrops]),
+		portDrops: make([]counter, counterSizes[CounterPortDrops]),
+		st:        newState(),
+		writers:   map[uint64]func([]byte) error{},
 	}
 	for id, a := range defaultActions {
 		d, err := decodeAction(a)
@@ -211,6 +213,8 @@ func (p *Pipeline) counterAt(id uint32, index *p4.Index) (*counter, error) {
 		cs = p.cells
 	case CounterDrops:
 		cs = p.drops
+	case CounterPortDrops:
+		cs = p.portDrops
 	default:
 		return nil, status.Errorf(codes.NotFound, "unknown counter %d", id)
 	}
@@ -268,7 +272,7 @@ func (p *Pipeline) readCounters(ce *p4.CounterEntry, out *[]*p4.Entity) error {
 	for _, x := range []struct {
 		id uint32
 		cs []counter
-	}{{CounterCells, p.cells}, {CounterDrops, p.drops}} {
+	}{{CounterCells, p.cells}, {CounterDrops, p.drops}, {CounterPortDrops, p.portDrops}} {
 		if ce.GetCounterId() != 0 && ce.GetCounterId() != x.id {
 			continue
 		}

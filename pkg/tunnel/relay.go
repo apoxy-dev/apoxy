@@ -94,6 +94,9 @@ type Relay struct {
 
 	// vpcConn is the QUIC socket of the VPC relay on its data plane, from SetVPC.
 	vpcConn net.PacketConn
+
+	// mesh is the mesh config of the VPC relay, from SetMesh. Nil has no mesh.
+	mesh *vpcrelay.MeshConfig
 }
 
 func NewRelay(name string, pc net.PacketConn, cert tls.Certificate, handler *icx.Handler, idHasher *hasher.Hasher, router router.Router) *Relay {
@@ -246,6 +249,19 @@ func (r *Relay) SetVPC(quicConn net.PacketConn, cfg vpcrelay.Config) (*vpcrelay.
 	return rtr, nil
 }
 
+// SetMesh makes the VPC relay keep a mesh session with each member that the
+// host gives to the Router of SetVPC. The name of the relay is its name in the
+// mesh. Call it after SetVPC and before Start.
+func (r *Relay) SetMesh(cfg vpcrelay.MeshConfig) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.vpc == nil {
+		return errors.New("mesh needs the VPC relay")
+	}
+	r.mesh = &cfg
+	return nil
+}
+
 // SetSteerGroup serves the tunnels on the sockets of a steer group, in the
 // order that steer.Listen gives them. Call it before Start.
 func (r *Relay) SetSteerGroup(conns []*net.UDPConn) error {
@@ -298,7 +314,8 @@ func (r *Relay) vpcTransport() *quic.Transport {
 }
 
 // vpcListenConfig returns the QUIC config of the VPC listener: RTT trace and
-// the liveness keep-alive for agents when the relay serves VPC sessions.
+// the liveness keep-alive for agents when the relay serves VPC sessions, and
+// the mesh timers for a member.
 func (r *Relay) vpcListenConfig() *quic.Config {
 	if r.vpc == nil {
 		return relayQUICConfig
@@ -306,7 +323,10 @@ func (r *Relay) vpcListenConfig() *quic.Config {
 	c := relayQUICConfig.Clone()
 	c.Tracer = vpcrelay.TraceRTT
 	c.KeepAlivePeriod = vpcrelay.AgentKeepAlive
-	return c
+	if r.mesh == nil {
+		return c
+	}
+	return r.vpc.R.ListenConfig(c)
 }
 
 // accept gives the connections of ln to serve until ln closes. It accepts
@@ -324,10 +344,11 @@ func accept(ln *quic.EarlyListener, serve func(quic.EarlyConnection), wg *sync.W
 	}
 }
 
-// serveVPCConn gives an apoxy-vpc/2 connection to the VPC server. vpcCtx ends
-// when Start returns.
+// serveVPCConn gives an apoxy-vpc/2 or apoxy-mesh/1 connection to the VPC
+// server. vpcCtx ends when Start returns.
 func (r *Relay) serveVPCConn(qc quic.EarlyConnection, vpcCtx context.Context) {
-	// The check of the agent cert needs the end of the handshake.
+	// The checks of the agent cert and of the cert of another relay need the end
+	// of the handshake.
 	select {
 	case <-qc.HandshakeComplete():
 	case <-qc.Context().Done():
@@ -335,7 +356,7 @@ func (r *Relay) serveVPCConn(qc quic.EarlyConnection, vpcCtx context.Context) {
 	case <-vpcCtx.Done():
 		return
 	}
-	if qc.ConnectionState().TLS.NegotiatedProtocol != dp.ALPNRelay {
+	if alpn := qc.ConnectionState().TLS.NegotiatedProtocol; alpn != dp.ALPNRelay && (r.mesh == nil || alpn != dp.ALPNMesh) {
 		_ = qc.CloseWithError(0, "unknown protocol")
 		return
 	}
@@ -343,10 +364,16 @@ func (r *Relay) serveVPCConn(qc quic.EarlyConnection, vpcCtx context.Context) {
 }
 
 // startVPC returns the listener of the QUIC socket of the VPC relay, or nil
-// with no VPC relay.
+// with no VPC relay. The mesh dials from the same socket, so that the other
+// relays see the address of this relay.
 func (r *Relay) startVPC(tr *quic.Transport) (*quic.EarlyListener, error) {
 	if tr == nil {
 		return nil, nil
+	}
+	if r.mesh != nil {
+		if err := r.vpc.R.SetMesh(r.name, *r.mesh, tr, relayQUICConfig); err != nil {
+			return nil, err
+		}
 	}
 	ln, err := tr.ListenEarly(r.vpc.R.TLSConfig(&tls.Config{GetCertificate: r.getCert}), r.vpcListenConfig())
 	if err != nil {
@@ -569,7 +596,7 @@ func (r *Relay) Start(ctx context.Context) error {
 			go func() {
 				drainCtx, cancel := context.WithTimeout(context.Background(), d)
 				defer cancel()
-				r.vpc.Drain(drainCtx, nil)
+				r.vpc.Drain(drainCtx)
 			}()
 		}
 

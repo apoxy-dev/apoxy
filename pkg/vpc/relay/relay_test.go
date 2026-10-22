@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/testing/protocmp"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
@@ -131,6 +134,7 @@ func TestAttach(t *testing.T) {
 	}
 	cases := []struct {
 		name    string
+		mesh    bool
 		vpc     *dpv1.VPCRef
 		attName string
 		routes  []string
@@ -154,11 +158,12 @@ func TestAttach(t *testing.T) {
 		{name: "no VPC", code: rpc.InvalidArgument},
 		{name: "name not valid", vpc: vpcRef, attName: "Not_Valid", code: rpc.InvalidArgument},
 		{name: "route not valid", vpc: vpcRef, routes: []string{"fd00::1"}, code: rpc.InvalidArgument},
-		{name: "more than 64 prefixes", vpc: vpcRef, routes: tooMany, code: rpc.InvalidArgument},
+		{name: "more than 64 prefixes with a mesh", mesh: true, vpc: vpcRef, routes: tooMany, code: rpc.InvalidArgument},
+		{name: "more than 64 prefixes with no mesh", vpc: vpcRef, routes: tooMany, results: slices.Repeat([]dpv1.RouteResult{dpv1.RouteResult_ROUTE_RESULT_ACCEPTED}, len(tooMany))},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newEnv(t)
+			e := newEnvWith(t, envOpts{mesh: tc.mesh})
 			watcher := e.dial(t, "watcher")
 			watcher.open(dpv1.Mode_MODE_QUIC)
 			watcher.attach()
@@ -171,7 +176,7 @@ func TestAttach(t *testing.T) {
 			res, err := a.rc.Attach(t.Context(), &dpv1.AttachRequest{Vpc: tc.vpc, Name: name, Routes: tc.routes})
 			require.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
 			if tc.code != rpc.OK {
-				if tc.name == "more than 64 prefixes" {
+				if tc.mesh {
 					// The addresses came from Assign: the relay releases them.
 					require.Eventually(t, func() bool { return e.addrs.releases() == 1 }, wait, 10*time.Millisecond)
 				}
@@ -500,18 +505,23 @@ func TestRevocation(t *testing.T) {
 }
 
 func TestDrain(t *testing.T) {
-	alternates := []*dpv1.RelayRef{{Id: "relay-2", Addresses: []string{"192.0.2.2"}}}
 	cases := []struct {
 		name  string
 		time  time.Duration
 		leave bool // The agent closes its connection after Drain.
+		// mesh makes relay-2 a member that is up: the alternate of the drain.
+		mesh bool
+		want []*dpv1.RelayRef
 	}{
-		{name: "agent moves", time: wait, leave: true},
-		{name: "drain time ends", time: 500 * time.Millisecond},
+		{name: "agent moves to a member", time: wait, leave: true, mesh: true, want: []*dpv1.RelayRef{{Id: "relay-2", Addresses: []string{"192.0.2.2"}}}},
+		{name: "drain time ends with no mesh", time: 500 * time.Millisecond},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
+			if tc.mesh {
+				e, _ = newMesh(t, envOpts{}, envOpts{})
+			}
 			a := e.dial(t, "agent-a")
 			a.open(dpv1.Mode_MODE_QUIC)
 			res := a.attach()
@@ -520,12 +530,11 @@ func TestDrain(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				e.srv.Drain(ctx, alternates)
+				e.srv.Drain(ctx)
 			}()
 
 			d := a.waitMsg(1, func(m *dpv1.SessionResponse) bool { return m.GetDrain() != nil }).GetDrain()
-			require.Len(t, d.GetAlternates(), 1)
-			assert.Equal(t, "relay-2", d.GetAlternates()[0].GetId())
+			assert.Empty(t, cmp.Diff(tc.want, d.GetAlternates(), protocmp.Transform()))
 			// A new connection gets the drain close.
 			n := e.dial(t, "agent-n")
 			code, _ := n.closed()
@@ -547,8 +556,8 @@ func TestDrain(t *testing.T) {
 	}
 }
 
-// TestSlotLost checks that the end of an address lease stops the data of the connection before
-// the hook returns.
+// TestSlotLost checks that the end of an address lease closes the connection and ends and
+// releases the attachment, and that the relay then has no route to its address.
 func TestSlotLost(t *testing.T) {
 	e := newEnv(t)
 	a := e.dial(t, "agent-a")
@@ -559,13 +568,13 @@ func TestSlotLost(t *testing.T) {
 	resB := b.attach()
 
 	e.addrs.loseSlot(resA.GetAttachmentId())
-	// The relay takes no data of the connection now.
-	b.sendFrame(packet(addr(t, resB), addr(t, resA), 100))
-	b.waitMsg(1, func(m *dpv1.SessionResponse) bool { return m.GetNoRoute() != nil })
 	code, msg := a.closed()
 	assert.Equal(t, dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, code)
 	assert.Contains(t, msg, "lease")
+	// The attachment ends after V removed its route: the relay has no route to it now.
 	e.waitEnd(t, resA.GetAttachmentId())
+	b.sendFrame(packet(addr(t, resB), addr(t, resA), 100))
+	b.waitMsg(1, func(m *dpv1.SessionResponse) bool { return m.GetNoRoute() != nil })
 	require.Eventually(t, func() bool { return e.addrs.isReleased(resA.GetAttachmentId()) }, wait, 10*time.Millisecond)
 	assert.True(t, b.openAfter(100*time.Millisecond))
 }

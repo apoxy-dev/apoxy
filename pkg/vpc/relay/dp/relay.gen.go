@@ -31,8 +31,9 @@ const (
 
 // Counter IDs.
 const (
-	CounterCells uint32 = 317147353 // Relay.cells
-	CounterDrops uint32 = 309103603 // Relay.drops
+	CounterCells     uint32 = 317147353 // Relay.cells
+	CounterDrops     uint32 = 309103603 // Relay.drops
+	CounterPortDrops uint32 = 306017222 // Relay.port_drops
 )
 
 // Meter IDs.
@@ -82,7 +83,8 @@ const (
 // counterSizes has the size of each counter.
 var counterSizes = map[uint32]int64{
 	317147353: 2097152,
-	309103603: 64,
+	309103603: 32,
+	306017222: 2097152,
 }
 
 // meterSizes has the size of each meter, and meterPackets the meters that count packets.

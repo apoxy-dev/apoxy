@@ -60,10 +60,13 @@ func TestRelayStops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			w := newWorld(t)
+			w.mesh = true
 			quic1, psp1 := &muteConn{PacketConn: loopback(t)}, &muteConn{PacketConn: loopback(t)}
 			r1, r2 := w.relayOn(t, "relay-1", quic1, psp1), w.relay(t, "relay-2")
+			joinMesh(t, r1, r2)
 			route, far := netip.MustParsePrefix("fd99::/64"), netip.MustParseAddr("fd99::5")
-			// The agent drops the PSP packets of relay 1 when only the PSP port stops.
+			// The relays send trunk data on their PSP sockets, so the agent drops
+			// the PSP packets of relay 1 when only the PSP port stops.
 			block := &blockConn{relay: r1.psp}
 			// The agent shuffles its relays, so relay 2 answers late at the start
 			// and the session on relay 1 gets rank 0.
@@ -72,19 +75,15 @@ func TestRelayStops(t *testing.T) {
 			a, rcs := w.agentOn(t, "a", agentOptions{mode: tc.mode, block: block, slow: slow, rttChoice: true, routes: []netip.Prefix{route}}, 2, r1, r2)
 			slow.set(r2, 0)
 			require.Equal(t, r1.addr, rcs[0].addr, "relay of rank 0")
-			// The relays have no mesh, so each relay has its own peer: b1 on
-			// relay 1 and b2 on relay 2.
-			b1, b2 := w.agent(t, "b1", r1, agentOptions{}), w.agent(t, "b2", r2, agentOptions{})
-			eb1, eb2 := b1.attached(t), b2.attached(t)
-			echo(t, b1.stack, eb1.addr, 9000)
-			echo(t, b2.stack, eb2.addr, 9000)
+			b := w.agent(t, "b", r2, agentOptions{})
+			eb := b.attached(t)
+			echo(t, b.stack, eb.addr, 9000)
 			a.netstack(t, a.binding(), far, false)
-			a.hasRoutes(t, eb1.prefixes[0])
-			b1.hasRoutes(t, route)
-			b2.hasRoutes(t, route)
+			a.hasRoutes(t, eb.prefixes[0])
+			b.hasRoutes(t, route)
 			lost := rcs[0]
 			require.True(t, sameSession(t, lost, a.current()))
-			ping(t, a.stack, far, eb1.addr, 9000, "from the advertised network before")
+			ping(t, a.stack, far, eb.addr, 9000, "from the advertised network before")
 			want := dp.Mode_MODE_PSP
 			if tc.mode == TransportQUIC {
 				want = dp.Mode_MODE_QUIC
@@ -101,7 +100,7 @@ func TestRelayStops(t *testing.T) {
 				sameSession(t, lost, a.current(), "the session keeps the default address")
 				assert.Equal(t, lost.self, a.a.Status().Connections[0].Address)
 				assert.NotContains(t, a.events("a"), "detach a "+lost.self.String())
-				ping(t, a.stack, far, eb1.addr, 9000, "from the advertised network in QUIC mode")
+				ping(t, a.stack, far, eb.addr, 9000, "from the advertised network in QUIC mode")
 				return
 			}
 			stopped := time.Now()
@@ -114,9 +113,8 @@ func TestRelayStops(t *testing.T) {
 				"the session on relay 2 did not get the default address")
 			require.Eventually(t, func() bool { return slices.Contains(a.events("a"), "detach a "+lost.self.String()) }, time.Second, 10*time.Millisecond,
 				"the address of the session that ended stays")
-			a.hasRoutes(t, eb2.prefixes[0])
-			ping(t, a.stack, far, eb2.addr, 9000, "from the advertised network after")
-			ping(t, a.stack, rcs[1].self, eb2.addr, 9000, "from the address of relay 2 after")
+			ping(t, a.stack, far, eb.addr, 9000, "from the advertised network after")
+			ping(t, a.stack, rcs[1].self, eb.addr, 9000, "from the address of relay 2 after")
 		})
 	}
 }

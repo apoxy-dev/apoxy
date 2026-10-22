@@ -4,10 +4,13 @@ package relay
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
 
+	pspwire "github.com/apoxy-dev/softpsp/psp"
 	p4 "github.com/p4lang/p4runtime/go/p4/v1"
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -145,14 +148,138 @@ var stateChangesDesc = prometheus.NewDesc("apoxy_vpc_relay_announcer_state_chang
 
 var _ prometheus.Collector = (*Router)(nil)
 
+// The trunk metrics have the relay name and the last relay ID of each member of the mesh. Many
+// members can have one ID.
+var (
+	trunkPacketsDesc = prometheus.NewDesc("apoxy_vpc_relay_trunk_packets_total",
+		"Packets of agents that the relay sent to a mesh member (tx), or got from the member (rx).",
+		[]string{"peer_relay", "peer_relay_id", "direction"}, nil)
+	trunkBytesDesc = prometheus.NewDesc("apoxy_vpc_relay_trunk_bytes_total",
+		"UDP payload bytes of the packets of agents that the relay sent to a mesh member (tx), or got from the member (rx).",
+		[]string{"peer_relay", "peer_relay_id", "direction"}, nil)
+	trunkDropsDesc = prometheus.NewDesc("apoxy_vpc_relay_trunk_dropped_packets_total",
+		"Packets that the relay did not send to a mesh member (tx), and packets of the member that the relay dropped (rx), by reason.",
+		[]string{"peer_relay", "peer_relay_id", "direction", "reason"}, nil)
+	meshRTTDesc = prometheus.NewDesc("apoxy_vpc_relay_mesh_rtt_seconds",
+		"Smoothed round-trip time of the mesh session with a member. A member with no session has no value.",
+		[]string{"peer_relay", "peer_relay_id"}, nil)
+)
+
+// trunkDrops are the drop reasons that can count at a trunk port, with their direction: tx at the
+// out port in send_out, rx at the in port. Each has a series from the start.
+var trunkDrops = []struct {
+	reason uint8
+	dir    string
+}{
+	{dp.ReasonMTU, "tx"},
+	{dp.ReasonNoKeys, "tx"},
+	{dp.ReasonTrunkToTrunk, "tx"},
+	{dp.ReasonLocalOnly, "tx"},
+	{dp.ReasonMalformed, "rx"},
+	{dp.ReasonOldSession, "rx"},
+	{dp.ReasonUnknownSource, "rx"},
+	{dp.ReasonNoContext, "rx"},
+	{dp.ReasonSource, "rx"},
+	{dp.ReasonNoRoute, "rx"},
+	{dp.ReasonNoTarget, "rx"},
+	{dp.ReasonPuntFull, "rx"},
+}
+
+// trunkStat is what the metrics read of one member: the trunk ports of its M and of each earlier
+// M that did not end yet, and the final counts of the ended ones.
+type trunkStat struct {
+	name, id string
+	ports    []trunkPort
+	base     trunkCounts
+	rtt      time.Duration // Zero with no session, or with no sample.
+}
+
+// trunkPort is the cell and the meter index of one trunk port.
+type trunkPort struct{ cell, meter uint32 }
+
+// read returns the counts of the member: base and the counts of each port.
+func (st *trunkStat) read(ctx context.Context, t dp.Target) (trunkCounts, error) {
+	n := st.base
+	for _, p := range st.ports {
+		c, err := readTrunk(ctx, t, p.cell, p.meter)
+		if err != nil {
+			return n, err
+		}
+		n.add(c)
+	}
+	return n, nil
+}
+
+// trunkAsk asks the root for the trunk stats of each member.
+type trunkAsk struct{ reply chan []*trunkStat }
+
+// trunkStats answers a trunkAsk with each member that the mesh has now.
+func (r *Router) trunkStats(e trunkAsk) {
+	byName := map[string]*trunkStat{}
+	for c := range r.mall {
+		cur := r.ms[c.name]
+		if cur == nil {
+			continue
+		}
+		st := byName[c.name]
+		if st == nil {
+			st = &trunkStat{name: c.name, id: cur.id}
+			if cur.s != nil && cur.s.trace != nil {
+				st.rtt = time.Duration(cur.s.trace.rtt.Load())
+			}
+			byName[c.name] = st
+		}
+		if st.id == "" {
+			st.id = c.id
+		}
+		st.ports = append(st.ports, trunkPort{c.cell, c.meter})
+		st.base.add(c.base)
+	}
+	e.reply <- slices.Collect(maps.Values(byName))
+}
+
+// collectTrunk gives the counts of the trunk ports of each member, and the RTT of its mesh
+// session.
+func (r *Router) collectTrunk(ctx context.Context, ch chan<- prometheus.Metric) {
+	reply := make(chan []*trunkStat, 1)
+	if r.mesh == nil || !r.box.send(trunkAsk{reply: reply}) {
+		return
+	}
+	for _, st := range <-reply {
+		n, err := st.read(ctx, r.cfg.Target)
+		if err != nil {
+			continue
+		}
+		for _, d := range trunkDrops {
+			ch <- prometheus.MustNewConstMetric(trunkDropsDesc, prometheus.CounterValue, float64(n.drops[d.reason]), st.name, st.id, d.dir, dropLabels[d.reason])
+		}
+		for _, d := range []struct {
+			label string
+			n     tally
+		}{{"tx", n.tx}, {"rx", n.rx}} {
+			// The cell counts the inner packets. A trunk packet adds the PSP overhead to each.
+			bytes := d.n.bytes + d.n.packets*pspwire.Overhead
+			ch <- prometheus.MustNewConstMetric(trunkPacketsDesc, prometheus.CounterValue, float64(d.n.packets), st.name, st.id, d.label)
+			ch <- prometheus.MustNewConstMetric(trunkBytesDesc, prometheus.CounterValue, float64(bytes), st.name, st.id, d.label)
+		}
+		if st.rtt > 0 {
+			ch <- prometheus.MustNewConstMetric(meshRTTDesc, prometheus.GaugeValue, st.rtt.Seconds(), st.name, st.id)
+		}
+	}
+}
+
 // Describe implements prometheus.Collector.
 func (r *Router) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dropsDesc
 	ch <- stateChangesDesc
+	ch <- trunkPacketsDesc
+	ch <- trunkBytesDesc
+	ch <- trunkDropsDesc
+	ch <- meshRTTDesc
 }
 
-// Collect implements prometheus.Collector with the drop counters of the data plane and the state
-// changes.
+// Collect implements prometheus.Collector with the drop counters of the data plane, the state
+// changes and the trunk metrics.
 func (r *Router) Collect(ch chan<- prometheus.Metric) {
 	drops := map[uint8]uint64{}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -169,6 +296,7 @@ func (r *Router) Collect(ch chan<- prometheus.Metric) {
 	for i := range r.stateChanges {
 		ch <- prometheus.MustNewConstMetric(stateChangesDesc, prometheus.CounterValue, float64(r.stateChanges[i].Load()), stateLabel(dpv1.AnnouncerState(i)))
 	}
+	r.collectTrunk(ctx, ch)
 }
 
 func modeLabel(m dpv1.Mode) string {

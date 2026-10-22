@@ -4,6 +4,7 @@ package dp
 
 import (
 	"bytes"
+	"cmp"
 	"net/netip"
 	"time"
 
@@ -89,7 +90,7 @@ func (p *Pipeline) PacketOut(po *p4.PacketOut) error {
 			p.drop(ReasonOldSession, len(b))
 			return nil
 		}
-		p.seal(md.Port, o, 0, 0, b)
+		p.seal(md.Port, o, 0, 0, b, 0)
 	case KindRaw:
 		if !md.To.IsValid() {
 			return status.Error(codes.InvalidArgument, "RAW has no outer address")
@@ -119,27 +120,27 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 	}
 	pa, ok := act.(PortAction)
 	if !ok {
-		p.dropAction(act, m.size)
+		p.dropAction(act, m.size, 0)
 		return
 	}
 
 	// check_in.
 	if m.session != pa.Session {
-		p.drop(ReasonOldSession, m.size)
+		p.dropIn(pa.MeterIndex, ReasonOldSession, m.size)
 		return
 	}
 	if m.psp {
 		if !fromPort(pa, m.from) {
-			p.drop(ReasonUnknownSource, m.size)
+			p.dropIn(pa.MeterIndex, ReasonUnknownSource, m.size)
 			return
 		}
 		if !p.meter(MeterLane, 4*pa.MeterIndex+uint32(m.lane), m.size) {
-			p.drop(ReasonMeter, m.size)
+			p.dropIn(pa.MeterIndex, ReasonMeter, m.size)
 			return
 		}
 	}
 	if !p.meter(MeterPort, pa.MeterIndex, m.size) {
-		p.drop(ReasonMeter, m.size)
+		p.dropIn(pa.MeterIndex, ReasonMeter, m.size)
 		return
 	}
 	if m.psp {
@@ -157,7 +158,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 	}
 	src, dst, ok := innerAddrs(pkt)
 	if !ok {
-		p.drop(ReasonMalformed, m.size)
+		p.dropIn(pa.MeterIndex, ReasonMalformed, m.size)
 		return
 	}
 
@@ -169,11 +170,11 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 	}
 	c, ok := act.(ContextAction)
 	if !ok {
-		p.dropAction(act, m.size)
+		p.dropAction(act, m.size, pa.MeterIndex)
 		return
 	}
 	if !pa.Trunk && m.vni != c.VNI {
-		p.drop(ReasonNoContext, m.size)
+		p.dropIn(pa.MeterIndex, ReasonNoContext, m.size)
 		return
 	}
 	p.cells[2*c.Cell].add(len(pkt))
@@ -191,7 +192,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 	case LocalOnlyAction:
 		localOnly = true
 	default:
-		p.dropAction(a, m.size)
+		p.dropAction(a, m.size, pa.MeterIndex)
 		return
 	}
 
@@ -212,35 +213,38 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 			out, cell = a.LocalPort, a.LocalCell
 		}
 		if out == 0 {
-			p.drop(ReasonNoRoute, m.size)
+			p.dropIn(pa.MeterIndex, ReasonNoRoute, m.size)
 			return
 		}
 	case NoAction:
 		if pa.Trunk {
-			p.drop(ReasonNoRoute, m.size)
+			p.dropIn(pa.MeterIndex, ReasonNoRoute, m.size)
 			return
 		}
 		p.toRoot(PacketInMeta{Kind: KindMiss, Port: m.port, Session: pa.Session, Hash: hash, From: m.from}, pa.MeterIndex, m.size, pkt)
 		return
 	default:
-		p.dropAction(a, m.size)
+		p.dropAction(a, m.size, pa.MeterIndex)
 		return
 	}
 
-	// send_out.
+	// send_out. After the ports entry of the out port, a drop counts at its meter index
+	// (out_meter_index).
 	o, ok := p.port(out)
-	switch {
-	case !ok:
-		p.drop(ReasonNoTarget, m.size)
+	if !ok {
+		p.dropIn(pa.MeterIndex, ReasonNoTarget, m.size)
 		return
+	}
+	mo := cmp.Or(o.MeterIndex, pa.MeterIndex)
+	switch {
 	case pa.Trunk && o.Trunk:
-		p.drop(ReasonTrunkToTrunk, m.size)
+		p.dropIn(mo, ReasonTrunkToTrunk, m.size)
 		return
 	case localOnly && o.Trunk:
-		p.drop(ReasonLocalOnly, m.size)
+		p.dropIn(mo, ReasonLocalOnly, m.size)
 		return
 	case o.MTU != 0 && len(pkt) > int(o.MTU):
-		p.drop(ReasonMTU, m.size)
+		p.dropIn(mo, ReasonMTU, m.size)
 		return
 	}
 	if o.Addr.IsValid() {
@@ -248,20 +252,20 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 		if o.Trunk {
 			vni = pa.Tag
 		}
-		if !p.seal(out, o, vni, hash, pkt) {
+		if !p.seal(out, o, vni, hash, pkt, mo) {
 			return
 		}
 	} else {
 		w := p.writers[out]
 		if w == nil {
-			p.drop(ReasonNoTarget, m.size)
+			p.dropIn(mo, ReasonNoTarget, m.size)
 			return
 		}
 		bp := p.bufs.Get().(*[]byte)
 		err := w(peerconn.EncodeData((*bp)[:0], c.VNI, pkt))
 		p.bufs.Put(bp)
 		if err != nil {
-			p.drop(ReasonDatagramFull, m.size)
+			p.dropIn(mo, ReasonDatagramFull, m.size)
 			return
 		}
 	}
@@ -270,18 +274,19 @@ func (p *Pipeline) apply(m *meta, pkt []byte) {
 
 // seal seals payload with a TX entry of the port session of o on a lane by hash, and sends it to
 // the address of that lane. Lane i of 1 to 3 goes to the port address until bit i-1 of seen is set
-// (a keepalive from the lane port). It counts the drop when it fails.
-func (p *Pipeline) seal(port uint64, o PortAction, vni, hash uint32, payload []byte) bool {
+// (a keepalive from the lane port). It counts the drop when it fails, also in port_drops at the
+// meter index mi (0: none).
+func (p *Pipeline) seal(port uint64, o PortAction, vni, hash uint32, payload []byte, mi uint32) bool {
 	sa := p.st.tx[portSession{port, o.Session}].pick(hash)
 	if sa == nil || len(payload)+psp.Overhead > maxPacket {
-		p.drop(ReasonNoKeys, len(payload))
+		p.dropIn(mi, ReasonNoKeys, len(payload))
 		return false
 	}
 	bp := p.bufs.Get().(*[]byte)
 	defer p.bufs.Put(bp)
 	n, err := sa.seal(*bp, vni, payload)
 	if err != nil {
-		p.drop(ReasonNoKeys, len(payload))
+		p.dropIn(mi, ReasonNoKeys, len(payload))
 		return false
 	}
 	to := o.Addr
@@ -292,15 +297,16 @@ func (p *Pipeline) seal(port uint64, o PortAction, vni, hash uint32, payload []b
 	return true
 }
 
-// toRoot gives a PacketIn to the root's callback, within punt meter i.
+// toRoot gives a PacketIn to the root's callback, within punt meter i: the meter index of the port
+// of the packet, or 0 for a probe.
 func (p *Pipeline) toRoot(md PacketInMeta, i uint32, size int, payload []byte) {
 	if !p.meter(MeterPunt, i, size) {
-		p.drop(ReasonMeter, size)
+		p.dropIn(i, ReasonMeter, size)
 		return
 	}
 	fn := p.packetIn.Load()
 	if fn == nil || !(*fn)(&p4.PacketIn{Payload: bytes.Clone(payload), Metadata: md.Metadata()}) {
-		p.drop(ReasonPuntFull, size)
+		p.dropIn(i, ReasonPuntFull, size)
 	}
 }
 
@@ -308,10 +314,20 @@ func (p *Pipeline) drop(reason uint8, size int) {
 	p.drops[reason].add(size)
 }
 
-// dropAction runs a drop action. Each table entry action that is not the expected one is a drop.
-func (p *Pipeline) dropAction(a Action, size int) {
+// dropIn counts a drop, also in port_drops at (mi << 5) | reason when the meter index mi is not 0:
+// the out port in send_out (tx), else the in port (rx).
+func (p *Pipeline) dropIn(mi uint32, reason uint8, size int) {
+	p.drop(reason, size)
+	if mi != 0 {
+		p.portDrops[mi<<5|uint32(reason)].packets.Add(1)
+	}
+}
+
+// dropAction runs a drop action of a packet whose in port has meter index mi. Each table entry
+// action that is not the expected one is a drop.
+func (p *Pipeline) dropAction(a Action, size int, mi uint32) {
 	if d, ok := a.(DropAction); ok {
-		p.drop(d.Reason, size)
+		p.dropIn(mi, d.Reason, size)
 	}
 }
 

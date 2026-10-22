@@ -22,7 +22,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // TestAttachErrors checks the errors of Attach and Detach before Run, while
@@ -179,8 +178,9 @@ func TestAttachmentsOnNewSession(t *testing.T) {
 	cases := []struct {
 		name string
 		move string // drain or lost.
-		// The drain gives no alternate, and the draining relay stops Accept, as a
-		// relay host in its lame duck. The agent has the other relay in its list.
+		// The relays have no mesh, so the drain gives no alternate, and the
+		// draining relay stops Accept, as a relay host in its lame duck. The
+		// agent has the other relay in its list.
 		lameDuck bool
 		want     []string // Callbacks of each extra attachment.
 	}{
@@ -191,11 +191,13 @@ func TestAttachmentsOnNewSession(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
+			w.mesh = !tc.lameDuck
 			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
 			opts := agentOptions{}
-			alts := []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}}
-			if tc.lameDuck {
-				opts.relays, alts = []identity.Relay{r1.ref(), r2.ref()}, nil
+			if w.mesh {
+				joinMesh(t, r1, r2)
+			} else {
+				opts.relays = []identity.Relay{r1.ref(), r2.ref()}
 			}
 			a := w.agent(t, "a", r1, opts)
 			a.attached(t)
@@ -221,7 +223,7 @@ func TestAttachmentsOnNewSession(t *testing.T) {
 					from.stopAccept()
 				}
 				var wg sync.WaitGroup
-				wg.Go(func() { from.srv.Drain(dctx, alts) })
+				wg.Go(func() { from.srv.Drain(dctx) })
 				t.Cleanup(wg.Wait)
 			case "lost":
 				a.reconnect()

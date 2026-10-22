@@ -4,8 +4,6 @@ syntax = "proto3";
 
 package apoxy.vpc.datapath.v1;
 
-import "google/protobuf/duration.proto";
-import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 import "proto/vpc/datapath/v1/types.proto";
 
@@ -16,11 +14,10 @@ option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1
 service Mesh {
   // Open is the first call on a session. The relay that dialed calls it.
   rpc Open(MeshOpenRequest) returns (MeshOpenResponse);
-  // Presence sends the attachments of the caller: the full set, then each
-  // change. The caller opens it one time on a session.
-  rpc Presence(stream PresenceUpdate) returns (google.protobuf.Empty);
-  // SPIRows copies SPI rows to the relay of the receiver.
-  rpc SPIRows(stream SPIRowUpdate) returns (google.protobuf.Empty);
+  // Presence sends the attachments of one tenant of the caller: the list of
+  // its VPCs, the full set of each VPC, then each change. The called relay
+  // sends only acks. The caller opens one call for each tenant on a session.
+  rpc Presence(stream PresenceUpdate) returns (stream PresenceControl);
   // TrunkKeys gives the peer relay trunk SAs for traffic to the caller.
   rpc TrunkKeys(KeysRequest) returns (KeysResponse);
   // Snapshot returns the snapshot of the host of the called relay, in parts.
@@ -109,27 +106,35 @@ message Presence {
   google.protobuf.Timestamp active_from = 13;
 }
 
+// PresenceUpdate is one message of the caller of Presence.
 message PresenceUpdate {
-  repeated Presence entries = 1;
-  // True in the last message of the full set that starts a Presence call.
-  bool end_of_full_set = 2;
+  reserved 1, 2;
+  reserved "entries", "end_of_full_set";
+  // Number of this message on the call: 1, 2, 3 and up.
+  uint64 seq = 3;
+  // Data of the VPCs, at most one part for each VPC.
+  repeated PresencePart parts = 4;
+  // The VPCs of the tenant that have attachments at the start of the call.
+  // They come first, in one or more messages with no part.
+  repeated VPCRef vpcs = 5;
+  // True in the last message of the list of VPCs.
+  bool end_of_vpcs = 6;
 }
 
-// SPIRow is a forward row that a sender registered on the sending relay.
-message SPIRow {
+// PresencePart is the data of one VPC in one PresenceUpdate.
+message PresencePart {
+  // project_id and vpc_uid of the VPC. network_id is not used.
   VPCRef vpc = 1;
-  // Trunk tag of the sender on the sending relay.
-  uint32 sender_tag = 2;
-  uint32 spi = 3;
-  // Overlay address of the receiver.
-  string destination = 4;
-  google.protobuf.Duration expires_in = 5;
-  // True if the row is removed.
-  bool removed = 6;
+  // True in the last part of the full set of this VPC on the call.
+  bool end_of_full_set = 2;
+  // Entries of attachments in the VPC of the part.
+  repeated Presence entries = 3;
 }
 
-message SPIRowUpdate {
-  repeated SPIRow rows = 1;
+// PresenceControl is one message of the called relay of Presence.
+message PresenceControl {
+  // The highest seq that the called relay took in.
+  uint64 ack = 1;
 }
 
 // SnapshotRequest asks a member for the snapshot of its host.

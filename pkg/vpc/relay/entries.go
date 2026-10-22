@@ -47,6 +47,21 @@ func (b *batch) zeroCell(cell uint32) {
 	}
 }
 
+// portReasons is the number of port_drops indices of one meter index: one for each reason.
+const portReasons = 1 << 5
+
+// portDropIndex returns the port_drops index of a drop at meter index i.
+func portDropIndex(i uint32, reason uint8) int64 { return int64(i)<<5 | int64(reason) }
+
+// zeroPortDrops sets the port_drops indices of meter index i to 0.
+func (b *batch) zeroPortDrops(i uint32) {
+	for reason := range uint8(portReasons) {
+		*b = append(*b, &p4.Update{Type: p4.Update_MODIFY, Entity: &p4.Entity{Entity: &p4.Entity_CounterEntry{CounterEntry: &p4.CounterEntry{
+			CounterId: dp.CounterPortDrops, Index: &p4.Index{Index: portDropIndex(i, reason)}, Data: &p4.CounterData{},
+		}}}})
+	}
+}
+
 // meter sets meter index i to rate bytes per second with burst bytes. A zero rate removes the
 // limit.
 func (b *batch) meter(id, i uint32, rate float64, burst int) {
@@ -92,6 +107,41 @@ func readCell(ctx context.Context, t dp.Target, cell uint32) (rx, tx tally, err 
 		}
 	})
 	return rx, tx, err
+}
+
+// trunkCounts is the counts of a trunk port: its cell, and the port_drops of its meter index by
+// reason.
+type trunkCounts struct {
+	rx, tx tally
+	drops  [portReasons]uint64
+}
+
+func (c *trunkCounts) add(o trunkCounts) {
+	c.rx.add(o.rx)
+	c.tx.add(o.tx)
+	for i, n := range o.drops {
+		c.drops[i] += n
+	}
+}
+
+// readTrunk reads the counts of a trunk port with cell and meter index.
+func readTrunk(ctx context.Context, t dp.Target, cell, meter uint32) (trunkCounts, error) {
+	var n trunkCounts
+	var err error
+	if n.rx, n.tx, err = readCell(ctx, t, cell); err != nil {
+		return n, err
+	}
+	req := &p4.ReadRequest{}
+	for reason := range uint8(portReasons) {
+		req.Entities = append(req.Entities, &p4.Entity{Entity: &p4.Entity_CounterEntry{CounterEntry: &p4.CounterEntry{
+			CounterId: dp.CounterPortDrops, Index: &p4.Index{Index: portDropIndex(meter, reason)},
+		}}})
+	}
+	err = t.Read(ctx, req, func(e *p4.Entity) {
+		ce := e.GetCounterEntry()
+		n.drops[ce.GetIndex().GetIndex()%portReasons] = uint64(ce.GetData().GetPacketCount())
+	})
+	return n, err
 }
 
 // vpcName is the name of a VPC in the data plane. A new network ID gives a new name, so old

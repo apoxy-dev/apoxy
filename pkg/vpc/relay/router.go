@@ -56,6 +56,11 @@ type Router struct {
 	// stateChanges counts the state changes of the connections with routes, by the new state.
 	stateChanges [numAnnouncerStates]atomic.Uint64
 	onEnd        atomic.Pointer[func(AttachmentStats)]
+	// mesh is set by SetMesh before Run. It is nil for a relay with no mesh.
+	mesh          *meshState
+	members       atomic.Pointer[[]MeshMember]
+	onMeshChange  atomic.Pointer[func(MeshChange)]
+	onMeshSession atomic.Pointer[func(*MeshSession)]
 
 	desiredMu sync.Mutex
 	desired   atomic.Pointer[desiredState]
@@ -81,7 +86,25 @@ type Router struct {
 	alts     []*dpv1.RelayRef
 	stopping bool
 	turns    turns
+	// The M of each listed member by name, each M that did not end, and the M of each trunk port.
+	ms     map[string]*mChild
+	mall   map[*mChild]struct{}
+	trunks map[uint64]*mChild
+	inc    uint64
+	// sets has the newest announcement set of each V, for a new M.
+	sets    map[VPCKey]*annSet
+	fetchN  uint64
+	fetches map[uint64]*fetchRun
 }
+
+// fetchRun is one FetchSnapshot ask: the members that it did not ask yet, in name order.
+type fetchRun struct {
+	reply chan fetchResult
+	names []string
+}
+
+// memberKey is the turn key of the events of a member.
+type memberKey string
 
 // vChild is the root side of one V.
 type vChild struct {
@@ -89,6 +112,8 @@ type vChild struct {
 	net    Network
 	box    *mailbox
 	down   *valueMap
+	up     *valueMap
+	cancel context.CancelFunc // Ends the watch of up.
 	ending bool
 }
 
@@ -154,20 +179,25 @@ func NewRouter(cfg Config) (*Router, error) {
 		return nil, err
 	}
 	r := &Router{
-		cfg:    cfg,
-		ver:    dpv1.LocalVersion(build.BuildVersion),
-		box:    newMailbox(0),
-		pins:   newMailbox(maxPacketIns),
-		keys:   k,
-		vs:     map[VPCKey]*vChild{},
-		conns:  map[uint64]*rootConn{},
-		sids:   map[[8]byte]uint64{},
-		lanes:  map[netip.AddrPort]uint64{},
-		tags:   map[uint32]struct{}{},
-		cells:  pool{max: maxCells},
-		meters: pool{max: maxMeters},
-		asks:   map[uint64]*statsRun{},
-		trust:  map[string]*trustGen{},
+		cfg:     cfg,
+		ver:     dpv1.LocalVersion(build.BuildVersion),
+		box:     newMailbox(0),
+		pins:    newMailbox(maxPacketIns),
+		keys:    k,
+		vs:      map[VPCKey]*vChild{},
+		conns:   map[uint64]*rootConn{},
+		sids:    map[[8]byte]uint64{},
+		lanes:   map[netip.AddrPort]uint64{},
+		tags:    map[uint32]struct{}{},
+		cells:   pool{max: maxCells},
+		meters:  pool{max: maxMeters},
+		asks:    map[uint64]*statsRun{},
+		trust:   map[string]*trustGen{},
+		ms:      map[string]*mChild{},
+		mall:    map[*mChild]struct{}{},
+		trunks:  map[uint64]*mChild{},
+		sets:    map[VPCKey]*annSet{},
+		fetches: map[uint64]*fetchRun{},
 	}
 	r.desired.Store(&desiredState{tenants: map[string]struct{}{}, vpcs: map[VPCKey]Network{}})
 	return r, nil
@@ -251,7 +281,7 @@ func (r *Router) Run(ctx context.Context) error {
 			}
 			r.handle(e)
 		}
-		if r.stopping && len(r.vs) == 0 && !r.hookOn && len(r.hooks) == 0 {
+		if r.stopping && len(r.vs) == 0 && len(r.mall) == 0 && !r.hookOn && len(r.hooks) == 0 {
 			r.pins.close()
 			for _, e := range r.box.close() {
 				r.refuse(e)
@@ -287,6 +317,14 @@ func (r *Router) keyOf(e any) any {
 		if c := r.conns[e.port]; c != nil {
 			return c.v.key
 		}
+	case vUpChanged:
+		return e.v.key
+	case fromM:
+		return memberKey(e.m.name)
+	case mUpChanged:
+		return memberKey(e.m.name)
+	case meshOpened:
+		return memberKey(e.open.name)
 	}
 	return nil
 }
@@ -298,6 +336,9 @@ func (r *Router) pinKey(pin packetIn) any {
 	}
 	if c := r.conns[port]; c != nil {
 		return c.v.key
+	}
+	if m := r.trunks[port]; m != nil {
+		return memberKey(m.name)
 	}
 	return nil
 }
@@ -350,6 +391,14 @@ func (r *Router) refuse(e any) {
 		close(e.done)
 	case statsAsk:
 		e.reply <- nil
+	case trunkAsk:
+		e.reply <- nil
+	case meshOpened:
+		e.res <- errMeshStopped
+	case askEv:
+		e.reply <- askAnswer{}
+	case fetchEv:
+		e.reply <- fetchResult{err: rpc.Errorf(rpc.Unavailable, "relay stopped")}
 	}
 }
 
@@ -364,9 +413,9 @@ func (r *Router) handle(e any) {
 	case slotLost:
 		r.slotLost(e)
 	case drainEv:
-		r.draining, r.alts = true, e.alternates
+		r.draining, r.alts = true, r.alternates()
 		for _, v := range r.vs {
-			v.box.send(toDrain{alternates: e.alternates})
+			v.box.send(toDrain{alternates: r.alts})
 		}
 	case endAllEv:
 		for _, v := range r.vs {
@@ -374,6 +423,8 @@ func (r *Router) handle(e any) {
 		}
 	case statsAsk:
 		r.askStats(e)
+	case trunkAsk:
+		r.trunkStats(e)
 	case packetIn:
 		r.packetIn(e)
 	case hookDone:
@@ -390,6 +441,24 @@ func (r *Router) handle(e any) {
 		r.assigned(e)
 	case fromV:
 		r.fromV(e.v, e.msg)
+	case vUpChanged:
+		if r.vs[e.v.key] == e.v {
+			r.publishSet(e.v.key, load[*annSet](e.v.up, keyAnnounce))
+		}
+	case membersChanged:
+		r.syncMembers()
+	case meshOpened:
+		r.meshOpened(e)
+	case askEv:
+		if c := r.ms[e.name]; c == nil || c.ending || !c.box.send(toAsk{reply: e.reply}) {
+			e.reply <- askAnswer{}
+		}
+	case fetchEv:
+		r.startFetch(e.reply)
+	case fromM:
+		r.fromM(e.m, e.msg)
+	case mUpChanged:
+		r.memberChanged(e.m, e.keys)
 	}
 }
 
@@ -481,10 +550,17 @@ func equalNetwork(a, b Network) bool {
 }
 
 func (r *Router) startV(key VPCKey, n Network) {
-	v := &vChild{key: key, net: n, box: newMailbox(0), down: &valueMap{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	v := &vChild{key: key, net: n, box: newMailbox(0), down: &valueMap{}, up: &valueMap{}, cancel: cancel}
 	store(v.down, keyNetwork, &n)
 	store(v.down, keyTrust, r.trustOf(key.Project))
+	for c := range r.mall {
+		if !c.ending && c.parts[key] != nil {
+			r.storeView(c, key)
+		}
+	}
 	r.vs[key] = v
+	watch(ctx, v.up, func([]string) { r.box.send(vUpChanged{v: v}) })
 	startVPC(r, v)
 	if r.draining {
 		v.box.send(toDrain{alternates: r.alts})
@@ -511,7 +587,7 @@ func (r *Router) recheck(project string) {
 	}
 }
 
-// stop ends each V. Run returns when they ended.
+// stop ends each V and each M. Run returns when they ended.
 func (r *Router) stop() {
 	r.stopping = true
 	for _, v := range r.vs {
@@ -519,6 +595,9 @@ func (r *Router) stop() {
 			v.ending = true
 			v.box.send(toEnd{})
 		}
+	}
+	for c := range r.mall {
+		r.endMember(c, dpv1.MeshCloseCode_MESH_CLOSE_CODE_RESTART, "relay stops", 0)
 	}
 }
 
@@ -622,6 +701,10 @@ func (r *Router) packetIn(pin packetIn) {
 	}
 	if c := r.conns[port]; c != nil && !c.ended {
 		c.v.box.send(toPacketIn{port: port, pin: pin})
+		return
+	}
+	if m := r.trunks[port]; m != nil && pin.md.kind == dp.KindPunt {
+		m.box.send(toPacketIn{port: port, pin: pin})
 	}
 }
 
@@ -655,10 +738,17 @@ func (r *Router) answerStats(ask uint64) {
 // tick runs the rekeys and the expiry of the key engine, and gives each V the receive counts of
 // its connections.
 func (r *Router) tick(now time.Time) {
-	rekeyed, rx := r.keys.tick(bg, now)
+	rekeyed, rx, expired := r.keys.tick(bg, now)
 	for port, req := range rekeyed {
 		if c := r.conns[port]; c != nil && !c.ended {
 			c.v.box.send(toRekeyed{port: port, req: req})
+		} else if m := r.trunks[port]; m != nil {
+			m.box.send(toRekeyed{port: port, req: req})
+		}
+	}
+	for _, port := range expired {
+		if m := r.trunks[port]; m != nil {
+			m.box.send(toTxExpired{})
 		}
 	}
 	for port, v := range rx {
@@ -716,8 +806,10 @@ func (r *Router) fromV(v *vChild, msg any) {
 			r.answerStats(m.ask)
 		}
 	case vEnded:
+		v.cancel()
 		if r.vs[v.key] == v {
 			delete(r.vs, v.key)
+			r.publishSet(v.key, nil)
 		}
 		for ask, run := range r.asks {
 			if _, ok := run.wait[v]; ok {
@@ -794,11 +886,15 @@ func (r *Router) endHooks(m vAttachmentEnd) {
 	r.hook(m.port, func() { r.cfg.Addresses.Release(m.att) })
 }
 
-// connEnded frees the attachments of an ended port, and then its indices.
+// connEnded frees the attachments of an ended port, and then its indices. The set of V with no
+// announcement of the port goes to each M first, so the tag comes again only after that.
 func (r *Router) connEnded(m vConnEnded) {
 	c := r.conns[m.port]
 	if c == nil {
 		return
+	}
+	if r.vs[c.v.key] == c.v {
+		r.publishSet(c.v.key, load[*annSet](c.v.up, keyAnnounce))
 	}
 	c.ended = true
 	for _, a := range c.lanes {

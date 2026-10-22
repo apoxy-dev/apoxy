@@ -500,6 +500,8 @@ func (r *root) status(m statusMsg) {
 	// OnRoutes follows the new session only after its OnAttach.
 	r.usePrimary()
 	r.attachMissing()
+	// The routes that came before the attach can name relays to dial.
+	r.plan()
 }
 
 // drained marks a home session draining: its relay drains. The dial plan

@@ -482,12 +482,12 @@ func closedByDrain(t *testing.T, rc sessionRef) {
 	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), ae.ErrorCode)
 }
 
-// drain starts the drain of r with alts. The drain ends, and r closes the
-// sessions that stay, when the test calls end or ends.
-func drain(t *testing.T, r *testRelay, alts []*dp.RelayRef) (end func()) {
+// drain starts the drain of r. The drain ends, and r closes the sessions that
+// stay, when the test calls end or ends.
+func drain(t *testing.T, r *testRelay) (end func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	wg.Go(func() { r.srv.Drain(ctx, alts) })
+	wg.Go(func() { r.srv.Drain(ctx) })
 	end = func() {
 		cancel()
 		wg.Wait()
@@ -518,26 +518,40 @@ func stateOf(a *testAgent, rc sessionRef) string {
 
 // TestDrain checks that the agent opens a session on an alternate relay when its
 // relay drains, and keeps the old session until the draining relay closes it.
+// The alternates are the mesh members of the relay that are up, in name order.
 func TestDrain(t *testing.T) {
 	cases := []struct {
 		name  string
 		known bool // The agent knows both relays.
-		// first comes before the alternate that takes the agent: "drains" (a relay
-		// that drains too), "no address", or "wrong address" (of another relay).
+		// first comes before the alternate that takes the agent: "drains" (a
+		// member that drains too) or "wrong address" (the first address of the
+		// alternate is of a relay that is not a member).
 		first string
 		dead  bool // The alternate does not answer, so the agent gets no new session.
 	}{
 		{name: "alternate that the agent does not know"},
 		{name: "alternate that the agent knows", known: true},
 		{name: "first alternate drains too", first: "drains"},
-		{name: "first alternate has no address", first: "no address"},
 		{name: "first address of the alternate is of another relay", first: "wrong address"},
 		{name: "alternate does not answer", dead: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
-			r1, r2, r3 := w.relay(t, "relay-1"), w.relay(t, "relay-2"), w.relay(t, "relay-3")
+			w.mesh = true
+			r3, sock2 := w.relay(t, "relay-3"), loopback(t)
+			switch {
+			case tc.first == "wrong address":
+				w.advertise = map[string][]string{"relay-2": {r3.addr, sock2.LocalAddr().String()}}
+			case tc.dead:
+				w.advertise = map[string][]string{"relay-2": {deadRelay(t)}}
+			}
+			r1, r2 := w.relay(t, "relay-1"), w.relayOn(t, "relay-2", sock2, loopback(t))
+			members := []*testRelay{r1, r2}
+			if tc.first == "drains" {
+				members = append(members, r3)
+			}
+			joinMesh(t, members...)
 			opts := agentOptions{}
 			if tc.known {
 				opts.relays = []identity.Relay{r1.ref(), r2.ref()}
@@ -548,23 +562,14 @@ func TestDrain(t *testing.T) {
 			if a.current().addr == r2.addr {
 				from, to = r2, r1
 			}
-			good := &dp.RelayRef{Id: to.id, Addresses: []string{to.addr}}
-			alts := []*dp.RelayRef{good}
-			switch {
-			case tc.first == "drains":
+			if tc.first == "drains" {
 				// A relay that drains refuses a new session at once.
-				r3.srv.Drain(context.Background(), nil)
-				alts = []*dp.RelayRef{{Id: r3.id, Addresses: []string{r3.addr}}, good}
-			case tc.first == "no address":
-				alts = []*dp.RelayRef{{Id: r3.id}, good}
-			case tc.first == "wrong address":
-				alts = []*dp.RelayRef{{Id: to.id, Addresses: []string{r3.addr, to.addr}}}
-			case tc.dead:
-				alts = []*dp.RelayRef{{Id: to.id, Addresses: []string{deadRelay(t)}}}
+				r2.srv.Drain(context.Background())
+				to = r3
 			}
 			prev := a.current()
 			require.Equal(t, stAttached, stateOf(a, prev))
-			end := drain(t, from, alts)
+			end := drain(t, from)
 
 			if tc.dead {
 				require.Eventually(t, func() bool { return stateOf(a, prev) == stDraining }, 5*time.Second, 10*time.Millisecond)
@@ -615,7 +620,7 @@ func TestDrainNoAlternate(t *testing.T) {
 	prev := a.current()
 	sessions := func() int { return len(a.a.Status().Connections) }
 
-	end := drain(t, r, nil)
+	end := drain(t, r)
 	require.Eventually(t, func() bool { return stateOf(a, prev) == stDraining }, 5*time.Second, 10*time.Millisecond)
 	require.Never(t, func() bool { return sessions() != 1 || prev.qc.Context().Err() != nil },
 		time.Second, 20*time.Millisecond, "the agent opened or closed a session while its relay drains")
@@ -626,20 +631,67 @@ func TestDrainNoAlternate(t *testing.T) {
 // TestDrainLocalRoutesOnly drains the relay of an agent that has one agent for
 // each relay. The relay gives it no alternate, so it does not move.
 func TestDrainLocalRoutesOnly(t *testing.T) {
-	w := newWorld(t)
-	r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+	w, r1, r2 := meshRelays(t)
 	a := w.agent(t, "a", r1, agentOptions{localRoutesOnly: true, sessions: 1})
 	a.attached(t)
 	prev := a.current()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	r1.srv.Drain(ctx, []*dp.RelayRef{{Id: r2.id, Addresses: []string{r2.addr}}})
+	r1.srv.Drain(ctx)
 	// The relay closed the session at the end of the drain time.
 	ae := closeOf(t, prev)
 	assert.False(t, ae.Remote)
 	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), ae.ErrorCode)
 	assert.Empty(t, r2.r.AttachmentStats(), "the agent has no attachment on the other relay")
+}
+
+// TestDrainMesh drains relay-1 of a mesh of two relays. The route of b on
+// relay-2 makes a attach there too; at the drain that session gets the default
+// address, and UDP passes both ways before, during and after the drain.
+func TestDrainMesh(t *testing.T) {
+	cases := []struct {
+		name string
+		mode TransportMode
+	}{{name: "PSP"}, {name: "QUIC", mode: TransportQUIC}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, r1, r2 := meshRelays(t)
+			a := w.agent(t, "a", r1, agentOptions{mode: tc.mode})
+			ea := a.attached(t)
+			prev := a.current()
+			b := w.agent(t, "b", r2, agentOptions{mode: tc.mode})
+			eb := b.attached(t)
+			echo(t, a.stack, ea.addr, 9000)
+			echo(t, b.stack, eb.addr, 9000)
+			a.hasRoutes(t, eb.prefixes[0])
+			b.hasRoutes(t, ea.prefixes[0])
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "a to b before the drain")
+			ping(t, b.stack, eb.addr, ea.addr, 9000, "b to a before the drain")
+			moved := a.attached(t)
+			sameSession(t, prev, a.current(), "the session on relay-1 keeps the default address")
+			mode := a.a.Status().Mode
+
+			end := drain(t, r1)
+			require.Eventually(t, func() bool { return a.current().addr == r2.addr }, 5*time.Second, 10*time.Millisecond,
+				"the session on relay-2 gets the default address")
+			assert.NoError(t, prev.qc.Context().Err(), "the draining session stays open")
+			assert.Equal(t, mode, a.a.Status().Mode)
+			echo(t, a.stack, moved.addr, 9000)
+			b.hasRoutes(t, moved.prefixes[0])
+			ping(t, a.stack, moved.addr, eb.addr, 9000, "a to b during the drain")
+			ping(t, b.stack, eb.addr, moved.addr, 9000, "b to a during the drain")
+			ping(t, a.stack, ea.addr, eb.addr, 9000, "a to b on the draining session")
+
+			end()
+			closedByDrain(t, prev)
+			require.Eventually(t, func() bool { return !slices.Contains(b.routeSet(), ea.prefixes[0]) }, 5*time.Second, 10*time.Millisecond,
+				"b has no route to the address of the session that ended")
+			assert.Len(t, r2.r.AttachmentStats(), 2, "attachments on relay-2")
+			ping(t, a.stack, moved.addr, eb.addr, 9000, "a to b after the drain")
+			ping(t, b.stack, eb.addr, moved.addr, 9000, "b to a after the drain")
+		})
+	}
 }
 
 // TestRelist checks that the agent enrolls again when all relays fail or the

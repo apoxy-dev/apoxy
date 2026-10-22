@@ -255,6 +255,9 @@ func counts(t *testing.T, tg dp.Target, id uint32) map[int64]int64 {
 	return got
 }
 
+// pd returns the port_drops index of a drop at meter index i.
+func pd(i int64, reason uint8) int64 { return i<<5 | int64(reason) }
+
 func frameOut(port, session uint64, b []byte) *p4.PacketOut {
 	return &p4.PacketOut{Payload: b, Metadata: dp.PacketOutMeta{Kind: dp.KindFrame, Port: port, Session: session}.Metadata()}
 }
@@ -283,6 +286,7 @@ func TestPipeline(t *testing.T) {
 		full     bool
 		dgramErr bool
 		drop     uint8 // The drops index.
+		portDrop int64 // The port_drops index of the drop: the out port after send_out finds it, else the in port (0: none).
 		out      *out
 		in       *pin
 		frame    []byte // A FRAME out to port 3.
@@ -394,38 +398,38 @@ func TestPipeline(t *testing.T) {
 			name:  "old_session after a new MS",
 			extra: []*p4.Update{modify(dp.PortsKey{Port: 10}.Entry(dp.PortAction{Trunk: true, Session: 6, Addr: addrT, MTU: 9000, MeterIndex: 10}))},
 			from:  addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.8.5", 100)),
-			drop: dp.ReasonOldSession,
+			drop: dp.ReasonOldSession, portDrop: pd(10, dp.ReasonOldSession),
 		},
-		{name: "old_session of a FRAME in", po: frameOut(3, 2, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))), drop: dp.ReasonOldSession},
-		{name: "unknown_source", from: netip.MustParseAddrPort("192.0.2.99:4000"), wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)), drop: dp.ReasonUnknownSource},
+		{name: "old_session of a FRAME in", po: frameOut(3, 2, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))), drop: dp.ReasonOldSession, portDrop: pd(3, dp.ReasonOldSession)},
+		{name: "unknown_source", from: netip.MustParseAddrPort("192.0.2.99:4000"), wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)), drop: dp.ReasonUnknownSource, portDrop: pd(1, dp.ReasonUnknownSource)},
 		{
 			name:  "meter",
 			extra: []*p4.Update{meterUpdate(dp.MeterPort, 1, &p4.MeterConfig{Cir: 1, Cburst: 64, Pir: 1, Pburst: 64})},
 			from:  addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)),
-			drop: dp.ReasonMeter,
+			drop: dp.ReasonMeter, portDrop: pd(1, dp.ReasonMeter),
 		},
-		{name: "no_context: VNI of another VPC", from: addrA1, wire: seal(spiA1In, vniB, 1, ipv4("100.64.1.5", "100.64.2.5", 100)), drop: dp.ReasonNoContext},
-		{name: "no_context: unknown trunk tag", from: addrT, wire: seal(spiTIn, 33, 1, ipv4("100.64.9.5", "100.64.2.5", 100)), drop: dp.ReasonNoContext},
-		{name: "source", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.50.1", "100.64.2.5", 100)), drop: dp.ReasonSource},
-		{name: "no_route: no entry on a trunk", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.200.1", 100)), drop: dp.ReasonNoRoute},
-		{name: "no_route: no local target", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.9.7", 100)), drop: dp.ReasonNoRoute},
-		{name: "no_target", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.4.5", 100)), drop: dp.ReasonNoTarget},
-		{name: "trunk_to_trunk", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.6.5", 100)), drop: dp.ReasonTrunkToTrunk},
-		{name: "local_only", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.77.7", "100.64.5.5", 100)), drop: dp.ReasonLocalOnly},
-		{name: "mtu", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 1401)), drop: dp.ReasonMTU},
+		{name: "no_context: VNI of another VPC", from: addrA1, wire: seal(spiA1In, vniB, 1, ipv4("100.64.1.5", "100.64.2.5", 100)), drop: dp.ReasonNoContext, portDrop: pd(1, dp.ReasonNoContext)},
+		{name: "no_context: unknown trunk tag", from: addrT, wire: seal(spiTIn, 33, 1, ipv4("100.64.9.5", "100.64.2.5", 100)), drop: dp.ReasonNoContext, portDrop: pd(10, dp.ReasonNoContext)},
+		{name: "source", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.50.1", "100.64.2.5", 100)), drop: dp.ReasonSource, portDrop: pd(1, dp.ReasonSource)},
+		{name: "no_route: no entry on a trunk", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.200.1", 100)), drop: dp.ReasonNoRoute, portDrop: pd(10, dp.ReasonNoRoute)},
+		{name: "no_route: no local target", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.9.7", 100)), drop: dp.ReasonNoRoute, portDrop: pd(10, dp.ReasonNoRoute)},
+		{name: "no_target", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.4.5", 100)), drop: dp.ReasonNoTarget, portDrop: pd(1, dp.ReasonNoTarget)},
+		{name: "trunk_to_trunk", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.6.5", 100)), drop: dp.ReasonTrunkToTrunk, portDrop: pd(11, dp.ReasonTrunkToTrunk)},
+		{name: "local_only", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.77.7", "100.64.5.5", 100)), drop: dp.ReasonLocalOnly, portDrop: pd(11, dp.ReasonLocalOnly)},
+		{name: "mtu", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 1401)), drop: dp.ReasonMTU, portDrop: pd(2, dp.ReasonMTU)},
 		{
 			name:  "no_keys",
 			extra: []*p4.Update{keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_TX, Spi: spiA2Out, Port: 2, Session: 1})},
 			from:  addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)),
-			drop: dp.ReasonNoKeys,
+			drop: dp.ReasonNoKeys, portDrop: pd(2, dp.ReasonNoKeys),
 		},
-		{name: "datagram_full", dgramErr: true, from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.3.5", 100)), drop: dp.ReasonDatagramFull},
-		{name: "punt queue full", full: true, from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.200.1", 100)), drop: dp.ReasonPuntFull},
+		{name: "datagram_full", dgramErr: true, from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.3.5", 100)), drop: dp.ReasonDatagramFull, portDrop: pd(3, dp.ReasonDatagramFull)},
+		{name: "punt queue full", full: true, from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.200.1", 100)), drop: dp.ReasonPuntFull, portDrop: pd(1, dp.ReasonPuntFull)},
 		{
 			name:  "drop action of an entry",
-			extra: []*p4.Update{insert(dp.RouteKey{VPC: vpcA, Dst: pfx("100.64.2.128/25")}.Entry(dp.DropAction{Reason: 63}))},
+			extra: []*p4.Update{insert(dp.RouteKey{VPC: vpcA, Dst: pfx("100.64.2.128/25")}.Entry(dp.DropAction{Reason: 31}))},
 			from:  addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.200", 100)),
-			drop: 63,
+			drop: 31, portDrop: pd(1, 31),
 		},
 	}
 	for _, tc := range cases {
@@ -446,6 +450,12 @@ func TestPipeline(t *testing.T) {
 				assert.Equal(t, map[int64]int64{int64(tc.drop): 1}, drops)
 			} else {
 				assert.Empty(t, drops)
+			}
+			portDrops := counts(t, r, dp.CounterPortDrops)
+			if tc.portDrop != 0 {
+				assert.Equal(t, map[int64]int64{tc.portDrop: 1}, portDrops)
+			} else {
+				assert.Empty(t, portDrops)
 			}
 			if tc.out == nil {
 				assert.Empty(t, r.sent)

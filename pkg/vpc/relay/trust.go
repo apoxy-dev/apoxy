@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
@@ -61,8 +62,21 @@ func checkCert(trust Trust, chain []*x509.Certificate, now time.Time) (identity.
 }
 
 // TLSConfig returns a copy of base whose handshake fails for an agent cert that fails the check.
+// With a mesh, a client that offers apoxy-mesh/1 gets the mesh config.
 func (r *Router) TLSConfig(base *tls.Config) *tls.Config {
 	c := base.Clone()
+	if r.mesh != nil {
+		next := c.GetConfigForClient
+		c.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+			if slices.Contains(chi.SupportedProtos, dpv1.ALPNMesh) {
+				return r.mesh.tls, nil
+			}
+			if next != nil {
+				return next(chi)
+			}
+			return nil, nil
+		}
+	}
 	c.MinVersion = tls.VersionTLS13
 	c.NextProtos = []string{dpv1.ALPNRelay}
 	// ClientCAs does not check the SAN or revocations, so the relay checks.

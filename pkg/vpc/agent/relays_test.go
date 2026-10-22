@@ -47,22 +47,25 @@ func relayDrops(t *testing.T, r *testRelay) map[string]uint64 {
 	return out
 }
 
-// TestAttachPrefixLimit checks that the agent gets the error of the relay for
-// an attachment with too many prefixes, and keeps its session.
+// TestAttachPrefixLimit checks that the agent gets the error of a relay with a
+// mesh for an attachment with too many prefixes, and keeps its session.
 func TestAttachPrefixLimit(t *testing.T) {
 	// The attachment has one address prefix more than its routes.
 	const limit = 64
 	cases := []struct {
 		name    string
+		mesh    bool
 		routes  int
 		refused bool
 	}{
-		{name: "at the limit", routes: limit - 1},
-		{name: "above the limit", routes: limit, refused: true},
+		{name: "relay with a mesh, at the limit", mesh: true, routes: limit - 1},
+		{name: "relay with a mesh, above the limit", mesh: true, routes: limit, refused: true},
+		{name: "relay with no mesh, above the limit", routes: limit},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
+			w.mesh = tc.mesh
 			r := w.relay(t, "relay-1")
 			a := w.agent(t, "a", r, agentOptions{})
 			a.attached(t)
@@ -80,7 +83,7 @@ func TestAttachPrefixLimit(t *testing.T) {
 				return
 			}
 			require.Equal(t, rpc.InvalidArgument, rpc.CodeOf(err), "error %v", err)
-			assert.ErrorContains(t, err, fmt.Sprintf("attachment has %d addresses and routes, and a relay takes at most %d", limit+1, limit))
+			assert.ErrorContains(t, err, fmt.Sprintf("attachment has %d addresses and routes, and a relay with a mesh takes at most %d", limit+1, limit))
 			assert.Len(t, a.a.Attachments(), 1, "the agent keeps no attachment that the relay refused")
 			assert.Equal(t, 1, w.addrs.LiveOf(a.ids.Current().ID.String()), "only the base attachment keeps its addresses")
 			// The session stays, and takes an attachment that fits.

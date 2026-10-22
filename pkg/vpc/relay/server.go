@@ -86,9 +86,14 @@ func (srv *Server) leave() {
 	}
 }
 
-// ServeConn serves one agent connection until it closes and its process and hook tasks ended. A
-// host that shares its listener calls it for apoxy-vpc/2.
+// ServeConn serves one agent connection until it closes and its process and hook tasks ended, or
+// one mesh session. A host that shares its listener calls it for apoxy-vpc/2 and apoxy-mesh/1.
 func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
+	// A mesh session is not an agent connection: it stays up while the relay drains.
+	if qc.ConnectionState().TLS.NegotiatedProtocol == dpv1.ALPNMesh {
+		srv.R.serveMesh(ctx, qc)
+		return
+	}
 	if !srv.enter() {
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), "relay is draining")
 		return
@@ -140,9 +145,9 @@ func (srv *Server) newLink(qc quic.Connection) (*link, error) {
 }
 
 // Drain refuses new connections, makes the candidates of each connection draining, then tells
-// each agent to move. It returns when each connection and its hook tasks ended, or closes the
-// connections at ctx end.
-func (srv *Server) Drain(ctx context.Context, alternates []*dpv1.RelayRef) {
+// each agent to move to the mesh members that are up. It returns when each connection and its hook
+// tasks ended, or closes the connections at ctx end.
+func (srv *Server) Drain(ctx context.Context) {
 	srv.mu.Lock()
 	srv.draining = true
 	idle := make(chan struct{})
@@ -152,7 +157,7 @@ func (srv *Server) Drain(ctx context.Context, alternates []*dpv1.RelayRef) {
 		srv.idle = idle
 	}
 	srv.mu.Unlock()
-	srv.R.box.send(drainEv{alternates: alternates})
+	srv.R.box.send(drainEv{})
 	select {
 	case <-idle:
 	case <-ctx.Done():

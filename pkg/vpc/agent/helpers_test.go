@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/pem"
 	"errors"
@@ -98,6 +99,9 @@ type fakeAddresses struct {
 	inHold, mostHold int // Assign calls that wait now, and the most at once.
 	// same has the first address of each subject when the allocator gives it again.
 	same map[string][]netip.Prefix
+	// fixed has the address of the next attachment of each name, in place of
+	// the next address of the pool.
+	fixed map[string]netip.Prefix
 }
 
 func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost func()) ([]netip.Prefix, error) {
@@ -121,6 +125,11 @@ func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost 
 		f.mu.Unlock()
 		return p, nil
 	}
+	if p, ok := f.fixed[a.Name]; ok {
+		delete(f.fixed, a.Name)
+		f.mu.Unlock()
+		return []netip.Prefix{p}, nil
+	}
 	f.mu.Unlock()
 	p, err := f.Addresses.Assign(ctx, a, onLost)
 	f.mu.Lock()
@@ -129,6 +138,16 @@ func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost 
 	}
 	f.mu.Unlock()
 	return p, err
+}
+
+// fix makes Assign give the address p to the next attachment named name.
+func (f *fakeAddresses) fix(name string, p netip.Prefix) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fixed == nil {
+		f.fixed = map[string]netip.Prefix{}
+	}
+	f.fixed[name] = p
 }
 
 // sameAgain makes Assign give each subject its first address again.
@@ -171,7 +190,12 @@ type world struct {
 	// refuse gives the close reason of each relay that refuses all agents as
 	// too old, by the relay ID. Such a relay opens no session.
 	refuse map[string]string
-	relays []*testRelay
+	// mesh gives each relay a mesh. joinMesh makes the members.
+	mesh bool
+	// advertise gives the addresses that a relay sends to agents and members,
+	// by the relay ID. Else it sends the address of its QUIC socket.
+	advertise map[string][]string
+	relays    []*testRelay
 }
 
 // relayAt returns the relay with the QUIC address addr, or nil.
@@ -443,6 +467,9 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 	plane := vpctest.NewSocketTarget(pspSock)
 	cfg := w.relayCfg
 	cfg.Relay = &dp.RelayRef{Id: id, Addresses: []string{quicSock.LocalAddr().String()}}
+	if a, ok := w.advertise[id]; ok {
+		cfg.Relay.Addresses = a
+	}
 	cfg.Trust, cfg.Addresses, cfg.Target = w.trust, w.addrs, plane
 	r, err := relay.NewRouter(cfg)
 	require.NoError(t, err)
@@ -457,7 +484,14 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 		EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512,
 		Tracer: relay.TraceRTT, KeepAlivePeriod: relay.AgentKeepAlive,
 	}
-	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), quicConf)
+	if w.mesh {
+		// As at a real relay, the mesh sessions use the socket of the agents.
+		require.NoError(t, r.SetMesh(id, relay.MeshConfig{
+			TLS:    &tls.Config{Certificates: []tls.Certificate{*cert}, InsecureSkipVerify: true},
+			Verify: w.verifyRelay,
+		}, tr, quicConf))
+	}
+	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), r.ListenConfig(quicConf))
 	require.NoError(t, err)
 	srv := &relay.Server{R: r}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -491,6 +525,10 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 			if err != nil {
 				return
 			}
+			if qc.ConnectionState().TLS.NegotiatedProtocol == dp.ALPNMesh {
+				wg.Go(func() { srv.ServeConn(ctx, qc) })
+				continue
+			}
 			if refuse {
 				wg.Go(func() { out.refuse(ctx, qc, reason) })
 				continue
@@ -508,6 +546,50 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 		wg.Wait()
 	})
 	return out
+}
+
+// verifyRelay accepts a relay cert of the relay CA that names the relay.
+func (w *world) verifyRelay(chain []*x509.Certificate, name string, _ netip.AddrPort) error {
+	if len(chain) == 0 {
+		return errors.New("no certificate")
+	}
+	_, err := chain[0].Verify(x509.VerifyOptions{Roots: w.relayCA.Pool(), DNSName: name, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+	return err
+}
+
+// meshRelays returns a new world with two relays of one mesh.
+func meshRelays(t *testing.T) (w *world, r1, r2 *testRelay) {
+	t.Helper()
+	w = newWorld(t)
+	w.mesh = true
+	r1, r2 = w.relay(t, "relay-1"), w.relay(t, "relay-2")
+	joinMesh(t, r1, r2)
+	return w, r1, r2
+}
+
+// joinMesh makes each relay a member of the mesh of the others, and waits
+// until each has the others up. The relays are from a world with mesh.
+func joinMesh(t *testing.T, relays ...*testRelay) {
+	t.Helper()
+	for _, r := range relays {
+		var members []relay.MeshMember
+		for _, o := range relays {
+			if o != r {
+				members = append(members, relay.MeshMember{Name: o.id, Addr: netip.MustParseAddrPort(o.addr)})
+			}
+		}
+		r.r.SetMembers(members)
+	}
+	require.Eventually(t, func() bool {
+		for _, r := range relays {
+			for _, o := range relays {
+				if o != r && !r.r.Up(o.id) {
+					return false
+				}
+			}
+		}
+		return true
+	}, 10*time.Second, 10*time.Millisecond, "mesh sessions")
 }
 
 // countConn counts the PSP packets that a relay socket gets from each address.

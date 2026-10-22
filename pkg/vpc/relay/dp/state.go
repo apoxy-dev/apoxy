@@ -12,7 +12,7 @@ import (
 )
 
 // Index limits of the action parameters: a cell c uses the counter indices 2c and 2c+1, and port
-// meter i uses lane meters 4i to 4i+3.
+// meter i uses lane meters 4i to 4i+3 and the port_drops indices (i << 5) | reason.
 const (
 	maxCell  = 1 << 20
 	maxMeter = 1 << 16

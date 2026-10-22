@@ -42,6 +42,8 @@ type target struct {
 	origin string
 	// own is true for an attachment of this relay.
 	own bool
+	// ref is the relay of an attachment of a member, from its Open.
+	ref *dpv1.RelayRef
 }
 
 // candidate is what the selection reads of one attachment.
@@ -184,6 +186,7 @@ type viewEntry struct {
 	origin string
 	relay  string
 	own    bool
+	ref    *dpv1.RelayRef // The relay of a candidate of a member.
 }
 
 // routeTable is the route table of a VPC that V gives to its A: the selection of each prefix. It
@@ -231,10 +234,13 @@ func (s session) standby(order []viewEntry) []string {
 // each session, another one only to a session with meshRoutes.
 func (s session) gets(e *viewEntry) bool { return e != nil && (e.own || s.meshRoutes) }
 
-// ref returns the relay of e.
+// ref returns the relay of e: this relay, or the member of the candidate.
 func (t *routeTable) ref(e *viewEntry) *dpv1.RelayRef {
 	if e.own {
 		return t.self
+	}
+	if e.ref != nil {
+		return e.ref
 	}
 	return &dpv1.RelayRef{Id: e.relay}
 }

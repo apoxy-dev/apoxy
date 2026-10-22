@@ -1,6 +1,7 @@
 package tunnel_test
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -97,6 +98,7 @@ func TestRelay_VPCSharesSocket(t *testing.T) {
 // vpcRelay is a started relay with VPC sessions, and the CA of its agents.
 type vpcRelay struct {
 	r      *tunnel.Relay
+	router *vpcrelay.Router
 	addr   netip.AddrPort // QUIC socket of the VPC relay.
 	data   uint16         // Data port of the VPC data plane.
 	roots  *x509.CertPool // Relay roots.
@@ -104,9 +106,25 @@ type vpcRelay struct {
 	cancel context.CancelFunc // Starts the drain.
 }
 
-func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcRelay {
+// vpcRelayOpts are the options of startVPCRelay.
+type vpcRelayOpts struct {
+	steer    int // Tunnel sockets in a steer group. Zero uses one plain socket.
+	lameDuck time.Duration
+	// mesh is the CA of the relay certs of a mesh, with id the relay ID and
+	// mesh name of the relay. Nil gives the ID localhost and no mesh.
+	mesh  *vpctest.CA
+	id    string
+	ca    *vpctest.CA   // CA of the agents. Nil makes a new one.
+	addrs *vpcAddresses // Address pool. Nil makes a new one.
+}
+
+func startVPCRelay(t *testing.T, o vpcRelayOpts) *vpcRelay {
 	ca, err := vpctest.NewCA()
 	require.NoError(t, err)
+	if o.ca != nil {
+		ca = o.ca
+	}
+	steerSockets := o.steer
 	var conns []*net.UDPConn
 	if steerSockets > 0 {
 		conns, err = steer.Listen("udp", "127.0.0.1:0", steerSockets)
@@ -126,7 +144,12 @@ func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcR
 	rtr := &mockRouter{}
 	rtr.On("Start", mock.Anything).Return(nil)
 	rtr.On("Close").Return(nil)
-	r := tunnel.NewRelay("localhost", conns[0], serverCert, h, hasher.NewHasher(make([]byte, 32)), rtr)
+	// The name of the relay is its name in the mesh.
+	name := "localhost"
+	if o.mesh != nil {
+		name = o.id
+	}
+	r := tunnel.NewRelay(name, conns[0], serverCert, h, hasher.NewHasher(make([]byte, 32)), rtr)
 	if steerSockets > 0 {
 		require.NoError(t, r.SetSteerGroup(conns))
 	}
@@ -136,16 +159,28 @@ func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcR
 	lo, err := vpctest.NewLoopback()
 	require.NoError(t, err)
 	go func() { _ = lo.Run() }()
+	ref := &dp.RelayRef{Id: name}
+	if o.mesh != nil {
+		ref.Addresses = []string{lo.QUIC.LocalAddr().String()}
+	}
 	router, err := r.SetVPC(lo.QUIC, vpcrelay.Config{
-		Relay:     &dp.RelayRef{Id: "localhost"},
+		Relay:     ref,
 		Trust:     vpcTrust{ca.Pool()},
-		Addresses: &vpcAddresses{},
+		Addresses: cmp.Or(o.addrs, &vpcAddresses{}),
 		Target:    lo.Target,
 	})
 	require.NoError(t, err)
 	router.AddTenant(vpcProject)
 	router.AddVPC(vpcrelay.VPCKey{Project: vpcProject, UID: vpcUID}, vpcrelay.Network{ID: vpcNetwork})
-	r.SetLameDuckPeriod(lameDuck)
+	if o.mesh != nil {
+		cert, err := o.mesh.RelayCert(o.id)
+		require.NoError(t, err)
+		require.NoError(t, r.SetMesh(vpcrelay.MeshConfig{
+			TLS:    &tls.Config{Certificates: []tls.Certificate{*cert}, InsecureSkipVerify: true},
+			Verify: verifyMember(o.mesh),
+		}))
+	}
+	r.SetLameDuckPeriod(o.lameDuck)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -162,8 +197,19 @@ func startVPCRelay(t *testing.T, steerSockets int, lameDuck time.Duration) *vpcR
 		_ = lo.Close()
 	})
 	return &vpcRelay{
-		r: r, addr: lo.QUIC.LocalAddr().(*net.UDPAddr).AddrPort(), data: lo.DataPort(),
+		r: r, router: router, addr: lo.QUIC.LocalAddr().(*net.UDPAddr).AddrPort(), data: lo.DataPort(),
 		roots: cryptoutils.CertPoolForCertificate(relayCA), ca: ca, cancel: cancel,
+	}
+}
+
+// verifyMember accepts a relay cert of ca that names the relay.
+func verifyMember(ca *vpctest.CA) vpcrelay.MeshVerify {
+	return func(chain []*x509.Certificate, name string, _ netip.AddrPort) error {
+		if len(chain) == 0 {
+			return errors.New("no certificate")
+		}
+		_, err := chain[0].Verify(x509.VerifyOptions{Roots: ca.Pool(), DNSName: name, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+		return err
 	}
 }
 
@@ -222,7 +268,7 @@ func (v *vpcRelay) openSession(t *testing.T, name string) (quic.Connection, dp.R
 }
 
 func testRelayVPC(t *testing.T, steerSockets int) {
-	v := startVPCRelay(t, steerSockets, 0)
+	v := startVPCRelay(t, vpcRelayOpts{steer: steerSockets})
 	r := v.r
 
 	// HTTP/3 still works.
@@ -286,7 +332,7 @@ func TestRelay_VPCDrain(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v := startVPCRelay(t, 0, 2*time.Second)
+			v := startVPCRelay(t, vpcRelayOpts{lameDuck: 2 * time.Second})
 			// An agent with a session sees the start of the drain.
 			_, _, st := v.openSession(t, "stayer")
 			v.cancel()
@@ -333,5 +379,59 @@ func TestRelay_VPCDrain(t *testing.T) {
 			assert.Equal(t, tc.code, ae.ErrorCode)
 			assert.Less(t, time.Since(start), time.Second)
 		})
+	}
+}
+
+// TestRelay_VPCMesh runs two relay hosts with a mesh on the QUIC sockets of
+// their VPC relays. A data frame passes from an agent of relay-a to an agent of
+// relay-b, and the drain of relay-a gives its agent relay-b as the alternate.
+func TestRelay_VPCMesh(t *testing.T) {
+	meshCA, err := vpctest.NewCA()
+	require.NoError(t, err)
+	agents, err := vpctest.NewCA()
+	require.NoError(t, err)
+	// An agent gets Drain only from a relay with a lame duck time.
+	addrs := &vpcAddresses{}
+	a := startVPCRelay(t, vpcRelayOpts{mesh: meshCA, id: "relay-a", ca: agents, addrs: addrs, lameDuck: 2 * time.Second})
+	b := startVPCRelay(t, vpcRelayOpts{mesh: meshCA, id: "relay-b", ca: agents, addrs: addrs})
+	a.router.SetMembers([]vpcrelay.MeshMember{{Name: "relay-b", Addr: b.addr}})
+	b.router.SetMembers([]vpcrelay.MeshMember{{Name: "relay-a", Addr: a.addr}})
+	require.Eventually(t, func() bool { return a.router.Up("relay-b") && b.router.Up("relay-a") }, 10*time.Second, 10*time.Millisecond,
+		"mesh sessions")
+
+	attach := func(v *vpcRelay, name string) (quic.Connection, netip.Addr, rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]) {
+		qc, c, st := v.openSession(t, name)
+		res, err := c.Attach(t.Context(), &dp.AttachRequest{Vpc: &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID}, Name: name})
+		require.NoError(t, err)
+		require.Len(t, res.GetAddresses(), 1)
+		return qc, vpcrelay.OverlayAddr(netip.MustParsePrefix(res.GetAddresses()[0])), st
+	}
+	qa, addrA, st := attach(a, "agent-a")
+	qb, addrB, _ := attach(b, "agent-b")
+	inner := make([]byte, 60)
+	inner[0] = 0x60
+	src, dst := addrA.As16(), addrB.As16()
+	copy(inner[8:], src[:])
+	copy(inner[24:], dst[:])
+	frame := peerconn.EncodeData(nil, vpcNetwork, inner)
+	// The frame passes when relay-a has the route of agent-b from the mesh.
+	require.Eventually(t, func() bool {
+		require.NoError(t, qa.SendDatagram(frame))
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		got, err := qb.ReceiveDatagram(ctx)
+		return err == nil && assert.Equal(t, frame, got)
+	}, 10*time.Second, 10*time.Millisecond, "frame from agent-a to agent-b")
+
+	a.cancel()
+	for {
+		m, err := st.Recv()
+		require.NoError(t, err)
+		if d := m.GetDrain(); d != nil {
+			require.Len(t, d.GetAlternates(), 1)
+			assert.Equal(t, "relay-b", d.GetAlternates()[0].GetId())
+			assert.Equal(t, []string{b.addr.String()}, d.GetAlternates()[0].GetAddresses())
+			break
+		}
 	}
 }

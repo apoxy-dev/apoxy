@@ -5,6 +5,7 @@ package relay
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -41,6 +42,12 @@ type vpcProc struct {
 	alts     []*dpv1.RelayRef
 	ending   bool
 
+	// ann is the announcement set of the attachments of this relay, for the members.
+	ann      map[string]*dpv1.Presence
+	annDirty bool
+	// members has the candidates of the records of each member, by the key of the member.
+	members map[string]*vMember
+
 	// dirty is true when the route table changed in this step. answers go out after the new
 	// table is stored.
 	dirty   bool
@@ -49,9 +56,16 @@ type vpcProc struct {
 	out     map[uint64][]AttachmentStats
 }
 
+// vMember is the candidates of the records of one member in V.
+type vMember struct {
+	values *memberValues
+	cands  map[string]*record // The record of each candidate, by attachment ID.
+}
+
 // aChild is the V side of one A.
 type aChild struct {
 	port   uint64
+	tag    uint32
 	l      *link
 	box    *mailbox
 	down   *valueMap
@@ -82,6 +96,8 @@ func startVPC(r *Router, c *vChild) {
 		owners:  map[string]uint64{},
 		asks:    map[uint64]map[uint64]struct{}{},
 		out:     map[uint64][]AttachmentStats{},
+		ann:     map[string]*dpv1.Presence{},
+		members: map[string]*vMember{},
 	}
 	v.trust = load[*trustGen](c.down, keyTrust)
 	watch(ctx, c.down, func(keys []string) { c.box.send(valuesChanged{keys: keys}) })
@@ -176,6 +192,7 @@ func (v *vpcProc) startConn(e toConn) {
 	ctx, cancel := context.WithCancel(v.ctx)
 	a := &aChild{
 		port:     e.port,
+		tag:      e.tag,
 		l:        e.l,
 		box:      e.box,
 		down:     &valueMap{},
@@ -237,6 +254,8 @@ func (v *vpcProc) changed(keys []string) {
 					store(a.down, keyTrust, t)
 				}
 			}
+		case strings.HasPrefix(k, keyMember):
+			v.memberChanged(k, time.Now())
 		case strings.HasPrefix(k, keyRx+"/"):
 			port, err := strconv.ParseUint(strings.TrimPrefix(k, keyRx+"/"), 10, 64)
 			a := v.as[port]
@@ -271,7 +290,7 @@ func (v *vpcProc) attach(e aAttach) {
 		return
 	}
 	for _, p := range e.att.Addresses {
-		if set := v.sets[p.Masked()]; set != nil && slices.ContainsFunc(set.entries, func(o *announcer) bool { return o.port != e.port }) {
+		if set := v.sets[p.Masked()]; set != nil && slices.ContainsFunc(set.entries, func(o *announcer) bool { return o.own && o.port != e.port }) {
 			reply(rpc.Errorf(rpc.AlreadyExists, "address %s has another attachment on this relay", p.Masked()))
 			return
 		}
@@ -280,6 +299,13 @@ func (v *vpcProc) attach(e aAttach) {
 	c := &candidate{agent: a.s.agent, relay: v.r.cfg.Relay.GetId(), attached: v.nextGen(now), rank: e.att.Rank, state: a.state, activeFrom: now.Add(holdTime)}
 	t := target{port: e.port, cell: e.cell, origin: e.att.ID, own: true}
 	ps := e.att.prefixes()
+	var ann *dpv1.Presence
+	if v.r.mesh != nil {
+		if ann = v.announcement(a, e.att.ID, ps, c, c.attached); !fitsOneMessage(ann) {
+			reply(rpc.Errorf(rpc.InvalidArgument, "announcement of the attachment does not fit in one message to the mesh"))
+			return
+		}
+	}
 	for _, p := range ps {
 		set := v.sets[p]
 		if set == nil {
@@ -298,7 +324,16 @@ func (v *vpcProc) attach(e aAttach) {
 	}
 	a.cands[e.att.ID], a.prefixes[e.att.ID] = c, ps
 	v.owners[e.att.ID] = e.port
+	if ann != nil {
+		v.ann[e.att.ID], v.annDirty = ann, true
+	}
 	reply(nil)
+}
+
+// announcement returns the announcement of attachment id of a to the members.
+func (v *vpcProc) announcement(a *aChild, id string, ps []netip.Prefix, c *candidate, gen uint64) *dpv1.Presence {
+	ref := &dpv1.VPCRef{ProjectId: v.c.key.Project, VpcUid: v.c.key.UID, NetworkId: v.net.ID}
+	return announcement(ref, id, ps, c, a.tag, gen)
 }
 
 // detach removes the candidates of an attachment, writes the route entries and answers A.
@@ -319,6 +354,10 @@ func (v *vpcProc) drop(a *aChild, id string, now time.Time) {
 	delete(a.prefixes, id)
 	if v.owners[id] == a.port {
 		delete(v.owners, id)
+	}
+	if _, ok := v.ann[id]; ok {
+		delete(v.ann, id)
+		v.annDirty = true
 	}
 	v.remove(a.port, id, ps)
 	if err := v.sync(ps, now); err != nil {
@@ -383,9 +422,8 @@ func (v *vpcProc) sync(ps []netip.Prefix, now time.Time) error {
 // forwardOf returns the route action of set: the winner, and the best local candidate.
 func forwardOf(set *routeSet) dp.ForwardAction {
 	var fa dp.ForwardAction
-	if w := set.order[0]; w.own {
-		fa.Port, fa.Cell = w.port, w.cell
-	}
+	w := set.order[0]
+	fa.Port, fa.Cell = w.port, w.cell
 	if l := set.local; l != nil {
 		fa.LocalPort, fa.LocalCell = l.port, l.cell
 	}
@@ -463,6 +501,9 @@ func (v *vpcProc) setState(a *aChild, state dpv1.AnnouncerState, reason string, 
 	for id, c := range a.cands {
 		c.restate(state, now)
 		ps = append(ps, a.prefixes[id]...)
+		if v.r.mesh != nil {
+			v.ann[id], v.annDirty = v.announcement(a, id, a.prefixes[id], c, v.nextGen(now)), true
+		}
 	}
 	if len(ps) == 0 {
 		return
@@ -503,6 +544,8 @@ func (v *vpcProc) connEnded(e aEnded) {
 		delete(wait, e.port)
 		v.answerAsk(ask)
 	}
+	// The root takes the tag back after the set with no announcement of A goes to the members.
+	v.storeSet()
 	v.up(vConnEnded{port: e.port, ends: e.ends})
 }
 
@@ -540,8 +583,19 @@ func (v *vpcProc) answerAsk(ask uint64) {
 // answer queues an answer to A that needs the new route table.
 func (v *vpcProc) answer(fn func()) { v.answers = append(v.answers, fn) }
 
-// publish stores the new route table in the map of each A, then sends the answers.
+// storeSet stores the announcement set for the root when it changed.
+func (v *vpcProc) storeSet() {
+	if !v.annDirty {
+		return
+	}
+	v.annDirty = false
+	store(v.c.up, keyAnnounce, &annSet{vpc: v.c.key, entries: maps.Clone(v.ann)})
+}
+
+// publish stores the new route table in the map of each A and the announcement set, then sends
+// the answers.
 func (v *vpcProc) publish() {
+	v.storeSet()
 	if v.dirty {
 		v.dirty = false
 		t := v.table()
@@ -566,7 +620,7 @@ func (v *vpcProc) table() *routeTable {
 	for p, set := range v.sets {
 		order := make([]viewEntry, len(set.order))
 		for i, e := range set.order {
-			order[i] = viewEntry{agent: e.agent, origin: e.origin, relay: e.relay, own: e.own}
+			order[i] = viewEntry{agent: e.agent, origin: e.origin, relay: e.relay, own: e.own, ref: e.ref}
 		}
 		t.orders[p] = order
 	}
@@ -582,6 +636,11 @@ func (v *vpcProc) end() {
 	clear(v.sets)
 	if err := v.sync(ps, time.Now()); err != nil {
 		slog.Error("Failed to delete route entries", "vpc", v.c.key.UID, "error", err)
+	}
+	if v.r.mesh != nil {
+		clear(v.ann)
+		v.annDirty = true
+		v.storeSet()
 	}
 	if v.timer != nil {
 		v.timer.Stop()
@@ -603,4 +662,62 @@ func (v *vpcProc) end() {
 		}
 	}
 	v.up(vEnded{})
+}
+
+// memberChanged makes the candidates of the member of key k match the records of its part:
+// candidates on its trunk port, after its trunk is up. Only a record with the network ID of the
+// VPC is a candidate.
+func (v *vpcProc) memberChanged(k string, now time.Time) {
+	view := load[*memberView](v.c.down, k)
+	var vals *memberValues
+	var want map[string]*record
+	if view != nil && view.values != nil && view.part != nil {
+		vals, want = view.values, view.part.recs
+	}
+	vm := v.members[k]
+	if vm == nil {
+		if vals == nil {
+			return
+		}
+		vm = &vMember{cands: map[string]*record{}}
+		v.members[k] = vm
+	}
+	// New trunk values change each candidate.
+	again := vm.values == nil || vals == nil || vm.values.port != vals.port || vm.values.cell != vals.cell || vm.values.ref != vals.ref
+	var ps []netip.Prefix
+	for id, rec := range vm.cands {
+		if again || want[id] != rec {
+			v.remove(vm.values.port, id, rec.prefixes)
+			ps = append(ps, rec.prefixes...)
+			delete(vm.cands, id)
+		}
+	}
+	vm.values = vals
+	for id, rec := range want {
+		if vm.cands[id] != nil || rec.networkID != v.net.ID {
+			continue
+		}
+		c := &candidate{
+			agent:    agentKey{id: rec.subject, name: rec.agent, instance: rec.instance},
+			relay:    vals.ref.GetId(),
+			attached: rec.attached, rank: rec.rank, state: rec.state, activeFrom: rec.activeFrom,
+		}
+		t := target{port: vals.port, cell: vals.cell, origin: id, ref: vals.ref}
+		for _, p := range rec.prefixes {
+			set := v.sets[p]
+			if set == nil {
+				set = &routeSet{}
+				v.sets[p] = set
+			}
+			set.entries = append(set.entries, newAnnouncer(t, c, p))
+		}
+		ps = append(ps, rec.prefixes...)
+		vm.cands[id] = rec
+	}
+	if vals == nil {
+		delete(v.members, k)
+	}
+	if err := v.sync(ps, now); err != nil {
+		slog.Error("Failed to write route entries", "vpc", v.c.key.UID, "error", err)
+	}
 }

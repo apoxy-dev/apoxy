@@ -67,7 +67,7 @@ func TestProbeRefusedSession(t *testing.T) {
 		refuse func(t *testing.T, w *world, r *testRelay)
 	}{
 		{"cert from another CA", func(t *testing.T, w *world, _ *testRelay) { w.trust.SetCA(newCA(t).CA) }},
-		{"relay drains", func(_ *testing.T, _ *world, r *testRelay) { r.srv.Drain(context.Background(), nil) }},
+		{"relay drains", func(_ *testing.T, _ *world, r *testRelay) { r.srv.Drain(context.Background()) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

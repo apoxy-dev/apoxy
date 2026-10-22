@@ -98,6 +98,7 @@ struct meta_t {
     bit<64> port;
     bit<64> sa_session;
     bit<32> spi;
+    bit<32> out_meter_index;
     bit<2> lane;
     bit<24> vni;
     bit<24> tag;
@@ -132,7 +133,11 @@ control Relay(inout headers_t h,
               inout standard_metadata_t sm) {
     // Cell c: receive at 2c, transmit at 2c+1. The root gives c and the meter indices (pools).
     counter(1 << 21, CounterType.packets_and_bytes) cells;
-    counter(64, CounterType.packets_and_bytes) drops;
+    // Drops by reason. The size is 32, so a reason fits the 5 low bits of a port_drops index.
+    counter(32, CounterType.packets_and_bytes) drops;
+    // Drops of each port by reason, at (meter index << 5) | reason. A send_out drop counts at the
+    // out port (tx), any other drop at the in port (rx). Meter index 0: not counted.
+    counter(1 << 21, CounterType.packets) port_drops;
     // Port meter i has lane meters 4i to 4i+3 and punt meter i. Punt meter 0: probes.
     meter(1 << 16, MeterType.bytes) port_meter;
     meter(1 << 18, MeterType.bytes) lane_meter;
@@ -151,6 +156,10 @@ control Relay(inout headers_t h,
     // hide:begin
     action drop(bit<8> reason) {
         drops.count((bit<32>)reason);
+        bit<32> i = m.out_meter_index != 0 ? m.out_meter_index : m.p.meter_index;
+        if (i != 0) {
+            port_drops.count((i << 5) | (bit<32>)reason);
+        }
         mark_to_drop(sm);
         exit;
     }
@@ -234,8 +243,8 @@ control Relay(inout headers_t h,
         // port: MISS. No local target: no_route.
         route.apply();
         route_end();
-        // 7. ports entry of m.fwd.port (no_target), no trunk to trunk, no local_only to a trunk,
-        // mtu. Then seal on a lane with the outgoing VNI (no_keys), or FRAME out with m.c.vni.
+        // 7. ports entry of m.fwd.port (no_target; it sets m.out_meter_index), no trunk to trunk,
+        // no local_only to a trunk, mtu. Then seal on a lane with the outgoing VNI (no_keys), or FRAME out with m.c.vni.
         send_out();
     }
 }
