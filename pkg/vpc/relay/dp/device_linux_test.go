@@ -731,10 +731,13 @@ func TestDeviceKickCounts(t *testing.T) {
 	assert.Equal(t, final, e.d.KickCounts(), "the counts after Run do not change")
 }
 
-// TestDeviceQUICQueue sends bursts of datagrams to UDP 443 and reads them after each burst. The
-// queue holds 1024 datagrams, and each datagram over that drops (quic_full). A read gives the RX
-// frame of a datagram back, so the bursts can have more datagrams than the RX frames.
+// TestDeviceQUICQueue sends bursts of datagrams to UDP 443 on one RX queue and reads them after each
+// burst. The queue holds 4096 datagrams, and each datagram over that drops (quic_full). While the
+// queue holds its datagrams, the RX queue still receives: the datagrams over the queue count as
+// quic_full, and the relay answers a ping. A read gives the RX frame of a datagram back, so the
+// bursts can have more datagrams than the RX frames.
 func TestDeviceQUICQueue(t *testing.T) {
+	const queue = 4096
 	e := newEnv(t, 1)
 	c := e.listen(t, netip.AddrPortFrom(peer4.Addr(), 7301))
 	// The peer resolves the relay first. Else its kernel drops the first datagrams of a burst.
@@ -747,8 +750,9 @@ func TestDeviceQUICQueue(t *testing.T) {
 		bursts, burst int
 		drops         int64 // The quic_full drops of each burst.
 	}{
-		{name: "bursts that fit, more datagrams than RX frames", bursts: 8, burst: 1000},
-		{name: "a burst over the queue", bursts: 1, burst: 1100, drops: 76},
+		{name: "bursts that fit, more datagrams than RX frames", bursts: 5, burst: 4000},
+		{name: "a full queue", bursts: 2, burst: queue},
+		{name: "a burst over the queue", bursts: 1, burst: queue + 300, drops: 300},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -763,8 +767,12 @@ func TestDeviceQUICQueue(t *testing.T) {
 						time.Sleep(time.Millisecond) // So that the veth of the peer drops none.
 					}
 				}
-				// The device takes all datagrams of the burst before the first read.
+				// The device takes all datagrams of the burst before the first read. With a full queue,
+				// the RX queue still receives: the datagrams over the queue drop, and a ping gets an answer.
 				time.Sleep(200 * time.Millisecond)
+				require.Eventually(t, func() bool { return e.drops(t, dp.ReasonQUICFull) == before+tc.drops },
+					2*time.Second, 10*time.Millisecond, "quic_full drops before the reads")
+				e.ping(t, relay4.Addr())
 				for i := first; i <= seq-int(tc.drops); i++ {
 					require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
 					n, _, err := conn.ReadFrom(buf)

@@ -16,8 +16,9 @@ import (
 )
 
 // quicQueue is how many received datagrams wait for quic-go. A datagram that does not fit drops
-// (quic_full).
-const quicQueue = 1024
+// (quic_full). The datagrams stay in their RX frames, so each RX queue has frames for a full queue
+// (see frameOptions).
+const quicQueue = 4096
 
 // quicConn is the UDP 443 socket of the relay on the dedicated interface. It reads and writes the ECN
 // bits of each packet, with DF, and WriteToGSO sends a batch of datagrams in one TX send.

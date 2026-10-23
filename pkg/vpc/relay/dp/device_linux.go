@@ -30,7 +30,8 @@ func OpenDevice(ifc Interface) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	xdpOpts := append(modeOptions(ifc.ZeroCopy), xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
+	xdpOpts := append(modeOptions(ifc.ZeroCopy), frameOptions()...)
+	xdpOpts = append(xdpOpts, xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
 		return loadRelayXDP(sockets, queues, impair)
 	}))
 	xdpOpt := afxdp.WithXDP(xdpOpts...)
@@ -81,6 +82,19 @@ func modeOptions(zc bool) []xdp.Option {
 		return []xdp.Option{xdp.WithZeroCopy()}
 	}
 	return nil
+}
+
+// frameOptions sizes the UMEM of each queue. The RX frames are a full fill ring, a full RX ring and
+// the frames that QUIC holds: quicQueue datagrams, and the read datagrams of the turn that quic-go
+// reads (at most rxBatch), because a turn gives its frames back when quic-go read all of it. The
+// QUIC datagrams of all queues can come on one queue, so each queue has frames for a full QUIC
+// queue: with a full RX ring and a full QUIC queue, a fill ring of frames is still for the fill ring
+// and the NIC (in zero-copy the NIC holds frames that it took from the fill ring). The TX frames and
+// the rings keep the go-afxdp defaults.
+func frameOptions() []xdp.Option {
+	o := xdp.DefaultOptions()
+	rx := o.FillRingNumDescs + o.RxRingNumDescs + quicQueue + rxBatch
+	return []xdp.Option{xdp.WithNumFrames(o.TxFrames + rx), xdp.WithTxFrames(o.TxFrames)}
 }
 
 // setSendBuffers gives each copy-mode TX socket of dev a send buffer for all its TX frames, and logs
