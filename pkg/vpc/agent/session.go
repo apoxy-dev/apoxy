@@ -79,8 +79,6 @@ type session struct {
 	laneTk        *time.Ticker
 	renewRefusals int
 	staleOffers   int
-	cur           []*extraConn
-	extraConns    map[*extraConn]bool
 
 	extras  map[string]*extra // By name.
 	byID    map[string]*extra
@@ -94,7 +92,7 @@ func newSession(a *Agent, ctx context.Context, up *mailbox, d *dialed, rank uint
 		a: a, mb: newMailbox(), up: up, d: d, rank: rank,
 		rx: make(chan *dp.SessionResponse, 1), next: make(chan struct{}, 1),
 		mode: dp.Mode_MODE_QUIC, lanes: 1,
-		checks: map[*check]bool{}, extraConns: map[*extraConn]bool{},
+		checks: map[*check]bool{},
 		extras: map[string]*extra{}, byID: map[string]*extra{},
 		running: map[*xjob]bool{},
 	}
@@ -162,7 +160,7 @@ func tickerC(t *time.Ticker) <-chan time.Time {
 
 // idle reports whether the session has no child and no task.
 func (s *session) idle() bool {
-	return s.tasks == 0 && len(s.checks) == 0 && len(s.extraConns) == 0
+	return s.tasks == 0 && len(s.checks) == 0
 }
 
 // start starts the long tasks, the attach and the first PSP probe. The probe
@@ -270,10 +268,6 @@ func (s *session) end(err error) {
 		c.mb.send(endMsg{})
 	}
 	s.chk = nil
-	for ec := range s.extraConns {
-		ec.mb.send(endMsg{})
-	}
-	s.cur = nil
 	s.sw.send(endMsg{})
 	if s.retry != nil {
 		s.retry.Stop()
@@ -297,9 +291,6 @@ func (s *session) handle(m any) {
 	case checkEnded:
 		delete(s.checks, m.c)
 		s.counter = max(s.counter, m.counter)
-		return
-	case extraEnded:
-		delete(s.extraConns, m.ec)
 		return
 	case endMsg:
 		s.end(errAgentStopped)
@@ -360,12 +351,6 @@ func (s *session) handle(m any) {
 			s.chk = nil
 			m.c.mb.send(endMsg{})
 			s.useQUIC()
-		}
-	case extraUp:
-		s.extraUp(m)
-	case extraDown:
-		if slices.Contains(s.cur, m.ec) {
-			_ = s.pc.SetExtra(m.ec.i, nil)
 		}
 	default:
 		s.handleExtras(m)
@@ -538,7 +523,6 @@ func (s *session) bound(m bindingMsg) {
 	}
 	s.setup = time.Since(s.d.begin)
 	s.attached = true
-	s.startExtras()
 	s.status()
 	if s.draining {
 		s.up.send(drainedMsg{s, s.alts})

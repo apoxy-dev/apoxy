@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/testing/protocmp"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
@@ -79,38 +81,29 @@ func TestWelcome(t *testing.T) {
 
 func TestHello(t *testing.T) {
 	e := newEnv(t)
-	owner := e.dial(t, "agent-1")
-	owner.open(dpv1.Mode_MODE_QUIC)
-	att := owner.attach().GetAttachmentId()
-	extra := func(id string, index uint32) *dpv1.Hello {
-		return &dpv1.Hello{Version: dpv1.LocalVersion("test"), Shard: &dpv1.Shard{AttachmentId: id, Index: index}}
-	}
 	cases := []struct {
 		name      string
-		agent     string
 		hello     *dpv1.Hello
 		first     *dpv1.SessionRequest // In place of Hello.
 		twice     bool                 // A second Session call after a good one.
 		code      rpc.Code
 		closeCode dpv1.RelayCloseCode
+		sessions  float64 // Sessions that the relay counts for the revision of hello.
 	}{
 		{name: "first message is not Hello", first: &dpv1.SessionRequest{Msg: &dpv1.SessionRequest_Ack{Ack: &dpv1.Ack{}}}, code: rpc.InvalidArgument},
 		{name: "no mode", hello: &dpv1.Hello{Version: dpv1.LocalVersion("test")}, code: rpc.InvalidArgument},
-		{name: "old revision", hello: &dpv1.Hello{Mode: dpv1.Mode_MODE_QUIC, Version: &dpv1.Version{Revision: dpv1.MinRevision - 1, MinRevision: 1}},
-			code: rpc.FailedPrecondition, closeCode: dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE},
-		{name: "extra index 0", hello: extra(att, 0), code: rpc.InvalidArgument},
-		{name: "extra index too large", hello: extra(att, 99), code: rpc.InvalidArgument},
-		{name: "extra of no attachment", hello: extra("no-such-attachment", 1), code: rpc.NotFound},
-		{name: "extra of another agent", agent: "agent-2", hello: extra(att, 1), code: rpc.PermissionDenied},
-		{name: "second Session call", hello: hello(dpv1.Mode_MODE_QUIC), twice: true, code: rpc.FailedPrecondition},
+		// An agent at revision 22 can open a second QUIC connection for a session.
+		{name: "revision 22", hello: &dpv1.Hello{Mode: dpv1.Mode_MODE_QUIC, Version: &dpv1.Version{Revision: 22, MinRevision: 21}},
+			closeCode: dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE},
+		{name: "revision 23", hello: &dpv1.Hello{Mode: dpv1.Mode_MODE_QUIC, Version: &dpv1.Version{Revision: 23, MinRevision: 23}},
+			code: rpc.OK, sessions: 1},
+		{name: "second Session call", hello: hello(dpv1.Mode_MODE_QUIC), twice: true, code: rpc.FailedPrecondition, sessions: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			name := tc.agent
-			if name == "" {
-				name = "agent-1"
-			}
-			a := e.dial(t, name)
+			rev := tc.hello.GetVersion().GetRevision()
+			before := sessionsOf(t, rev)
+			a := e.dial(t, "agent-1")
 			if tc.twice {
 				a.open(dpv1.Mode_MODE_QUIC)
 			}
@@ -125,11 +118,35 @@ func TestHello(t *testing.T) {
 			if tc.closeCode != 0 {
 				code, _ := a.closed()
 				assert.Equal(t, tc.closeCode, code)
-				return
+			} else {
+				assert.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
 			}
-			assert.Equal(t, tc.code, rpc.CodeOf(err), "error: %v", err)
+			// The relay counts a session after it answers the Session call.
+			assert.Eventually(t, func() bool { return sessionsOf(t, rev)-before == tc.sessions }, wait, 10*time.Millisecond,
+				"sessions of revision %d", rev)
 		})
 	}
+}
+
+// sessionsOf returns the Session calls of revision rev that the relay counted.
+func sessionsOf(t *testing.T, rev uint32) float64 {
+	t.Helper()
+	mfs, err := metrics.Registry.Gather()
+	require.NoError(t, err)
+	var n float64
+	for _, mf := range mfs {
+		if mf.GetName() != "apoxy_vpc_relay_session_versions_total" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "revision" && l.GetValue() == strconv.FormatUint(uint64(rev), 10) {
+					n += m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return n
 }
 
 func TestAttach(t *testing.T) {
@@ -630,33 +647,6 @@ func TestIndexReuse(t *testing.T) {
 		sa, sb := e.statsOf(resA2.GetAttachmentId()), e.statsOf(resB2.GetAttachmentId())
 		return sa.RXPackets == 1 && sb.TXPackets == 1
 	}, wait, 50*time.Millisecond)
-}
-
-func TestExtraConnection(t *testing.T) {
-	e := newEnv(t)
-	a := e.dial(t, "agent-a")
-	a.open(dpv1.Mode_MODE_QUIC)
-	resA := a.attach()
-	b := e.dial(t, "agent-b")
-	b.open(dpv1.Mode_MODE_QUIC)
-	resB := b.attach()
-
-	x := e.dial(t, "agent-a")
-	m, err := x.session(&dpv1.Hello{Version: dpv1.LocalVersion("test"), Shard: &dpv1.Shard{AttachmentId: resA.GetAttachmentId(), Index: 1}})
-	require.NoError(t, err)
-	assert.Equal(t, x.qc.LocalAddr().String(), m.GetWelcome().GetReflexiveAddress())
-	// An extra connection carries only data.
-	_, err = x.rc.Attach(t.Context(), &dpv1.AttachRequest{Vpc: vpcRef, Name: "x"})
-	assert.Equal(t, rpc.FailedPrecondition, rpc.CodeOf(err), "error: %v", err)
-	// Its data frames are data of the main connection.
-	p := packet(addr(t, resA), addr(t, resB), 100)
-	x.sendFrame(p)
-	assert.Equal(t, p, b.recvFrame(wait))
-
-	// It ends with the main connection.
-	_ = a.qc.CloseWithError(0, "")
-	code, _ := x.closed()
-	assert.Equal(t, dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, code)
 }
 
 func TestRemoveVPC(t *testing.T) {

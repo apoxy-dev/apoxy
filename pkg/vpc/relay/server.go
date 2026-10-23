@@ -18,7 +18,6 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -166,8 +165,8 @@ func (srv *Server) Drain(ctx context.Context) {
 	}
 }
 
-// Session runs the Session call: Hello, then Welcome, Config and the route table for a main
-// connection, or Welcome for an extra connection. The process of the connection sends the rest.
+// Session runs the Session call: Hello, then Welcome, Config and the route table. The process of
+// the connection sends the rest.
 func (srv *Server) Session(ctx context.Context, st sessionStream) error {
 	l, err := linkOf(ctx)
 	if err != nil {
@@ -191,11 +190,7 @@ func (srv *Server) Session(ctx context.Context, st sessionStream) error {
 		l.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE, msg)
 		return rpc.Errorf(rpc.FailedPrecondition, "%s", msg)
 	}
-	if x := hello.GetShard(); x != nil {
-		if i := x.GetIndex(); i == 0 || i >= peerconn.MaxConns {
-			return rpc.Errorf(rpc.InvalidArgument, "extra connection index %d is not from 1 to %d", i, peerconn.MaxConns-1)
-		}
-	} else if m := hello.GetMode(); m != dpv1.Mode_MODE_PSP && m != dpv1.Mode_MODE_QUIC {
+	if m := hello.GetMode(); m != dpv1.Mode_MODE_PSP && m != dpv1.Mode_MODE_QUIC {
 		return rpc.Errorf(rpc.InvalidArgument, "Hello needs a mode")
 	}
 	res := make(chan error, 1)
@@ -206,10 +201,8 @@ func (srv *Server) Session(ctx context.Context, st sessionStream) error {
 	if err := <-res; err != nil {
 		return err
 	}
-	if hello.GetShard() == nil {
-		sessionsTotal.WithLabelValues(modeLabel(hello.GetMode()), reasonLabel(hello)).Inc()
-		sessionVersions.WithLabelValues(versionLabels.of(hello.GetVersion())...).Inc()
-	}
+	sessionsTotal.WithLabelValues(modeLabel(hello.GetMode()), reasonLabel(hello)).Inc()
+	sessionVersions.WithLabelValues(versionLabels.of(hello.GetVersion())...).Inc()
 	select {
 	case <-l.streamDone:
 	case <-ctx.Done():
@@ -258,9 +251,6 @@ func call(ctx context.Context, kind callKind, in proto.Message, noA string) (pro
 	l, err := linkOf(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if l.extra.Load() {
-		return nil, rpc.Errorf(rpc.FailedPrecondition, "an extra connection carries only data")
 	}
 	box := l.a.Load()
 	if box == nil {

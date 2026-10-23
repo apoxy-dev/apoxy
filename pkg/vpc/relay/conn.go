@@ -8,17 +8,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash/maphash"
 	"io"
 	"log/slog"
 	"net/netip"
 	"slices"
-	"sync/atomic"
 	"time"
 
 	"github.com/apoxy-dev/softpsp/keys"
 	p4 "github.com/p4lang/p4runtime/go/p4/v1"
-	"github.com/quic-go/quic-go"
 	"golang.org/x/time/rate"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -26,17 +23,12 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/flow"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp/keyproto"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // probeRate is the most path probes per second that one connection gets replies to.
 const probeRate = 10
-
-// extraSeed keys the flow hash that picks the QUIC connection of a frame to an agent.
-var extraSeed = maphash.MakeSeed()
 
 // Events of A from its tasks and children.
 type (
@@ -49,11 +41,7 @@ type (
 	prevExpired struct{ addr netip.AddrPort }
 	checkLost   struct{ c *checkProc }
 	// remoteIn is a RemoteAddresses message of the agent, from the reader task.
-	remoteIn   struct{ m *dpv1.RemoteAddresses }
-	extraEnded struct {
-		index uint32
-		x     *extraProc
-	}
+	remoteIn struct{ m *dpv1.RemoteAddresses }
 )
 
 // keyJob is one key operation of A. The root runs them in order, one at a time.
@@ -118,8 +106,6 @@ type connProc struct {
 	probes  uint64 // The largest counter of a valid path probe.
 	limit   *rate.Limiter
 	check   *checkProc
-	extras  [peerconn.MaxConns]*extraProc
-	dconns  atomic.Pointer[[peerconn.MaxConns]quic.Connection]
 	// sources has the source entries of the port. The value is true for a remote address.
 	sources map[netip.Prefix]bool
 
@@ -227,9 +213,6 @@ func (a *connProc) start() {
 	for lane := range uint32(dpLanes) {
 		b.meter(dp.MeterLane, dpLanes*a.meter+lane, cfg.LaneRate, cfg.LaneBurst)
 	}
-	var cs [peerconn.MaxConns]quic.Connection
-	cs[0] = a.l.qc
-	a.dconns.Store(&cs)
 	a.t.SetFrameWriter(a.port, a.writeFrame)
 	if err := b.write(bg, a.t); err != nil {
 		slog.Error("Failed to write the entries of an agent connection", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
@@ -269,23 +252,10 @@ func (a *connProc) start() {
 	go func() { a.box.send(readerDone{err: a.read()}) }()
 }
 
-// writeFrame is the frame writer of the port: the main connection, or an extra one by the flow
-// of the inner packet. It runs under the read lock of the data plane.
+// writeFrame is the frame writer of the port: it sends on the session connection. It runs under
+// the read lock of the data plane.
 func (a *connProc) writeFrame(b []byte) error {
-	cs := a.dconns.Load()
-	n := 1
-	for i, c := range cs {
-		if c != nil {
-			n = i + 1
-		}
-	}
-	c := cs[0]
-	if n > 1 && len(b) >= peerconn.DataLen {
-		if x := cs[flow.Hash(extraSeed, b[peerconn.DataLen:])%uint64(n)]; x != nil {
-			c = x
-		}
-	}
-	return c.TrySendDatagram(b)
+	return a.l.qc.TrySendDatagram(b)
 }
 
 // read reads the agent messages of the Session call until it ends.
@@ -353,10 +323,6 @@ func (a *connProc) handle(e any) {
 		a.close(e.code, e.msg)
 	case toEnd:
 		a.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "relay does not serve the VPC")
-	case toExtra:
-		a.extra(e)
-	case extraEnded:
-		a.extraEnded(e)
 	case valuesChanged:
 		a.changed(e.keys)
 	case trustChecked:
@@ -390,8 +356,6 @@ func (a *connProc) refuse(e any) {
 		close(e.done)
 	case toStats:
 		a.vbox.send(aStatsAnswer{port: a.port, ask: e.ask})
-	case toExtra:
-		e.res <- rpc.Errorf(rpc.NotFound, "no open session has attachment %q", e.extra.GetAttachmentId())
 	case toKeysDone:
 		a.keysDone(e)
 	case readerDone:
@@ -957,36 +921,6 @@ func (a *connProc) pathLost(c *checkProc) {
 	slog.Info("PSP path to an agent stopped; changed its connection from PSP mode to QUIC mode", "vpc", a.l.vpc.UID, "agent", a.s.agent.name)
 }
 
-// extra starts the extra connection of an index. It replaces the one before.
-func (a *connProc) extra(e toExtra) {
-	i := e.extra.GetIndex()
-	if old := a.extras[i]; old != nil {
-		old.box.send(extraEnd{msg: "extra connection replaced"})
-	}
-	a.extras[i] = startExtra(a.r, a.box, e.l, e.st, a.port, i)
-	a.storeConns()
-	e.res <- nil
-}
-
-func (a *connProc) extraEnded(e extraEnded) {
-	if a.extras[e.index] == e.x {
-		a.extras[e.index] = nil
-		a.storeConns()
-	}
-}
-
-// storeConns gives the frame writer the QUIC connections of A now.
-func (a *connProc) storeConns() {
-	var cs [peerconn.MaxConns]quic.Connection
-	cs[0] = a.l.qc
-	for i, x := range a.extras {
-		if x != nil {
-			cs[i] = x.l.qc
-		}
-	}
-	a.dconns.Store(&cs)
-}
-
 // changed loads the values of V that changed.
 func (a *connProc) changed(keys []string) {
 	for _, k := range keys {
@@ -1196,11 +1130,6 @@ func (a *connProc) close(code dpv1.RelayCloseCode, msg string) {
 	a.l.close(code, msg)
 	a.cancel()
 	a.stopCheck()
-	for _, x := range a.extras {
-		if x != nil {
-			x.box.send(extraEnd{msg: "main connection ended"})
-		}
-	}
 	if a.prevT != nil {
 		a.prevT.Stop()
 	}

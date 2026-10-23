@@ -53,10 +53,8 @@ type link struct {
 
 	// session is true after the first Session call.
 	session atomic.Bool
-	// a is the mailbox of the A of a main connection, set before the root answers the Session
-	// call. extra is true for an extra connection.
-	a     atomic.Pointer[mailbox]
-	extra atomic.Bool
+	// a is the mailbox of the A of the connection, set before the root answers the Session call.
+	a atomic.Pointer[mailbox]
 	// owned is true after the root took the connection: finished then closes.
 	owned    atomic.Bool
 	finished chan struct{} // Closed when the process of the connection and its hook tasks ended.
@@ -186,12 +184,6 @@ type (
 		tag   uint32
 		cell  uint32
 		meter uint32
-	}
-	toExtra struct {
-		l     *link
-		st    sessionStream
-		extra *dpv1.Shard
-		res   chan error
 	}
 	toAssigned struct {
 		port     uint64

@@ -28,8 +28,7 @@ func (r *testRelay) byName() string {
 	return net.JoinHostPort("localhost", port)
 }
 
-// dials returns the Session calls of ta that the relays got, with no extra
-// connections.
+// dials returns the Session calls of ta that the relays got.
 func (ta *testAgent) dials(relays ...*testRelay) int {
 	n := 0
 	for _, r := range relays {

@@ -49,7 +49,7 @@ bits. The relay ignores the flags. It takes data frames from a session in
 each mode. It drops a data frame if the VNI is not the network ID of the
 session, if the session does not route the inner source, or if no session
 routes the inner destination (then it sends `NoRoute`). It sends the frame to a
-QUIC-mode agent with no change, on the main or extra connection of its flow.
+QUIC-mode agent with no change, on the session connection.
 When a session of another relay of the mesh routes the inner destination, the
 relay sends the inner packet to that relay (see "Trunk").
 
@@ -111,8 +111,8 @@ first sends one BFD packet in the Down state, so the other side makes the
 change at once when that packet passes, and after its own 6 s when it does
 not. The session, its attachments and their addresses stay.
 
-- The agent sends its data as data frames, opens the extra connections
-  again, and stops its lane ports and the rekeys of its SAs for the relay. Its fallback reason is `PROBE_TIMEOUT`. It then
+- The agent sends its data as data frames, and stops its lane ports and the
+  rekeys of its SAs for the relay. Its fallback reason is `PROBE_TIMEOUT`. It then
   probes with backoff, as a session whose first probe failed, and calls
   `Rekey` when two probes in a row pass.
 - The relay sends the data for the agent as data frames, and deletes its relay
@@ -274,9 +274,9 @@ fails:
    one trunk at most.
 
 Then it sends the inner packet as it sends the inner packet of a data frame
-of one of its own sessions: in a data frame to a QUIC-mode agent, on the main
-or extra connection of its flow, or sealed with the SA that a PSP-mode agent
-gave with `Rekey` (`no_keys` when it has none). The data frame has the network
+of one of its own sessions: in a data frame to a QUIC-mode agent, on the
+session connection, or sealed with the SA that a PSP-mode agent gave with
+`Rekey` (`no_keys` when it has none). The data frame has the network
 ID of the VPC and zero flags, because a trunk packet has no VNI word. The
 relay of the receiver does not know the mode of the sender.
 
@@ -515,16 +515,6 @@ skips a relay on which it has a session, and it attaches on the first relay
 that takes it, with the next rank. With no such relay, it dials the relays
 that it knows after the relay closes the session.
 
-In QUIC mode an agent can add up to 3 extra connections from the same socket
-that carry data datagrams. Each one sends
-`Hello{shard: {attachment_id, index}, version}` as its first `Session`
-message, gets `Welcome`, and makes no other call. The relay refuses the join
-if the index is not from 1 to 3 (`InvalidArgument`), if no open session has
-the attachment (`NotFound`), if that session has another agent identity
-(`PermissionDenied`), or if the connection already has a `Session` call
-(`FailedPrecondition`). A new extra connection with the same index replaces
-the old one. An extra connection closes when its main session closes.
-
 The relay accepts an agent cert only if it chains to the agent CA, its SAN is
 an agent ID, and the agent is not revoked in its VPC. It checks in the TLS
 handshake and again for open sessions when the trust data changes. A session
@@ -762,11 +752,12 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 20 | The BFD packet in a path probe, with the probe flag `0x02`. The change of an open session from PSP mode to QUIC mode. | In PSP mode, sends a BFD packet to the PSP socket of the relay each 2 s, in place of the probe each 5 s, and at each change of its state. Changes the session to QUIC mode when the PSP path is lost, as in "PSP path check", and probes with backoff for the return to PSP mode. | No duty. | Runs one BFD session for each session in PSP mode, sends its BFD packets to the PSP address of the session, and sends no reply to a probe with a BFD packet. Changes the session to QUIC mode when the PSP path is lost, as in "PSP path check", and takes a later `Rekey` as on each session in QUIC mode. The two sides must be at revision 20: there is no code for an older agent or relay. |
 | 21 | `Relay.ResolvePeer`, `RegisterSPI`, `UnregisterSPI`, `Visit` and `Grant`, the `Peer` service (`apoxy-peer/1`), `AttachmentGrant` and `GrantClaims` are gone; `AttachResponse.grant` and `NoRoute.home_relay` are reserved. `Welcome.relay_id`, `Route.relay`, `AttachResponse.addresses`, `RemoteAddresses` and `KeysRequest.generation`. `ROUTE_RESULT_IPV4`. A Route for each slot. The first route table in parts. The minimum revision of each side is 21. | Opens no peer session and makes none of the removed calls. Sends the number of its key attempt in `KeysRequest.generation` of each `Rekey` that changes the mode. Takes the first route table in `RouteDelta` parts, up to the first one with no routes. | No duty. | Answers the removed calls with `Unimplemented`. Sends its ID in `Welcome.relay_id`, the `RelayRef` of the relay of the origin in `Route.relay`, and the addresses of an attachment in `AttachResponse.addresses`. Copies `generation` of the `Rekey` that changes the mode into its `OfferSAs`. Refuses each IPv4 prefix that is not a default route with `ROUTE_RESULT_IPV4`. Sends one Route for each /88 slot of the network of the VPC in place of the /96 routes of its attachments, with the ID of the relay that holds the slot as its origin. Sends the first route table in `RouteDelta` parts of at most 256 routes and 1 MiB, then one `RouteDelta` with no routes. Closes a session below revision 21 with `UPGRADE`. |
 | 22 | `Mesh.Presence` is a bidirectional call, one for each tenant and direction, with `PresenceUpdate{seq, vpcs, end_of_vpcs, parts}`, `PresencePart` and `PresenceControl{ack}`; `PresenceUpdate` fields 1 and 2 (`entries`, `end_of_full_set`) are reserved. `Mesh.SPIRows` and `SPIRowUpdate` are gone. A record lives with its call. Each packet between two relays is a trunk packet. The minimum revision of a relay on a mesh session is 22. | No duty. | No duty. | Opens one `Presence` call for each tenant with attachments on each mesh session, with the flow control and the limits of "Mesh", ends a call that has a message with no ack for 5 s and opens it again, and opens no new call of a tenant whose call ended for a different cause until the next session. Keeps the records of a call until the call ends, and deletes the records and the trunk SAs of a member at once when its session ends. Makes the routes of a member after the first probe result of its trunk. Takes a trunk packet only from the PSP socket that the member gave in `Open`, and refuses a member that gives no PSP port. With a mesh, refuses an `Attach` with more than 64 prefixes, or whose entry does not fit in one `PresenceUpdate`. Closes a mesh session with a relay below revision 22 with `UPGRADE`. |
+| 23 | The `Shard` message is gone, and `Hello` field 3 (`shard`) is reserved. The minimum revision of each side is 23, also on a mesh session. | Opens one QUIC connection for each relay session, and sends all data of the session on it. | No duty. | Sends the data frames of a session only on its session connection. Closes a session below revision 23, and a mesh session with a relay below revision 23, with `UPGRADE`. |
 
 ### Minimum revision
 
 Each side has a minimum for the revision of the other side. A relay takes an
-agent at revision 21 or later, and another relay of its mesh at revision 22
+agent at revision 23 or later, and another relay of its mesh at revision 23
 or later. It closes a mesh session below that with the `MeshCloseCode`
 `UPGRADE`.
 

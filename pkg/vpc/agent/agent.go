@@ -27,11 +27,8 @@ const (
 	maxBackoff = 30 * time.Second
 	// After a session of this age, the next reconnect starts at minBackoff.
 	stableSession = time.Minute
-	// quicConns is the number of connections, with the session, that carry
-	// data in QUIC mode.
-	quicConns    = 2
-	openTimeout  = 10 * time.Second
-	tickInterval = time.Second
+	openTimeout   = 10 * time.Second
+	tickInterval  = time.Second
 	// keysTimeout limits one change to PSP mode, from the Rekey call to the
 	// SAs of the relay.
 	keysTimeout = 10 * time.Second

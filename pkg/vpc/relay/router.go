@@ -601,19 +601,11 @@ func (r *Router) stop() {
 	}
 }
 
-// accept gives a Session call with its Hello to the V of its VPC: a new A, or an extra connection
-// of an A.
+// accept gives a Session call with its Hello to the V of its VPC, which starts a new A.
 func (r *Router) accept(e accepted) {
 	v := r.vs[e.l.vpc]
 	if v == nil || v.ending || r.stopping {
 		e.res <- rpc.Errorf(rpc.Unavailable, "relay does not serve VPC %s/%s", e.l.vpc.Project, e.l.vpc.UID)
-		return
-	}
-	if x := e.hello.GetShard(); x != nil {
-		e.l.extra.Store(true)
-		if !v.box.send(toExtra{l: e.l, st: e.st, extra: x, res: e.res}) {
-			e.res <- rpc.Errorf(rpc.Unavailable, "relay does not serve VPC %s/%s", e.l.vpc.Project, e.l.vpc.UID)
-		}
 		return
 	}
 	tag := r.newTag()

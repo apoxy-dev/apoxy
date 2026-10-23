@@ -667,14 +667,6 @@
               "jsonName": "maxVpcsPerSession"
             },
             {
-              "name": "shard",
-              "number": 3,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_MESSAGE",
-              "typeName": ".apoxy.vpc.datapath.v1.Shard",
-              "jsonName": "shard"
-            },
-            {
               "name": "fallback_reason",
               "number": 4,
               "label": "LABEL_OPTIONAL",
@@ -714,31 +706,17 @@
           ],
           "reservedRange": [
             {
+              "start": 3,
+              "end": 4
+            },
+            {
               "start": 5,
               "end": 6
             }
           ],
           "reservedName": [
+            "shard",
             "spare"
-          ]
-        },
-        {
-          "name": "Shard",
-          "field": [
-            {
-              "name": "attachment_id",
-              "number": 1,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_STRING",
-              "jsonName": "attachmentId"
-            },
-            {
-              "name": "index",
-              "number": 2,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_UINT32",
-              "jsonName": "index"
-            }
           ]
         },
         {

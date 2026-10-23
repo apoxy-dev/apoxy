@@ -5,6 +5,5 @@
 //
 // Each long-running process is one goroutine, and messages go only up and down the tree: the root
 // (Router), one V for each VPC (vpc.go), and one A for each agent connection (conn.go) with its
-// children extra (extra.go) and check (check.go). Events go in a mailbox; values go in watchable
-// maps that the parent owns.
+// child check (check.go). Events go in a mailbox; values go in watchable maps that the parent owns.
 package relay

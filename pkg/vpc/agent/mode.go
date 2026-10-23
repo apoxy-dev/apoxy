@@ -369,7 +369,6 @@ func (s *session) clamped(m clampedMsg) {
 	s.att.timer.Stop()
 	s.att = nil
 	s.mode = dp.Mode_MODE_PSP
-	s.stopExtras()
 	s.up.send(peerMode{s: s, peer: s.peer, mode: dp.Mode_MODE_PSP})
 	s.status()
 	slog.Info("Changed the relay session from QUIC mode to PSP mode", "relay", s.addr(), "address", s.self)
@@ -407,7 +406,6 @@ func (s *session) useQUIC() {
 	s.mode = dp.Mode_MODE_QUIC
 	s.reason = dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
 	s.stopLanes()
-	s.startExtras()
 	s.up.send(peerMode{s: s, peer: s.peer, mode: dp.Mode_MODE_QUIC})
 	s.status()
 	s.wait = s.a.retryMin

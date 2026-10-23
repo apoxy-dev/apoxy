@@ -351,7 +351,7 @@ func TestAttachmentMemory(t *testing.T) {
 	t.Logf("Heap for each extra attachment, the relay state too: %d bytes", per)
 	assert.LessOrEqual(t, per, int64(budget))
 	assert.Len(t, a.Attachments(), n+1)
-	// The extra QUIC connections can open in this time, so a small number of new goroutines is OK.
+	// Other goroutines of the agent and the relay can start in this time, so a small number is OK.
 	assert.LessOrEqual(t, runtime.NumGoroutine(), goroutines+32, "no goroutine for each attachment")
 
 	for i := range n {

@@ -108,26 +108,3 @@ func TestCloseDoesNotWait(t *testing.T) {
 	}
 	assert.ErrorIs(t, c.SendData(EncodeData(nil, testVNI, nil)), net.ErrClosed)
 }
-
-// TestReceiveExtra checks that the reader of an extra connection returns when
-// it closes, and that it does not change the connection table.
-func TestReceiveExtra(t *testing.T) {
-	c, qcs := newConns(t, 2)
-	got := make(chan []byte, 1)
-	c.HandleData(func(b []byte) { got <- bytes.Clone(b) })
-	done := make(chan struct{})
-	go func() {
-		c.Receive(context.Background(), qcs[1])
-		close(done)
-	}()
-	frame := EncodeData(nil, testVNI, []byte("extra"))
-	qcs[1].in <- frame
-	assert.Equal(t, frame, <-got)
-	close(qcs[1].gone)
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Receive did not return after the extra connection closed")
-	}
-	require.Equal(t, 2, c.Conns(), "the reader changed the connection table")
-}

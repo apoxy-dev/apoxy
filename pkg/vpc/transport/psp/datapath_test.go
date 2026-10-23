@@ -652,7 +652,7 @@ func TestPeerQUIC(t *testing.T) {
 }
 
 // TestHandleDataConcurrent gives data frames to a tun driver from several
-// readers at once, as the readers of the extra QUIC connections do.
+// readers at once, as the links of several relay sessions do.
 func TestHandleDataConcurrent(t *testing.T) {
 	a, b := newPair(t)
 	const readers, frames = 4, 200

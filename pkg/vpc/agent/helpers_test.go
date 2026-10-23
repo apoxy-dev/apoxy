@@ -276,7 +276,6 @@ type acceptedConn struct {
 const (
 	connUnknown int32 = iota
 	connSession
-	connExtra
 )
 
 // keep records the agent connection qc. The relay serves the connection
@@ -344,13 +343,9 @@ func (s *helloStream) Read(p []byte) (int, error) {
 	n, err := s.Stream.Read(p)
 	if s.buf != nil || s.kind.Load() == connUnknown {
 		s.buf = append(s.buf, p[:n]...)
-		if h, ok := readHello(s.buf); ok {
+		if _, ok := readHello(s.buf); ok {
 			s.buf = nil
-			kind := connSession
-			if h.GetShard() != nil {
-				kind = connExtra
-			}
-			s.kind.Store(kind)
+			s.kind.Store(connSession)
 		}
 	}
 	return n, err
@@ -383,7 +378,7 @@ func readHello(b []byte) (*dp.Hello, bool) {
 }
 
 // sessionConns returns the connections from the address from with a Session
-// call that is not of an extra connection, in the order that the relay accepted them.
+// call, in the order that the relay accepted them.
 func (r *testRelay) sessionConns(from net.Addr) []quic.Connection {
 	r.connsMu.Lock()
 	defer r.connsMu.Unlock()
@@ -1060,8 +1055,8 @@ func sameSession(t *testing.T, want, got sessionRef, msgAndArgs ...any) bool {
 // ended reports whether the relay side of the session closed.
 func (s sessionRef) ended() bool { return s.qc == nil || s.qc.Context().Err() != nil }
 
-// sessionOf returns the session of c. The relay accepted the session before
-// the extra connections of that session, so it is the oldest open connection of the agent.
+// sessionOf returns the session of c: the oldest open connection of the agent
+// on the relay of c.
 func (ta *testAgent) sessionOf(c ConnStatus) sessionRef {
 	ref := sessionRef{addr: c.Relay, self: c.Address}
 	if r := ta.w.relayAt(c.Relay); r != nil {

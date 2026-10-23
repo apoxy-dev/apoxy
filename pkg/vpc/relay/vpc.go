@@ -14,7 +14,6 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -35,7 +34,6 @@ type vpcProc struct {
 	timer   *time.Timer
 	timerAt time.Time
 	as      map[uint64]*aChild
-	owners  map[string]uint64 // The port of each attachment.
 	gen     uint64
 
 	draining bool
@@ -111,7 +109,6 @@ func startVPC(r *Router, c *vChild) {
 		entries: map[netip.Prefix]dp.ForwardAction{},
 		holds:   map[netip.Prefix]time.Time{},
 		as:      map[uint64]*aChild{},
-		owners:  map[string]uint64{},
 		asks:    map[uint64]map[uint64]struct{}{},
 		out:     map[uint64][]AttachmentStats{},
 		ann:     map[string]*dpv1.Presence{},
@@ -146,8 +143,6 @@ func (v *vpcProc) handle(e any) {
 	switch e := e.(type) {
 	case toConn:
 		v.startConn(e)
-	case toExtra:
-		v.extra(e)
 	case valuesChanged:
 		v.changed(e.keys)
 	case holdEv:
@@ -240,23 +235,6 @@ func (v *vpcProc) startConn(e toConn) {
 	startConn(v.r, v.c.box, e, a.down, a.up, v.draining, v.alts)
 }
 
-// extra gives an extra connection to the A that has its attachment, if the agent identity is
-// the same.
-func (v *vpcProc) extra(e toExtra) {
-	id, i := e.extra.GetAttachmentId(), e.extra.GetIndex()
-	a := v.as[v.owners[id]]
-	switch {
-	case i == 0 || i >= peerconn.MaxConns:
-		e.res <- rpc.Errorf(rpc.InvalidArgument, "extra connection index %d is not from 1 to %d", i, peerconn.MaxConns-1)
-	case a == nil:
-		e.res <- rpc.Errorf(rpc.NotFound, "no open session has attachment %q", id)
-	case a.l.subject != e.l.subject:
-		e.res <- rpc.Errorf(rpc.PermissionDenied, "attachment %q has another agent identity", id)
-	case !a.box.send(e):
-		e.res <- rpc.Errorf(rpc.NotFound, "no open session has attachment %q", id)
-	}
-}
-
 // changed loads the values of the root that changed.
 func (v *vpcProc) changed(keys []string) {
 	for _, k := range keys {
@@ -346,7 +324,6 @@ func (v *vpcProc) attach(e aAttach) {
 	}
 	a.cands[e.att.ID], a.prefixes[e.att.ID] = c, ps
 	a.atts[e.att.ID] = &vAtt{cell: e.cell, addrs: slices.Clone(e.att.Addresses), fallback: map[netip.Prefix]*announcer{}}
-	v.owners[e.att.ID] = e.port
 	if ann != nil {
 		v.ann[e.att.ID], v.annDirty = ann, true
 	}
@@ -382,9 +359,6 @@ func (v *vpcProc) drop(a *aChild, id string, now time.Time) {
 	}
 	delete(a.cands, id)
 	delete(a.prefixes, id)
-	if v.owners[id] == a.port {
-		delete(v.owners, id)
-	}
 	if _, ok := v.ann[id]; ok {
 		delete(v.ann, id)
 		v.annDirty = true
@@ -714,8 +688,6 @@ func (v *vpcProc) end() {
 			e.l.streamEnd()
 			e.box.close()
 			v.up(vConnEnded{port: e.port})
-		case toExtra:
-			e.res <- rpc.Errorf(rpc.Unavailable, "relay does not serve the VPC")
 		case toSlotLost:
 			close(e.done)
 		case toStats:

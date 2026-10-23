@@ -98,8 +98,6 @@ func TestPSPRetry(t *testing.T) {
 			// The send counts a packet after the socket write, which can be after the answer.
 			assert.Eventually(t, func() bool { return pspPackets(bind.LanePackets()) > psp }, 2*time.Second, 5*time.Millisecond,
 				"PSP packets after the change")
-			require.Eventually(t, func() bool { return len(r.agentConns(a.tr.Conn.LocalAddr(), true)) == 1 }, 5*time.Second, 10*time.Millisecond,
-				"the extra connections close in PSP mode")
 			same("in PSP mode")
 		})
 	}
