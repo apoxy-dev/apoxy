@@ -23,6 +23,8 @@ type mark struct {
 	Nanos int64 `json:"nanos"` // Time since the side started.
 	// CPU is the CPU time of the process.
 	CPU float64 `json:"cpu_s"`
+	// KickCPU is the CPU time of the kicker threads of the relay.
+	KickCPU float64 `json:"kick_cpu_s,omitempty"`
 	// HostCPU is the busy CPU time of the host of the side, or -1.
 	HostCPU float64 `json:"host_cpu_s,omitempty"`
 	// Packets that the client sent, and TCP segments retransmitted (client and
@@ -241,6 +243,8 @@ type result struct {
 	ClientCoresPerGbps float64 `json:"client_cores_per_gbps"`
 	ServerCoresPerGbps float64 `json:"server_cores_per_gbps"`
 	RelayCoresPerGbps  float64 `json:"relay_cores_per_gbps"`
+	// RelayKickCores are the cores of the kicker threads of the relay, a part of RelayCores.
+	RelayKickCores float64 `json:"relay_kick_cores,omitempty"`
 	// HostCores are the busy CPU seconds per second of the host of each side,
 	// with the kernel work. The sides of the netns rig have one host. -1 is not known.
 	ClientHostCores float64 `json:"client_host_cores"`
@@ -345,6 +349,9 @@ func newResult(client, server, relay [2]mark) result {
 		r.RetransPercent = float64(r.Retransmits) * 100 / float64(segs)
 	}
 	r.ClientCores, r.ServerCores, r.RelayCores = cores(client[0], client[1]), cores(server[0], server[1]), cores(relay[0], relay[1])
+	if rs := time.Duration(relay[1].Nanos - relay[0].Nanos).Seconds(); rs > 0 {
+		r.RelayKickCores = (relay[1].KickCPU - relay[0].KickCPU) / rs
+	}
 	r.ClientHostCores, r.ServerHostCores, r.RelayHostCores = hostCores(client[0], client[1]), hostCores(server[0], server[1]), hostCores(relay[0], relay[1])
 	r.ClientTopCPUs = busiestCPUs(client[0], client[1], topCPUs)
 	r.ServerTopCPUs = busiestCPUs(server[0], server[1], topCPUs)

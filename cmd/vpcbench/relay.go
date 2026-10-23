@@ -20,6 +20,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/quic-go/quic-go"
 
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
@@ -32,10 +33,14 @@ import (
 // ends or a client sends stop. The CA signs the relay cert and the agent
 // certs; the control port at -listen gives it and the QUIC address of the
 // relay to the server and the client. The data plane and QUIC of the relay
-// run on the relay device of -iface. ready gets the control address.
+// run on the relay device of -iface or -imds. ready gets the control address.
 func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error {
 	start := time.Now()
-	ifc, err := linkInterface(o.Iface)
+	cfg, err := relayConfig(o)
+	if err != nil {
+		return err
+	}
+	ifc, err := relaydp.FindInterface(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -113,7 +118,8 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 				drops, reasons := relayDrops(r)
 				m := mark{
 					Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(),
-					Drops: drops, DropReasons: reasons, CPUs: bench.PerCPU(),
+					KickCPU: bench.ThreadCPUSeconds(relaydp.KickThread),
+					Drops:   drops, DropReasons: reasons, CPUs: bench.PerCPU(),
 				}
 				o.marked(req.Index, req.Window)
 				return reply{Mark: m}, nil
@@ -135,18 +141,22 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	return err
 }
 
-// linkInterface returns the relay interface of the link name: its MAC and its
-// addresses that are not link-local, as the kernel has them.
-func linkInterface(name string) (relaydp.Interface, error) {
-	link, err := net.InterfaceByName(name)
+// relayConfig returns the relay interface config of the flags. With -imds the relay finds its link
+// in IMDSv2. With -iface the config has the MAC of the link and its addresses that are not
+// link-local, as the kernel has them.
+func relayConfig(o options) (*configv1alpha1.RelayInterface, error) {
+	if o.IMDS {
+		return &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, ZeroCopy: o.ZeroCopy}, nil
+	}
+	link, err := net.InterfaceByName(o.Iface)
 	if err != nil {
-		return relaydp.Interface{}, fmt.Errorf("failed to find the relay link: %w", err)
+		return nil, fmt.Errorf("failed to find the relay link: %w", err)
 	}
 	addrs, err := link.Addrs()
 	if err != nil {
-		return relaydp.Interface{}, fmt.Errorf("failed to read the addresses of %s: %w", name, err)
+		return nil, fmt.Errorf("failed to read the addresses of %s: %w", o.Iface, err)
 	}
-	ifc := relaydp.Interface{Name: name, MAC: link.HardwareAddr}
+	cfg := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceStatic, MAC: link.HardwareAddr.String(), ZeroCopy: o.ZeroCopy}
 	for _, a := range addrs {
 		ipn, ok := a.(*net.IPNet)
 		if !ok {
@@ -157,12 +167,12 @@ func linkInterface(name string) (relaydp.Interface, error) {
 			continue
 		}
 		bits, _ := ipn.Mask.Size()
-		ifc.Own = append(ifc.Own, netip.PrefixFrom(ip.Unmap(), bits))
+		cfg.Addresses = append(cfg.Addresses, netip.PrefixFrom(ip.Unmap(), bits).String())
 	}
-	if len(ifc.Own) == 0 {
-		return relaydp.Interface{}, fmt.Errorf("the relay link %s has no address", name)
+	if len(cfg.Addresses) == 0 {
+		return nil, fmt.Errorf("the relay link %s has no address", o.Iface)
 	}
-	return ifc, nil
+	return cfg, nil
 }
 
 // ctlRetry is the time between two tries of a control call.

@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -270,6 +272,37 @@ func TestAddSoftIRQs(t *testing.T) {
 			cpus := make([]CPUTicks, tc.cpus)
 			addSoftIRQs(cpus, softirqs)
 			assert.Equal(t, tc.want, cpus)
+		})
+	}
+}
+
+func TestThreadCPU(t *testing.T) {
+	stat := func(name string, utime, stime int) string {
+		return fmt.Sprintf("12 (%s) S 1 1 1 0 -1 4194560 100 0 0 0 %d %d 0 0 20 0 1 0 100 0 0\n", name, utime, stime)
+	}
+	tasks := fstest.MapFS{
+		"10/comm": {Data: []byte("relay-kick\n")},
+		"10/stat": {Data: []byte(stat("relay-kick", 150, 50))},
+		"11/comm": {Data: []byte("relay-kick\n")},
+		"11/stat": {Data: []byte(stat("relay-kick", 30, 70))},
+		"12/comm": {Data: []byte("vpcbench\n")},
+		"12/stat": {Data: []byte(stat("vpcbench", 900, 900))},
+		"13/comm": {Data: []byte("a b) c\n")},
+		"13/stat": {Data: []byte(stat("a b) c", 7, 3))},
+		"14/comm": {Data: []byte("relay-kick\n")},
+	}
+	cases := []struct {
+		name string
+		want float64
+	}{
+		{name: "relay-kick", want: 3},
+		{name: "vpcbench", want: 18},
+		{name: "a b) c", want: 0.1},
+		{name: "none", want: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.InDelta(t, tc.want, threadCPU(tasks, tc.name), 1e-9)
 		})
 	}
 }

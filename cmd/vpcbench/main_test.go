@@ -46,7 +46,21 @@ func TestParseFlags(t *testing.T) {
 		},
 		{name: "relay with too many lanes", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-lanes", "4"}, wantErr: "-lanes must be 0 to 3"},
 		{name: "relay with no listen", cmd: "relay", args: []string{"-iface", "r"}, wantErr: "-listen is required"},
-		{name: "relay with no iface", cmd: "relay", args: []string{"-listen", ":4443"}, wantErr: "-iface is required"},
+		{name: "relay with no iface", cmd: "relay", args: []string{"-listen", ":4443"}, wantErr: "set one of -iface and -imds"},
+		{name: "relay with iface and imds", cmd: "relay", args: []string{"-iface", "r", "-imds", "-listen", ":4443"}, wantErr: "set one of -iface and -imds"},
+		{
+			name: "relay on IMDS with zero-copy", cmd: "relay", args: []string{"-imds", "-zero-copy", "on", "-listen", ":4443"},
+			want: func(o options) bool { return o.IMDS && o.Iface == "" && o.ZeroCopy != nil && *o.ZeroCopy },
+		},
+		{
+			name: "relay with copy mode", cmd: "relay", args: []string{"-iface", "r", "-zero-copy", "off", "-listen", ":4443"},
+			want: func(o options) bool { return o.ZeroCopy != nil && !*o.ZeroCopy },
+		},
+		{
+			name: "relay zero-copy not set", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443"},
+			want: func(o options) bool { return o.ZeroCopy == nil },
+		},
+		{name: "relay with a bad zero-copy", cmd: "relay", args: []string{"-iface", "r", "-zero-copy", "auto", "-listen", ":4443"}, wantErr: `want on or off, got "auto"`},
 		{
 			name: "relay needs no work dir", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-work-dir", ""},
 			want: func(o options) bool { return o.WorkDir == "" },
@@ -136,19 +150,19 @@ func TestNewResult(t *testing.T) {
 			},
 			relay: [2]mark{
 				{
-					Nanos: 0, HostCPU: 5, Drops: 1,
+					Nanos: 0, HostCPU: 5, KickCPU: 0.25, Drops: 1,
 					DropReasons: map[string]uint64{"malformed": 1},
 					CPUs:        []bench.CPUTicks{{User: 10, Idle: 90}, {Idle: 100}},
 				},
 				{
-					Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, Drops: 5,
+					Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, KickCPU: 0.5, Drops: 5,
 					DropReasons: map[string]uint64{"malformed": 1, "tx_full": 3, "unknown_spi": 1},
 					CPUs:        []bench.CPUTicks{{User: 30, System: 40, Idle: 230}, {IRQ: 150, Idle: 150}},
 				},
 			},
 			want: result{
 				Seconds: 2, BitsPerSecond: 1e9, PacketsPerSecond: 1000, Retransmits: 10, RetransPercent: 1,
-				ServerRetransmits: 2, ClientCores: 0.5, ServerCores: 1, RelayCores: 0.25,
+				ServerRetransmits: 2, ClientCores: 0.5, ServerCores: 1, RelayCores: 0.25, RelayKickCores: 0.125,
 				ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 1, RelayCoresPerGbps: 0.25,
 				ClientHostCores: 3, ServerHostCores: 4, RelayHostCores: 1,
 				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, ServerRcvbufErrors: 12, ServerSockDrops: 3,

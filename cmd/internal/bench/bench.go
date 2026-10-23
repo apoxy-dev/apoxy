@@ -7,6 +7,7 @@ package bench
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -68,6 +69,47 @@ func hostBusy(stat string) float64 {
 		busy += n
 	}
 	return float64(busy) / userHZ
+}
+
+// ThreadCPUSeconds returns the user and system CPU time of the threads of this process that have
+// the name name, as /proc/self/task/TID/comm shows it. It returns 0 when it cannot read /proc.
+func ThreadCPUSeconds(name string) float64 {
+	return threadCPU(os.DirFS("/proc/self/task"), name)
+}
+
+// threadCPU sums utime and stime of the tasks in fsys with the name name.
+func threadCPU(fsys fs.FS, name string) float64 {
+	tasks, err := fs.ReadDir(fsys, ".")
+	if err != nil {
+		return 0
+	}
+	var ticks uint64
+	for _, t := range tasks {
+		comm, err := fs.ReadFile(fsys, t.Name()+"/comm")
+		if err != nil || strings.TrimSpace(string(comm)) != name {
+			continue
+		}
+		stat, err := fs.ReadFile(fsys, t.Name()+"/stat")
+		if err != nil {
+			continue
+		}
+		// The name in the stat line can have spaces, so the fields start after the last ')'.
+		i := strings.LastIndexByte(string(stat), ')')
+		if i < 0 {
+			continue
+		}
+		f := strings.Fields(string(stat)[i+1:])
+		// utime and stime are fields 14 and 15 of the line, 12 and 13 after the name.
+		if len(f) < 13 {
+			continue
+		}
+		u, err1 := strconv.ParseUint(f[11], 10, 64)
+		s, err2 := strconv.ParseUint(f[12], 10, 64)
+		if err1 == nil && err2 == nil {
+			ticks += u + s
+		}
+	}
+	return float64(ticks) / userHZ
 }
 
 // CPUTicks are the clock ticks of one CPU in /proc/stat, and its NET_RX and

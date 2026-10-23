@@ -3,8 +3,8 @@
 // Command vpcbench measures TCP flows between two VPC agents, through a v2
 // relay or directly. The relay makes a CA and serves relay sessions with test
 // fakes, with no apiserver. Its data plane and QUIC run on the relay device of
-// a link (-iface), which takes all packets of the link, so its control port is
-// on another link. The server and the client get the CA and the QUIC address
+// a link (-iface, or -imds on EC2), which takes all packets of the link, so its
+// control port is on another link. The server and the client get the CA and the QUIC address
 // of the relay on the control port. The client prints one JSON line that
 // "perfrig run -workload exec" reads. The relay is the sidecar of the server.
 // perfrig stops it after the server exits:
@@ -130,7 +130,11 @@ type options struct {
 	StartTimeout time.Duration
 	// StopRelay makes the client stop the relay at the end.
 	StopRelay bool
-	Profiles  bench.Profiles
+	// IMDS makes the relay find its interface in IMDSv2, as the product relay does.
+	IMDS bool
+	// ZeroCopy is the zero-copy setting of the relay interface. Nil lets the driver decide.
+	ZeroCopy *bool
+	Profiles bench.Profiles
 	// prof are the profiles that main started. Nil: the run has no profiles.
 	prof *bench.Running
 }
@@ -154,7 +158,17 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.StringVar(&o.Listen, "listen", "", "TCP control address; server: also UDP with -via direct")
 	}
 	if cmd == "relay" {
-		fs.StringVar(&o.Iface, "iface", "", "link of the relay device, which takes all packets of the link (AF_XDP, Linux only)")
+		fs.StringVar(&o.Iface, "iface", "", "link of the relay device, which takes all packets of the link (AF_XDP, Linux only); the relay uses the addresses that the kernel has on it")
+		fs.BoolVar(&o.IMDS, "imds", false, "find the relay link and its address in IMDSv2 of the EC2 instance (the ENI with device number 1), as the product relay does; the kernel has no address on it")
+		fs.Func("zero-copy", "on: the relay link must open AF_XDP in zero-copy; off: driver mode with copy (default: zero-copy when the driver gives it)", func(v string) error {
+			switch v {
+			case "on", "off":
+				zc := v == "on"
+				o.ZeroCopy = &zc
+				return nil
+			}
+			return fmt.Errorf("want on or off, got %q", v)
+		})
 		fs.IntVar(&o.Lanes, "lanes", relay.MaxLaneSources, "most lane ports that the relay takes from a session; 0 makes agents send on one port")
 	}
 	if cmd != "relay" {
@@ -196,8 +210,8 @@ func (o options) check(cmd string) error {
 		return errors.New("-via direct sends only PSP")
 	case cmd != "client" && o.Listen == "":
 		return errors.New("-listen is required")
-	case cmd == "relay" && o.Iface == "":
-		return errors.New("-iface is required")
+	case cmd == "relay" && (o.Iface == "") == !o.IMDS:
+		return errors.New("set one of -iface and -imds")
 	case cmd == "client" && o.Server == "":
 		return errors.New("-server is required")
 	case o.Via == "relay" && o.Relay == "":
