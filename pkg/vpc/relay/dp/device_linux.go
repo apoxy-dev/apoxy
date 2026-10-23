@@ -46,10 +46,16 @@ func OpenDevice(ifc Interface) (*Device, error) {
 		impair.Close()
 		return nil, fmt.Errorf("failed to open %s with AF_XDP: %w", ifc.Name, err)
 	}
+	setSendBuffers(ifc.Name, dev)
 	var ports []txPort
 	for i := range dev.NumTxQueues() {
 		s := dev.TxQueue(i).(*afxdp.TxQueue).Socket()
-		ports = append(ports, txPort{publish: publisher(s), kick: s.KickIfNeeded})
+		ring := s.NumFreeTxSlots() // No send ran yet, so the TX ring is empty and this is its size.
+		ports = append(ports, txPort{
+			publish: publisher(s),
+			kick:    s.KickIfNeeded,
+			pending: func() int { return ring - s.NumFreeTxSlots() },
+		})
 	}
 	d, err := newDevice(ifc, dev, ports, uint32(link.MTU), impair)
 	if err != nil {
@@ -76,14 +82,71 @@ func modeOptions(zc bool) []xdp.Option {
 	return nil
 }
 
-// nameThread gives the OS thread of the caller a name, for top, perf and /proc. The kernel keeps
-// the first 15 bytes.
-func nameThread(name string) {
+// setSendBuffers gives each copy-mode TX socket of dev a send buffer for all its TX frames, and logs
+// the value that the kernel took. Without it a kick sends nothing after about 90 frames in flight.
+func setSendBuffers(link string, dev packetio.Device) {
+	var sockets, want, got int
+	var failed error
+	for i := range dev.NumTxQueues() {
+		q := dev.TxQueue(i).(*afxdp.TxQueue)
+		s := q.Socket()
+		zc, err := s.ZeroCopy()
+		n := sendBuffer(err == nil && zc, q.NumFreeFrames(), s.FrameSize())
+		if n == 0 {
+			continue
+		}
+		v, err := setSendBuffer(s.FD(), n)
+		if err != nil {
+			failed = err
+			continue
+		}
+		if sockets == 0 || v < got {
+			got = v
+		}
+		sockets, want = sockets+1, n
+	}
+	if failed != nil {
+		slog.Warn("Failed to set the send buffer of a copy-mode TX socket", "link", link, "error", failed)
+	}
+	if sockets > 0 {
+		slog.Info("Set the send buffer of the copy-mode TX sockets", "link", link, "sockets", sockets,
+			"want_bytes", want, "send_buffer_bytes", got)
+	}
+}
+
+// sendBuffer returns the send buffer in bytes for a TX socket with frames TX frames of frameSize
+// bytes. A zero-copy socket does not use the send buffer, so it gets 0.
+func sendBuffer(zeroCopy bool, frames, frameSize int) int {
+	if zeroCopy {
+		return 0
+	}
+	return frames * frameSize
+}
+
+// setSendBuffer sets the send buffer of the socket fd to n bytes and returns the value that the
+// kernel took. Without CAP_NET_ADMIN it uses SO_SNDBUF, which the kernel limits to wmem_max.
+func setSendBuffer(fd, n int) (int, error) {
+	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUFFORCE, n); err != nil {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, n); err != nil {
+			return 0, err
+		}
+	}
+	return unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF)
+}
+
+// nameThread gives the OS thread of the caller a name, for top, perf and /proc, and returns its old
+// name. The kernel keeps the first 15 bytes.
+func nameThread(name string) (old string) {
+	var buf [16]byte
+	if unix.Prctl(unix.PR_GET_NAME, uintptr(unsafe.Pointer(&buf[0])), 0, 0, 0) == nil {
+		old = unix.ByteSliceToString(buf[:])
+	}
 	b, err := unix.BytePtrFromString(name)
 	if err != nil {
-		return
+		return old
 	}
 	_ = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(b)), 0, 0, 0)
+	return old
 }
 
 // publisher returns the publish of the TX queue of s. The txQueue lock keeps it to one call at a

@@ -12,4 +12,4 @@ func OpenDevice(Interface) (*Device, error) {
 }
 
 // nameThread needs Linux.
-func nameThread(string) {}
+func nameThread(string) string { return "" }

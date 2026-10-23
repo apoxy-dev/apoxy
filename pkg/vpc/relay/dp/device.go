@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/atoonk/packetio"
@@ -53,17 +54,26 @@ type txQueue struct {
 	mu     sync.Mutex
 	q      packetio.TxQueue
 	closed bool
+	err    error // The kick error that ended the queue.
 
 	txPort
 	wake chan struct{} // Size 1. A send after a publish asks the kicker for a kick.
 }
 
-// txPort is how the device sends on one TX queue. publish puts descriptors on the TX ring and does
-// not kick, and kick tells the kernel about them, when it asks for it.
+// txPort is how the device sends on one TX queue. The kicker calls kick and pending without the
+// queue lock.
 type txPort struct {
-	publish func(descs []packetio.Desc) int
-	kick    func() error
+	publish func(descs []packetio.Desc) int // Puts descriptors on the TX ring, with no kick.
+	kick    func() error                    // Tells the kernel about them, when it asks for it.
+	pending func() int                      // TX descriptors that the kernel did not take.
 }
+
+// The backoff of a kicker while descriptors stay on its TX ring doubles from kickWaitMin to
+// kickWaitMax.
+const (
+	kickWaitMin = 20 * time.Microsecond
+	kickWaitMax = 200 * time.Microsecond
+)
 
 // newDevice builds the pipeline, the netstack and the QUIC conn on dev. ports has the port of each
 // TX queue of dev. mtu is the IP MTU of the link, and impair the impair map.
@@ -84,7 +94,7 @@ func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, i
 		return nil, fmt.Errorf("the relay interface has %d TX queues and %d TX ports", dev.NumTxQueues(), len(ports))
 	}
 	for i := range dev.NumTxQueues() {
-		d.tx = append(d.tx, &txQueue{q: dev.TxQueue(i), txPort: ports[i], wake: make(chan struct{}, 1)})
+		d.tx = append(d.tx, newTxQueue(dev.TxQueue(i), ports[i]))
 	}
 	if len(d.tx) == 0 || dev.NumRxQueues() == 0 {
 		return nil, errors.New("the relay interface has no queues")
@@ -115,8 +125,8 @@ func (d *Device) PacketConn() net.PacketConn { return d.conn }
 func (d *Device) Interface() Interface { return d.ifc }
 
 // Run receives on all queues, kicks each TX queue on its own OS thread, and reads the impair map
-// each second, until ctx is done. Then it closes the QUIC conn, the netstack, the interface and the
-// impair map.
+// each second, until ctx is done or a TX queue fails. Then it closes the QUIC conn, the netstack,
+// the interface and the impair map.
 func (d *Device) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	for i := range d.dev.NumRxQueues() {
@@ -125,10 +135,7 @@ func (d *Device) Run(ctx context.Context) error {
 		g.Go(func() error { return d.receive(gctx, q, tx) })
 	}
 	for _, t := range d.tx {
-		g.Go(func() error {
-			t.kicker(gctx)
-			return nil
-		})
+		g.Go(func() error { return t.kicker(gctx) })
 	}
 	g.Go(func() error {
 		d.readDelays(gctx)
@@ -381,15 +388,20 @@ func (d *Device) transmit(t *txQueue, size int, build func(frame []byte) int) bo
 	return sent == 1
 }
 
+func newTxQueue(q packetio.TxQueue, p txPort) *txQueue {
+	return &txQueue{q: q, txPort: p, wake: make(chan struct{}, 1)}
+}
+
 // send builds the frames of n packets (at most rxBatch) and publishes them in one call. build
 // returns 0 to skip packet i. Bit i of full tells that packet i had no room in the ring.
 func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, full uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed {
+	if t.closed || t.err != nil {
 		return 0, 0
 	}
-	t.q.Complete(rxBatch)
+	// Take back all completed frames, not only n: one kick can complete thousands.
+	t.q.Complete(t.q.NumCompleted())
 	descs := t.q.Alloc(n)
 	var pkts [rxBatch]int // The packet of each frame.
 	k, i := 0, 0
@@ -421,19 +433,49 @@ func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, fu
 const KickThread = "relay-kick"
 
 // kicker kicks t on its own OS thread, so that in copy mode the kernel copies the frames on a second
-// core. One kick covers all wakes since the last kick. It runs until ctx is done. The thread has the
-// name KickThread, so its CPU time shows apart from the receive loops. The goroutine ends with the
-// thread locked, so the Go runtime ends the named thread too.
-func (t *txQueue) kicker(ctx context.Context) {
+// core. One kick covers all wakes since the last kick. While descriptors stay on the ring, it kicks
+// again after a backoff: no frame waits for the next send. It runs until ctx is done or a kick error
+// ends the queue. The thread has the name KickThread, and the goroutine ends with it locked, so the
+// Go runtime ends the named thread too.
+func (t *txQueue) kicker(ctx context.Context) error {
 	runtime.LockOSThread()
-	nameThread(KickThread)
+	// The Go runtime keeps the main thread when its locked goroutine ends, so it gets its old name back.
+	defer nameThread(nameThread(KickThread))
+	retry := time.NewTimer(kickWaitMax)
+	retry.Stop()
+	var backoff time.Duration
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-t.wake:
-			// As before, a kick error is not fatal: the frames stay on the ring for the next kick.
-			_ = t.kick()
+			backoff = 0
+		case <-retry.C:
 		}
+		// Other kick errors, as a link that is down, keep the frames on the ring for the next kick.
+		if err := t.kick(); kickEnds(err) {
+			t.fail(err)
+			return fmt.Errorf("failed to kick a TX queue of the relay interface: %w", err)
+		}
+		if t.pending() == 0 {
+			retry.Stop()
+			continue
+		}
+		backoff = min(max(2*backoff, kickWaitMin), kickWaitMax)
+		retry.Reset(backoff)
 	}
+}
+
+// kickEnds tells if a kick error ends the TX queue: the socket is closed, or the kernel removed its
+// binding to the interface (ENXIO).
+func kickEnds(err error) bool {
+	return errors.Is(err, net.ErrClosed) || errors.Is(err, packetio.ErrClosed) ||
+		errors.Is(err, syscall.ENXIO)
+}
+
+// fail ends t with the kick error err. A send after it sends nothing.
+func (t *txQueue) fail(err error) {
+	t.mu.Lock()
+	t.err = err
+	t.mu.Unlock()
 }
