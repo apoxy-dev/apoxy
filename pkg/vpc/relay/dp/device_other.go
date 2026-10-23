@@ -10,3 +10,6 @@ import "errors"
 func OpenDevice(Interface) (*Device, error) {
 	return nil, errors.New("the relay interface needs Linux")
 }
+
+// nameThread needs Linux.
+func nameThread(string) {}

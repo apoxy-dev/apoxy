@@ -395,6 +395,57 @@ func TestDeviceReopen(t *testing.T) {
 	require.NoError(t, d.Run(ctx))
 }
 
+// TestDeviceZeroCopy opens the link with each zero-copy setting. veth has native XDP but no
+// zero-copy, so a device that demands zero-copy does not open. A device that runs has one named
+// kicker thread for each TX queue.
+func TestDeviceZeroCopy(t *testing.T) {
+	const queues = 2
+	e := newEnv(t, queues)
+	e.stop()
+	on, off := true, false
+	cases := []struct {
+		name string
+		zc   *bool
+		err  bool
+	}{
+		{name: "not set", zc: nil},
+		{name: "copy", zc: &off},
+		{name: "zero-copy", zc: &on, err: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ifc := e.ifc
+			ifc.ZeroCopy = tc.zc
+			d, err := dp.OpenDevice(ifc)
+			if tc.err {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			ctx, cancel := context.WithCancel(context.Background())
+			ran := make(chan error, 1)
+			go func() { ran <- d.Run(ctx) }()
+			assert.Eventually(t, func() bool { return kickThreads(t) == queues }, 5*time.Second, 10*time.Millisecond)
+			cancel()
+			require.NoError(t, <-ran)
+		})
+	}
+}
+
+// kickThreads returns the number of threads of this process with the name of a kicker.
+func kickThreads(t *testing.T) int {
+	tasks, err := os.ReadDir("/proc/self/task")
+	require.NoError(t, err)
+	n := 0
+	for _, task := range tasks {
+		comm, err := os.ReadFile("/proc/self/task/" + task.Name() + "/comm")
+		if err == nil && string(bytes.TrimSpace(comm)) == dp.KickThread {
+			n++
+		}
+	}
+	return n
+}
+
 // fwd is agent A1 on the peer, at port 9001 and its lane ports, and the socket of agent A2 on the
 // peer. The device forwards the PSP packets of A1 to A2.
 type fwd struct {

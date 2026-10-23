@@ -417,11 +417,16 @@ func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, fu
 	return sent, full
 }
 
+// KickThread is the name of the OS thread of each kicker, as /proc/PID/task/TID/comm shows it.
+const KickThread = "relay-kick"
+
 // kicker kicks t on its own OS thread, so that in copy mode the kernel copies the frames on a second
-// core. One kick covers all wakes since the last kick. It runs until ctx is done.
+// core. One kick covers all wakes since the last kick. It runs until ctx is done. The thread has the
+// name KickThread, so its CPU time shows apart from the receive loops. The goroutine ends with the
+// thread locked, so the Go runtime ends the named thread too.
 func (t *txQueue) kicker(ctx context.Context) {
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	nameThread(KickThread)
 	for {
 		select {
 		case <-ctx.Done():

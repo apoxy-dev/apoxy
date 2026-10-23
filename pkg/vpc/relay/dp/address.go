@@ -33,6 +33,9 @@ type Interface struct {
 	Public []netip.Addr
 	// Gateways are the next-hop routers of the link.
 	Gateways []netip.Addr
+	// ZeroCopy is the zero-copy setting of the config: true demands zero-copy, false uses
+	// driver mode with copy, and nil uses zero-copy when the driver gives it.
+	ZeroCopy *bool
 }
 
 // FindInterface gives the dedicated interface of cfg and its addresses. With IMDS it reads
@@ -41,6 +44,19 @@ func FindInterface(ctx context.Context, cfg *configv1alpha1.RelayInterface, opts
 	if cfg == nil {
 		return Interface{}, errors.New("no relay interface in the config")
 	}
+	ifc, err := findInterface(ctx, cfg, opts...)
+	if err != nil {
+		return Interface{}, err
+	}
+	if cfg.ZeroCopy != nil {
+		zc := *cfg.ZeroCopy
+		ifc.ZeroCopy = &zc
+	}
+	return ifc, nil
+}
+
+// findInterface gives the interface of the source of cfg and its addresses.
+func findInterface(ctx context.Context, cfg *configv1alpha1.RelayInterface, opts ...func(*imds.Options)) (Interface, error) {
 	switch cfg.Source {
 	case configv1alpha1.RelayInterfaceSourceIMDS:
 		if cfg.MAC != "" || len(cfg.Addresses) > 0 || len(cfg.Gateways) > 0 {

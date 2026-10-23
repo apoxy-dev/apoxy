@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"time"
+	"unsafe"
 
 	xdp "github.com/atoonk/go-afxdp"
 	"github.com/atoonk/packetio"
@@ -29,9 +30,10 @@ func OpenDevice(ifc Interface) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	xdpOpt := afxdp.WithXDP(xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
+	xdpOpts := append(modeOptions(ifc.ZeroCopy), xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
 		return loadRelayXDP(sockets, queues, impair)
 	}))
+	xdpOpt := afxdp.WithXDP(xdpOpts...)
 	// The kernel frees the queues of a stopped relay some milliseconds later, so a relay that
 	// restarts can get EBUSY. It tries again with a backoff of 10 ms to 1 s, for at most 30 s.
 	dev, err := afxdp.Open(ifc.Name, xdpOpt)
@@ -55,8 +57,37 @@ func OpenDevice(ifc Interface) (*Device, error) {
 		impair.Close()
 		return nil, err
 	}
-	slog.Info("Opened the relay interface", "link", ifc.Name, "zero_copy", dev.Capabilities().ZeroCopy)
+	// Info reads the zero-copy state of each socket and the XDP mode from the kernel.
+	info, err := dev.Fleet().Info()
+	if err != nil {
+		slog.Warn("Failed to read the AF_XDP state of the relay interface", "link", ifc.Name, "error", err)
+	}
+	slog.Info("Opened the relay interface", "link", ifc.Name, "zero_copy", info.ZeroCopy, "xdp_mode", info.XDPMode,
+		"queues", info.NumQueues, "frame_size", info.FrameSize, "driver", info.Driver)
 	return d, nil
+}
+
+// modeOptions returns the go-afxdp mode of the zero-copy setting zc. With no setting, go-afxdp
+// uses zero-copy when the driver gives it, else copy.
+func modeOptions(zc *bool) []xdp.Option {
+	switch {
+	case zc == nil:
+		return nil
+	case *zc:
+		return []xdp.Option{xdp.WithZeroCopy()}
+	default:
+		return []xdp.Option{xdp.WithCopyMode()}
+	}
+}
+
+// nameThread gives the OS thread of the caller a name, for top, perf and /proc. The kernel keeps
+// the first 15 bytes.
+func nameThread(name string) {
+	b, err := unix.BytePtrFromString(name)
+	if err != nil {
+		return
+	}
+	_ = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(b)), 0, 0, 0)
 }
 
 // publisher returns the publish of the TX queue of s. The txQueue lock keeps it to one call at a
