@@ -55,9 +55,9 @@ func TestClientRelayRestart(t *testing.T) {
 			// MTU probes are larger than 42 bytes and stop after a few probes.
 			// Turn them off to get a connection that has done its probes.
 			c.h3.QUICConfig.DisablePathMTUDiscovery = true
-			conns := make(chan quic.EarlyConnection, 4)
+			conns := make(chan *quic.Conn, 4)
 			dial := c.h3.Dial
-			c.h3.Dial = func(ctx context.Context, addr string, tlsConf *tls.Config, quicConf *quic.Config) (quic.EarlyConnection, error) {
+			c.h3.Dial = func(ctx context.Context, addr string, tlsConf *tls.Config, quicConf *quic.Config) (*quic.Conn, error) {
 				qc, err := dial(ctx, addr, tlsConf, quicConf)
 				if err == nil {
 					conns <- qc

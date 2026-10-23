@@ -863,9 +863,6 @@ func TestListenConfigKeepAlive(t *testing.T) {
 			if c.MaxIdleTimeout != 15*time.Second {
 				t.Errorf("idle timeout is %s, want 15s", c.MaxIdleTimeout)
 			}
-			if (c.Tracer != nil) != (tc.vpc != nil) {
-				t.Errorf("tracer set is %t, want %t", c.Tracer != nil, tc.vpc != nil)
-			}
 		})
 	}
 }

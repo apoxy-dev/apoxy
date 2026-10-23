@@ -15,6 +15,8 @@ github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae h1:33rLqcuNfL0KaP
 github.com/apoxy-dev/icx v0.19.1-0.20260826222334-295d1c74aeae/go.mod h1:B52w7Cs1nsMyE3IwkFMwy06gGQ5Dz0YxPrd1eUWv7g4=
 github.com/apoxy-dev/quic-go v0.0.0-20261002123340-891424b7ca48 h1:kIyo9ktVhEoB+LewRQYqqLJNsDQU4EzlUSN5VMNg8AU=
 github.com/apoxy-dev/quic-go v0.0.0-20261002123340-891424b7ca48/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP4wqrWmzQ=
+github.com/apoxy-dev/quic-go v0.0.0-20261022210428-cc9f3fe73a85 h1:Wdds/3OrIkx7ucoT5jFUIHt0yPnB/zSBavoo3A4o+D4=
+github.com/apoxy-dev/quic-go v0.0.0-20261022210428-cc9f3fe73a85/go.mod h1:upnsH4Ju1YkqpLXC305eW3yDZ4NfnNbmQRCMWS58IKU=
 github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973/go.mod h1:Dwedo/Wpr24TaqPxmxbtue+5NUziq4I4S80YR8gNf3Q=
 github.com/bradfitz/go-smtpd v0.0.0-20170404230938-deb6d6237625/go.mod h1:HYsPBTaaSFSlLx/70C2HPIMNZpVV8+vt/A+FMnYP11g=
 github.com/buger/jsonparser v0.0.0-20181115193947-bf1c66bbce23/go.mod h1:bbYlZJ7hK1yFx9hf58LP0zeX7UjIGs20ufpu3evjr+s=
@@ -122,6 +124,7 @@ github.com/viant/toolbox v0.24.0/go.mod h1:OxMCG57V0PXuIP2HNQrtJf2CjqdmbrOx5EkMI
 go.opencensus.io v0.18.0/go.mod h1:vKdFvxhtzZ9onBp9VKHK8z/sRpBMnKAsufL7wlDrCOA=
 go.uber.org/mock v0.5.0 h1:KAMbZvZPyBPWgD14IrIQ38QCyjwpvVVV6K/bHl1IwQU=
 go.uber.org/mock v0.5.0/go.mod h1:ge71pBPLYDk7QIi1LupWxdAykm7KIEFchiOqd6z7qMM=
+go.uber.org/mock v0.5.2/go.mod h1:wLlUxC2vVTPTaE3UD51E0BGOAElKrILxhVSDYQLld5o=
 go4.org v0.0.0-20180809161055-417644f6feb5/go.mod h1:MkTOUMDaeVYJUOUsaDXIhWPZYa1yOyC1qaOBpL57BhE=
 golang.org/x/build v0.0.0-20190111050920-041ab4dc3f9d/go.mod h1:OWs+y06UdEOHN4y+MfF/py+xQ/tYqIWW03b70/CG9Rw=
 golang.org/x/crypto v0.0.0-20181030102418-4d3f4d9ffa16/go.mod h1:6SG95UA2DQfeDnfUPMdvaQW0Q7yPrPDi9nlGo2tz2b4=

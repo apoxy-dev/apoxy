@@ -145,7 +145,7 @@ func NewClient(opts ClientOptions) (*Client, error) {
 		quicTransport := &quic.Transport{
 			Conn: opts.PacketConn,
 		}
-		t.Dial = func(ctx context.Context, addr string, tlsConf *tls.Config, quicConf *quic.Config) (quic.EarlyConnection, error) {
+		t.Dial = func(ctx context.Context, addr string, tlsConf *tls.Config, quicConf *quic.Config) (*quic.Conn, error) {
 			udpAddr, err := net.ResolveUDPAddr("udp", addr)
 			if err != nil {
 				return nil, err
@@ -184,7 +184,7 @@ func (c *Client) Lost() <-chan struct{} {
 
 // watchControlConn waits for a dialed control connection to end and flags a
 // drain when the close was graceful and not our own doing.
-func (c *Client) watchControlConn(qc quic.EarlyConnection) {
+func (c *Client) watchControlConn(qc *quic.Conn) {
 	<-qc.Context().Done()
 	c.handleControlClose(context.Cause(qc.Context()))
 }

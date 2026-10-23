@@ -234,7 +234,7 @@ func (v *vpcRelay) agentTLS(t *testing.T, name string) *tls.Config {
 }
 
 // dialAt dials the relay socket at addr with conf from a new socket.
-func (v *vpcRelay) dialAt(t *testing.T, conf *tls.Config, addr netip.AddrPort) (quic.Connection, error) {
+func (v *vpcRelay) dialAt(t *testing.T, conf *tls.Config, addr netip.AddrPort) (*quic.Conn, error) {
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
 	tr := &quic.Transport{Conn: udp}
@@ -246,7 +246,7 @@ func (v *vpcRelay) dialAt(t *testing.T, conf *tls.Config, addr netip.AddrPort) (
 
 // openSession dials the VPC relay as agent name and runs the Session call to
 // its Config message.
-func (v *vpcRelay) openSession(t *testing.T, name string) (quic.Connection, dp.RelayClient, rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]) {
+func (v *vpcRelay) openSession(t *testing.T, name string) (*quic.Conn, dp.RelayClient, rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]) {
 	t.Helper()
 	qc, err := v.dialAt(t, v.agentTLS(t, name), v.addr)
 	require.NoError(t, err)
@@ -290,7 +290,7 @@ func testRelayVPC(t *testing.T, steerSockets int) {
 	assert.True(t, te.Remote, "the relay refused the handshake")
 
 	type vpcAgent struct {
-		qc   quic.Connection
+		qc   *quic.Conn
 		addr netip.Addr
 	}
 	agents := make([]vpcAgent, 4)
@@ -399,7 +399,7 @@ func TestRelay_VPCMesh(t *testing.T) {
 	require.Eventually(t, func() bool { return a.router.Up("relay-b") && b.router.Up("relay-a") }, 10*time.Second, 10*time.Millisecond,
 		"mesh sessions")
 
-	attach := func(v *vpcRelay, name string) (quic.Connection, netip.Addr, rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]) {
+	attach := func(v *vpcRelay, name string) (*quic.Conn, netip.Addr, rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]) {
 		qc, c, st := v.openSession(t, name)
 		res, err := c.Attach(t.Context(), &dp.AttachRequest{Vpc: &dp.VPCRef{ProjectId: vpcProject, VpcUid: vpcUID}, Name: name})
 		require.NoError(t, err)

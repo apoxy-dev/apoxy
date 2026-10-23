@@ -109,10 +109,10 @@ func TestRelay_HeaderSizeLimit(t *testing.T) {
 	cases := []struct {
 		name       string
 		headerSize int
-		wantErr    bool
+		want       int
 	}{
-		{name: "small headers", headerSize: 1 << 10},
-		{name: "headers over the limit", headerSize: 32 << 10, wantErr: true},
+		{name: "small headers", headerSize: 1 << 10, want: http.StatusOK},
+		{name: "headers over the limit", headerSize: 32 << 10, want: http.StatusRequestHeaderFieldsTooLarge},
 	}
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -136,13 +136,9 @@ func TestRelay_HeaderSizeLimit(t *testing.T) {
 			require.NoError(t, err)
 			req.Header.Set("X-Pad", hex.EncodeToString(pad))
 			resp, err := (&http3.Transport{}).NewClientConn(conn).RoundTrip(req)
-			if tc.wantErr {
-				require.Error(t, err)
-				return
-			}
 			require.NoError(t, err)
 			_ = resp.Body.Close()
-			require.Equal(t, http.StatusOK, resp.StatusCode)
+			require.Equal(t, tc.want, resp.StatusCode)
 		})
 	}
 }

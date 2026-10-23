@@ -43,13 +43,12 @@ type stateValue struct {
 // link is one authenticated QUIC connection of an agent. The handlers of its calls find their
 // process through it.
 type link struct {
-	qc       quic.Connection
+	qc       *quic.Conn
 	vpc      VPCKey
 	subject  string
 	chain    []*x509.Certificate // Agent cert chain, leaf first.
 	verified time.Time           // Time of the cert check of the handshake.
 	probe    p2p.ProbeKeys
-	trace    *connTrace // Nil with no tracer.
 
 	// session is true after the first Session call.
 	session atomic.Bool

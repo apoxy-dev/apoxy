@@ -183,7 +183,7 @@ func selfSigned(t *testing.T) tls.Certificate {
 }
 
 // ping sends one datagram on qc and returns the relay socket that echoed it.
-func ping(qc quic.Connection) (int, error) {
+func ping(qc *quic.Conn) (int, error) {
 	ctx, cancel := context.WithTimeout(qc.Context(), 2*time.Second)
 	defer cancel()
 	if err := qc.SendDatagram([]byte("ping")); err != nil {
@@ -253,7 +253,7 @@ func TestRebind(t *testing.T) {
 
 			relay := conns[0].LocalAddr().(*net.UDPAddr)
 			nats := make([]*rebinder, agents)
-			qcs := make([][]quic.Connection, agents)
+			qcs := make([][]*quic.Conn, agents)
 			ctc := &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"test"}}
 			for a := range agents {
 				nats[a] = newRebinder(t, relay)

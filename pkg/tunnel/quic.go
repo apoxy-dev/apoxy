@@ -57,10 +57,9 @@ const (
 	// in lockstep (worst-case total wait before the final attempt is ~2.2s).
 	sameServerRedialBackoffBase = 100 * time.Millisecond
 
-	// maxHeaderBytes is the limit on the encoded HEADERS frame of an HTTP/3
-	// request. The quic-go fork does not limit the decoded size, and the
-	// decoded size can be about 50 times larger (CVE-2025-64702). Tunnel
-	// requests have small headers, so a low limit keeps the decoded size small.
+	// maxHeaderBytes is the limit on the decoded headers of an HTTP/3 request
+	// (CVE-2025-64702). quic-go also sends it to the client in
+	// SETTINGS_MAX_FIELD_SECTION_SIZE. Tunnel requests have small headers.
 	maxHeaderBytes = 16 << 10
 )
 

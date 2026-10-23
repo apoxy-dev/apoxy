@@ -112,7 +112,7 @@ const (
 // Events of M from its tasks.
 type (
 	dialed struct {
-		qc  quic.Connection
+		qc  *quic.Conn
 		err error
 	}
 	redialEv   struct{}
@@ -455,8 +455,6 @@ func (m *mProc) startDial() {
 	go func() {
 		ctx, cancel := context.WithTimeout(m.ctx, meshOpenTimeout)
 		defer cancel()
-		// A dialed connection keeps the values of ctx, so it gets the place for its RTT here.
-		ctx, _ = TraceContext(ctx, nil)
 		qc, err := cfg.tr.Dial(ctx, net.UDPAddrFromAddrPort(addr), cfg.tls, cfg.quic)
 		m.box.send(dialed{qc: qc, err: err})
 	}()
@@ -519,7 +517,7 @@ func (m *mProc) msUp(ms *msProc) {
 	}
 	m.ms = ms
 	m.wait = redial{}
-	m.session = &MeshSession{name: m.c.name, relay: ms.open.ref, version: ms.open.ver, trace: traceOf(ms.c.qc.Context())}
+	m.session = &MeshSession{name: m.c.name, relay: ms.open.ref, version: ms.open.ver, qc: ms.c.qc}
 	m.sub, m.offered, m.txOK, m.fresh, m.tries, m.pending = subKeying, false, false, true, 0, nil
 	if m.kT != nil {
 		m.kT.Stop()

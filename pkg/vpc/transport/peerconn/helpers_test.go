@@ -28,7 +28,6 @@ const (
 // fakeQC is a relay session. ReceiveDatagram returns the frames on in, and
 // SendDatagram puts copies on sent (nil sent discards them).
 type fakeQC struct {
-	quic.Connection
 	in   chan []byte
 	sent chan []byte
 	err  error

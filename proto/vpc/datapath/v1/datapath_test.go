@@ -64,7 +64,7 @@ func connect(t *testing.T, alpn string, dialerMux, listenerMux *rpc.Mux) (dialer
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	accepted := make(chan quic.Connection, 1)
+	accepted := make(chan *quic.Conn, 1)
 	go func() {
 		c, _ := ln.Accept(ctx)
 		accepted <- c

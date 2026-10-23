@@ -35,11 +35,11 @@ func (l *queryLog) list() []string {
 // fakeUpstreamServer starts a local DNS server that answers queries based on
 // a set of known names. Unknown names get NXDOMAIN.
 type fakeUpstreamServer struct {
-	addr     string
-	known    map[string]string // FQDN -> IP answer (A record)
-	log      *queryLog
-	server   *mdns.Server
-	udpConn  net.PacketConn
+	addr    string
+	known   map[string]string // FQDN -> IP answer (A record)
+	log     *queryLog
+	server  *mdns.Server
+	udpConn net.PacketConn
 }
 
 func newFakeUpstream(t *testing.T, known map[string]string, log *queryLog) *fakeUpstreamServer {
@@ -117,13 +117,14 @@ type dnsRecorder struct {
 }
 
 func (r *dnsRecorder) WriteMsg(m *mdns.Msg) error { r.msg = m; return nil }
-func (r *dnsRecorder) LocalAddr() net.Addr         { return nil }
-func (r *dnsRecorder) RemoteAddr() net.Addr         { return nil }
-func (r *dnsRecorder) Write([]byte) (int, error)    { return 0, fmt.Errorf("not implemented") }
-func (r *dnsRecorder) Close() error                 { return nil }
-func (r *dnsRecorder) TsigStatus() error            { return nil }
-func (r *dnsRecorder) TsigTimersOnly(bool)          {}
-func (r *dnsRecorder) Hijack()                      {}
+func (r *dnsRecorder) LocalAddr() net.Addr        { return nil }
+func (r *dnsRecorder) RemoteAddr() net.Addr       { return nil }
+func (r *dnsRecorder) Write([]byte) (int, error)  { return 0, fmt.Errorf("not implemented") }
+func (r *dnsRecorder) Close() error               { return nil }
+func (r *dnsRecorder) TsigStatus() error          { return nil }
+func (r *dnsRecorder) TsigTimersOnly(bool)        {}
+func (r *dnsRecorder) Hijack()                    {}
+func (r *dnsRecorder) Network() string            { return "udp" }
 
 func TestServeDNS_NdotsSearchDomainPriority(t *testing.T) {
 	tests := []struct {

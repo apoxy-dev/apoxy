@@ -310,18 +310,17 @@ func (r *Relay) vpcTransport() *quic.Transport {
 	if r.vpc == nil {
 		return nil
 	}
-	return &quic.Transport{Conn: r.vpcConn, StatelessResetKey: r.resetKey, ConnContext: vpcrelay.TraceContext}
+	return &quic.Transport{Conn: r.vpcConn, StatelessResetKey: r.resetKey}
 }
 
-// vpcListenConfig returns the QUIC config of the VPC listener: RTT trace and
-// the liveness keep-alive for agents when the relay serves VPC sessions, and
-// the mesh timers for a member.
+// vpcListenConfig returns the QUIC config of the VPC listener: the liveness
+// keep-alive for agents when the relay serves VPC sessions, and the mesh
+// timers for a member.
 func (r *Relay) vpcListenConfig() *quic.Config {
 	if r.vpc == nil {
 		return relayQUICConfig
 	}
 	c := relayQUICConfig.Clone()
-	c.Tracer = vpcrelay.TraceRTT
 	c.KeepAlivePeriod = vpcrelay.AgentKeepAlive
 	if r.mesh == nil {
 		return c
@@ -331,7 +330,7 @@ func (r *Relay) vpcListenConfig() *quic.Config {
 
 // accept gives the connections of ln to serve until ln closes. It accepts
 // during the drain too, so that new connections get a close and not a silent drop.
-func accept(ln *quic.EarlyListener, serve func(quic.EarlyConnection), wg *sync.WaitGroup) error {
+func accept(ln *quic.EarlyListener, serve func(*quic.Conn), wg *sync.WaitGroup) error {
 	for {
 		qc, err := ln.Accept(context.Background())
 		if errors.Is(err, quic.ErrServerClosed) {
@@ -346,7 +345,7 @@ func accept(ln *quic.EarlyListener, serve func(quic.EarlyConnection), wg *sync.W
 
 // serveVPCConn gives an apoxy-vpc/2 or apoxy-mesh/1 connection to the VPC
 // server. vpcCtx ends when Start returns.
-func (r *Relay) serveVPCConn(qc quic.EarlyConnection, vpcCtx context.Context) {
+func (r *Relay) serveVPCConn(qc *quic.Conn, vpcCtx context.Context) {
 	// The checks of the agent cert and of the cert of another relay need the end
 	// of the handshake.
 	select {
@@ -384,7 +383,7 @@ func (r *Relay) startVPC(tr *quic.Transport) (*quic.EarlyListener, error) {
 
 // serveConn serves an HTTP/3 connection of a tunnel socket. vpcCtx ends when
 // Start returns.
-func (r *Relay) serveConn(qc quic.EarlyConnection, srv *http3.Server, vpcCtx context.Context) {
+func (r *Relay) serveConn(qc *quic.Conn, srv *http3.Server, vpcCtx context.Context) {
 	// After Shutdown, h3 refuses new connections and does not close them.
 	if err := srv.ServeQUICConn(qc); !errors.Is(err, http.ErrServerClosed) {
 		return
@@ -555,6 +554,7 @@ func (r *Relay) Start(ctx context.Context) error {
 	srv := http3.Server{
 		Handler:        mux,
 		MaxHeaderBytes: maxHeaderBytes,
+		ConnContext:    withQUICConn,
 	}
 	// stop closes h3, then the listeners. Close refuses the handshakes in flight.
 	stop := func() error {
@@ -662,12 +662,12 @@ func (r *Relay) Start(ctx context.Context) error {
 	slog.Info("Starting relay", slog.String("addr", addr), slog.Int("sockets", len(lns)))
 	for _, ln := range lns {
 		g.Go(func() error {
-			return accept(ln, func(qc quic.EarlyConnection) { r.serveConn(qc, &srv, vpcCtx) }, &conns)
+			return accept(ln, func(qc *quic.Conn) { r.serveConn(qc, &srv, vpcCtx) }, &conns)
 		})
 	}
 	for _, ln := range vpcLns {
 		g.Go(func() error {
-			return accept(ln, func(qc quic.EarlyConnection) { r.serveVPCConn(qc, vpcCtx) }, &conns)
+			return accept(ln, func(qc *quic.Conn) { r.serveVPCConn(qc, vpcCtx) }, &conns)
 		})
 	}
 
@@ -820,14 +820,14 @@ func (r *Relay) handleConnect(w http.ResponseWriter, req *http.Request, ps httpr
 	// A Tunnel must have a connection-lifetime signal before it is published.
 	// Without the HTTP/3 connection context, a killed agent can leave a Tunnel
 	// indefinitely because no request-level context survives the response.
-	hij, ok := w.(http3.Hijacker)
-	if !ok || hij.Connection() == nil {
+	qc := quicConnFrom(req.Context())
+	if qc == nil {
 		metrics.TunnelConnectionFailures.WithLabelValues("session_tracking").Inc()
 		slog.Error("HTTP/3 connection tracking is unavailable")
 		http.Error(w, "connection tracking is unavailable", http.StatusInternalServerError)
 		return
 	}
-	sessionCtx := hij.Connection().Context()
+	sessionCtx := qc.Context()
 
 	// Enforce the credential's bounds on agent-declared labels and routes.
 	// withAuth always attaches a non-nil authorization on success; a missing one
@@ -1352,7 +1352,7 @@ func (r *Relay) withAuth(next httprouter.Handle) httprouter.Handle {
 		if len(authHeader) <= len(prefix) || authHeader[:len(prefix)] != prefix {
 			slog.Warn("Missing or invalid Authorization header")
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
+			r.closeConn(req, http3.ErrCodeRequestRejected, "unauthorized")
 			return
 		}
 
@@ -1361,7 +1361,7 @@ func (r *Relay) withAuth(next httprouter.Handle) httprouter.Handle {
 		if tunnelName == "" {
 			slog.Warn("Missing tunnel name in request")
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
+			r.closeConn(req, http3.ErrCodeRequestRejected, "unauthorized")
 			return
 		}
 
@@ -1373,7 +1373,7 @@ func (r *Relay) withAuth(next httprouter.Handle) httprouter.Handle {
 		if err != nil {
 			slog.Warn("Rejected tunnel credential", slog.String("tunnel", tunnelName), slog.Any("error", err))
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
+			r.closeConn(req, http3.ErrCodeRequestRejected, "unauthorized")
 			return
 		}
 		if authz == nil {
@@ -1381,7 +1381,7 @@ func (r *Relay) withAuth(next httprouter.Handle) httprouter.Handle {
 			// bug; treat it as a rejection rather than silently unbounded access.
 			slog.Error("Token validator returned no authorization", slog.String("tunnel", tunnelName))
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			r.closeConn(w, http3.ErrCodeRequestRejected, "unauthorized")
+			r.closeConn(req, http3.ErrCodeRequestRejected, "unauthorized")
 			return
 		}
 
@@ -1404,15 +1404,27 @@ func authzResultFrom(ctx context.Context) *token.AuthzResult {
 	return authz
 }
 
-func (r *Relay) closeConn(w http.ResponseWriter, code http3.ErrCode, msg string) {
-	hij, ok := w.(http3.Hijacker)
-	if !ok {
+func (r *Relay) closeConn(req *http.Request, code http3.ErrCode, msg string) {
+	qc := quicConnFrom(req.Context())
+	if qc == nil {
 		slog.Warn("Failed to explicitly close quic connection")
 		return
 	}
+	_ = qc.CloseWithError(quic.ApplicationErrorCode(code), msg)
+}
 
-	h3c := hij.Connection()
-	_ = h3c.CloseWithError(quic.ApplicationErrorCode(code), msg)
+type quicConnKey struct{}
+
+// withQUICConn is the ConnContext of the HTTP/3 server. It lets a handler find
+// the QUIC connection of its request.
+func withQUICConn(ctx context.Context, qc *quic.Conn) context.Context {
+	return context.WithValue(ctx, quicConnKey{}, qc)
+}
+
+// quicConnFrom returns the QUIC connection of a request, or nil.
+func quicConnFrom(ctx context.Context) *quic.Conn {
+	qc, _ := ctx.Value(quicConnKey{}).(*quic.Conn)
+	return qc
 }
 
 func randomMasterSecret() (api.MasterSecret, error) {

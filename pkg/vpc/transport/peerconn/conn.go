@@ -12,10 +12,18 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+// QUICConn is the part of a QUIC connection that Conn uses.
+type QUICConn interface {
+	SendDatagram([]byte) error
+	ReceiveDatagram(context.Context) ([]byte, error)
+}
+
+var _ QUICConn = (*quic.Conn)(nil)
+
 // Conn sends data frames on the session connection of a relay session, and
 // gives the received data frames to its handler.
 type Conn struct {
-	qc     quic.Connection
+	qc     QUICConn
 	stop   context.CancelFunc // Stops the reader of the session connection.
 	closed atomic.Bool
 
@@ -32,7 +40,7 @@ type Stats struct {
 
 // New returns a Conn on the relay session qc, and starts the reader of qc.
 // qc must have datagrams on.
-func New(qc quic.Connection) *Conn {
+func New(qc QUICConn) *Conn {
 	ctx, stop := context.WithCancel(context.Background())
 	c := &Conn{qc: qc, stop: stop}
 	go c.receive(ctx)

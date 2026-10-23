@@ -241,7 +241,7 @@ func newEnvWith(t *testing.T, o envOpts) *env {
 	if o.quicSend != nil {
 		qconn = o.quicSend(lo.QUIC)
 	}
-	tr := &quic.Transport{Conn: qconn, ConnContext: relay.TraceContext}
+	tr := &quic.Transport{Conn: qconn}
 	if o.mesh {
 		require.NoError(t, e.r.SetMesh(o.id, relay.MeshConfig{
 			TLS:      &tls.Config{Certificates: []tls.Certificate{*cert}, InsecureSkipVerify: true},
@@ -259,7 +259,7 @@ func newEnvWith(t *testing.T, o envOpts) *env {
 	}()
 
 	ln, err := tr.Listen(e.r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}),
-		e.r.ListenConfig(&quic.Config{EnableDatagrams: true, Tracer: relay.TraceRTT, KeepAlivePeriod: relay.AgentKeepAlive}))
+		e.r.ListenConfig(&quic.Config{EnableDatagrams: true, KeepAlivePeriod: relay.AgentKeepAlive}))
 	require.NoError(t, err)
 	e.srv = &relay.Server{R: e.r}
 	serveCtx, stopServe := context.WithCancel(context.Background())
@@ -299,7 +299,7 @@ func verifyRelay(ca *vpctest.CA) relay.MeshVerify {
 type agent struct {
 	t    *testing.T
 	name string
-	qc   quic.Connection
+	qc   *quic.Conn
 	rc   dpv1.RelayClient
 	keys p2p.ProbeKeys
 	st   rpc.BidiStreamClient[dpv1.SessionRequest, dpv1.SessionResponse]

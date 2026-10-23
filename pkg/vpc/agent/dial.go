@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -27,7 +26,7 @@ type dialed struct {
 	ep     endpoint
 	name   string         // TLS name of the relay.
 	roots  *x509.CertPool // Check relay certs. Nil means the system roots.
-	qc     quic.Connection
+	qc     *quic.Conn
 	client dp.RelayClient
 	st     rpc.BidiStreamClient[dp.SessionRequest, dp.SessionResponse]
 	ctx    context.Context // The context of st. cancel ends the call.
@@ -41,9 +40,8 @@ type dialed struct {
 	begin     time.Time      // Start of the dial.
 	connect   time.Duration  // From the start of the dial to the first Config.
 
-	rtt      *atomic.Int64 // Smoothed RTT of qc in nanoseconds. The QUIC tracer writes it.
-	lowRTT   *atomic.Int64 // Lowest RTT of qc in nanoseconds. Zero is not known.
-	helloRTT time.Duration // From the send of Hello to Welcome.
+	stats    func() quic.ConnectionStats // Stats of qc. A zero MinRTT is not known.
+	helloRTT time.Duration               // From the send of Hello to Welcome.
 }
 
 // close closes the connection of d in its own goroutine and ends its call.
@@ -56,7 +54,7 @@ func (d *dialed) close(reason string) {
 // time of the lowest QUIC time and the time from Hello to Welcome. After a late
 // start of the path, QUIC can have no sample of the Hello exchange at the choice.
 func (d *dialed) choiceRTT() time.Duration {
-	low := time.Duration(d.lowRTT.Load())
+	low := d.stats().MinRTT
 	if low <= 0 || d.helloRTT > 0 && d.helloRTT < low {
 		return d.helloRTT
 	}
@@ -74,22 +72,21 @@ func (a *Agent) dial(ctx context.Context, e endpoint, roots *x509.CertPool) (*di
 	if err != nil {
 		return nil, err
 	}
-	d := &dialed{ep: e, name: cmp.Or(e.id, host), roots: roots, begin: time.Now(), rtt: new(atomic.Int64), lowRTT: new(atomic.Int64)}
+	d := &dialed{ep: e, name: cmp.Or(e.id, host), roots: roots, begin: time.Now()}
 	dctx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
-	quicCfg := a.quicCfg.Clone()
-	quicCfg.Tracer = a.traceSession(d.rtt, d.lowRTT)
 	qc, err := a.cfg.Transport.Dial(dctx, ua, &tls.Config{
 		MinVersion:           tls.VersionTLS13,
 		RootCAs:              roots,
 		ServerName:           d.name,
 		NextProtos:           []string{dp.ALPNRelay},
 		GetClientCertificate: a.cfg.Identity.GetClientCertificate,
-	}, quicCfg)
+	}, a.quicCfg)
 	if err != nil {
 		return nil, err
 	}
-	d.qc = qc
+	a.quicLost.add(qc)
+	d.qc, d.stats = qc, qc.ConnectionStats
 	d.client = dp.NewRelayClient(rpc.NewConn(qc, nil))
 	// The call lives after the dial, under the context of the caller.
 	d.ctx, d.cancel = context.WithCancel(context.WithoutCancel(ctx))

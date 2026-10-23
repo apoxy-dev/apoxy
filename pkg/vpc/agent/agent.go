@@ -151,8 +151,8 @@ type Agent struct {
 	instance uint64
 	seed     maphash.Seed // Orders the relays of this agent.
 	demux    psp.Demux
-	quicCfg  *quic.Config  // relayQUIC with the loss tracer.
-	quicLost atomic.Uint64 // 1-RTT packets that relay connections lost.
+	quicCfg  *quic.Config // Config of the relay connections.
+	quicLost lossCount    // Packets that relay connections lost.
 	probes   probeRegistry
 
 	retryMin, retryMax, retryNext   time.Duration
@@ -187,7 +187,6 @@ func New(cfg Config) *Agent {
 	a.rttWaitMax = cmp.Or(cfg.RTTWaitMax, defaultRTTWaitMax)
 	a.demux.Probe = a.probes.take
 	a.quicCfg = relayQUIC.Clone()
-	a.quicCfg.Tracer = a.traceLoss
 	if cfg.Transport != nil {
 		cfg.Transport.NonQUICPacketHandler = a.demux.Handle
 		cfg.Transport.NonQUICBatchEnd = a.demux.BatchEnd

@@ -191,7 +191,7 @@ func (s *LatencySelector) probeAll(ctx context.Context, endpoints []string, canc
 
 // dialEndpoint establishes a QUIC connection and creates an HTTP/3 client connection.
 // Returns the QUIC connection, HTTP/3 client connection, and any error.
-func (s *LatencySelector) dialEndpoint(ctx context.Context, addr string) (quic.Connection, *http3.ClientConn, error) {
+func (s *LatencySelector) dialEndpoint(ctx context.Context, addr string) (*quic.Conn, *http3.ClientConn, error) {
 	// Extract hostname from address for TLS ServerName.
 	serverName := "proxy"
 	if host, _, err := net.SplitHostPort(addr); err == nil && net.ParseIP(host) == nil {

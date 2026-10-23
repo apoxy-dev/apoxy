@@ -17,7 +17,7 @@ import (
 // Conn makes and serves calls on one QUIC connection. Both ends of the
 // connection can use a Conn at the same time: each side can call the other.
 type Conn struct {
-	qc   quic.Connection
+	qc   *quic.Conn
 	mux  *Mux
 	opts options
 }
@@ -26,6 +26,41 @@ type options struct {
 	maxHeaderSize  int
 	maxMessageSize int
 	headerTimeout  time.Duration
+	streams        Streams
+}
+
+// Stream is the part of a QUIC stream that a call uses. *quic.Stream implements it.
+type Stream interface {
+	io.ReadWriteCloser
+	CancelRead(quic.StreamErrorCode)
+	CancelWrite(quic.StreamErrorCode)
+	Context() context.Context
+	SetReadDeadline(time.Time) error
+}
+
+// Streams opens and accepts the call streams of a QUIC connection.
+type Streams interface {
+	AcceptStream(context.Context) (Stream, error)
+	OpenStreamSync(context.Context) (Stream, error)
+}
+
+// quicStreams is Streams on the QUIC connection itself.
+type quicStreams struct{ qc *quic.Conn }
+
+func (q quicStreams) AcceptStream(ctx context.Context) (Stream, error) {
+	str, err := q.qc.AcceptStream(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return str, nil
+}
+
+func (q quicStreams) OpenStreamSync(ctx context.Context) (Stream, error) {
+	str, err := q.qc.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return str, nil
 }
 
 // Option sets a Conn option.
@@ -40,9 +75,13 @@ func WithMaxMessageSize(n int) Option { return func(o *options) { o.maxMessageSi
 // WithHeaderTimeout sets the time that a peer has to send the call header on a new stream.
 func WithHeaderTimeout(d time.Duration) Option { return func(o *options) { o.headerTimeout = d } }
 
+// WithStreams makes the Conn open and accept its call streams with s, which must use the
+// streams of the QUIC connection. A test uses it to watch the calls.
+func WithStreams(s Streams) Option { return func(o *options) { o.streams = s } }
+
 // NewConn returns a Conn on qc. The Conn serves calls with the handlers in mux
 // (mux can be nil). The caller owns qc and closes it.
-func NewConn(qc quic.Connection, mux *Mux, opts ...Option) *Conn {
+func NewConn(qc *quic.Conn, mux *Mux, opts ...Option) *Conn {
 	c := &Conn{
 		qc:  qc,
 		mux: mux,
@@ -55,11 +94,14 @@ func NewConn(qc quic.Connection, mux *Mux, opts ...Option) *Conn {
 	for _, o := range opts {
 		o(&c.opts)
 	}
+	if c.opts.streams == nil {
+		c.opts.streams = quicStreams{qc}
+	}
 	return c
 }
 
 // QUIC returns the QUIC connection.
-func (c *Conn) QUIC() quic.Connection { return c.qc }
+func (c *Conn) QUIC() *quic.Conn { return c.qc }
 
 type connKey struct{}
 
@@ -79,8 +121,8 @@ func (c *Conn) Serve(ctx context.Context) error {
 	var wg sync.WaitGroup
 	var err error
 	for {
-		var str quic.Stream
-		if str, err = c.qc.AcceptStream(ctx); err != nil {
+		var str Stream
+		if str, err = c.opts.streams.AcceptStream(ctx); err != nil {
 			break
 		}
 		wg.Go(func() { c.serveStream(ctx, str) })
@@ -115,7 +157,7 @@ func (m *Mux) Handle(method string, h HandlerFunc) {
 type ServerStream struct {
 	ctx    context.Context
 	conn   *Conn
-	str    quic.Stream
+	str    Stream
 	method string
 	json   *jsonCall // Set for a call from JSONHandler.
 
@@ -185,7 +227,7 @@ func (s *ServerStream) SendMsg(m proto.Message) error {
 	return err
 }
 
-func (c *Conn) serveStream(ctx context.Context, str quic.Stream) {
+func (c *Conn) serveStream(ctx context.Context, str Stream) {
 	s := &ServerStream{ctx: ctx, conn: c, str: str}
 	s.fr.init(str)
 	defer s.release()

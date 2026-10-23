@@ -257,7 +257,7 @@ func selfSigned(t testing.TB) tls.Certificate {
 
 // quicPair returns a QUIC connection with datagrams from x to y, and its end
 // on y. It has the packet size of relay sessions.
-func quicPair(t testing.TB, x, y *quic.Transport) (quic.Connection, quic.Connection) {
+func quicPair(t testing.TB, x, y *quic.Transport) (*quic.Conn, *quic.Conn) {
 	t.Helper()
 	conf := &quic.Config{EnableDatagrams: true, InitialPacketSize: 1350}
 	ln, err := y.Listen(&tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, NextProtos: []string{"test"}}, conf)

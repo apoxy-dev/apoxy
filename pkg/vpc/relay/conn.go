@@ -171,9 +171,8 @@ func startConn(r *Router, vbox *mailbox, e toConn, down, up *valueMap, draining 
 func (a *connProc) run() {
 	now := time.Now()
 	a.live.last, a.live.since = now, now
-	if a.l.trace != nil {
-		a.live.heard = &a.l.trace.heard
-	}
+	a.live.received = func() uint64 { return a.l.qc.ConnectionStats().PacketsReceived }
+	a.live.count = a.live.received()
 	a.start()
 	tick := time.NewTicker(livenessInterval)
 	defer tick.Stop()
@@ -1068,9 +1067,7 @@ func (a *connProc) statsOf(ca *connAtt, oldest bool, rx tally) AttachmentStats {
 		Since:     ca.since,
 		TXPackets: tx.packets,
 		TXBytes:   tx.bytes,
-	}
-	if a.l.trace != nil {
-		st.RTT = time.Duration(a.l.trace.rtt.Load())
+		RTT:       a.l.qc.ConnectionStats().SmoothedRTT,
 	}
 	if oldest {
 		st.RXPackets = sub(rx.packets, a.rxBase.packets)

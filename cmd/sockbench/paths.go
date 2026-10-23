@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/logging"
 	"golang.org/x/net/ipv4"
 
 	"github.com/apoxy-dev/apoxy/pkg/cryptoutils"
@@ -113,9 +113,8 @@ func quicConn(path string, uc *net.UDPConn, remote *net.UDPAddr) (net.PacketConn
 	}
 }
 
-// listenQUIC listens on uc as the relay does (quic.ListenEarly). It counts
-// the packets that quic-go drops in drops.
-func listenQUIC(path string, uc *net.UDPConn, drops *atomic.Uint64) (*quic.EarlyListener, func(), error) {
+// listenQUIC listens on uc as the relay does (quic.ListenEarly).
+func listenQUIC(path string, uc *net.UDPConn) (*quic.EarlyListener, func(), error) {
 	pc, closePC, err := quicConn(path, uc, nil)
 	if err != nil {
 		return nil, nil, err
@@ -126,15 +125,7 @@ func listenQUIC(path string, uc *net.UDPConn, drops *atomic.Uint64) (*quic.Early
 		return nil, nil, err
 	}
 	tlsConf := &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{alpn}}
-	cfg := quicConfig()
-	cfg.Tracer = func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer {
-		return &logging.ConnectionTracer{
-			DroppedPacket: func(logging.PacketType, logging.PacketNumber, logging.ByteCount, logging.PacketDropReason) {
-				drops.Add(1)
-			},
-		}
-	}
-	ln, err := quic.ListenEarly(pc, tlsConf, cfg)
+	ln, err := quic.ListenEarly(pc, tlsConf, quicConfig())
 	if err != nil {
 		closePC()
 		return nil, nil, fmt.Errorf("listen QUIC: %w", err)
@@ -144,13 +135,13 @@ func listenQUIC(path string, uc *net.UDPConn, drops *atomic.Uint64) (*quic.Early
 
 // dialQUIC dials n connections from one quic.Transport on uc, as the agent
 // API client does.
-func dialQUIC(ctx context.Context, path string, uc *net.UDPConn, raddr *net.UDPAddr, n int) ([]quic.Connection, func(), error) {
+func dialQUIC(ctx context.Context, path string, uc *net.UDPConn, raddr *net.UDPAddr, n int) ([]*quic.Conn, func(), error) {
 	pc, closePC, err := quicConn(path, uc, raddr)
 	if err != nil {
 		return nil, nil, err
 	}
 	tr := &quic.Transport{Conn: pc}
-	var conns []quic.Connection
+	var conns []*quic.Conn
 	// Close the conn before the Transport, so that its read loop ends.
 	closeAll := func() {
 		for _, c := range conns {
@@ -174,13 +165,38 @@ func dialQUIC(ctx context.Context, path string, uc *net.UDPConn, raddr *net.UDPA
 	return conns, closeAll, nil
 }
 
-// acceptDatagrams counts the datagrams of every connection on ln.
-func acceptDatagrams(ctx context.Context, ln *quic.EarlyListener, received *atomic.Uint64) {
+// connDrops sums the packets that quic-go dropped on the accepted connections.
+type connDrops struct {
+	mu    sync.Mutex
+	conns []*quic.Conn
+}
+
+func (d *connDrops) add(c *quic.Conn) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.conns = append(d.conns, c)
+}
+
+// total returns the packets that the queues of the connections dropped.
+func (d *connDrops) total() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var n uint64
+	for _, c := range d.conns {
+		st := c.ConnectionState()
+		n += st.QueueFullDrops + st.QueueAgeDrops + st.DatagramQueueDrops
+	}
+	return n
+}
+
+// acceptDatagrams counts the datagrams and the drops of every connection on ln.
+func acceptDatagrams(ctx context.Context, ln *quic.EarlyListener, received *atomic.Uint64, drops *connDrops) {
 	for {
 		c, err := ln.Accept(ctx)
 		if err != nil {
 			return
 		}
+		drops.add(c)
 		go func() {
 			select {
 			case <-c.HandshakeComplete():
@@ -203,7 +219,7 @@ func acceptDatagrams(ctx context.Context, ln *quic.EarlyListener, received *atom
 // sendDatagrams sends datagrams on c as fast as quic-go takes them. Before
 // warmEnd, path MTU discovery can still raise the limit. It runs only while
 // the connection sends, so a datagram that is too large is sent smaller.
-func sendDatagrams(ctx context.Context, c quic.Connection, size int, warmEnd time.Time, sent *atomic.Uint64) error {
+func sendDatagrams(ctx context.Context, c *quic.Conn, size int, warmEnd time.Time, sent *atomic.Uint64) error {
 	p := make([]byte, size)
 	for ctx.Err() == nil {
 		err := c.SendDatagram(p)

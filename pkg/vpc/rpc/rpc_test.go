@@ -106,7 +106,7 @@ type pairConfig struct {
 // pair is one QUIC connection with an rpc.Conn on each end.
 type pair struct {
 	dialer, listener         *rpc.Conn
-	dq, lq                   quic.Connection
+	dq, lq                   *quic.Conn
 	dialerSrv, listenerSrv   *echoServer
 	stopListener             context.CancelFunc
 	listenerServeDone        chan error
@@ -125,7 +125,7 @@ func newPair(t testing.TB, cfg pairConfig) *pair {
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	accepted := make(chan quic.Connection, 1)
+	accepted := make(chan *quic.Conn, 1)
 	go func() {
 		c, err := ln.Accept(ctx)
 		if err != nil {
@@ -527,7 +527,7 @@ func readRawStatus(t *testing.T, r io.Reader) *wirepb.Status {
 }
 
 // writeUntilError writes to str until the peer's STOP_SENDING makes Write fail.
-func writeUntilError(str quic.SendStream) error {
+func writeUntilError(str io.Writer) error {
 	buf := make([]byte, 1024)
 	for range 100000 {
 		if _, err := str.Write(rawFrame(0x02, &wirepb.Status{Message: string(buf)})); err != nil {
@@ -1027,7 +1027,7 @@ func TestNoStreamLeaks(t *testing.T) {
 	require.LessOrEqual(t, runtime.NumGoroutine(), baseline, "goroutines after the calls")
 }
 
-func rawUnsupported(t *testing.T, qc quic.Connection) {
+func rawUnsupported(t *testing.T, qc *quic.Conn) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	str, err := qc.OpenStreamSync(ctx)

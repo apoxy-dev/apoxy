@@ -4,10 +4,10 @@ package agent
 
 import (
 	"context"
-	"sync/atomic"
 	"time"
 
 	"github.com/apoxy-dev/softpsp/keys"
+	"github.com/quic-go/quic-go"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -161,7 +161,7 @@ type sessState struct {
 	mode           dp.Mode
 	reason         dp.FallbackReason
 	connect, setup time.Duration
-	rtt            *atomic.Int64
+	stats          func() quic.ConnectionStats
 	dnsServers     []string
 	dnsSearch      []string
 }

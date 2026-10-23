@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/logging"
 	"github.com/quic-go/quic-go/qlog"
+	"github.com/quic-go/quic-go/qlogwriter"
 )
 
 const quicBuild = "fork"
@@ -29,13 +29,15 @@ func quicConfig(o options) *quic.Config {
 		MaxIdleTimeout:                 15 * time.Second,
 	}
 	if o.QlogDir != "" {
-		c.Tracer = func(_ context.Context, p logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
-			w, err := newQlogWriter(o.QlogDir, p == logging.PerspectiveClient, id, o.QlogMax)
+		c.Tracer = func(_ context.Context, isClient bool, id quic.ConnectionID) qlogwriter.Trace {
+			w, err := newQlogWriter(o.QlogDir, isClient, id, o.QlogMax)
 			if err != nil {
 				slog.Warn("Failed to create qlog file", "error", err)
 				return nil
 			}
-			return qlog.NewConnectionTracer(w, p, id)
+			t := qlogwriter.NewConnectionFileSeq(w, isClient, id, []string{qlog.EventSchema})
+			go t.Run()
+			return t
 		}
 	}
 	return c

@@ -87,7 +87,8 @@ func (srv *Server) leave() {
 
 // ServeConn serves one agent connection until it closes and its process and hook tasks ended, or
 // one mesh session. A host that shares its listener calls it for apoxy-vpc/2 and apoxy-mesh/1.
-func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
+// opts are the options of the calls of an agent connection.
+func (srv *Server) ServeConn(ctx context.Context, qc *quic.Conn, opts ...rpc.Option) {
 	// A mesh session is not an agent connection: it stays up while the relay drains.
 	if qc.ConnectionState().TLS.NegotiatedProtocol == dpv1.ALPNMesh {
 		srv.R.serveMesh(ctx, qc)
@@ -108,7 +109,7 @@ func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_CERT), "agent cert rejected")
 		return
 	}
-	_ = rpc.NewConn(qc, srv.mux).Serve(context.WithValue(ctx, linkKey{}, l))
+	_ = rpc.NewConn(qc, srv.mux, opts...).Serve(context.WithValue(ctx, linkKey{}, l))
 	_ = qc.CloseWithError(quic.ApplicationErrorCode(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED), "")
 	if l.owned.Load() {
 		<-l.finished
@@ -116,7 +117,7 @@ func (srv *Server) ServeConn(ctx context.Context, qc quic.Connection) {
 }
 
 // newLink checks the agent cert of qc and returns its link.
-func (srv *Server) newLink(qc quic.Connection) (*link, error) {
+func (srv *Server) newLink(qc *quic.Conn) (*link, error) {
 	tc := qc.ConnectionState().TLS
 	if tc.NegotiatedProtocol != dpv1.ALPNRelay {
 		return nil, fmt.Errorf("ALPN %q is not %s", tc.NegotiatedProtocol, dpv1.ALPNRelay)
@@ -137,7 +138,6 @@ func (srv *Server) newLink(qc quic.Connection) (*link, error) {
 		chain:      tc.PeerCertificates,
 		verified:   now,
 		probe:      probe,
-		trace:      traceOf(qc.Context()),
 		finished:   make(chan struct{}),
 		streamDone: make(chan struct{}),
 	}, nil

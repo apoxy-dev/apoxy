@@ -6,8 +6,9 @@ import (
 	"cmp"
 	"maps"
 	"slices"
-	"sync/atomic"
 	"time"
+
+	"github.com/quic-go/quic-go"
 
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -30,7 +31,7 @@ type connSnap struct {
 	mode           dp.Mode
 	reason         dp.FallbackReason
 	connect, setup time.Duration
-	rtt            *atomic.Int64 // Written by the QUIC tracer.
+	stats          func() quic.ConnectionStats // Stats of the QUIC connection.
 	base           Attachment
 	extras         []Attachment // By name.
 	dnsServers     []string
@@ -51,10 +52,10 @@ func (s *snapshot) primary() *connSnap {
 
 // liveRTT returns the smoothed round-trip time of the session.
 func (c *connSnap) liveRTT() time.Duration {
-	if c.rtt == nil {
+	if c.stats == nil {
 		return 0
 	}
-	return time.Duration(c.rtt.Load())
+	return c.stats().SmoothedRTT
 }
 
 // Attachments returns the attachment of Config on each relay session in rank

@@ -341,7 +341,7 @@ func TestDevice(t *testing.T) {
 
 		// Two agents in VPC A, on ports 3 and 5 in QUIC mode.
 		ports := []uint64{3, 5}
-		agents := map[uint64]quic.Connection{}
+		agents := map[uint64]*quic.Conn{}
 		var updates []*p4.Update
 		for _, port := range ports {
 			c := e.listen(t, netip.AddrPortFrom(peer4.Addr(), uint16(8000+port)))

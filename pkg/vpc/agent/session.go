@@ -546,7 +546,7 @@ func (s *session) status() {
 			Name: cfg.Name, Labels: maps.Clone(cfg.Labels), Routes: slices.Clone(cfg.Routes),
 			ID: s.id, Address: s.self, Prefixes: slices.Clone(s.prefixes), Base: true, Relay: s.addr(),
 		},
-		mode: s.mode, reason: s.fallback(), connect: s.d.connect, setup: s.setup, rtt: s.d.rtt,
+		mode: s.mode, reason: s.fallback(), connect: s.d.connect, setup: s.setup, stats: s.d.stats,
 		dnsServers: s.d.config.GetDnsServers(), dnsSearch: s.d.config.GetDnsSearchDomains(),
 	}})
 }
@@ -630,7 +630,7 @@ func logRefused(addr, name string, routes []*dp.RouteStatus) {
 }
 
 // attachError adds the close cause of qc to err.
-func attachError(qc quic.Connection, err error) error {
+func attachError(qc *quic.Conn, err error) error {
 	if cause := context.Cause(qc.Context()); cause != nil {
 		return fmt.Errorf("%w (connection: %w)", err, cause)
 	}

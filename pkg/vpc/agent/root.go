@@ -210,7 +210,7 @@ func (r *root) run() error {
 			r.tick(now)
 		case now := <-report.C:
 			if r.b != nil {
-				r.b.ReportQUIC(now, r.a.quicLost.Load())
+				r.b.ReportQUIC(now, r.a.quicLost.total())
 			}
 		case <-r.a.cfg.Identity.Changed():
 			r.plan()
@@ -928,7 +928,7 @@ func (r *root) publish(running bool) {
 	for _, h := range r.live() {
 		c := &connSnap{
 			relay: h.ep.addr, name: h.s.d.name, rank: h.rank, draining: h.draining,
-			mode: h.st.mode, reason: h.st.reason, connect: h.st.connect, setup: h.st.setup, rtt: h.st.rtt,
+			mode: h.st.mode, reason: h.st.reason, connect: h.st.connect, setup: h.st.setup, stats: h.st.stats,
 			base: h.st.base, dnsServers: h.st.dnsServers, dnsSearch: h.st.dnsSearch,
 		}
 		for _, x := range h.held {

@@ -483,7 +483,7 @@ func (f *fakeMember) member() relay.MeshMember {
 }
 
 // open dials e and calls Open. It serves the calls of the relay until the connection closes.
-func (f *fakeMember) open(e *env) quic.Connection {
+func (f *fakeMember) open(e *env) *quic.Conn {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()

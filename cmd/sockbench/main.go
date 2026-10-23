@@ -99,7 +99,10 @@ func serverCmd(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	var received, quicDrops atomic.Uint64
+	var (
+		received  atomic.Uint64
+		quicDrops connDrops
+	)
 	if o.Path == pathUDP {
 		defer uc.Close()
 		go func() {
@@ -108,12 +111,12 @@ func serverCmd(ctx context.Context, args []string) error {
 			}
 		}()
 	} else {
-		ln, closeLn, err := listenQUIC(o.Path, uc, &quicDrops)
+		ln, closeLn, err := listenQUIC(o.Path, uc)
 		if err != nil {
 			return err
 		}
 		defer closeLn()
-		go acceptDatagrams(ctx, ln, &received)
+		go acceptDatagrams(ctx, ln, &received, &quicDrops)
 	}
 
 	ctl, err := net.Listen("tcp", *listen)
@@ -123,15 +126,15 @@ func serverCmd(ctx context.Context, args []string) error {
 	defer ctl.Close()
 	slog.Info("Serving", "path", o.Path, "listen", *listen, "gso", o.GSO, "sockbuf", o.SockBuf)
 	return serveControl(ctx, ctl, func() counters {
-		return counters{Packets: received.Load(), QUICDrops: quicDrops.Load(), KernelDrops: rcvbufErrors()}
+		return counters{Packets: received.Load(), QUICDrops: quicDrops.total(), KernelDrops: rcvbufErrors()}
 	})
 }
 
 // counters are the receive counters of the server.
 type counters struct {
 	Packets uint64 `json:"packets"`
-	// QUICDrops are packets that quic-go dropped, for example because a
-	// connection queue was full.
+	// QUICDrops are packets that quic-go dropped because a connection queue
+	// was full or a packet waited too long in it.
 	QUICDrops uint64 `json:"quic_drops"`
 	// KernelDrops is the UDP RcvbufErrors count of the server netns.
 	KernelDrops uint64 `json:"kernel_drops"`

@@ -37,6 +37,7 @@ func (w *testResponseWriter) WriteMsg(msg *cdns.Msg) error {
 	return nil
 }
 func (w *testResponseWriter) Write([]byte) (int, error) { return 0, nil }
+func (w *testResponseWriter) Network() string           { return "udp" }
 func (w *testResponseWriter) Close() error              { return nil }
 func (w *testResponseWriter) TsigStatus() error         { return nil }
 func (w *testResponseWriter) TsigTimersOnly(bool)       {}

@@ -44,6 +44,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	relaydp "github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -267,7 +268,7 @@ func (r *testRelay) addCall(n int) {
 
 // acceptedConn is an agent connection and its remote address at the accept.
 type acceptedConn struct {
-	qc   quic.Connection
+	qc   *quic.Conn
 	from netip.AddrPort
 	kind *atomic.Int32 // connUnknown until the relay reads the Hello.
 }
@@ -278,29 +279,33 @@ const (
 	connSession
 )
 
-// keep records the agent connection qc. The relay serves the connection
-// that keep returns, which finds the kind of qc in its Hello.
-func (r *testRelay) keep(qc quic.Connection) quic.Connection {
+// keep records the agent connection qc. The relay serves the calls on the
+// streams that keep returns, which find the kind of qc in its Hello.
+func (r *testRelay) keep(qc *quic.Conn) rpc.Streams {
 	r.connsMu.Lock()
 	defer r.connsMu.Unlock()
 	c := acceptedConn{qc, unmap(qc.RemoteAddr().(*net.UDPAddr).AddrPort()), new(atomic.Int32)}
 	r.conns = append(r.conns, c)
-	return &helloConn{Connection: qc, r: r, kind: c.kind}
+	return &helloConn{qc: qc, r: r, kind: c.kind}
 }
 
 // helloConn reads the Hello of the Session call on the first stream, and
 // counts the open calls on the other streams.
 type helloConn struct {
-	quic.Connection
+	qc    *quic.Conn
 	r     *testRelay
 	kind  *atomic.Int32
 	first atomic.Bool
 }
 
-func (c *helloConn) AcceptStream(ctx context.Context) (quic.Stream, error) {
-	st, err := c.Connection.AcceptStream(ctx)
+func (c *helloConn) OpenStreamSync(ctx context.Context) (rpc.Stream, error) {
+	return c.qc.OpenStreamSync(ctx)
+}
+
+func (c *helloConn) AcceptStream(ctx context.Context) (rpc.Stream, error) {
+	st, err := c.qc.AcceptStream(ctx)
 	if err != nil {
-		return st, err
+		return nil, err
 	}
 	if c.first.Swap(true) {
 		c.r.addCall(1)
@@ -311,7 +316,7 @@ func (c *helloConn) AcceptStream(ctx context.Context) (quic.Stream, error) {
 
 // callStream is a call stream that the relay ends with Close or CancelWrite.
 type callStream struct {
-	quic.Stream
+	*quic.Stream
 	r     *testRelay
 	ended atomic.Bool
 }
@@ -334,7 +339,7 @@ func (s *callStream) CancelWrite(code quic.StreamErrorCode) {
 
 // helloStream keeps the bytes that the relay reads until they have the Hello.
 type helloStream struct {
-	quic.Stream
+	*quic.Stream
 	kind *atomic.Int32
 	buf  []byte
 }
@@ -379,10 +384,10 @@ func readHello(b []byte) (*dp.Hello, bool) {
 
 // sessionConns returns the connections from the address from with a Session
 // call, in the order that the relay accepted them.
-func (r *testRelay) sessionConns(from net.Addr) []quic.Connection {
+func (r *testRelay) sessionConns(from net.Addr) []*quic.Conn {
 	r.connsMu.Lock()
 	defer r.connsMu.Unlock()
-	var out []quic.Connection
+	var out []*quic.Conn
 	for _, qc := range r.agentConnsLocked(from, false) {
 		for _, c := range r.conns {
 			if c.qc == qc && c.kind.Load() == connSession {
@@ -396,15 +401,15 @@ func (r *testRelay) sessionConns(from net.Addr) []quic.Connection {
 // agentConns returns the agent connections from the address from, at the
 // accept or now, in the order that the relay accepted them. With open, only
 // the ones that did not close.
-func (r *testRelay) agentConns(from net.Addr, open bool) []quic.Connection {
+func (r *testRelay) agentConns(from net.Addr, open bool) []*quic.Conn {
 	r.connsMu.Lock()
 	defer r.connsMu.Unlock()
 	return r.agentConnsLocked(from, open)
 }
 
-func (r *testRelay) agentConnsLocked(from net.Addr, open bool) []quic.Connection {
+func (r *testRelay) agentConnsLocked(from net.Addr, open bool) []*quic.Conn {
 	want := unmap(from.(*net.UDPAddr).AddrPort())
-	var out []quic.Connection
+	var out []*quic.Conn
 	// An agent socket on the unspecified address has the port only.
 	match := func(ap netip.AddrPort) bool {
 		return ap == want || want.Addr().IsUnspecified() && ap.Port() == want.Port()
@@ -420,7 +425,7 @@ func (r *testRelay) agentConnsLocked(from net.Addr, open bool) []quic.Connection
 
 // refuse closes qc with UPGRADE and reason, as a relay that needs a newer
 // agent. It waits for the first stream, so that the Session call is open.
-func (r *testRelay) refuse(ctx context.Context, qc quic.Connection, reason string) {
+func (r *testRelay) refuse(ctx context.Context, qc *quic.Conn, reason string) {
 	if _, err := qc.AcceptStream(ctx); err != nil {
 		_ = qc.CloseWithError(0, "")
 		return
@@ -473,12 +478,12 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 	r.AddVPC(relay.VPCKey{Project: testProject, UID: testVPC}, relay.Network{
 		ID: testVNI, Name: testVPC, MTU: w.mtu, DNSServers: w.dns, DNSSearchDomains: w.search,
 	})
-	tr := &quic.Transport{Conn: quicSock, ConnContext: relay.TraceContext}
+	tr := &quic.Transport{Conn: quicSock}
 	// As at a real relay, the packets are Not-ECT, and the stream limit takes
 	// the Attach calls of extra attachments.
 	quicConf := &quic.Config{
 		EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512,
-		Tracer: relay.TraceRTT, KeepAlivePeriod: relay.AgentKeepAlive,
+		KeepAlivePeriod: relay.AgentKeepAlive,
 	}
 	if w.mesh {
 		// As at a real relay, the mesh sessions use the socket of the agents.
@@ -533,7 +538,7 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 				continue
 			}
 			sc := out.keep(qc)
-			wg.Go(func() { srv.ServeConn(ctx, sc) })
+			wg.Go(func() { srv.ServeConn(ctx, qc, rpc.WithStreams(sc)) })
 		}
 	})
 	t.Cleanup(func() {
@@ -1034,9 +1039,9 @@ func (ta *testAgent) binding() *psp.Binding { return ta.bind.Load() }
 
 // sessionRef is a relay session of an agent as its relay sees it.
 type sessionRef struct {
-	addr string          // Address of the relay.
-	self netip.Addr      // Overlay address of the agent on the session.
-	qc   quic.Connection // The connection at the relay. Nil when the relay has none.
+	addr string     // Address of the relay.
+	self netip.Addr // Overlay address of the agent on the session.
+	qc   *quic.Conn // The connection at the relay. Nil when the relay has none.
 }
 
 // sameSession checks that got is the session want. It compares the

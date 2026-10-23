@@ -150,14 +150,13 @@ func TestQUICPaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var drops atomic.Uint64
-			ln, closeLn, err := listenQUIC(tc.path, suc, &drops)
+			ln, closeLn, err := listenQUIC(tc.path, suc)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer closeLn()
 			var received atomic.Uint64
-			go acceptDatagrams(ctx, ln, &received)
+			go acceptDatagrams(ctx, ln, &received, &connDrops{})
 
 			cuc, err := listenUDP("127.0.0.1:0", 0)
 			if err != nil {

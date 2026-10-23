@@ -541,7 +541,7 @@ func TestPeerQUIC(t *testing.T) {
 		got [][]byte
 	}
 	var onPeer, onOther frames
-	conn := func(qa, qb quic.Connection, f *frames) *peerconn.Conn {
+	conn := func(qa, qb *quic.Conn, f *frames) *peerconn.Conn {
 		pa, pb := peerconn.New(qa), peerconn.New(qb)
 		t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
 		pb.HandleData(func(frame []byte) {

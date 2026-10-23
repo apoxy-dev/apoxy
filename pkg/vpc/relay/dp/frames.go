@@ -37,4 +37,4 @@ func ReadFrames(ctx context.Context, t Target, c DatagramConn, port, session uin
 	}
 }
 
-var _ DatagramConn = quic.Connection(nil)
+var _ DatagramConn = (*quic.Conn)(nil)

@@ -224,8 +224,8 @@ func (r *Router) trunkStats(e trunkAsk) {
 		st := byName[c.name]
 		if st == nil {
 			st = &trunkStat{name: c.name, id: cur.id}
-			if cur.s != nil && cur.s.trace != nil {
-				st.rtt = time.Duration(cur.s.trace.rtt.Load())
+			if cur.s != nil {
+				st.rtt = cur.s.qc.ConnectionStats().SmoothedRTT
 			}
 			byName[c.name] = st
 		}

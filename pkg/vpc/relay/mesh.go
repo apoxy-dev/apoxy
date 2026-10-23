@@ -116,7 +116,7 @@ type MeshSession struct {
 	name    string
 	relay   *dpv1.RelayRef
 	version *dpv1.Version
-	trace   *connTrace // The RTT of the connection, or nil.
+	qc      *quic.Conn // Its stats give the RTT of the session.
 }
 
 // Name returns the relay name of the member.
@@ -176,9 +176,6 @@ func meshQUICConfig(base *quic.Config) *quic.Config {
 	c.MaxIdleTimeout = meshIdleTimeout
 	c.MaxIncomingStreams = meshStreams
 	c.GetConfigForClient = nil
-	if c.Tracer == nil {
-		c.Tracer = TraceRTT
-	}
 	return c
 }
 
@@ -279,7 +276,7 @@ func (r *Router) FetchSnapshot(ctx context.Context) (data []byte, from string, e
 
 // meshConn is one QUIC connection of the mesh, before and after Open.
 type meshConn struct {
-	qc     quic.Connection
+	qc     *quic.Conn
 	conn   *rpc.Conn
 	client dpv1.MeshClient
 	dialer bool
@@ -291,7 +288,7 @@ type meshConn struct {
 
 type meshConnKey struct{}
 
-func newMeshConn(qc quic.Connection, mux *rpc.Mux, dialer bool) *meshConn {
+func newMeshConn(qc *quic.Conn, mux *rpc.Mux, dialer bool) *meshConn {
 	conn := rpc.NewConn(qc, mux)
 	return &meshConn{qc: qc, conn: conn, client: dpv1.NewMeshClient(conn), dialer: dialer, ready: make(chan struct{})}
 }
@@ -325,7 +322,7 @@ func sessionOf(ctx context.Context) (*msProc, error) {
 
 // serveMesh serves a mesh connection that another relay dialed until it closes or ctx ends. The
 // relay keeps it only when the Open call of the other relay passes in time.
-func (r *Router) serveMesh(ctx context.Context, qc quic.Connection) {
+func (r *Router) serveMesh(ctx context.Context, qc *quic.Conn) {
 	if r.mesh == nil {
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(dpv1.MeshCloseCode_MESH_CLOSE_CODE_NOT_MEMBER), "relay has no mesh")
 		return
@@ -370,7 +367,7 @@ func pspSocket(host string, port uint32, dialed netip.Addr) (netip.AddrPort, err
 
 // remoteClose returns the code and the reason with which the other relay closed qc. err is the
 // error of a call on qc, or nil.
-func remoteClose(qc quic.Connection, err error) (dpv1.MeshCloseCode, string, bool) {
+func remoteClose(qc *quic.Conn, err error) (dpv1.MeshCloseCode, string, bool) {
 	var ae *quic.ApplicationError
 	// quic-go ends the call streams before it sets the close cause.
 	if !errors.As(err, &ae) && !errors.As(context.Cause(qc.Context()), &ae) {

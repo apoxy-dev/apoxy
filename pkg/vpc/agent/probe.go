@@ -79,7 +79,7 @@ type probeResult struct {
 // probe tests whether the path to the PSP socket of the relay at to carries
 // PSP packets with inner packets of mtu B: true at the first reply, false
 // after probeWait or when ctx or qc ends. counter is the last probe counter.
-func (a *Agent) probe(ctx context.Context, qc quic.Connection, to netip.AddrPort, mtu int, counter uint64) probeResult {
+func (a *Agent) probe(ctx context.Context, qc *quic.Conn, to netip.AddrPort, mtu int, counter uint64) probeResult {
 	res := probeResult{counter: counter}
 	keys, err := p2p.NewProbeKeys(qc.ConnectionState().TLS)
 	if err != nil {

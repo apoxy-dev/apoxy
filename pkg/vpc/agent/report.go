@@ -3,13 +3,11 @@
 package agent
 
 import (
-	"context"
 	"log/slog"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/logging"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -27,28 +25,44 @@ func fromReport(m *dp.RxReport) []psp.SACount {
 	return sas
 }
 
-// traceLoss counts the 1-RTT packets that relay connections lose, for the
-// breaker of the data frames.
-func (a *Agent) traceLoss(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer {
-	return &logging.ConnectionTracer{
-		LostPacket: func(level logging.EncryptionLevel, _ logging.PacketNumber, _ logging.PacketLossReason) {
-			if level == logging.Encryption1RTT {
-				a.quicLost.Add(1)
-			}
-		},
-	}
+// lossCount sums the packets that the relay connections of the agent lost. The
+// sum keeps the loss of a closed connection.
+type lossCount struct {
+	mu    sync.Mutex
+	conns map[*quic.Conn]uint64 // The last loss count of each open connection.
+	sum   uint64
 }
 
-// traceSession is traceLoss for a relay session. It also keeps the smoothed
-// RTT of the session in rtt and its lowest RTT in low.
-func (a *Agent) traceSession(rtt, low *atomic.Int64) func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer {
-	return func(ctx context.Context, p logging.Perspective, id quic.ConnectionID) *logging.ConnectionTracer {
-		t := a.traceLoss(ctx, p, id)
-		t.UpdatedMetrics = func(s *logging.RTTStats, _, _ logging.ByteCount, _ int) {
-			rtt.Store(int64(s.SmoothedRTT()))
-			low.Store(int64(s.MinRTT()))
+// add starts to count the loss of qc.
+func (l *lossCount) add(qc *quic.Conn) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.conns == nil {
+		l.conns = make(map[*quic.Conn]uint64)
+	}
+	l.collect()
+	l.conns[qc] = 0
+}
+
+// total returns the packets lost up to now.
+func (l *lossCount) total() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.collect()
+	return l.sum
+}
+
+// collect adds the new loss of each connection to the sum, and removes the
+// closed connections. l.mu must be held.
+func (l *lossCount) collect() {
+	for qc, last := range l.conns {
+		if n := qc.ConnectionStats().PacketsLost; n > last {
+			l.sum += n - last
+			l.conns[qc] = n
 		}
-		return t
+		if qc.Context().Err() != nil {
+			delete(l.conns, qc)
+		}
 	}
 }
 

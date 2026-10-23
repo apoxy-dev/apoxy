@@ -389,10 +389,10 @@ func TestRelay_InvalidAuthClosesQUIC(t *testing.T) {
 		ServerName: "localhost",
 	}
 
-	var captured quic.EarlyConnection
+	var captured *quic.Conn
 	rt := &http3.Transport{
 		TLSClientConfig: tlsCfg,
-		Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
+		Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
 			c, err := quic.DialAddrEarly(ctx, addr, tlsConf, cfg)
 			if err == nil {
 				captured = c

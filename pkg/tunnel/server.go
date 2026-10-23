@@ -750,7 +750,12 @@ func iproutesFromPrefixes(ps []netip.Prefix) []connectip.IPRoute {
 
 // makeSingleConnectHandler creates a handler that serves /ping for latency probes,
 // /metrics/push for agent metrics, and /connect for CONNECT-IP connections.
-func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn quic.Connection) http.HandlerFunc {
+// connCloser is the part of a QUIC connection that the connect handler uses.
+type connCloser interface {
+	CloseWithError(quic.ApplicationErrorCode, string) error
+}
+
+func (t *TunnelServer) makeSingleConnectHandler(ctx context.Context, qConn connCloser) http.HandlerFunc {
 	// connID is set by the /connect handler and read by /metrics/push.
 	// It is safe for concurrent access because HTTP/3 streams are served
 	// on separate goroutines.

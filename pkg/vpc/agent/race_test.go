@@ -4,10 +4,10 @@ package agent
 
 import (
 	"slices"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -57,8 +57,7 @@ func TestChoiceWait(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &root{a: New(Config{})}
-			d := &dialed{lowRTT: new(atomic.Int64), helloRTT: tc.hello}
-			d.lowRTT.Store(int64(tc.rtt))
+			d := &dialed{stats: statsWithMinRTT(tc.rtt), helloRTT: tc.hello}
 			assert.Equal(t, tc.want, r.choiceWait(d))
 		})
 	}
@@ -90,8 +89,7 @@ func TestRankDialed(t *testing.T) {
 			var got []*dialed
 			index := map[*dialed]int{}
 			for i, an := range tc.answers {
-				d := &dialed{lowRTT: new(atomic.Int64), helloRTT: an.hello}
-				d.lowRTT.Store(int64(an.rtt))
+				d := &dialed{stats: statsWithMinRTT(an.rtt), helloRTT: an.hello}
 				got = append(got, d)
 				index[d] = i
 			}
@@ -207,4 +205,9 @@ func TestRelayChoiceLatePacket(t *testing.T) {
 			assert.Equal(t, nearRelay.addr, a.current().addr, "relay of the attachment")
 		})
 	}
+}
+
+// statsWithMinRTT returns the stats read of a connection with the lowest RTT rtt.
+func statsWithMinRTT(rtt time.Duration) func() quic.ConnectionStats {
+	return func() quic.ConnectionStats { return quic.ConnectionStats{MinRTT: rtt} }
 }

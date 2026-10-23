@@ -87,10 +87,10 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	}
 	r.AddTenant(project)
 	r.AddVPC(relay.VPCKey{Project: project, UID: vpcName}, relay.Network{ID: vni, MTU: uint32(o.MTU)})
-	tr := &quic.Transport{Conn: d.PacketConn(), ConnContext: relay.TraceContext}
+	tr := &quic.Transport{Conn: d.PacketConn()}
 	defer tr.Close()
 	quicConf := tunnel.RelayQUICConfig()
-	quicConf.Tracer, quicConf.KeepAlivePeriod = relay.TraceRTT, relay.AgentKeepAlive
+	quicConf.KeepAlivePeriod = relay.AgentKeepAlive
 	ln, err := tr.Listen(r.TLSConfig(&tls.Config{Certificates: []tls.Certificate{*cert}}), quicConf)
 	if err != nil {
 		return err

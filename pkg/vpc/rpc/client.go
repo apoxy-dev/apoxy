@@ -43,7 +43,7 @@ func (c *Conn) NewStream(ctx context.Context, method string) (*ClientStream, err
 type ClientStream struct {
 	ctx        context.Context
 	conn       *Conn
-	str        quic.Stream
+	str        Stream
 	fr         frameReader
 	stop       func() bool
 	sendClosed atomic.Bool
@@ -79,7 +79,7 @@ func (c *Conn) newStream(ctx context.Context, method string, first proto.Message
 		return nil, err
 	}
 
-	str, err := c.qc.OpenStreamSync(ctx)
+	str, err := c.opts.streams.OpenStreamSync(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctxError(ctx)

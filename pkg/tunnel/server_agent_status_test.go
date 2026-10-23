@@ -189,9 +189,7 @@ func TestUpdateAgentStatus(t *testing.T) {
 
 // stubQUICConn stands in for the QUIC connection that carries the request.
 // The connect handler only closes it.
-type stubQUICConn struct {
-	quic.Connection
-}
+type stubQUICConn struct{}
 
 func (stubQUICConn) CloseWithError(quic.ApplicationErrorCode, string) error { return nil }
 
