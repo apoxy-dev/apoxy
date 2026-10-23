@@ -59,6 +59,8 @@ var relayQUIC = &quic.Config{
 	MaxIdleTimeout:    6 * time.Second,
 	InitialPacketSize: 1350,
 	DisableECN:        true,
+	// The tunneled flows control congestion; a second control under them only slows them.
+	DisableCongestionControl: true,
 }
 
 var errNoRelay = errors.New("no relay session")

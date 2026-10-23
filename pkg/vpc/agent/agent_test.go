@@ -787,6 +787,11 @@ func TestCertRefused(t *testing.T) {
 	assert.Equal(t, int32(2), a.enrolls.Load())
 }
 
+func TestRelayQUICNoCongestionControl(t *testing.T) {
+	// The dial of each relay session uses this config.
+	assert.True(t, New(Config{}).quicCfg.DisableCongestionControl)
+}
+
 func TestRelayPacketSize(t *testing.T) {
 	assert.GreaterOrEqual(t, int(relayQUIC.InitialPacketSize), relay.MinPacketSize)
 	// The QUIC path of the binding carries psp.QUICMTU, as MinPacketSize carries 1280.

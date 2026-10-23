@@ -231,8 +231,8 @@ github.com/apoxy-dev/quic-go v0.0.0-20261022091806-40c59c25b267 h1:p6jkaw7pTFJl5
 github.com/apoxy-dev/quic-go v0.0.0-20261022091806-40c59c25b267/go.mod h1:upnsH4Ju1YkqpLXC305eW3yDZ4NfnNbmQRCMWS58IKU=
 github.com/apoxy-dev/quic-go v0.0.0-20261022210428-cc9f3fe73a85 h1:Wdds/3OrIkx7ucoT5jFUIHt0yPnB/zSBavoo3A4o+D4=
 github.com/apoxy-dev/quic-go v0.0.0-20261022210428-cc9f3fe73a85/go.mod h1:upnsH4Ju1YkqpLXC305eW3yDZ4NfnNbmQRCMWS58IKU=
-github.com/apoxy-dev/quic-go v0.0.0-20261023072036-3d2a3bd4fdb8 h1:L+XfuhEmcqIE8TmQFqiriz9fOGRHGVoS7kIAP0G8/1k=
-github.com/apoxy-dev/quic-go v0.0.0-20261023072036-3d2a3bd4fdb8/go.mod h1:upnsH4Ju1YkqpLXC305eW3yDZ4NfnNbmQRCMWS58IKU=
+github.com/apoxy-dev/quic-go v0.0.0-20261023094537-1d6e9a302ebf h1:hbh4AnbbLKSGc9jCVl271PRV0bd60Yblz8m2RI+rVYs=
+github.com/apoxy-dev/quic-go v0.0.0-20261023094537-1d6e9a302ebf/go.mod h1:upnsH4Ju1YkqpLXC305eW3yDZ4NfnNbmQRCMWS58IKU=
 github.com/apoxy-dev/softpsp v0.0.0-20261001021638-daae98faedfd h1:yQHTBg5WZCNys5HlL+1yeWex9S1t0MTvSkZ27CpI7R0=
 github.com/apoxy-dev/softpsp v0.0.0-20261001021638-daae98faedfd/go.mod h1:ahrCSgeuIkm0XgY5WmM+QLTg3ZEdTz8hDah6JgeJNbY=
 github.com/apoxy-dev/softpsp v0.0.0-20261003060305-4bfe4fe862c1 h1:00w42Hzu6l4rWTIUFJ3/p+8xYP3G3i+H6p3Gq49QMlw=
