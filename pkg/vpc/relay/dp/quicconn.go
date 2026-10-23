@@ -8,22 +8,30 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/atoonk/packetio"
 	"github.com/quic-go/quic-go"
 )
 
-// quicQueue is how many received datagrams wait for quic-go. A full queue drops the datagram
+// quicQueue is how many received datagrams wait for quic-go. A datagram that does not fit drops
 // (quic_full).
 const quicQueue = 1024
 
 // quicConn is the UDP 443 socket of the relay on the dedicated interface. quic-go reads and
 // writes the ECN bits of the IP header through ReadFromECN and WriteToECN; each packet has DF.
 type quicConn struct {
-	d     *Device
-	local netip.AddrPort
-	in    chan *inDatagram
-	pool  sync.Pool
+	d      *Device
+	local  netip.AddrPort
+	in     chan *quicTurn // The QUIC turns of the RX goroutines.
+	queued atomic.Int64   // The datagrams that quic-go did not read, at most quicQueue.
+
+	// mu keeps one read at a time, and the turn that it reads. Close takes it, so that no read
+	// copies from an RX frame after Close.
+	mu   sync.Mutex
+	turn *quicTurn
+	next int // The next datagram of turn.
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -32,34 +40,91 @@ type quicConn struct {
 
 var _ quic.ECNPacketConn = (*quicConn)(nil)
 
-type inDatagram struct {
-	buf  []byte
-	n    int
-	from netip.AddrPort
-	ecn  uint8
-}
-
-func newQUICConn(d *Device, local netip.AddrPort, size int) *quicConn {
-	c := &quicConn{d: d, local: local, in: make(chan *inDatagram, quicQueue), closed: make(chan struct{})}
-	c.pool.New = func() any { return &inDatagram{buf: make([]byte, size)} }
+func newQUICConn(d *Device, local netip.AddrPort) *quicConn {
+	c := &quicConn{d: d, local: local, in: make(chan *quicTurn, quicQueue), closed: make(chan struct{})}
 	c.deadline.init()
 	return c
 }
 
-// deliver queues a received datagram. It copies the payload and never waits.
-func (c *quicConn) deliver(dg datagram) {
-	in := c.pool.Get().(*inDatagram)
-	if len(dg.payload) > len(in.buf) {
-		c.pool.Put(in)
-		return
+// reserve takes room in the queue for at most n datagrams. It returns the number it took.
+func (c *quicConn) reserve(n int) int {
+	for {
+		q := c.queued.Load()
+		k := min(int64(n), quicQueue-q)
+		if k <= 0 {
+			return 0
+		}
+		if c.queued.CompareAndSwap(q, q+k) {
+			return int(k)
+		}
 	}
-	in.n, in.from, in.ecn = copy(in.buf, dg.payload), dg.from, dg.ecn
-	select {
-	case c.in <- in:
-	default:
-		c.pool.Put(in)
+}
+
+// quicTurn is the QUIC datagrams of one RX turn, in their RX frames. quic-go copies each datagram
+// one time, from its frame. quic-go owns the turn from give until read is true.
+type quicTurn struct {
+	dgs   []datagram
+	descs []packetio.Desc // The RX frame of each datagram.
+	read  atomic.Bool     // quic-go read all datagrams, and the RX goroutine owns the turn again.
+}
+
+// quicTurns is the QUIC turns of one RX goroutine. Only that goroutine uses it.
+type quicTurns struct {
+	given []*quicTurn // The turns that quic-go has, oldest first. It reads them in this order.
+	free  []*quicTurn
+	done  []packetio.Desc
+}
+
+// next returns an empty turn.
+func (s *quicTurns) next() *quicTurn {
+	if n := len(s.free); n > 0 {
+		t := s.free[n-1]
+		s.free = s.free[:n-1]
+		return t
+	}
+	return &quicTurn{}
+}
+
+func (s *quicTurns) release(t *quicTurn) {
+	t.dgs, t.descs = t.dgs[:0], t.descs[:0]
+	t.read.Store(false)
+	s.free = append(s.free, t)
+}
+
+// give gives the datagrams of t to c, as one item. It never waits. The datagrams that do not fit in
+// the queue drop (quic_full), and give appends their frames to free.
+func (s *quicTurns) give(c *quicConn, t *quicTurn, free []packetio.Desc) []packetio.Desc {
+	k := 0
+	if len(t.dgs) > 0 {
+		k = c.reserve(len(t.dgs))
+	}
+	for _, dg := range t.dgs[k:] {
 		c.d.p.drop(ReasonQUICFull, len(dg.payload))
 	}
+	free = append(free, t.descs[k:]...)
+	if k == 0 {
+		s.release(t)
+		return free
+	}
+	t.dgs, t.descs = t.dgs[:k], t.descs[:k]
+	s.given = append(s.given, t)
+	// The send does not wait: each turn in c.in has datagrams that reserve counts, at most quicQueue.
+	c.in <- t
+	return free
+}
+
+// read returns the frames of the turns that quic-go read, and takes these turns back.
+func (s *quicTurns) read() []packetio.Desc {
+	s.done = s.done[:0]
+	n := 0
+	for ; n < len(s.given) && s.given[n].read.Load(); n++ {
+		s.done = append(s.done, s.given[n].descs...)
+		s.release(s.given[n])
+	}
+	if n > 0 {
+		s.given = append(s.given[:0], s.given[n:]...)
+	}
+	return s.done
 }
 
 func (c *quicConn) ReadFrom(b []byte) (int, net.Addr, error) {
@@ -67,24 +132,34 @@ func (c *quicConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	return n, addr, err
 }
 
-// ReadFromECN reads a datagram and the ECN bits of its IP header.
+// ReadFromECN reads a datagram and the ECN bits of its IP header. It takes a turn in one wake, and
+// gives its datagrams one by one.
 func (c *quicConn) ReadFromECN(b []byte) (int, net.Addr, uint8, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	select {
 	case <-c.closed:
 		return 0, nil, 0, net.ErrClosed
 	default:
 	}
-	select {
-	case in := <-c.in:
-		n := copy(b, in.buf[:in.n])
-		from, ecn := in.from, in.ecn
-		c.pool.Put(in)
-		return n, net.UDPAddrFromAddrPort(from), ecn, nil
-	case <-c.closed:
-		return 0, nil, 0, net.ErrClosed
-	case <-c.deadline.wait():
-		return 0, nil, 0, os.ErrDeadlineExceeded
+	if c.turn == nil {
+		select {
+		case c.turn = <-c.in:
+			c.next = 0
+		case <-c.closed:
+			return 0, nil, 0, net.ErrClosed
+		case <-c.deadline.wait():
+			return 0, nil, 0, os.ErrDeadlineExceeded
+		}
 	}
+	dg := c.turn.dgs[c.next]
+	n := copy(b, dg.payload)
+	c.queued.Add(-1)
+	if c.next++; c.next == len(c.turn.dgs) {
+		c.turn.read.Store(true)
+		c.turn = nil
+	}
+	return n, net.UDPAddrFromAddrPort(dg.from), dg.ecn, nil
 }
 
 func (c *quicConn) WriteTo(b []byte, addr net.Addr) (int, error) {
@@ -108,7 +183,12 @@ func (c *quicConn) WriteToECN(b []byte, addr net.Addr, ecn uint8) (int, error) {
 }
 
 func (c *quicConn) Close() error {
-	c.closeOnce.Do(func() { close(c.closed) })
+	c.closeOnce.Do(func() {
+		close(c.closed)
+		// A read that runs now ends before Close returns: the device closes the RX frames after Close.
+		c.mu.Lock()
+		c.mu.Unlock()
+	})
 	return nil
 }
 

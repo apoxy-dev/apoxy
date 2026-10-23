@@ -5,6 +5,7 @@ package dp
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 
 // OpenDevice opens the dedicated interface ifc with AF_XDP on all its queues. It takes all packets:
 // the kernel gets no packet of the interface. The relay XDP program drops the packets that the
-// impair map tells it to drop.
+// impair map tells it to drop. Transmit does not kick; the kicker of each TX queue does.
 func OpenDevice(ifc Interface) (*Device, error) {
 	link, err := net.InterfaceByName(ifc.Name)
 	if err != nil {
@@ -26,7 +27,7 @@ func OpenDevice(ifc Interface) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	xdpOpt := afxdp.WithXDP(xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
+	xdpOpt := afxdp.WithXDP(xdp.WithoutTxKick(), xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
 		return loadRelayXDP(sockets, queues, impair)
 	}))
 	// The kernel frees the queues of a stopped relay some milliseconds later, so a relay that
@@ -41,12 +42,17 @@ func OpenDevice(ifc Interface) (*Device, error) {
 		impair.Close()
 		return nil, fmt.Errorf("failed to open %s with AF_XDP: %w", ifc.Name, err)
 	}
-	d, err := newDevice(ifc, dev, uint32(link.MTU), impair)
+	var kicks []func() error
+	for _, s := range dev.Fleet().Sockets() {
+		kicks = append(kicks, s.KickIfNeeded)
+	}
+	d, err := newDevice(ifc, dev, kicks, uint32(link.MTU), impair)
 	if err != nil {
 		dev.Close()
 		impair.Close()
 		return nil, err
 	}
+	slog.Info("Opened the relay interface", "link", ifc.Name, "zero_copy", dev.Capabilities().ZeroCopy)
 	return d, nil
 }
 

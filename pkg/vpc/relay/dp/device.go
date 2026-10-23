@@ -11,6 +11,7 @@ import (
 	"math/bits"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,19 +43,24 @@ type Device struct {
 	// when no entry delays a packet.
 	impair *ebpf.Map
 	delays atomic.Pointer[delayTable]
+
+	hops sync.Pool // The next-hop caches of sendUDP. A send takes one, so no other goroutine uses it.
 }
 
 // txQueue is a transmit queue. The receive loops, quic-go and the netstack send from many
-// goroutines, so a lock keeps the queue to one at a time.
+// goroutines, so a lock keeps the queue to one at a time. Transmit does not kick: its kicker does.
 type txQueue struct {
 	mu     sync.Mutex
 	q      packetio.TxQueue
 	closed bool
+
+	kick func() error  // Tells the kernel about the new TX descriptors, when it asks for it.
+	wake chan struct{} // Size 1. A send after Transmit asks the kicker for a kick.
 }
 
-// newDevice builds the pipeline, the netstack and the QUIC conn on dev. mtu is the IP MTU of the
-// link, and impair the impair map.
-func newDevice(ifc Interface, dev packetio.Device, mtu uint32, impair *ebpf.Map) (*Device, error) {
+// newDevice builds the pipeline, the netstack and the QUIC conn on dev. kicks has the kick of each
+// TX queue of dev. mtu is the IP MTU of the link, and impair the impair map.
+func newDevice(ifc Interface, dev packetio.Device, kicks []func() error, mtu uint32, impair *ebpf.Map) (*Device, error) {
 	d := &Device{ifc: ifc, dev: dev, impair: impair}
 	for _, p := range ifc.Own {
 		switch a := p.Addr(); {
@@ -67,8 +73,11 @@ func newDevice(ifc Interface, dev packetio.Device, mtu uint32, impair *ebpf.Map)
 	if !d.src4.IsValid() && !d.src6.IsValid() {
 		return nil, errors.New("the relay interface has no own address")
 	}
+	if len(kicks) != dev.NumTxQueues() {
+		return nil, fmt.Errorf("the relay interface has %d TX queues and %d kicks", dev.NumTxQueues(), len(kicks))
+	}
 	for i := range dev.NumTxQueues() {
-		d.tx = append(d.tx, &txQueue{q: dev.TxQueue(i)})
+		d.tx = append(d.tx, &txQueue{q: dev.TxQueue(i), kick: kicks[i], wake: make(chan struct{}, 1)})
 	}
 	if len(d.tx) == 0 || dev.NumRxQueues() == 0 {
 		return nil, errors.New("the relay interface has no queues")
@@ -79,11 +88,12 @@ func newDevice(ifc Interface, dev packetio.Device, mtu uint32, impair *ebpf.Map)
 	}
 	d.ns = ns
 	d.p = New(deviceSender{d})
+	d.hops.New = func() any { return hopCache{} }
 	local := d.src4
 	if !local.IsValid() {
 		local = d.src6
 	}
-	d.conn = newQUICConn(d, netip.AddrPortFrom(local, portQUIC), dev.TxQueue(0).Region().FrameSize())
+	d.conn = newQUICConn(d, netip.AddrPortFrom(local, portQUIC))
 	return d, nil
 }
 
@@ -97,14 +107,21 @@ func (d *Device) PacketConn() net.PacketConn { return d.conn }
 // Interface is the interface of the device and its addresses.
 func (d *Device) Interface() Interface { return d.ifc }
 
-// Run receives on all queues and reads the impair map each second, until ctx is done. Then it
-// closes the QUIC conn, the netstack, the interface and the impair map.
+// Run receives on all queues, kicks each TX queue on its own OS thread, and reads the impair map
+// each second, until ctx is done. Then it closes the QUIC conn, the netstack, the interface and the
+// impair map.
 func (d *Device) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	for i := range d.dev.NumRxQueues() {
 		q := d.dev.RxQueue(i)
 		tx := &TxBatch{txq: d.tx[i%len(d.tx)], hops: hopCache{}}
 		g.Go(func() error { return d.receive(gctx, q, tx) })
+	}
+	for _, t := range d.tx {
+		g.Go(func() error {
+			t.kicker(gctx)
+			return nil
+		})
 	}
 	g.Go(func() error {
 		d.readDelays(gctx)
@@ -128,28 +145,46 @@ func (d *Device) Run(ctx context.Context) error {
 	return err
 }
 
-// receive is the receive loop of one queue. The pipeline sends the packets of each turn in tx.
+// receive is the receive loop of one queue. The pipeline sends the packets of each turn in tx. The
+// QUIC datagrams of a turn go to quic-go as one item, in their RX frames.
 func (d *Device) receive(ctx context.Context, q packetio.RxQueue, tx *TxBatch) error {
 	rx := make([]RxPacket, 0, rxBatch)
-	q.Fill(q.NumFreeFillSlots())
+	free := make([]packetio.Desc, 0, rxBatch)
+	var qt quicTurns
 	for ctx.Err() == nil {
-		n, err := q.Poll(100 * time.Millisecond)
-		if err != nil {
-			return fmt.Errorf("failed to receive on the relay interface: %w", err)
-		}
-		if n == 0 {
+		q.Recycle(qt.read())
+		q.Fill(q.NumFreeFillSlots())
+		descs := q.Receive(rxBatch)
+		if len(descs) == 0 {
+			// Poll only when no frame waits: in copy mode a poll also sends the TX ring of the socket,
+			// on this core.
+			if _, err := q.Poll(100 * time.Millisecond); err != nil {
+				return fmt.Errorf("failed to receive on the relay interface: %w", err)
+			}
 			continue
 		}
-		descs := q.Receive(min(n, rxBatch))
-		rx = rx[:0]
+		rx, free = rx[:0], free[:0]
+		turn := qt.next()
 		for _, desc := range descs {
-			if dg, ok := d.input(q.Region().Frame(desc)); ok {
+			frame := q.Region().Frame(desc)
+			switch to, dg := demux(frame, d.own); to {
+			case toPipeline:
 				rx = append(rx, RxPacket{From: dg.from, Payload: dg.payload})
+			case toQUIC:
+				turn.dgs, turn.descs = append(turn.dgs, dg), append(turn.descs, desc)
+				continue // The frame stays with the datagram until quic-go reads it.
+			case toNetstack:
+				d.ns.link.deliver(frame)
+			default:
+				// The drops counter is atomic. The drops of the packet I/O do not take the pipeline
+				// lock, because a send runs with or without it.
+				d.p.drop(ReasonDemux, len(frame))
 			}
+			free = append(free, desc)
 		}
+		free = qt.give(d.conn, turn, free)
 		d.p.Receive(rx, tx)
-		q.Recycle(descs)
-		q.Fill(q.NumFreeFillSlots())
+		q.Recycle(free)
 	}
 	return ctx.Err()
 }
@@ -174,23 +209,6 @@ func (d *Device) readDelays(ctx context.Context) {
 		case <-tick.C:
 		}
 	}
-}
-
-// input is the demux of one received frame. It returns the datagrams for the pipeline.
-func (d *Device) input(frame []byte) (datagram, bool) {
-	switch to, dg := demux(frame, d.own); to {
-	case toPipeline:
-		return dg, true
-	case toQUIC:
-		d.conn.deliver(dg)
-	case toNetstack:
-		d.ns.link.deliver(frame)
-	default:
-		// The drops counter is atomic. The drops of the packet I/O do not take the pipeline lock,
-		// because a send runs with or without it.
-		d.p.drop(ReasonDemux, len(frame))
-	}
-	return datagram{}, false
 }
 
 func (d *Device) own(a netip.Addr) bool {
@@ -230,8 +248,8 @@ func (d *Device) route(port uint16, to netip.AddrPort, ecn uint8, b []byte, hops
 // checks of gVisor going, so a new MAC of a next hop applies within about hopTTL.
 const hopTTL = time.Second
 
-// hopCache is the next-hop MACs of one RX goroutine, with the time it asked gVisor for each. Only
-// that goroutine uses it, so it has no lock.
+// hopCache is the next-hop MACs of one sending goroutine, with the time it asked gVisor for each.
+// Only that goroutine uses it, so it has no lock.
 type hopCache map[netip.Addr]hopEntry
 
 type hopEntry struct {
@@ -240,14 +258,14 @@ type hopEntry struct {
 }
 
 // mac returns the MAC of the next hop to dst. A miss, or an entry older than hopTTL, asks gVisor
-// one time. A nil cache asks gVisor each time.
+// one time.
 func (c hopCache) mac(ns *netstack, dst netip.Addr, now time.Time) (tcpip.LinkAddress, bool) {
 	hop := ns.nextHop(dst)
 	if e, ok := c[hop]; ok && now.Sub(e.at) < hopTTL {
 		return e.mac, true
 	}
 	mac, ok := ns.neighbor(hop)
-	if ok && c != nil {
+	if ok {
 		// There are few next hops, so a full cache is cleared. An LRU would write on each hit.
 		if len(c) >= stack.NeighborCacheSize {
 			clear(c)
@@ -307,7 +325,9 @@ func (s deviceSender) Send(b *TxBatch) {
 // datagram (no_neighbor). It never waits: when the impair map delays the datagram, a timer sends a
 // copy of it.
 func (d *Device) sendUDP(port uint16, to netip.AddrPort, ecn uint8, b []byte) {
-	f, ok := d.route(port, to, ecn, b, nil, time.Time{})
+	hops := d.hops.Get().(hopCache)
+	f, ok := d.route(port, to, ecn, b, hops, time.Now())
+	d.hops.Put(hops)
 	if !ok {
 		return
 	}
@@ -374,6 +394,12 @@ func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, fu
 	}
 	t.q.Free(descs[k:])
 	sent = t.q.Transmit(descs[:k])
+	if sent > 0 {
+		select {
+		case t.wake <- struct{}{}:
+		default: // The kicker has a wake that it did not take yet. Its next kick sends these frames too.
+		}
+	}
 	t.q.Free(descs[sent:k])
 	for _, j := range pkts[sent:k] {
 		full |= 1 << j
@@ -382,4 +408,20 @@ func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, fu
 		full |= 1 << i
 	}
 	return sent, full
+}
+
+// kicker kicks t on its own OS thread, so that in copy mode the kernel copies the frames on a second
+// core. One kick covers all wakes since the last kick. It runs until ctx is done.
+func (t *txQueue) kicker(ctx context.Context) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.wake:
+			// As before, a kick error is not fatal: the frames stay on the ring for the next kick.
+			_ = t.kick()
+		}
+	}
 }

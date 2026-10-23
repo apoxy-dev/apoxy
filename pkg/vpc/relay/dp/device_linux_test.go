@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -499,40 +500,196 @@ func TestDeviceForward(t *testing.T) {
 	}
 }
 
-// TestDeviceNextHop forwards packets to the MAC of the next hop. The device asks gVisor for a MAC
-// again after at most 1 s, so a new MAC of the peer applies, and a next hop with no MAC drops.
+// TestDeviceNextHop sends packets to the MAC of the next hop, from the pipeline and from the QUIC
+// conn. The device asks gVisor for a MAC again after at most 1 s, so a new MAC of the peer applies,
+// and a next hop with no MAC drops.
 func TestDeviceNextHop(t *testing.T) {
 	cases := []struct {
 		name   string
 		a2     netip.AddrPort
+		quic   bool // The QUIC conn sends to A2, else the pipeline forwards the packets of A1.
 		newMAC bool // The peer takes a new MAC after the first packets arrive.
 		want   bool // The packets arrive at A2, else they drop (no_neighbor).
 	}{
 		{name: "MAC of the peer", a2: netip.AddrPortFrom(peer4.Addr(), 9002), want: true},
 		{name: "new MAC of the peer", a2: netip.AddrPortFrom(peer4.Addr(), 9002), newMAC: true, want: true},
 		{name: "no neighbor", a2: netip.MustParseAddrPort("10.99.0.99:9002")},
+		{name: "new MAC of the peer, QUIC conn", a2: netip.AddrPortFrom(peer4.Addr(), 9002), quic: true, newMAC: true, want: true},
+		{name: "no neighbor, QUIC conn", a2: netip.MustParseAddrPort("10.99.0.99:9002"), quic: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t, 1)
 			f := e.forward(t, 1, tc.a2)
+			arrive := f.arrive
+			if tc.quic {
+				// arrive sends from the QUIC conn until a datagram arrives at A2, for at most wait.
+				arrive = func(t *testing.T, wait time.Duration) bool {
+					for end := time.Now().Add(wait); time.Now().Before(end); {
+						_, err := e.d.PacketConn().WriteTo([]byte("quic"), net.UDPAddrFromAddrPort(tc.a2))
+						require.NoError(t, err)
+						require.NoError(t, f.dst.SetReadDeadline(time.Now().Add(50*time.Millisecond)))
+						if _, _, err := f.dst.ReadFromUDPAddrPort(f.buf); err == nil {
+							return true
+						}
+					}
+					return false
+				}
+			}
 			if tc.newMAC {
-				require.True(t, f.arrive(t, 2*time.Second), "no packet with the first MAC")
-				// The kernel of the peer then resolves the relay again, which gives gVisor the new MAC.
+				// The peer sends first, as to a real relay. When gVisor resolves the peer itself,
+				// -race finds a race in gVisor at the MAC change.
+				e.ping(t, relay4.Addr())
+				require.True(t, arrive(t, 2*time.Second), "no packet with the first MAC")
+				// The kernel of the peer then resolves the relay again for the ping, which gives gVisor
+				// the new MAC. The QUIC conn only sends, so without the ping the peer does not.
 				h, err := netlink.NewHandleAt(e.peer)
 				require.NoError(t, err)
 				defer h.Close()
 				pe, err := h.LinkByName("pe0")
 				require.NoError(t, err)
 				require.NoError(t, h.LinkSetHardwareAddr(pe, net.HardwareAddr{0x02, 0, 0, 0, 0x99, 0x01}))
+				e.ping(t, relay4.Addr())
 			}
 			before := e.drops(t, dp.ReasonNoNeighbor)
-			assert.Equal(t, tc.want, f.arrive(t, 3*time.Second))
+			assert.Equal(t, tc.want, arrive(t, 3*time.Second))
 			if !tc.want {
 				assert.Greater(t, e.drops(t, dp.ReasonNoNeighbor), before)
 			}
 		})
 	}
+}
+
+// TestDeviceKick sends rounds of packets on each send path and reads all packets of a round before
+// the next round. Transmit does not kick; the kicker of the TX queue kicks after each batch, so a
+// round arrives in a few ms, not at the next poll of an idle RX goroutine (100 ms).
+func TestDeviceKick(t *testing.T) {
+	const rounds, burst = 40, 16
+	e := newEnv(t, 4)
+	quicPeer, rawPeer := netip.AddrPortFrom(peer4.Addr(), 7201), netip.AddrPortFrom(peer6.Addr(), 7202)
+	qc, rc := e.listen(t, quicPeer), e.listen(t, rawPeer)
+	e.reach(t, qc, quicPeer)
+	e.reach(t, rc, rawPeer)
+	f := e.forward(t, 4, netip.AddrPortFrom(peer4.Addr(), 9002))
+	require.True(t, f.arrive(t, 2*time.Second), "no packet after ARP")
+
+	// read returns the next datagram to c, or nil after 5 s.
+	read := func(c *net.UDPConn) func(t *testing.T) []byte {
+		buf := make([]byte, 1500)
+		return func(t *testing.T) []byte {
+			require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+			n, _, err := c.ReadFromUDPAddrPort(buf)
+			if err != nil {
+				return nil
+			}
+			return bytes.Clone(buf[:n])
+		}
+	}
+	cases := []struct {
+		name string
+		send func(t *testing.T, seq int) []byte // Sends packet seq and returns the bytes that arrive.
+		recv func(t *testing.T) []byte          // Returns the next packet that arrives, or nil.
+	}{
+		{
+			name: "pipeline batches of four RX queues",
+			send: func(t *testing.T, seq int) []byte {
+				f.send(t, seq%4, seq)
+				return inner(seq%4, seq)
+			},
+			recv: func(t *testing.T) []byte { return f.recv(t, 5*time.Second) },
+		},
+		{
+			name: "QUIC conn",
+			send: func(t *testing.T, seq int) []byte {
+				b := fmt.Appendf(nil, "quic %d", seq)
+				_, err := e.d.PacketConn().WriteTo(b, net.UDPAddrFromAddrPort(quicPeer))
+				require.NoError(t, err)
+				return b
+			},
+			recv: read(qc),
+		},
+		{
+			name: "RAW PacketOut",
+			send: func(t *testing.T, seq int) []byte {
+				b := fmt.Appendf(nil, "raw %d", seq)
+				po := &p4.PacketOut{Payload: b, Metadata: dp.PacketOutMeta{Kind: dp.KindRaw, To: rawPeer}.Metadata()}
+				require.NoError(t, e.d.Target().PacketOut(po))
+				return b
+			},
+			recv: read(rc),
+		},
+	}
+	seq := f.seq
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var times []time.Duration
+			for range rounds {
+				start, want := time.Now(), map[string]bool{}
+				for range burst {
+					seq++
+					want[string(tc.send(t, seq))] = true
+				}
+				for len(want) > 0 {
+					got := tc.recv(t)
+					require.NotNil(t, got, "%d packets of the round did not arrive", len(want))
+					delete(want, string(got))
+				}
+				times = append(times, time.Since(start))
+			}
+			slices.Sort(times)
+			assert.Less(t, times[len(times)/2], 20*time.Millisecond, "the median time of a round")
+		})
+	}
+}
+
+// TestDeviceQUICQueue sends bursts of datagrams to UDP 443 and reads them after each burst. The
+// queue holds 1024 datagrams, and each datagram over that drops (quic_full). A read gives the RX
+// frame of a datagram back, so the bursts can have more datagrams than the RX frames.
+func TestDeviceQUICQueue(t *testing.T) {
+	e := newEnv(t, 1)
+	c := e.listen(t, netip.AddrPortFrom(peer4.Addr(), 7301))
+	// The peer resolves the relay first. Else its kernel drops the first datagrams of a burst.
+	e.ping(t, relay4.Addr())
+	conn := e.d.PacketConn()
+	buf := make([]byte, 1500)
+	seq := 0
+	cases := []struct {
+		name          string
+		bursts, burst int
+		drops         int64 // The quic_full drops of each burst.
+	}{
+		{name: "bursts that fit, more datagrams than RX frames", bursts: 8, burst: 1000},
+		{name: "a burst over the queue", bursts: 1, burst: 1100, drops: 76},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for range tc.bursts {
+				before := e.drops(t, dp.ReasonQUICFull)
+				first := seq + 1
+				for i := range tc.burst {
+					seq++
+					_, err := c.WriteToUDPAddrPort(fmt.Appendf(nil, "q %d", seq), netip.AddrPortFrom(relay4.Addr(), 443))
+					require.NoError(t, err)
+					if i%64 == 63 {
+						time.Sleep(time.Millisecond) // So that the veth of the peer drops none.
+					}
+				}
+				// The device takes all datagrams of the burst before the first read.
+				time.Sleep(200 * time.Millisecond)
+				for i := first; i <= seq-int(tc.drops); i++ {
+					require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+					n, _, err := conn.ReadFrom(buf)
+					require.NoError(t, err, "datagram %d", i)
+					require.Equal(t, fmt.Sprintf("q %d", i), string(buf[:n]))
+				}
+				require.NoError(t, conn.SetReadDeadline(time.Now().Add(100*time.Millisecond)))
+				_, _, err := conn.ReadFrom(buf)
+				require.ErrorIs(t, err, os.ErrDeadlineExceeded, "a datagram over the queue")
+				assert.Equal(t, before+tc.drops, e.drops(t, dp.ReasonQUICFull))
+			}
+		})
+	}
+	require.NoError(t, conn.SetReadDeadline(time.Time{}))
 }
 
 func serverTLS(t *testing.T) *tls.Config {
