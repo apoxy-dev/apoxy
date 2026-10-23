@@ -33,6 +33,7 @@ type fakeTx struct {
 	cq      []packetio.Desc // On the completion ring.
 	wire    [][]byte        // The frames that the kernel sent, in order.
 	kicks   int
+	sends   int // The publish calls.
 	budget  func(kick int) int
 	kickErr func(kick int) error
 	hold    bool
@@ -63,6 +64,7 @@ func (f *fakeTx) counts() KickCounts {
 func (f *fakeTx) publish(descs []packetio.Desc) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.sends++
 	k := min(len(descs), f.ring-len(f.txr))
 	f.txr = append(f.txr, descs[:k]...)
 	return k

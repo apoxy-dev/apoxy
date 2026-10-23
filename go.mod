@@ -525,7 +525,7 @@ require (
 
 replace github.com/getsavvyinc/upgrade-cli => github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e
 
-replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261022210428-cc9f3fe73a85
+replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261023072036-3d2a3bd4fdb8
 
 replace github.com/atoonk/go-afxdp => github.com/apoxy-dev/go-afxdp v0.12.1-0.20261023071134-3d125660ded1
 

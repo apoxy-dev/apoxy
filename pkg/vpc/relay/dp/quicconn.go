@@ -19,8 +19,8 @@ import (
 // (quic_full).
 const quicQueue = 1024
 
-// quicConn is the UDP 443 socket of the relay on the dedicated interface. quic-go reads and
-// writes the ECN bits of the IP header through ReadFromECN and WriteToECN; each packet has DF.
+// quicConn is the UDP 443 socket of the relay on the dedicated interface. It reads and writes the ECN
+// bits of each packet, with DF, and WriteToGSO sends a batch of datagrams in one TX send.
 type quicConn struct {
 	d      *Device
 	local  netip.AddrPort
@@ -38,7 +38,7 @@ type quicConn struct {
 	deadline  deadline
 }
 
-var _ quic.ECNPacketConn = (*quicConn)(nil)
+var _ quic.GSOPacketConn = (*quicConn)(nil)
 
 func newQUICConn(d *Device, local netip.AddrPort) *quicConn {
 	c := &quicConn{d: d, local: local, in: make(chan *quicTurn, quicQueue), closed: make(chan struct{})}
@@ -169,6 +169,16 @@ func (c *quicConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 // WriteToECN sends a datagram with the ECN bits ecn and DF. With no next-hop MAC, or a full
 // transmit ring, it drops the datagram; it never waits.
 func (c *quicConn) WriteToECN(b []byte, addr net.Addr, ecn uint8) (int, error) {
+	return c.write(b, addr, 0, ecn)
+}
+
+// WriteToGSO sends the datagrams of b, each gsoSize bytes except the last, as WriteToECN sends one,
+// with one TX send for the batch. It returns len(b) also when it drops datagrams.
+func (c *quicConn) WriteToGSO(b []byte, addr net.Addr, gsoSize uint16, ecn uint8) (int, error) {
+	return c.write(b, addr, int(gsoSize), ecn)
+}
+
+func (c *quicConn) write(b []byte, addr net.Addr, seg int, ecn uint8) (int, error) {
 	select {
 	case <-c.closed:
 		return 0, net.ErrClosed
@@ -178,7 +188,7 @@ func (c *quicConn) WriteToECN(b []byte, addr net.Addr, ecn uint8) (int, error) {
 	if !ok {
 		return 0, errors.New("not a UDP address")
 	}
-	c.d.sendUDP(portQUIC, ua.AddrPort(), ecn, b)
+	c.d.sendUDP(portQUIC, ua.AddrPort(), ecn, segments{b: b, seg: seg})
 	return len(b), nil
 }
 

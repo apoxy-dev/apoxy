@@ -136,7 +136,7 @@ func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, i
 func (d *Device) Target() *Pipeline { return d.p }
 
 // PacketConn is the UDP 443 conn of the device, for a quic.Transport. It also implements
-// ReadFromECN and WriteToECN.
+// quic.GSOPacketConn: ReadFromECN, WriteToECN and WriteToGSO.
 func (d *Device) PacketConn() net.PacketConn { return d.conn }
 
 // Interface is the interface of the device and its addresses.
@@ -280,9 +280,9 @@ type udpFrame struct {
 	payload  []byte
 }
 
-// route returns the frame of a UDP datagram from the own address and port. With no next-hop MAC in
-// hops or gVisor it drops it (no_neighbor). Call it before a TX queue lock: a miss sends ARP or NDP.
-func (d *Device) route(port uint16, to netip.AddrPort, ecn uint8, b []byte, hops hopCache, now time.Time) (udpFrame, bool) {
+// route returns the frame header of a UDP datagram from the own address and port, or false with no
+// next-hop MAC in hops or gVisor. Call it before a TX queue lock: a miss sends ARP or NDP.
+func (d *Device) route(port uint16, to netip.AddrPort, ecn uint8, hops hopCache, now time.Time) (udpFrame, bool) {
 	to = netip.AddrPortFrom(to.Addr().Unmap(), to.Port())
 	src := d.src4
 	if to.Addr().Is6() {
@@ -290,10 +290,9 @@ func (d *Device) route(port uint16, to netip.AddrPort, ecn uint8, b []byte, hops
 	}
 	mac, ok := hops.mac(d.ns, to.Addr(), now)
 	if !src.IsValid() || !ok {
-		d.p.drop(ReasonNoNeighbor, len(b))
 		return udpFrame{}, false
 	}
-	return udpFrame{from: netip.AddrPortFrom(src, port), to: to, mac: mac, ecn: ecn, payload: b}, true
+	return udpFrame{from: netip.AddrPortFrom(src, port), to: to, mac: mac, ecn: ecn}, true
 }
 
 // hopTTL is the time that an RX goroutine uses a MAC from gVisor. Each new ask keeps the neighbor
@@ -327,9 +326,14 @@ func (c hopCache) mac(ns *netstack, dst netip.Addr, now time.Time) (tcpip.LinkAd
 	return mac, ok
 }
 
-// encode writes f into frame. It returns the frame length, or 0 when frame is too small.
+// encode writes f into frame. It returns the frame length, or 0 and counts a drop (mtu) when frame
+// is too small.
 func (d *Device) encode(f *udpFrame, frame []byte) int {
-	return encodeUDP(frame, tcpip.LinkAddress(d.ifc.MAC), f.mac, f.from, f.to, f.ecn, f.payload)
+	n := encodeUDP(frame, tcpip.LinkAddress(d.ifc.MAC), f.mac, f.from, f.to, f.ecn, f.payload)
+	if n == 0 {
+		d.p.drop(ReasonMTU, len(f.payload))
+	}
+	return n
 }
 
 // deviceSender gives the batches of the pipeline to the device.
@@ -342,7 +346,7 @@ func (s deviceSender) Send(b *TxBatch) {
 	if b.txq == nil {
 		for i := range b.Len() {
 			to, payload := b.Packet(i)
-			d.sendUDP(PortData, to, 0, payload)
+			d.sendUDP(PortData, to, 0, segments{b: payload})
 		}
 		return
 	}
@@ -351,13 +355,15 @@ func (s deviceSender) Send(b *TxBatch) {
 	t, now := d.delays.Load(), time.Now()
 	for i := range b.Len() {
 		to, payload := b.Packet(i)
-		f, ok := d.route(PortData, to, 0, payload, b.hops, now)
+		f, ok := d.route(PortData, to, 0, b.hops, now)
 		if !ok {
+			d.p.drop(ReasonNoNeighbor, len(payload))
 			continue
 		}
+		f.payload = payload
 		if t != nil {
 			if w := t.wait(PortData, f.to.Addr()); w > 0 {
-				d.sendLater(w, b.txq, f)
+				d.sendLater(w, b.txq, f, segments{b: payload})
 				continue
 			}
 		}
@@ -373,33 +379,70 @@ func (s deviceSender) Send(b *TxBatch) {
 	}
 }
 
-// sendUDP sends a UDP datagram from the own address and port. With no next-hop MAC it drops the
-// datagram (no_neighbor). It never waits: when the impair map delays the datagram, a timer sends a
-// copy of it.
-func (d *Device) sendUDP(port uint16, to netip.AddrPort, ecn uint8, b []byte) {
+// segments is UDP datagrams back to back in b, seg bytes each; the last can be shorter. With seg 0,
+// b is one datagram.
+type segments struct {
+	b   []byte
+	seg int
+}
+
+func (s segments) len() int {
+	if s.seg <= 0 || s.seg >= len(s.b) {
+		return 1
+	}
+	return (len(s.b) + s.seg - 1) / s.seg
+}
+
+// at returns datagram i.
+func (s segments) at(i int) []byte {
+	if s.seg <= 0 || s.seg >= len(s.b) {
+		return s.b
+	}
+	return s.b[i*s.seg : min((i+1)*s.seg, len(s.b))]
+}
+
+// sendUDP sends the datagrams of s from the own address and port to one destination. It never
+// waits: a datagram with no next-hop MAC drops (no_neighbor), and the impair map can delay all.
+func (d *Device) sendUDP(port uint16, to netip.AddrPort, ecn uint8, s segments) {
 	hops := d.hops.Get().(hopCache)
-	f, ok := d.route(port, to, ecn, b, hops, time.Now())
+	f, ok := d.route(port, to, ecn, hops, time.Now())
 	d.hops.Put(hops)
 	if !ok {
+		for i := range s.len() {
+			d.p.drop(ReasonNoNeighbor, len(s.at(i)))
+		}
 		return
 	}
 	h := f.to.Addr().As16()
 	q := d.tx[(uint32(h[15])|uint32(f.to.Port())<<8)%uint32(len(d.tx))]
 	if t := d.delays.Load(); t != nil {
 		if w := t.wait(port, f.to.Addr()); w > 0 {
-			d.sendLater(w, q, f)
+			d.sendLater(w, q, f, s)
 			return
 		}
 	}
-	d.transmit(q, len(b), func(frame []byte) int { return d.encode(&f, frame) })
+	d.sendSegments(q, f, s)
 }
 
-// sendLater sends a copy of f on q after w.
-func (d *Device) sendLater(w time.Duration, q *txQueue, f udpFrame) {
-	f.payload = bytes.Clone(f.payload)
-	time.AfterFunc(w, func() {
-		d.transmit(q, len(f.payload), func(frame []byte) int { return d.encode(&f, frame) })
-	})
+// sendSegments sends the datagrams of s with the header of f on q, one send for each rxBatch
+// datagrams. A datagram with no room in the ring drops (tx_full).
+func (d *Device) sendSegments(q *txQueue, f udpFrame, s segments) {
+	n := s.len()
+	for first := 0; first < n; first += rxBatch {
+		_, full := q.send(min(n-first, rxBatch), func(i int, frame []byte) int {
+			f.payload = s.at(first + i)
+			return d.encode(&f, frame)
+		})
+		for ; full != 0; full &= full - 1 {
+			d.p.drop(ReasonTXFull, len(s.at(first+bits.TrailingZeros64(full))))
+		}
+	}
+}
+
+// sendLater sends a copy of the datagrams of s with the header of f on q after w.
+func (d *Device) sendLater(w time.Duration, q *txQueue, f udpFrame, s segments) {
+	s.b = bytes.Clone(s.b)
+	time.AfterFunc(w, func() { d.sendSegments(q, f, s) })
 }
 
 // sendPacket sends a packet of the netstack, with its Ethernet header.
