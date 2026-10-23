@@ -143,8 +143,8 @@ func TestFloodRowsNotInDefaultRun(t *testing.T) {
 			t.Errorf("the hosts of the row %s read their NIC counters while the packets flow", r.ID)
 		}
 	}
-	if len(ids) != len(vpcRows)+len(floodRows) {
-		t.Errorf("the suite has %d rows, want %d", len(ids), len(vpcRows)+len(floodRows))
+	if want := len(vpcRows) + len(floodRows) + len(eniPerfTests(o)); len(ids) != want {
+		t.Errorf("the suite has %d perf test cases, want %d", len(ids), want)
 	}
 }
 

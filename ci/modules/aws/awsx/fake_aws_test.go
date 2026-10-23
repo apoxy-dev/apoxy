@@ -140,6 +140,31 @@ func TestFakeAWS(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+
+	t.Run("eni", func(t *testing.T) {
+		tags := map[string]string{"apoxy-perf": "true", "apoxy-perf-run": "3-1-vpc", "apoxy-perf-expires": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+		id, err := c.Launch(ctx, LaunchInput{Image: "ami-12c6146b", InstanceType: "c7a.8xlarge", UserData: "#cloud-config\n", Tags: tags, SubnetTag: "apoxy-perf=true"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		eni, err := c.AttachNewInterface(ctx, id, tags, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := c.NetworkInterfaces(ctx, "apoxy-perf-run=3-1-vpc"); err != nil || len(got) != 1 || !strings.HasPrefix(got[0], eni+" ") {
+			t.Fatalf("interfaces of the run = %v, %v, want %s", got, err, eni)
+		}
+		if err := c.Terminate(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		// The interface goes with the instance, or the delete removes it.
+		if _, err := c.DeleteNetworkInterfaces(ctx, "apoxy-perf-run=3-1-vpc", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := c.NetworkInterfaces(ctx, "apoxy-perf-run=3-1-vpc"); err != nil || len(got) != 0 {
+			t.Fatalf("interfaces after the cleanup = %v, %v", got, err)
+		}
+	})
 }
 
 func httpDo(t *testing.T, method, url string, body []byte) string {

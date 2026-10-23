@@ -68,6 +68,9 @@ func nodeCmd(ctx context.Context, args []string) error {
 	fs.BoolVar(&cfg.RelayXDPGeneric, "relay-xdp-generic", false, "with -relay-xdp: the program runs in generic mode, so the relay host keeps its channels and MTU and sets only IPv4 forwarding")
 	fs.BoolVar(&cfg.ServerXDP, "server-xdp", false, "the server host sets its link for XDP in driver mode during the row, as -relay-xdp does on the relay host")
 	fs.BoolVar(&cfg.NoNICPoll, "no-nic-poll", false, "a host with an XDP link does not read its NIC counters during the row; the ENA driver resets a link with full RX queues when the device does not answer a read")
+	fs.StringVar(&cfg.RelayLink, "relay-link", "", "link of the relay on the relay host: empty for the link of the default route, or "+relayLinkENI+
+		" for the ENI with device index 1, which perfrig finds in IMDS and takes from the OS (no address, no route), as on a production relay node; "+
+		"$DEV is then that link, and the relay host records its AF_XDP sockets, resets and kernel log")
 	out := fs.String("out", "", "write the result JSON to this file (default: stdout)")
 	fs.StringVar(&cfg.Name, "name", "", "result name")
 	fs.Var((*argvFlag)(&cfg.ServerArgv), "server-argv", "JSON argv of the server role; $SERVER_IP, $RELAY_IP and $CLIENT_IP expand to the host addresses, and $DEV to the network device of this host")
@@ -92,6 +95,9 @@ func nodeCmd(ctx context.Context, args []string) error {
 	}
 	if strings.ContainsAny(cfg.HostClass, " \t\n") {
 		return fmt.Errorf("bad -host-class %q: it must be one word", cfg.HostClass)
+	}
+	if cfg.RelayLink != "" && cfg.RelayLink != relayLinkENI {
+		return fmt.Errorf("bad -relay-link %q: want empty or %s", cfg.RelayLink, relayLinkENI)
 	}
 	cfg.Workload = "exec"
 	w, err := execWorkload(cfg)
@@ -180,8 +186,16 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 	if err != nil {
 		return nil, err
 	}
+	// The relay ENI has no address. ip stays the address of the host.
+	linkIP := ip
+	if role == "relay" && cfg.RelayLink == relayLinkENI {
+		if dev, err = relayENI(ctx, wait); err != nil {
+			return nil, err
+		}
+		linkIP = ""
+	}
 	if on, channels, generic := cfg.xdpLink(role); on {
-		undo, err := prepareXDP(ctx, dev, ip, channels, generic, linkSettle)
+		undo, err := prepareXDP(ctx, dev, linkIP, channels, generic, linkSettle)
 		if err != nil {
 			return nil, fmt.Errorf("set %s for XDP: %w", dev, err)
 		}
@@ -192,9 +206,10 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 		Workload:  w.Name,
 		Role:      role,
 		StartedAt: time.Now().UTC(),
-		Host:      Host{Arch: hostArch(), Class: cfg.HostClass, Kernel: kernelRelease(), CPUs: runtime.NumCPU(), CPUModel: cpuModel(), NIC: nic},
-		Settings:  Settings{DurationS: cfg.Duration.Seconds(), OmitS: cfg.Omit.Seconds(), MTU: nic.MTU, Streams: cfg.Streams, Bitrate: cfg.Bitrate, Window: cfg.Window},
-		Sysctls:   readSysctls(),
+		Host: Host{Arch: hostArch(), Class: cfg.HostClass, Kernel: kernelRelease(), CPUs: runtime.NumCPU(), CPUModel: cpuModel(), NIC: nic,
+			IRQTimeAccounting: irqTimeAccounting()},
+		Settings: Settings{DurationS: cfg.Duration.Seconds(), OmitS: cfg.Omit.Seconds(), MTU: nic.MTU, Streams: cfg.Streams, Bitrate: cfg.Bitrate, Window: cfg.Window},
+		Sysctls:  readSysctls(),
 	}
 	if cfg.Delay > 0 {
 		res.Settings.DelayMS, res.Settings.QueueLimit = float64(cfg.Delay)/float64(time.Millisecond), cfg.QueueLimit
@@ -267,7 +282,7 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 	}
 
 	run, err := nodeRep(ctx, cfg, w, role, env, dev, wait)
-	if err != nil {
+	if err != nil && run.Error == "" {
 		return nil, err
 	}
 	res.Runs = []Run{run}
@@ -275,11 +290,13 @@ func executeNode(ctx context.Context, cfg config, w Workload, role string, nodes
 	if err := stealErr(run, cfg.MaxSteal); err != nil {
 		return infra(err)
 	}
-	return res, nil
+	// A failed client or relay gives a result with the error.
+	return res, err
 }
 
 // nodeRep runs the role one time and measures its process, the host and the NIC.
 // The server ends when the client disconnects, the relay when the client stops it.
+// When the client or the relay fails, it returns the run with Error and the error.
 func nodeRep(ctx context.Context, cfg config, w Workload, role string, env Env, dev string, wait time.Duration) (Run, error) {
 	var argv []string
 	switch role {
@@ -301,10 +318,17 @@ func nodeRep(ctx context.Context, cfg config, w Workload, role string, env Env, 
 	if cfg.pollsNIC(role) {
 		peak = peakCounters(ctx, dev, time.Second)
 	}
+	var watch func() LinkRecord
+	if role == "relay" && cfg.RelayLink != "" {
+		watch = watchLink(ctx, dev)
+	}
 	host0, hostErr := readCPUTimes()
 	start := time.Now()
 	p, err := startProc(role, "", argv, env.vars(), prefix)
 	if err != nil {
+		if watch != nil {
+			watch()
+		}
 		return Run{}, err
 	}
 	// The client can wait for the other hosts before it starts the flows.
@@ -315,11 +339,18 @@ func nodeRep(ctx context.Context, cfg config, w Workload, role string, env Env, 
 	waitErr := p.wait(ctx, timeout)
 	elapsed := time.Since(start).Seconds()
 	host1, hostErr2 := readCPUTimes()
+	var link *LinkRecord
+	if watch != nil {
+		rec := watch()
+		link = &rec
+	}
 	nic1 := maxCounters(peak(), nicCounters(ctx, dev))
 	writeOutput(env.Dir, cfg.OutDir != "", p)
+	var failed error
 	switch {
-	case waitErr != nil && role == "client":
-		return Run{}, fmt.Errorf("client failed: %w\n%s", waitErr, tail(p.out.String(), 20))
+	case waitErr != nil && (role == "client" || role == "relay") && ctx.Err() == nil:
+		failed = fmt.Errorf("%s failed: %w\n%s", role, waitErr, tail(p.out.String(), 20))
+		run.Error = failed.Error()
 	case waitErr != nil && ctx.Err() == nil:
 		return Run{}, fmt.Errorf("%s failed: %w", role, waitErr)
 	case waitErr != nil:
@@ -329,7 +360,7 @@ func nodeRep(ctx context.Context, cfg config, w Workload, role string, env Env, 
 	run.CPU.WallS = round(elapsed, 3)
 	cu, cs := p.cpu()
 	gbps := 0.0
-	if role == "client" {
+	if role == "client" && failed == nil {
 		tp, err := w.Parse(p.out.Bytes(), nil)
 		if err != nil {
 			return Run{}, err
@@ -373,10 +404,17 @@ func nodeRep(ctx context.Context, cfg config, w Workload, role string, env Env, 
 		}
 	}
 	run.NIC = counterDeltas(nic0, nic1)
+	if link != nil {
+		link.XSKCounters = sumXSKCounters(run.NIC)
+		link.Resets = linkResets(run.NIC, link.CarrierDowns)
+		run.Link = link
+		slog.Info("Relay link", "dev", link.Dev, "xdp_mode", link.XDPMode, "xsk_sockets", link.XSKSockets, "zero_copy", link.ZeroCopy,
+			"resets", link.Resets, "carrier_downs", link.CarrierDowns, "xsk_stats", link.XSKStats, "xsk_counters", link.XSKCounters, "diag_error", link.DiagError)
+	}
 	run.Load1End = load1()
 	slog.Info("Rep done", "role", role, "gbps", run.Throughput.Gbps, "seconds", run.CPU.WallS,
-		"steal_percent", run.StealPercent, "nic_counters", run.NIC)
-	return run, nil
+		"steal_percent", run.StealPercent, "nic_counters", run.NIC, "error", run.Error)
+	return run, failed
 }
 
 // nodeNetemSteps returns the tc commands that delay the egress of dev with netem.

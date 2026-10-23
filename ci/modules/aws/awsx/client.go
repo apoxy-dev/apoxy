@@ -38,6 +38,12 @@ type ec2API interface {
 	CreateSecurityGroup(context.Context, *ec2.CreateSecurityGroupInput, ...func(*ec2.Options)) (*ec2.CreateSecurityGroupOutput, error)
 	AuthorizeSecurityGroupIngress(context.Context, *ec2.AuthorizeSecurityGroupIngressInput, ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupIngressOutput, error)
 	DeleteSecurityGroup(context.Context, *ec2.DeleteSecurityGroupInput, ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error)
+	CreateNetworkInterface(context.Context, *ec2.CreateNetworkInterfaceInput, ...func(*ec2.Options)) (*ec2.CreateNetworkInterfaceOutput, error)
+	AttachNetworkInterface(context.Context, *ec2.AttachNetworkInterfaceInput, ...func(*ec2.Options)) (*ec2.AttachNetworkInterfaceOutput, error)
+	DetachNetworkInterface(context.Context, *ec2.DetachNetworkInterfaceInput, ...func(*ec2.Options)) (*ec2.DetachNetworkInterfaceOutput, error)
+	ModifyNetworkInterfaceAttribute(context.Context, *ec2.ModifyNetworkInterfaceAttributeInput, ...func(*ec2.Options)) (*ec2.ModifyNetworkInterfaceAttributeOutput, error)
+	DescribeNetworkInterfaces(context.Context, *ec2.DescribeNetworkInterfacesInput, ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error)
+	DeleteNetworkInterface(context.Context, *ec2.DeleteNetworkInterfaceInput, ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error)
 }
 
 // Client calls EC2 and S3 in one region.

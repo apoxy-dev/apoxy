@@ -17,13 +17,21 @@ import (
 )
 
 // ethtoolCounters are the "ethtool -S" counters that the node result keeps.
-// The allowance counters are the EC2 network limits of the ENA driver.
+// The allowance counters are the EC2 network limits of the ENA driver. The
+// others count the resets of an ENA link and their causes.
 var ethtoolCounters = []string{
 	"bw_in_allowance_exceeded",
 	"bw_out_allowance_exceeded",
 	"pps_allowance_exceeded",
 	"conntrack_allowance_exceeded",
 	"linklocal_allowance_exceeded",
+	"total_resets",
+	"reset_fail",
+	"wd_expired",
+	"admin_to",
+	"missing_tx_cmpl",
+	"device_request_reset",
+	"interface_down",
 }
 
 // sysfsCounters are the drop counters in /sys/class/net/DEV/statistics.
@@ -178,7 +186,7 @@ func parseEthtoolStats(out string, names []string) map[string]int64 {
 	for _, line := range strings.Split(out, "\n") {
 		k, v, ok := strings.Cut(line, ":")
 		k = strings.TrimSpace(k)
-		if !ok || !(want[k] || rxQueuePackets.MatchString(k) || txQueueCounters.MatchString(k) || rxQueueDetail.MatchString(k)) {
+		if !ok || !(want[k] || rxQueuePackets.MatchString(k) || txQueueCounters.MatchString(k) || rxQueueDetail.MatchString(k) || queueXSKCounter.MatchString(k)) {
 			continue
 		}
 		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)

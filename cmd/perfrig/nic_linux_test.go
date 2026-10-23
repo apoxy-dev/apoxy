@@ -27,8 +27,8 @@ func TestWaitAddr(t *testing.T) {
 		wantErr string
 	}{
 		{name: "address stays", ctx: t.Context(), dev: "lo", ip: "127.0.0.1"},
-		{name: "other address", ctx: t.Context(), dev: "lo", ip: "192.0.2.1", wantErr: "lo did not keep the address 192.0.2.1"},
-		{name: "no link", ctx: t.Context(), dev: "perf-none", ip: "127.0.0.1", wantErr: "perf-none did not keep the address"},
+		{name: "other address", ctx: t.Context(), dev: "lo", ip: "192.0.2.1", wantErr: `lo did not stay up with the address "192.0.2.1"`},
+		{name: "no link", ctx: t.Context(), dev: "perf-none", ip: "127.0.0.1", wantErr: "perf-none did not stay up"},
 		{name: "context is done", ctx: done, dev: "lo", ip: "192.0.2.1", wantErr: "context canceled"},
 	}
 	for _, tc := range cases {

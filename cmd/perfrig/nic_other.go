@@ -15,3 +15,13 @@ func xdpFeatures(string) ([]string, uint32) { return nil, 0 }
 func prepareXDP(context.Context, string, string, uint32, bool, time.Duration) (func(), error) {
 	return nil, errors.New("XDP needs Linux")
 }
+
+// relayENI needs Linux.
+func relayENI(context.Context, time.Duration) (string, error) {
+	return "", errors.New("the relay ENI needs Linux")
+}
+
+// watchLink needs Linux. It records only the link name.
+func watchLink(_ context.Context, dev string) func() LinkRecord {
+	return func() LinkRecord { return LinkRecord{Dev: dev} }
+}

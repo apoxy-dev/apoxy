@@ -54,6 +54,9 @@ type config struct {
 	// NoNICPoll stops the read of the NIC counters of an XDP link during the row.
 	// The workload then reads the counters when it sends no packets.
 	NoNICPoll bool
+	// RelayLink is the link of the relay in "perfrig node": empty for the link of
+	// the default route, or relayLinkENI.
+	RelayLink string
 
 	// Exec workload flags.
 	Name        string

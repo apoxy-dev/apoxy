@@ -163,25 +163,27 @@ func Tags(runTag string, expires time.Time) []string {
 }
 
 // CloudInit returns the user data of a bench instance. cloud-init installs
-// iperf3 and ethtool, fetches perfagent, starts a systemd timer that powers
-// off the host after poweroff, runs perfagent, and then powers off the host.
-func CloudInit(agentURL, specURL string, poweroff time.Duration) (string, error) {
+// the packages, starts a systemd timer that powers off the host after
+// poweroff, fetches perfagent with curl, runs it, and then powers off the
+// host. curl and not write_files fetches perfagent: the cloud-init of Amazon
+// Linux 2023 is older than 23.1 and cannot fetch a file in write_files.
+func CloudInit(agentURL, specURL string, poweroff time.Duration, packages []string) (string, error) {
 	if poweroff < time.Minute {
 		return "", fmt.Errorf("poweroff %s is less than 1m", poweroff)
 	}
+	agent := "/opt/perf/" + Agent
 	cfg := map[string]any{
-		"packages": []string{"iperf3", "ethtool"},
-		"write_files": []map[string]any{{
-			"path":        "/opt/perf/" + Agent,
-			"permissions": "0755",
-			"source":      map[string]string{"uri": agentURL},
-		}},
 		// systemd-run stops the boot when it runs in bootcmd, so the timer starts here.
 		"runcmd": [][]string{
 			{"systemd-run", "--no-block", fmt.Sprintf("--on-active=%dmin", int(poweroff.Minutes())), "systemctl", "poweroff", "-ff"},
-			{"/opt/perf/" + Agent, "-ec2", "-spec", specURL},
+			{"curl", "-fsS", "--retry", "5", "--retry-all-errors", "--create-dirs", "-o", agent, agentURL},
+			{"chmod", "0755", agent},
+			{agent, "-ec2", "-spec", specURL},
 		},
 		"power_state": map[string]any{"mode": "poweroff", "condition": true, "delay": "now"},
+	}
+	if len(packages) > 0 {
+		cfg["packages"] = packages
 	}
 	// JSON is YAML. The encoder quotes the URLs.
 	var buf bytes.Buffer

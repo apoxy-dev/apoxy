@@ -31,6 +31,12 @@ func TestParseEthtool(t *testing.T) {
 	assert.Equal(t, map[string]int64{"bw_out_allowance_exceeded": 0, "bw_in_allowance_exceeded": 3, "queue_0_rx_cnt": 99, "queue_12_rx_cnt": 1, "queue_3_tx_cnt": 5, "queue_3_tx_queue_stop": 2,
 		"queue_3_rx_xdp_redirect": 7, "queue_3_rx_empty_rx_ring": 1}, got)
 	assert.Nil(t, parseEthtoolStats("NIC statistics:\n     tx_timeout: 0\n", ethtoolCounters))
+
+	// The Amazon ENA driver counts its resets and the AF_XDP work of each queue.
+	const amazon = "NIC statistics:\n     total_resets: 2\n     wd_expired: 1\n     queue_0_tx_xsk_cnt: 40\n" +
+		"     queue_1_tx_xsk_wakeup_request: 6\n     queue_1_rx_xsk_need_wakeup_set: 3\n     queue_1_tx_xsk_bytes_x: 1\n     xsk_unknown: 5\n"
+	assert.Equal(t, map[string]int64{"total_resets": 2, "wd_expired": 1, "queue_0_tx_xsk_cnt": 40, "queue_1_tx_xsk_wakeup_request": 6,
+		"queue_1_rx_xsk_need_wakeup_set": 3, "queue_1_tx_xsk_bytes_x": 1}, parseEthtoolStats(amazon, ethtoolCounters))
 }
 
 func TestParseSNMP(t *testing.T) {

@@ -51,6 +51,9 @@ type Host struct {
 	CPUModel string `json:"cpu_model,omitempty"`
 	// NIC is the network device of the host in "perfrig node".
 	NIC *NIC `json:"nic,omitempty"`
+	// IRQTimeAccounting is CONFIG_IRQ_TIME_ACCOUNTING of the kernel in "perfrig
+	// node": y, or n when the softirq time of /proc/stat is too low. Empty: unknown.
+	IRQTimeAccounting string `json:"irq_time_accounting,omitempty"`
 }
 
 // NIC describes the network device of a host.

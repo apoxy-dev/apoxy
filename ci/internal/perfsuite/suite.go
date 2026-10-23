@@ -25,6 +25,8 @@ type Row struct {
 	hosts int
 	// netem tells that a node row adds a netem delay on each host.
 	netem bool
+	// eni tells that the relay of this node perf test case runs on a second ENI of its host.
+	eni bool
 }
 
 // Hosts returns the number of hosts of a node row, or 0 for a row of the netns rig.
@@ -317,7 +319,8 @@ func profileArgs(role string) []string {
 
 // VPC is the VPC data path through the relay, with one floor row and info
 // rows. The node rows run on 2 or 3 EC2 hosts. The flood rows are node rows
-// that measure the XDP forward of the relay with no agent.
+// that measure the XDP forward of the relay with no agent. The ENI perf test
+// cases run the relay on a second ENI of its host, with AF_XDP zero-copy and with copy.
 var VPC = Suite{
 	Name:  "vpc",
 	Title: "VPC perf",
@@ -333,7 +336,7 @@ var VPC = Suite{
 		for _, r := range floodRows {
 			rows = append(rows, r.row(o))
 		}
-		return rows
+		return append(rows, eniPerfTests(o)...)
 	},
 }
 

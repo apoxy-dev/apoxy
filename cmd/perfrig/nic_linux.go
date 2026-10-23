@@ -106,7 +106,8 @@ func forwardingPath(dev string) string {
 }
 
 // setLink gives dev the settings c. The driver stops the link when the channels
-// change, so setLink then waits until ip stays on dev for the time settle.
+// change, so setLink then waits until ip stays on dev for the time settle. With
+// no ip, it waits until dev stays up for that time.
 func setLink(ctx context.Context, dev, ip string, c linkConf, settle time.Duration) error {
 	e, err := ethtool.NewEthtool()
 	if err != nil {
@@ -141,15 +142,20 @@ func setLink(ctx context.Context, dev, ip string, c linkConf, settle time.Durati
 
 // waitAddr waits until dev is up and has the address ip for the time hold. After
 // the link stops, the host can take the address off and get it again with DHCP.
+// With no ip, it waits until dev is up for the time hold.
 func waitAddr(ctx context.Context, dev, ip string, hold, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var since time.Time
 	for {
 		now := time.Now()
 		ifi, err := net.InterfaceByName(dev)
-		got, aerr := devIPv4(dev)
+		ok := err == nil && ifi.Flags&net.FlagRunning != 0
+		if ip != "" {
+			got, aerr := devIPv4(dev)
+			ok = ok && aerr == nil && got == ip
+		}
 		switch {
-		case err != nil || aerr != nil || got != ip || ifi.Flags&net.FlagRunning == 0:
+		case !ok:
 			since = time.Time{}
 		case since.IsZero():
 			since = now
@@ -157,7 +163,7 @@ func waitAddr(ctx context.Context, dev, ip string, hold, timeout time.Duration) 
 			return nil
 		}
 		if now.After(deadline) {
-			return fmt.Errorf("%s did not keep the address %s for %s in %s", dev, ip, hold, timeout)
+			return fmt.Errorf("%s did not stay up with the address %q for %s in %s", dev, ip, hold, timeout)
 		}
 		select {
 		case <-ctx.Done():

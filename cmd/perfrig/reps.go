@@ -26,6 +26,11 @@ type Run struct {
 	NIC map[string]int64 `json:"nic_counters,omitempty"`
 	// Rig has the rig counters that increased while the client ran, and their increase.
 	Rig map[string]int64 `json:"rig_counters,omitempty"`
+	// Error tells why the client or the relay of "perfrig node" failed. The run
+	// then has no throughput: a stall is a result of 0 Gbps.
+	Error string `json:"error,omitempty"`
+	// Link is the record of the relay link of "perfrig node -relay-link".
+	Link *LinkRecord `json:"relay_link,omitempty"`
 }
 
 // throughputFields are the workload result fields that Throughput has.

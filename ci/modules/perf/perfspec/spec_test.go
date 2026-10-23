@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -140,47 +141,62 @@ func TestNewKeys(t *testing.T) {
 func TestCloudInit(t *testing.T) {
 	agent := "https://b.s3.us-west-2.amazonaws.com/runs/x/in/bin/perfagent?X-Amz-Credential=a%2Fb&X-Amz-Signature=c"
 	spec := "https://b.s3.us-west-2.amazonaws.com/runs/x/in/spec.json?X-Amz-Signature=d&x=<y>"
-	ud, err := CloudInit(agent, spec, time.Hour)
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name     string
+		packages []string
+		poweroff time.Duration
+		wantErr  bool
+	}{
+		{name: "ubuntu host", packages: []string{"iperf3", "ethtool"}, poweroff: time.Hour},
+		{name: "relay host", packages: []string{"ethtool"}, poweroff: time.Hour},
+		{name: "no packages", poweroff: time.Hour},
+		{name: "poweroff under 1m", poweroff: time.Second, wantErr: true},
 	}
-	body, ok := strings.CutPrefix(ud, "#cloud-config\n")
-	if !ok {
-		t.Fatalf("no #cloud-config line: %q", ud)
-	}
-	if strings.Contains(body, "\t") {
-		t.Fatal("YAML must not have tabs")
-	}
-	var cfg struct {
-		Bootcmd    [][]string `json:"bootcmd"`
-		Packages   []string   `json:"packages"`
-		WriteFiles []struct {
-			Path   string            `json:"path"`
-			Source map[string]string `json:"source"`
-		} `json:"write_files"`
-		Runcmd     [][]string     `json:"runcmd"`
-		PowerState map[string]any `json:"power_state"`
-	}
-	if err := json.Unmarshal([]byte(body), &cfg); err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Bootcmd) > 0 {
-		t.Errorf("bootcmd = %v, want none", cfg.Bootcmd)
-	}
-	if got := strings.Join(cfg.Runcmd[0], " "); got != "systemd-run --no-block --on-active=60min systemctl poweroff -ff" {
-		t.Errorf("runcmd[0] = %s", got)
-	}
-	if cfg.WriteFiles[0].Path != "/opt/perf/perfagent" || cfg.WriteFiles[0].Source["uri"] != agent {
-		t.Errorf("write_files = %+v", cfg.WriteFiles)
-	}
-	if want := []string{"/opt/perf/perfagent", "-ec2", "-spec", spec}; !reflect.DeepEqual(cfg.Runcmd[1], want) {
-		t.Errorf("runcmd[1] = %v, want %v", cfg.Runcmd[1], want)
-	}
-	if cfg.PowerState["mode"] != "poweroff" || !reflect.DeepEqual(cfg.Packages, []string{"iperf3", "ethtool"}) {
-		t.Errorf("power_state = %v, packages = %v", cfg.PowerState, cfg.Packages)
-	}
-	if _, err := CloudInit(agent, spec, time.Second); err == nil {
-		t.Error("CloudInit takes a poweroff of less than 1m")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ud, err := CloudInit(agent, spec, tc.poweroff, tc.packages)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("CloudInit takes a poweroff of less than 1m")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, ok := strings.CutPrefix(ud, "#cloud-config\n")
+			if !ok {
+				t.Fatalf("no #cloud-config line: %q", ud)
+			}
+			if strings.Contains(body, "\t") {
+				t.Fatal("YAML must not have tabs")
+			}
+			var cfg struct {
+				Bootcmd    [][]string     `json:"bootcmd"`
+				Packages   []string       `json:"packages"`
+				WriteFiles []any          `json:"write_files"`
+				Runcmd     [][]string     `json:"runcmd"`
+				PowerState map[string]any `json:"power_state"`
+			}
+			if err := json.Unmarshal([]byte(body), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.Bootcmd) > 0 || len(cfg.WriteFiles) > 0 {
+				t.Errorf("bootcmd = %v, write_files = %v, want none", cfg.Bootcmd, cfg.WriteFiles)
+			}
+			want := [][]string{
+				{"systemd-run", "--no-block", "--on-active=60min", "systemctl", "poweroff", "-ff"},
+				{"curl", "-fsS", "--retry", "5", "--retry-all-errors", "--create-dirs", "-o", "/opt/perf/perfagent", agent},
+				{"chmod", "0755", "/opt/perf/perfagent"},
+				{"/opt/perf/perfagent", "-ec2", "-spec", spec},
+			}
+			if !reflect.DeepEqual(cfg.Runcmd, want) {
+				t.Errorf("runcmd = %v, want %v", cfg.Runcmd, want)
+			}
+			if cfg.PowerState["mode"] != "poweroff" || !slices.Equal(cfg.Packages, tc.packages) {
+				t.Errorf("power_state = %v, packages = %v, want %v", cfg.PowerState, cfg.Packages, tc.packages)
+			}
+		})
 	}
 }
 

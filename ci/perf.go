@@ -128,14 +128,24 @@ func (m *ApoxyCli) PerfVpc(
 	// ec2: the instance type of the hosts. The baseline has c7a.8xlarge only.
 	// +default="c7a.8xlarge"
 	instanceType string,
+	// ec2: the time for the perf test cases, from the launch of the first host (default:
+	// the default of the perf module). The instances live 60m, so keep it at
+	// 50m or less.
+	// +optional
+	deadline string,
+	// ec2: the image of the relay host of the perf test cases with the relay ENI (default:
+	// the Amazon Linux 2023 image of the perf module).
+	// +optional
+	relayImage string,
 ) (*dagger.Directory, error) {
 	o := perfsuite.Options{Duration: duration, Reps: reps, MinCPUs: minCpus, Only: rows, Profile: profile}
-	e := perfEC2{runTag: runTag, bucket: bucket, region: region, instanceType: instanceType, id: awsAccessKeyId, secret: awsSecretAccessKey, token: awsSessionToken}
+	e := perfEC2{runTag: runTag, bucket: bucket, region: region, instanceType: instanceType, deadline: deadline, relayImage: relayImage,
+		id: awsAccessKeyId, secret: awsSecretAccessKey, token: awsSessionToken}
 	return m.perfRun(ctx, src, perfsuite.VPC, where, o, e)
 }
 
 // PerfCleanup terminates the instances of a PerfNetns or PerfVpc run on EC2
-// and deletes its placement group and its inputs in S3. Run it after the run
+// and deletes its placement group, its network interfaces and its inputs in S3. Run it after the run
 // step in all cases: a cancel stops the run before its own cleanup. With
 // nothing left, it does nothing.
 func (m *ApoxyCli) PerfCleanup(
@@ -160,6 +170,7 @@ func (m *ApoxyCli) PerfCleanup(
 // perfEC2 has the EC2 arguments of a perf run.
 type perfEC2 struct {
 	runTag, bucket, region, instanceType string
+	deadline, relayImage                 string
 	id, secret, token                    *dagger.Secret
 }
 
@@ -202,11 +213,18 @@ func (m *ApoxyCli) perfRun(ctx context.Context, src *dagger.Directory, s perfsui
 	case where == "local":
 		out = dag.Perf().Local(bins, plan, dagger.PerfLocalOpts{Files: files})
 	case nodePlans != "":
+		eni, err := s.RelayENI(o)
+		if err != nil {
+			return nil, err
+		}
 		out = dag.Perf().Ec2Nodes(bins, nodePlans, e.runTag, e.bucket, e.id, e.secret, dagger.PerfEc2NodesOpts{
 			Files:        files,
 			Region:       e.region,
 			SessionToken: e.token,
 			InstanceType: e.instanceType,
+			Deadline:     e.deadline,
+			RelayEni:     eni,
+			RelayImage:   e.relayImage,
 		})
 	default:
 		out = dag.Perf().Ec2(bins, plan, e.runTag, e.bucket, e.id, e.secret, dagger.PerfEc2Opts{
@@ -214,6 +232,7 @@ func (m *ApoxyCli) perfRun(ctx context.Context, src *dagger.Directory, s perfsui
 			Region:       e.region,
 			SessionToken: e.token,
 			InstanceType: e.instanceType,
+			Deadline:     e.deadline,
 		})
 	}
 	return m.perfSummarize(ctx, src, s, o, out)

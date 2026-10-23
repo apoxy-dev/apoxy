@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +42,133 @@ type fakeEC2 struct {
 	sgInUse map[string]int
 	// noPublicIP answers DescribeInstances with no public IP this many times.
 	noPublicIP int
+	// pending answers DescribeInstances with the state pending this many times.
+	pending int
+	// enis are the network interfaces by ID. failAttach and failModify make
+	// those calls fail, and eniInUse answers in use to a delete of an ID n times.
+	enis       map[string]*types.NetworkInterface
+	failAttach bool
+	failModify bool
+	eniInUse   map[string]int
+}
+
+func (f *fakeEC2) CreateNetworkInterface(_ context.Context, in *ec2.CreateNetworkInterfaceInput, _ ...func(*ec2.Options)) (*ec2.CreateNetworkInterfaceOutput, error) {
+	if f.enis == nil {
+		f.enis = map[string]*types.NetworkInterface{}
+	}
+	e := &types.NetworkInterface{
+		NetworkInterfaceId: aws.String("eni-" + strconv.Itoa(len(f.enis)+1)),
+		SubnetId:           in.SubnetId,
+		Status:             types.NetworkInterfaceStatusAvailable,
+	}
+	for _, g := range in.Groups {
+		e.Groups = append(e.Groups, types.GroupIdentifier{GroupId: aws.String(g)})
+	}
+	for _, ts := range in.TagSpecifications {
+		if ts.ResourceType != types.ResourceTypeNetworkInterface {
+			return nil, &smithy.GenericAPIError{Code: "InvalidParameterValue", Message: "bad resource type"}
+		}
+		e.TagSet = append(e.TagSet, ts.Tags...)
+	}
+	f.enis[aws.ToString(e.NetworkInterfaceId)] = e
+	return &ec2.CreateNetworkInterfaceOutput{NetworkInterface: e}, nil
+}
+
+func (f *fakeEC2) eni(id *string) (*types.NetworkInterface, error) {
+	e, ok := f.enis[aws.ToString(id)]
+	if !ok {
+		return nil, &smithy.GenericAPIError{Code: "InvalidNetworkInterfaceID.NotFound"}
+	}
+	return e, nil
+}
+
+func (f *fakeEC2) AttachNetworkInterface(_ context.Context, in *ec2.AttachNetworkInterfaceInput, _ ...func(*ec2.Options)) (*ec2.AttachNetworkInterfaceOutput, error) {
+	e, err := f.eni(in.NetworkInterfaceId)
+	if err != nil {
+		return nil, err
+	}
+	if f.failAttach {
+		return nil, &smithy.GenericAPIError{Code: "UnauthorizedOperation"}
+	}
+	e.Status = types.NetworkInterfaceStatusInUse
+	e.Attachment = &types.NetworkInterfaceAttachment{
+		AttachmentId: aws.String("attach-" + aws.ToString(e.NetworkInterfaceId)),
+		InstanceId:   in.InstanceId,
+		DeviceIndex:  in.DeviceIndex,
+	}
+	return &ec2.AttachNetworkInterfaceOutput{AttachmentId: e.Attachment.AttachmentId}, nil
+}
+
+func (f *fakeEC2) DetachNetworkInterface(_ context.Context, in *ec2.DetachNetworkInterfaceInput, _ ...func(*ec2.Options)) (*ec2.DetachNetworkInterfaceOutput, error) {
+	for _, e := range f.enis {
+		if e.Attachment != nil && aws.ToString(e.Attachment.AttachmentId) == aws.ToString(in.AttachmentId) {
+			e.Attachment, e.Status = nil, types.NetworkInterfaceStatusAvailable
+			return &ec2.DetachNetworkInterfaceOutput{}, nil
+		}
+	}
+	return nil, &smithy.GenericAPIError{Code: "InvalidAttachmentID.NotFound"}
+}
+
+func (f *fakeEC2) ModifyNetworkInterfaceAttribute(_ context.Context, in *ec2.ModifyNetworkInterfaceAttributeInput, _ ...func(*ec2.Options)) (*ec2.ModifyNetworkInterfaceAttributeOutput, error) {
+	e, err := f.eni(in.NetworkInterfaceId)
+	if err != nil {
+		return nil, err
+	}
+	if f.failModify {
+		return nil, &smithy.GenericAPIError{Code: "UnauthorizedOperation"}
+	}
+	if in.Attachment != nil && e.Attachment != nil && aws.ToString(in.Attachment.AttachmentId) == aws.ToString(e.Attachment.AttachmentId) {
+		e.Attachment.DeleteOnTermination = in.Attachment.DeleteOnTermination
+	}
+	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
+}
+
+// DescribeNetworkInterfaces returns the interfaces of the IDs, or the interfaces with each tag of the filters.
+func (f *fakeEC2) DescribeNetworkInterfaces(_ context.Context, in *ec2.DescribeNetworkInterfacesInput, _ ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error) {
+	var out ec2.DescribeNetworkInterfacesOutput
+	for _, id := range in.NetworkInterfaceIds {
+		e, err := f.eni(&id)
+		if err != nil {
+			return nil, err
+		}
+		out.NetworkInterfaces = append(out.NetworkInterfaces, *e)
+	}
+	if len(in.NetworkInterfaceIds) > 0 {
+		return &out, nil
+	}
+	ids := slices.Sorted(maps.Keys(f.enis))
+	for _, id := range ids {
+		e := f.enis[id]
+		match := func(fl types.Filter) bool {
+			return slices.ContainsFunc(e.TagSet, func(t types.Tag) bool {
+				return "tag:"+aws.ToString(t.Key) == aws.ToString(fl.Name) && slices.Contains(fl.Values, aws.ToString(t.Value))
+			})
+		}
+		if !slices.ContainsFunc(in.Filters, func(fl types.Filter) bool { return !match(fl) }) {
+			out.NetworkInterfaces = append(out.NetworkInterfaces, *e)
+		}
+	}
+	return &out, nil
+}
+
+func (f *fakeEC2) DeleteNetworkInterface(_ context.Context, in *ec2.DeleteNetworkInterfaceInput, _ ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error) {
+	e, err := f.eni(in.NetworkInterfaceId)
+	if err != nil {
+		return nil, err
+	}
+	id := aws.ToString(e.NetworkInterfaceId)
+	if f.eniInUse[id] > 0 || e.Status != types.NetworkInterfaceStatusAvailable {
+		if f.eniInUse[id] > 0 {
+			f.eniInUse[id]--
+			if f.eniInUse[id] == 0 {
+				e.Attachment, e.Status = nil, types.NetworkInterfaceStatusAvailable
+			}
+		}
+		// This is the answer of EC2 to the delete of an attached interface.
+		return nil, &smithy.GenericAPIError{Code: "InvalidParameterValue", Message: "Network interface '" + id + "' is currently in use."}
+	}
+	delete(f.enis, id)
+	return &ec2.DeleteNetworkInterfaceOutput{}, nil
 }
 
 func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
@@ -154,6 +283,13 @@ func (f *fakeEC2) DescribeInstances(_ context.Context, in *ec2.DescribeInstances
 	}
 	f.filters = in.Filters
 	instances := f.instances
+	if f.pending > 0 {
+		f.pending--
+		instances = slices.Clone(instances)
+		for i := range instances {
+			instances[i].State = &types.InstanceState{Name: types.InstanceStateNamePending}
+		}
+	}
 	if f.noPublicIP > 0 {
 		f.noPublicIP--
 		instances = slices.Clone(instances)

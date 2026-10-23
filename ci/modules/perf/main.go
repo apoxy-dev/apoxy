@@ -41,6 +41,17 @@ const (
 	nodeGrace = 3 * time.Minute
 	// groupDeleteWait is the time to wait for the instances of a placement group to terminate.
 	groupDeleteWait = "4m"
+	// interfaceWait is the time to wait for the relay host to run before the
+	// attach of its second interface, and for the interfaces of a run to go
+	// with their instances.
+	interfaceWait = "4m"
+)
+
+// hostPackages are the packages of a bench host. The relay host on Amazon Linux
+// runs no iperf3.
+var (
+	hostPackages  = []string{"iperf3", "ethtool"}
+	relayPackages = []string{"ethtool"}
 )
 
 type Perf struct{}
@@ -172,7 +183,7 @@ func (m *Perf) Ec2(
 	}
 	launched := time.Now()
 	spec.Deadline = launched.Add(d).UTC()
-	id, err := r.launch(ctx, spec, keys.Spec(), agentURL, launchOpts{image: image, instanceType: instanceType, subnetTag: subnetTag}, launched)
+	id, err := r.launch(ctx, spec, keys.Spec(), agentURL, launchOpts{image: image, instanceType: instanceType, subnetTag: subnetTag, packages: hostPackages}, launched)
 	if err != nil {
 		return infra(runTag, err), nil
 	}
@@ -223,6 +234,16 @@ func (m *Perf) Ec2Nodes(
 	// Replaces the AWS endpoints, for example with a local AWS fake.
 	// +optional
 	endpoint string,
+	// The relay host gets a second network interface at device index 1, with
+	// no address in the kernel, as a production relay node has. It then runs
+	// relayImage.
+	// +optional
+	relayEni bool,
+	// The image of the relay host with relayEni. The default is Amazon Linux 2023
+	// with kernel 6.12, x86_64, 20261021, us-west-2, as the production relay
+	// nodes run.
+	// +default="ami-0ce59d8f4219233f7"
+	relayImage string,
 ) (*dagger.Directory, error) {
 	specs, err := perfspec.ParseNodePlans(plans)
 	if err != nil {
@@ -246,6 +267,10 @@ func (m *Perf) Ec2Nodes(
 	group := perfspec.GroupName(runTag)
 	// The deferred terminates run first, so the group is free when this runs.
 	defer r.deleteGroup(context.WithoutCancel(ctx), group)
+	if relayEni {
+		// EC2 deletes the interface with its instance. This deletes what a failure left.
+		defer r.deleteInterfaces(context.WithoutCancel(ctx))
+	}
 
 	// The bins and the files are the same for all hosts.
 	var shared perfspec.Spec
@@ -271,7 +296,11 @@ func (m *Perf) Ec2Nodes(
 		if err := r.uploads(ctx, &spec, func(name string) string { return keys.NodeOutput(role, name) }); err != nil {
 			return infra(runTag, err), nil
 		}
-		opts := launchOpts{image: image, instanceType: instanceType, subnetTag: subnetTag, subnet: subnet, group: group}
+		opts := launchOpts{image: image, instanceType: instanceType, subnetTag: subnetTag, subnet: subnet, group: group, packages: hostPackages}
+		eni := role == "relay" && relayEni
+		if eni {
+			opts.image, opts.packages = relayImage, relayPackages
+		}
 		id, err := r.launch(ctx, spec, keys.NodeSpec(role), agentURL, opts, launched)
 		if err != nil {
 			return infra(runTag, fmt.Errorf("launch the %s host: %w", role, err)), nil
@@ -289,6 +318,14 @@ func (m *Perf) Ec2Nodes(
 		}
 		ips[role] = ip
 		slog.Info("Launched a bench host", "role", role, "instance", id, "ip", ip, "subnet", subnet, "group", group, "deadline", deadlineAt)
+		if eni {
+			// The host finds the interface in IMDS when it starts its perf test cases.
+			eniID, err := inst.AttachNewInterface(ctx, perfspec.Tags(runTag, launched.Add(poweroff)), dagger.AwsInstanceAttachNewInterfaceOpts{Wait: interfaceWait})
+			if err != nil {
+				return infra(runTag, fmt.Errorf("attach the second interface of the relay host: %w", err)), nil
+			}
+			slog.Info("Attached the relay interface", "instance", id, "interface", eniID)
+		}
 	}
 
 	until := deadlineAt.Add(uploadSlack)
@@ -354,13 +391,15 @@ func (m *Perf) Ec2Cleanup(
 	// Do the S3 delete also when the terminate fails.
 	ids, terr := a.Reap(ctx, dagger.AwsReapOpts{Tag: perfspec.RunTag(runTag), All: true})
 	n, derr := a.Bucket(bucket).Delete(ctx, keys.Inputs())
-	// The group is free when its instances have terminated.
+	// The group and the interfaces are free when their instances have terminated.
 	group := perfspec.GroupName(runTag)
 	gerr := a.DeletePlacementGroup(ctx, group, dagger.AwsDeletePlacementGroupOpts{Wait: groupDeleteWait})
-	if err := errors.Join(terr, derr, gerr); err != nil {
+	enis, ierr := a.DeleteNetworkInterfaces(ctx, perfspec.RunTag(runTag), dagger.AwsDeleteNetworkInterfacesOpts{Wait: interfaceWait})
+	if err := errors.Join(terr, derr, gerr, ierr); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Terminated %d instances %v, deleted %d input objects and the placement group %s of run %s.", len(ids), ids, n, group, runTag), nil
+	return fmt.Sprintf("Terminated %d instances %v, deleted %d input objects, the placement group %s and %d network interfaces %v of run %s.",
+		len(ids), ids, n, group, len(enis), enis, runTag), nil
 }
 
 // ec2Run is the state of one Ec2 or Ec2Nodes call.
@@ -388,6 +427,7 @@ type launchOpts struct {
 	image, instanceType, subnetTag string
 	// subnet and group are set for the hosts of a multi-node run.
 	subnet, group string
+	packages      []string
 }
 
 // reap terminates the expired bench instances and deletes the placement
@@ -404,6 +444,24 @@ func (r *ec2Run) reap(ctx context.Context) {
 		slog.Warn("Failed to delete empty bench placement groups", "error", err)
 	} else if len(groups) > 0 {
 		slog.Info("Deleted empty bench placement groups", "groups", groups)
+	}
+	enis, err := r.aws.ReapNetworkInterfaces(ctx)
+	if err != nil {
+		slog.Warn("Failed to delete expired bench network interfaces", "error", err)
+	} else if len(enis) > 0 {
+		slog.Info("Deleted expired bench network interfaces", "interfaces", enis)
+	}
+}
+
+// deleteInterfaces deletes the network interfaces of the run.
+func (r *ec2Run) deleteInterfaces(ctx context.Context) {
+	enis, err := r.aws.DeleteNetworkInterfaces(ctx, perfspec.RunTag(r.runTag), dagger.AwsDeleteNetworkInterfacesOpts{Wait: interfaceWait})
+	if err != nil {
+		slog.Warn("Failed to delete the network interfaces of the run", "error", err)
+		return
+	}
+	if len(enis) > 0 {
+		slog.Info("Deleted the network interfaces of the run", "interfaces", enis)
 	}
 }
 
@@ -529,7 +587,7 @@ func (r *ec2Run) launch(ctx context.Context, spec perfspec.Spec, specKey, agentU
 	if err != nil {
 		return "", err
 	}
-	ud, err := perfspec.CloudInit(agentURL, specURL, poweroff)
+	ud, err := perfspec.CloudInit(agentURL, specURL, poweroff, o.packages)
 	if err != nil {
 		return "", err
 	}

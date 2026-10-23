@@ -457,6 +457,61 @@ func (m *Aws) Instances(
 	return c.Instances(ctx, tag)
 }
 
+// NetworkInterfaces returns the network interfaces with the tag, each as its ID
+// and its status. A check after a run uses it with the tag of the run.
+// +cache="never"
+func (m *Aws) NetworkInterfaces(
+	ctx context.Context,
+	// +default="apoxy-perf=true"
+	tag string,
+) ([]string, error) {
+	c, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.NetworkInterfaces(ctx, tag)
+}
+
+// DeleteNetworkInterfaces deletes the network interfaces with the tag and
+// returns their IDs. While an interface is attached, it tries again until wait
+// ends. An interface that EC2 deleted with its instance is not an error.
+// +cache="never"
+func (m *Aws) DeleteNetworkInterfaces(
+	ctx context.Context,
+	// KEY=VALUE tag of the interfaces, for example the tag of one run.
+	tag string,
+	// Time to wait for the instances of the interfaces to terminate, for example 3m.
+	// +default="0s"
+	wait string,
+) ([]string, error) {
+	d, err := time.ParseDuration(wait)
+	if err != nil {
+		return nil, fmt.Errorf("bad wait %q: %w", wait, err)
+	}
+	c, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.DeleteNetworkInterfaces(ctx, tag, d)
+}
+
+// ReapNetworkInterfaces deletes the available network interfaces with the tag
+// whose expiry tag (RFC 3339) is in the past, and returns their IDs.
+// +cache="never"
+func (m *Aws) ReapNetworkInterfaces(
+	ctx context.Context,
+	// +default="apoxy-perf=true"
+	tag string,
+	// +default="apoxy-perf-expires"
+	expiryTag string,
+) ([]string, error) {
+	c, err := m.client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.ReapNetworkInterfaces(ctx, tag, expiryTag, time.Now())
+}
+
 // parseTags reads KEY=VALUE tags.
 func parseTags(tags []string) (map[string]string, error) {
 	out := map[string]string{}
@@ -546,6 +601,34 @@ func (i *Instance) PublicIp(
 		return "", err
 	}
 	return c.PublicIP(ctx, i.InstanceId, d)
+}
+
+// AttachNewInterface makes a network interface with the tags in the subnet and
+// with the security groups of the instance, and attaches it at device index 1.
+// EC2 deletes it when the instance terminates. It waits for the instance to run.
+// It returns the interface ID.
+// +cache="never"
+func (i *Instance) AttachNewInterface(
+	ctx context.Context,
+	// KEY=VALUE tags of the interface.
+	tags []string,
+	// Time to wait for the instance to run, for example 3m.
+	// +default="3m"
+	wait string,
+) (string, error) {
+	d, err := time.ParseDuration(wait)
+	if err != nil {
+		return "", fmt.Errorf("bad wait %q: %w", wait, err)
+	}
+	t, err := parseTags(tags)
+	if err != nil {
+		return "", err
+	}
+	c, err := i.Aws.client(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.AttachNewInterface(ctx, i.InstanceId, t, d)
 }
 
 // Console returns the serial console output.
