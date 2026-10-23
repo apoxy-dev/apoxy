@@ -114,7 +114,7 @@ func encodeUDP(frame []byte, srcMAC, dstMAC tcpip.LinkAddress, src, dst netip.Ad
 		return 0
 	}
 	copy(frame[hdr:], payload)
-	srcIP, dstIP := tcpip.AddrFromSlice(src.Addr().AsSlice()), tcpip.AddrFromSlice(dst.Addr().AsSlice())
+	srcIP, dstIP := tcpipAddr(src.Addr()), tcpipAddr(dst.Addr())
 	udpLen := uint16(header.UDPMinimumSize + len(payload))
 	eth := header.Ethernet(frame)
 	off := header.EthernetMinimumSize

@@ -42,7 +42,7 @@ func newNetstack(ifc Interface, mtu uint32, out func(*stack.PacketBuffer) bool) 
 	for _, p := range ifc.Own {
 		a := tcpip.ProtocolAddress{
 			Protocol:          protocol(p.Addr()),
-			AddressWithPrefix: tcpip.AddressWithPrefix{Address: tcpip.AddrFromSlice(p.Addr().AsSlice()), PrefixLen: p.Bits()},
+			AddressWithPrefix: tcpip.AddressWithPrefix{Address: tcpipAddr(p.Addr()), PrefixLen: p.Bits()},
 		}
 		if err := n.s.AddProtocolAddress(nicID, a, stack.AddressProperties{}); err != nil {
 			n.close()
@@ -51,7 +51,7 @@ func newNetstack(ifc Interface, mtu uint32, out func(*stack.PacketBuffer) bool) 
 		routes = append(routes, tcpip.Route{Destination: a.AddressWithPrefix.Subnet(), NIC: nicID})
 	}
 	for _, g := range ifc.Gateways {
-		gw := tcpip.Route{Gateway: tcpip.AddrFromSlice(g.AsSlice()), NIC: nicID}
+		gw := tcpip.Route{Gateway: tcpipAddr(g), NIC: nicID}
 		switch {
 		case g.Is4() && !n.gw4.IsValid():
 			n.gw4, gw.Destination = g, header.IPv4EmptySubnet
@@ -73,6 +73,18 @@ func protocol(a netip.Addr) tcpip.NetworkProtocolNumber {
 	return ipv6.ProtocolNumber
 }
 
+// tcpipAddr converts a as tcpip.AddrFromSlice(a.AsSlice()) does, with no heap allocation: the
+// array of AsSlice goes to the heap because AddrFrom4Slice keeps its argument for a panic message.
+func tcpipAddr(a netip.Addr) tcpip.Address {
+	switch {
+	case a.Is4():
+		return tcpip.AddrFrom4(a.As4())
+	case a.Is6():
+		return tcpip.AddrFrom16(a.As16())
+	}
+	return tcpip.Address{}
+}
+
 // nextHop returns the next hop to dst: dst in an own subnet, else the gateway. It is not valid
 // when there is no gateway.
 func (n *netstack) nextHop(dst netip.Addr) netip.Addr {
@@ -92,7 +104,7 @@ func (n *netstack) neighbor(hop netip.Addr) (tcpip.LinkAddress, bool) {
 	if !hop.IsValid() {
 		return "", false
 	}
-	addr, proto := tcpip.AddrFromSlice(hop.AsSlice()), protocol(hop)
+	addr, proto := tcpipAddr(hop), protocol(hop)
 	// The first call has no callback, so that a miss only starts the resolution.
 	if err := n.s.GetLinkAddress(nicID, addr, tcpip.Address{}, proto, nil); err != nil {
 		return "", false
