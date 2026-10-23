@@ -533,7 +533,7 @@ func (s *session) bound(m bindingMsg) {
 // useConn makes the data frames of the relay peer go on the connection of s.
 func (s *session) useConn() error {
 	s.pc = peerconn.New(s.d.qc)
-	s.pc.HandleData(s.link.HandleData)
+	s.pc.HandleData(s.link)
 	return s.peer.UseQUIC(s.pc)
 }
 

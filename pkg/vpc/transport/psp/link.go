@@ -9,8 +9,6 @@ import (
 
 	"github.com/apoxy-dev/softpsp/engine"
 	"github.com/apoxy-dev/softpsp/keys"
-
-	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
 // Link is the routes of one relay connection. An inner packet uses the link of
@@ -21,6 +19,8 @@ type Link struct {
 	routes engine.Routes[*Peer]
 	// routed reports whether a relay of the link has a route to an address.
 	routed func(netip.Addr) bool
+	// rx is the state of the reader of the relay session of l in the receive pipe.
+	rx rxReader
 
 	// Guarded by b.mu.
 	sources []netip.Prefix
@@ -30,7 +30,8 @@ type Link struct {
 // AddLink adds a link with no sources and no relays. While the binding has one
 // link, each packet uses it.
 func (b *Binding) AddLink() (*Link, error) {
-	l := &Link{b: b}
+	l := &Link{b: b, rx: rxReader{lane: -1}}
+	l.rx.link = l
 	l.routed = func(a netip.Addr) bool {
 		_, ok := l.routes.Lookup(a)
 		return ok
@@ -156,19 +157,9 @@ func (l *Link) AddRelay(addr netip.AddrPort) (*Peer, error) {
 	return p, nil
 }
 
-// HandleData opens a data frame of the relay session of l and gives it to the driver.
-// Set it with (*peerconn.Conn).HandleData.
-func (l *Link) HandleData(frame []byte) {
-	b := l.b
-	d := b.drv.Load()
-	if d == nil {
-		b.stats.rxNoDriver.Add(1)
-		return
-	}
-	inner, err := peerconn.OpenData(frame, b.vni, l.routed)
-	if err != nil {
-		b.stats.rxDrops.Add(1)
-		return
-	}
-	b.deliver(d, frame, len(frame)-len(inner), false)
-}
+// HandleData takes a data frame of the relay session of l and waits as Binding.read does. One
+// goroutine calls it: set l with (*peerconn.Conn).HandleData.
+func (l *Link) HandleData(frame []byte) { l.b.read(&l.rx, frame) }
+
+// BatchEnd gives the data frames of one read of the relay session to the driver.
+func (l *Link) BatchEnd() { l.b.readEnd(&l.rx) }

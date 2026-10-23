@@ -27,7 +27,7 @@ func TestSendLanesClose(t *testing.T) {
 			for i := range frames {
 				frames[i] = seal(a, packet(a.v4, b.v4, 17, uint16(1000+i), 9, 200))
 			}
-			d := newDriver(a.b, nil)
+			d := fakeDriver(a.b, nil)
 			w1, _, err := write(d, frames, kept)
 			require.NoError(t, err)
 			l, c := d.lanes[1], a.b.laneConn(1)
@@ -86,7 +86,7 @@ func TestLaneQueue(t *testing.T) {
 				}
 
 				// A frame of lane 2 starts the senders of lanes 0 and 2.
-				d := newDriver(a.b, nil)
+				d := fakeDriver(a.b, nil)
 				defer d.Close()
 				first := frame(2)
 				w, _, err := write(d, [][]byte{first}, kept)
@@ -191,7 +191,7 @@ func TestLaneStopped(t *testing.T) {
 			offer(t, time.Now(), a, b)
 			flows := laneFlows(t, a, 3)
 			frame := func(lane int) []byte { return seal(a, packet(a.v4, b.v4, 17, flows[lane], 9, 100)) }
-			d := newDriver(a.b, nil)
+			d := fakeDriver(a.b, nil)
 			defer d.Close()
 			for i := range 3 {
 				d.lanes[i] = d.newLane(i, nil)
@@ -257,7 +257,7 @@ func TestWriteNoAllocs(t *testing.T) {
 	}
 	for _, kept := range []bool{false, true} {
 		t.Run(fmt.Sprintf("kept=%t", kept), func(t *testing.T) {
-			d := newDriver(a.b, nil)
+			d := fakeDriver(a.b, nil)
 			defer d.Close()
 			// The lanes have no goroutine, so the test is their sender.
 			for i := range lanes {

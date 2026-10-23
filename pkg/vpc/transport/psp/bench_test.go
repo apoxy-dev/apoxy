@@ -110,7 +110,7 @@ func BenchmarkRoundTrip(b *testing.B) {
 				ep := nullStack(b)
 				deliver = func(buf []byte, off int) bool { return inject(ep, buf[off:]) }
 			}
-			y.b.drv.Store(newDriver(y.b, deliver))
+			y.b.drv.Store(fakeDriver(y.b, deliver))
 			tx := &driver{b: x.b}
 			pkt := packet(x.v4, y.v4, 6, 1, 2, DefaultMTU)
 			phy := make([]byte, 2048)
@@ -118,7 +118,7 @@ func BenchmarkRoundTrip(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				n, _ := tx.VirtToPhy(pkt, phy)
-				y.b.receive(0, phy[addrLen:n])
+				y.b.demux.Handle(phy[addrLen:n], nil)
 			}
 			require.Equal(b, uint64(b.N), y.b.Stats().RxPackets)
 		})
@@ -151,7 +151,7 @@ func BenchmarkHandleData(b *testing.B) {
 		b.Run(fmt.Sprintf("clamp=%d", clamp), func(b *testing.B) {
 			x, y := newPairMTU(b, MaxMTU)
 			y.b.SetClampMTU(clamp)
-			y.b.drv.Store(newDriver(y.b, func([]byte, int) bool { return true }))
+			y.b.drv.Store(fakeDriver(y.b, func([]byte, int) bool { return true }))
 			frame := peerconn.EncodeData(nil, testVNI, packet(x.v4, y.v4, 6, 1, 2, DefaultMTU))
 			b.SetBytes(int64(len(frame)))
 			b.ReportAllocs()
@@ -177,7 +177,7 @@ func BenchmarkWriteFrames(b *testing.B) {
 			require.NoError(b, err)
 			defer sink.Close()
 			x.peer.SetAddr(sink.LocalAddr().(*net.UDPAddr).AddrPort())
-			d := newDriver(x.b, nil)
+			d := fakeDriver(x.b, nil)
 			if !bc.batch {
 				d.tx = nil
 			}
@@ -214,7 +214,7 @@ func BenchmarkLaneQueue(b *testing.B) {
 		b.Run(fmt.Sprintf("kept=%t/cold=%t", bc.kept, bc.cold), func(b *testing.B) {
 			x, y := newPair(b)
 			offer(b, time.Now(), x, y)
-			d := newDriver(x.b, nil)
+			d := fakeDriver(x.b, nil)
 			defer d.Close()
 			l := d.newLane(0, nil)
 			d.lanes[0] = l

@@ -110,7 +110,7 @@ func TestWriteFrames(t *testing.T) {
 	for _, tc := range cases {
 		for _, kept := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/kept=%t", tc.name, kept), func(t *testing.T) {
-				d := newDriver(a.b, nil)
+				d := fakeDriver(a.b, nil)
 				if !tc.batch {
 					d.tx = nil
 				}
@@ -137,7 +137,7 @@ func TestWriteFrames(t *testing.T) {
 
 	require.NoError(t, a.b.Close())
 	for _, kept := range []bool{false, true} {
-		w, _, err := write(newDriver(a.b, nil), [][]byte{frame}, kept)
+		w, _, err := write(fakeDriver(a.b, nil), [][]byte{frame}, kept)
 		assert.ErrorIs(t, err, net.ErrClosed)
 		allReleased(t, w)
 	}
@@ -186,7 +186,7 @@ func TestSendLanes(t *testing.T) {
 			if tc.noSocket > 0 {
 				require.NoError(t, a.b.laneConns[tc.noSocket].Swap(nil).Close())
 			}
-			d := newDriver(a.b, nil)
+			d := fakeDriver(a.b, nil)
 			if !tc.batch {
 				d.tx = nil
 			}
@@ -292,7 +292,7 @@ func TestLaneOrder(t *testing.T) {
 				laneOf[a.b.laneConn(byte(i)).LocalAddr().(*net.UDPAddr).AddrPort().Port()] = i
 			}
 
-			d := newDriver(a.b, nil)
+			d := fakeDriver(a.b, nil)
 			var want [lanes][][]byte
 			var got [lanes]int
 			var writes []*keptWrite
@@ -463,11 +463,11 @@ func TestQUIC(t *testing.T) {
 	qa, qb := quicPair(t, a.tr, b.tr)
 	pa, pb := peerconn.New(qa), peerconn.New(qb)
 	t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
-	pb.HandleData(b.l.HandleData)
+	pb.HandleData(b.l)
 	got := &capture{}
-	b.b.drv.Store(newDriver(b.b, got.deliver))
+	b.b.drv.Store(fakeDriver(b.b, got.deliver))
 
-	d := newDriver(a.b, nil)
+	d := fakeDriver(a.b, nil)
 	send := func(pkt []byte, kept bool) func() {
 		return func() {
 			phy := make([]byte, 2048)
@@ -544,14 +544,14 @@ func TestPeerQUIC(t *testing.T) {
 	conn := func(qa, qb *quic.Conn, f *frames) *peerconn.Conn {
 		pa, pb := peerconn.New(qa), peerconn.New(qb)
 		t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
-		pb.HandleData(func(frame []byte) {
+		pb.HandleData(handlerFunc(func(frame []byte) {
 			_, inner, err := peerconn.DecodeData(frame)
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			if err == nil {
 				f.got = append(f.got, bytes.Clone(inner))
 			}
-		})
+		}))
 		return pa
 	}
 	ofPeer, ofOther := conn(qa1, qb1, &onPeer), conn(qa2, qb2, &onOther)
@@ -651,27 +651,36 @@ func TestPeerQUIC(t *testing.T) {
 	})
 }
 
-// TestHandleDataConcurrent gives data frames to a tun driver from several
-// readers at once, as the links of several relay sessions do.
+// TestHandleDataConcurrent gives data frames to a tun driver from the links of several relay
+// sessions at once. One goroutine reads each link, as the session reader does.
 func TestHandleDataConcurrent(t *testing.T) {
-	a, b := newPair(t)
-	const readers, frames = 4, 200
-	dev := newFakeTun(readers * frames)
+	_, b := newPair(t)
+	const links, frames = 4, 200
+	dev := newFakeTun(links * frames)
 	td, err := b.b.Tun(dev)
 	require.NoError(t, err)
 	defer td.Close()
 	var wg sync.WaitGroup
-	for r := range readers {
+	for r := range links {
+		l, err := b.b.AddLink()
+		require.NoError(t, err)
+		relay, err := l.AddRelay(netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), uint16(1+r)))
+		require.NoError(t, err)
+		src := netip.AddrFrom4([4]byte{10, 5, 0, byte(1 + r)})
+		require.NoError(t, b.b.AddRoute(netip.PrefixFrom(src, 32), relay))
 		wg.Go(func() {
 			for i := range frames {
-				pkt := packet(a.v4, b.v4, 17, uint16(r), uint16(i), 100+i)
-				b.l.HandleData(peerconn.EncodeData(nil, testVNI, pkt))
+				l.HandleData(peerconn.EncodeData(nil, testVNI, packet(src, b.v4, 17, uint16(r), uint16(i), 100+i)))
+				if i%16 == 15 {
+					l.BatchEnd()
+				}
 			}
+			l.BatchEnd()
 		})
 	}
 	wg.Wait()
-	assert.Equal(t, Stats{RxPackets: readers * frames}, b.b.Stats())
-	assert.Len(t, dev.out, readers*frames)
+	assert.Equal(t, Stats{RxPackets: links * frames}, b.b.Stats())
+	assert.Len(t, dev.out, links*frames)
 }
 
 // relayOf adds a relay to the link of n at the socket of the other node, with
@@ -732,7 +741,7 @@ func TestSend(t *testing.T) {
 	a, b := newPair(t)
 	offer(t, time.Now(), a, b)
 	got := &capture{}
-	b.b.drv.Store(newDriver(b.b, got.deliver))
+	b.b.drv.Store(fakeDriver(b.b, got.deliver))
 	far := netip.MustParseAddr("10.9.9.9")
 	p1, p2 := packet(a.v4, b.v4, 17, 1, 2, 100), packet(a.v6, b.v6, 17, 3, 4, DefaultMTU)
 	cases := []struct {

@@ -187,7 +187,7 @@ func TestTooBig(t *testing.T) {
 			}
 			a.b.SetClampMTU(tc.clamp)
 			c := &capture{}
-			d := newDriver(a.b, c.deliver)
+			d := fakeDriver(a.b, c.deliver)
 			a.b.drv.Store(d)
 			pkt := tc.pkt(a)
 			limit := a.b.pathMTU(tc.quic)
@@ -219,7 +219,7 @@ func TestTooBig(t *testing.T) {
 		// One error each second, so that the time of the test has no effect.
 		a.b.ptb.rate.Store(1)
 		c := &capture{}
-		d := newDriver(a.b, c.deliver)
+		d := fakeDriver(a.b, c.deliver)
 		a.b.drv.Store(d)
 		for range 3 {
 			n, _ := d.VirtToPhy(udp(true, false, 1350)(a), make([]byte, 2048))

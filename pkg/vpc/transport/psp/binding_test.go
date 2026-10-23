@@ -3,7 +3,6 @@
 package psp
 
 import (
-	"bytes"
 	"encoding/binary"
 	"net"
 	"net/netip"
@@ -151,7 +150,7 @@ func TestReceive(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.drv != nil {
-				d := newDriver(b.b, tc.drv.deliver)
+				d := fakeDriver(b.b, tc.drv.deliver)
 				b.b.drv.Store(d)
 				defer b.b.drv.Store(nil)
 			}
@@ -177,7 +176,7 @@ func TestDemux(t *testing.T) {
 	a, b := newPair(t)
 	offer(t, time.Now(), a, b)
 	c := &capture{}
-	b.b.drv.Store(newDriver(b.b, c.deliver))
+	b.b.drv.Store(fakeDriver(b.b, c.deliver))
 	var probes [][]byte
 	cases := []struct {
 		name      string
@@ -236,9 +235,10 @@ func xferQUIC(t *testing.T, from *node, pkt []byte) []byte {
 	require.Zero(t, binary.BigEndian.Uint16(f[16:laneOff]), "not a data frame")
 	to := from.other.b
 	c := &capture{}
-	to.drv.Store(newDriver(to, c.deliver))
+	to.drv.Store(fakeDriver(to, c.deliver))
 	defer to.drv.Store(nil)
 	from.other.l.HandleData(f[addrLen:])
+	from.other.l.BatchEnd()
 	if len(c.got) == 0 {
 		return nil
 	}
@@ -680,8 +680,8 @@ func TestLinks(t *testing.T) {
 	})
 }
 
-// TestLinkReceive gives a binding with two links a packet whose source only the
-// other link routes. A link accepts only the sources that it routes.
+// TestLinkReceive gives a binding with two links a PSP packet whose source only the second
+// link routes. The packet drops; TestHandleData has the same check for data frames.
 func TestLinkReceive(t *testing.T) {
 	a, b := newPair(t)
 	offer(t, time.Now(), a, b)
@@ -691,28 +691,12 @@ func TestLinkReceive(t *testing.T) {
 	require.NoError(t, err)
 	src := netip.MustParseAddr("10.5.0.1")
 	require.NoError(t, b.b.AddRoute(netip.PrefixFrom(src, 32), p2))
-	pkt := packet(src, b.v4, 17, 1, 2, 100)
-	frame := peerconn.EncodeData(nil, testVNI, pkt)
 	got := &capture{}
-	cases := []struct {
-		name string
-		give func()
-		want Stats
-	}{
-		{"PSP packet of the first link", func() { require.NotNil(t, xferRaw(a, pkt)) }, Stats{RxDrops: 1}},
-		{"data frame of the first link", func() { b.l.HandleData(bytes.Clone(frame)) }, Stats{RxDrops: 1}},
-		{"data frame of the second link", func() { l2.HandleData(bytes.Clone(frame)) }, Stats{RxPackets: 1}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			b.b.drv.Store(newDriver(b.b, got.deliver))
-			defer b.b.drv.Store(nil)
-			before := b.b.Stats()
-			tc.give()
-			assert.Equal(t, tc.want, sub(b.b.Stats(), before))
-		})
-	}
-	assert.Len(t, got.got, 1)
+	b.b.drv.Store(fakeDriver(b.b, got.deliver))
+	defer b.b.drv.Store(nil)
+	require.NotNil(t, xferRaw(a, packet(src, b.v4, 17, 1, 2, 100)))
+	assert.Equal(t, Stats{RxDrops: 1}, b.b.Stats())
+	assert.Empty(t, got.got)
 }
 
 // xferRaw seals pkt on from and gives the PSP packet to the receive path of the
@@ -720,7 +704,7 @@ func TestLinkReceive(t *testing.T) {
 func xferRaw(from *node, pkt []byte) []byte {
 	phy := seal(from, pkt)
 	if phy != nil {
-		from.other.b.receive(0, phy[addrLen:])
+		from.other.b.demux.Handle(phy[addrLen:], nil)
 	}
 	return phy
 }

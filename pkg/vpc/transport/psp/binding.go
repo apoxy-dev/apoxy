@@ -68,25 +68,33 @@ type Demux struct {
 	Probe func(pkt []byte, from net.Addr)
 
 	b atomic.Pointer[Binding]
+	// rx is the state of the read loop of the agent socket in the receive pipe. Only that read
+	// loop uses it.
+	rx rxReader
 }
 
-// Handle runs on the QUIC read loop. It waits only while the receive pipe is full.
+// Handle runs on the read loop of the agent socket. It waits as Binding.read does.
 func (m *Demux) Handle(pkt []byte, from net.Addr) {
 	if len(pkt) > 0 && pkt[0] == p2p.TypeProbe && m.Probe != nil {
 		m.Probe(pkt, from)
 		return
 	}
 	if b := m.b.Load(); b != nil {
-		b.receive(0, pkt)
+		b.receive(&m.rx, pkt)
+		return
 	}
+	// No binding: the set of a read for the old binding counts in its stats.
+	m.rx.retire(nil)
 }
 
 // BatchEnd is the NonQUICBatchEnd of the transport. It gives the packets of one read to
 // the TUN device or the netstack.
 func (m *Demux) BatchEnd() {
 	if b := m.b.Load(); b != nil {
-		b.batchEnd(0)
+		b.readEnd(&m.rx)
+		return
 	}
+	m.rx.retire(nil)
 }
 
 // Config configures a Binding.
@@ -149,8 +157,11 @@ type Binding struct {
 	// sendWarn logs one time that a lane has no send socket.
 	sendWarn sync.Once
 	// rxMu guards the receive queue and the read batch of a driver with no receive
-	// pipe, because lane sockets can read too.
+	// pipe, because lane sockets and relay sessions read too.
 	rxMu sync.Mutex
+	// lanes is the state of the read loop of each lane socket in the receive pipe. Index 0 is not
+	// used: the demux has the reader of the agent socket.
+	lanes [keys.MaxLanes]rxReader
 
 	mu      sync.Mutex
 	links   []*Link
@@ -215,6 +226,9 @@ func New(cfg Config) (*Binding, error) {
 	}
 	b.ptb.rate.Store(tooBigRate)
 	b.slots.Store(new([]*peerconn.Conn))
+	for i := range b.lanes {
+		b.lanes[i].lane = i
+	}
 	if b.onTrip == nil {
 		b.onTrip = func(*Peer, Trip) {}
 	}
@@ -234,11 +248,15 @@ func New(cfg Config) (*Binding, error) {
 	return b, nil
 }
 
-// Close stops the driver and the receive SAs, and waits for the inject workers.
-// It does not close the transport.
+// Close stops the driver and the receive SAs, ends the read batch of a driver with no pipe, and
+// waits for the inject workers. It does not close the transport.
 func (b *Binding) Close() error {
 	b.demux.b.CompareAndSwap(b, nil)
 	b.cancel()
+	// The read batch of a driver without a pipe has no other end after the cancel.
+	if d := b.drv.Load(); d != nil && d.pipe == nil {
+		d.endBatch()
+	}
 	b.mu.Lock()
 	for _, p := range b.peers {
 		b.removeLocked(p)
@@ -481,8 +499,8 @@ func (b *Binding) ReadLanes() error {
 		tr := &quic.Transport{
 			Conn:                 c,
 			EnableGRO:            b.tr.EnableGRO,
-			NonQUICPacketHandler: func(pkt []byte, _ net.Addr) { b.receive(i, pkt) },
-			NonQUICBatchEnd:      func() { b.batchEnd(i) },
+			NonQUICPacketHandler: func(pkt []byte, _ net.Addr) { b.receive(&b.lanes[i], pkt) },
+			NonQUICBatchEnd:      func() { b.readEnd(&b.lanes[i]) },
 		}
 		if err := tr.Start(); err != nil {
 			return fmt.Errorf("psp: start the read loop of lane %d: %w", i, err)
@@ -690,64 +708,85 @@ func (b *Binding) ReportQUIC(now time.Time, lost uint64) {
 // when there is none.
 func (b *Binding) QUICLimit() int64 { return b.quic.limit() }
 
-// receive gives a PSP packet from the socket of lane to the driver, on the read
-// loop of that socket: a copy into the receive pipe, or an open.
-func (b *Binding) receive(lane int, pkt []byte) {
+// receive gives a PSP packet from the socket of reader r to the driver, on the read loop of that
+// socket, and counts the other packets.
+func (b *Binding) receive(r *rxReader, pkt []byte) {
 	if len(pkt) == 0 || (pkt[0] != pspwire.NextHdrV4 && pkt[0] != pspwire.NextHdrV6) {
 		b.stats.rxOther.Add(1)
 		return
 	}
+	b.read(r, pkt)
+}
+
+// pipeOf returns the receive pipe of the driver d, or nil.
+func pipeOf(d *driver) *rxPipe {
+	if d == nil {
+		return nil
+	}
+	return d.pipe
+}
+
+// read gives a packet of reader r to the driver on the read loop of r: a copy into the receive
+// pipe, or an open. It waits for a free set, or without a pipe for rxMu and the read batch.
+func (b *Binding) read(r *rxReader, pkt []byte) {
 	d := b.drv.Load()
+	r.retire(pipeOf(d))
 	if d == nil {
 		b.stats.rxNoDriver.Add(1)
 		return
 	}
 	if d.pipe != nil {
-		d.pipe.add(lane, pkt)
+		d.pipe.add(r, pkt)
 		return
 	}
 	b.rxMu.Lock()
-	b.stats.rxLanes[lane].Add(1)
-	b.open(d, pkt)
-	b.rxMu.Unlock()
+	defer b.rxMu.Unlock()
+	if d.closed() {
+		// Close ended the read batch of d, so a packet after that has no batch.
+		b.stats.rxDrops.Add(1)
+		return
+	}
+	if r.lane >= 0 {
+		b.stats.rxLanes[r.lane].Add(1)
+	}
+	b.open(d, r, pkt)
 }
 
-// batchEnd gives the packets of one read of the socket of lane to the driver.
-func (b *Binding) batchEnd(lane int) {
+// readEnd gives the packets of one read of reader r to the driver.
+func (b *Binding) readEnd(r *rxReader) {
 	d := b.drv.Load()
+	r.retire(pipeOf(d))
 	switch {
 	case d == nil:
 	case d.pipe != nil:
-		d.pipe.flush(lane)
-	case d.batch != nil:
+		d.pipe.flush(r)
+	default:
 		b.rxMu.Lock()
 		d.batch.flush()
 		b.rxMu.Unlock()
 	}
 }
 
-// open opens a PSP packet in place and gives it to the driver, with b.rxMu held. Only the
-// read loops call it, when the driver has no receive pipe.
-func (b *Binding) open(d *driver, pkt []byte) {
-	inner, _, err := b.rxq.Receive(pkt)
+// open opens a packet of reader r in place and gives it to the driver, with b.rxMu held: a PSP
+// packet on the receive queue, or a data frame of a relay session. A driver with no pipe uses it.
+func (b *Binding) open(d *driver, r *rxReader, pkt []byte) {
+	var inner []byte
+	var err error
+	if r.link != nil {
+		inner, err = peerconn.OpenData(pkt, b.vni, r.link.routed)
+	} else {
+		inner, _, err = b.rxq.Receive(pkt)
+	}
 	if err != nil {
 		b.stats.rxDrops.Add(1)
 		return
 	}
-	b.deliver(d, pkt[:pspwire.PrefixLen+len(inner)], pspwire.PrefixLen, true)
+	b.deliver(d, inner)
 }
 
-// deliver gives the inner packet buf[off:] of the PSP path or the QUIC path to the driver,
-// after the MSS clamp. Both paths deliver only here, and the receive pipe. The PSP path sets batch.
-func (b *Binding) deliver(d *driver, buf []byte, off int, batch bool) {
-	b.clampMSS(buf[off:], b.quicPath())
-	if batch && d.batch != nil {
-		d.batch.add(buf[off:])
-		return
-	}
-	if d.deliver(buf, off) {
-		b.stats.rxPackets.Add(1)
-	} else {
-		b.stats.rxDrops.Add(1)
-	}
+// deliver gives an inner packet of the PSP path or the QUIC path to the read batch of d, after
+// the MSS clamp, with b.rxMu held. The receive pipe is the other place where both paths deliver.
+func (b *Binding) deliver(d *driver, inner []byte) {
+	b.clampMSS(inner, b.quicPath())
+	d.batch.add(inner)
 }

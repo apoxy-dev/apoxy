@@ -175,6 +175,59 @@ func rekey(now time.Time, nodes ...*node) (int, error) {
 	return n, nil
 }
 
+// fakeBatch is a read batch that gives each packet to a deliver function at once, and counts it
+// as the batches of the drivers do. onAdd, when set, runs first in each add.
+type fakeBatch struct {
+	st      *counters
+	deliver func([]byte, int) bool
+	onAdd   func()
+}
+
+func (f *fakeBatch) add(pkt []byte) {
+	if f.onAdd != nil {
+		f.onAdd()
+	}
+	if f.deliver(pkt, 0) {
+		f.st.rxPackets.Add(1)
+	} else {
+		f.st.rxDrops.Add(1)
+	}
+}
+
+func (*fakeBatch) flush() {}
+
+// fakeDriver returns a driver of b with deliver as its deliver function and its read batch. The
+// tests that only send give a nil deliver.
+func fakeDriver(b *Binding, deliver func([]byte, int) bool) *driver {
+	d := newDriver(b, deliver)
+	d.batch = &fakeBatch{st: &b.stats, deliver: deliver}
+	return d
+}
+
+// laneRead gives a PSP packet to the read loop of the socket of lane: the demux for lane 0.
+func laneRead(b *Binding, lane int, pkt []byte) {
+	if lane == 0 {
+		b.demux.Handle(pkt, nil)
+		return
+	}
+	b.receive(&b.lanes[lane], pkt)
+}
+
+// laneEnd ends a read of the socket of lane.
+func laneEnd(b *Binding, lane int) {
+	if lane == 0 {
+		b.demux.BatchEnd()
+		return
+	}
+	b.readEnd(&b.lanes[lane])
+}
+
+// handlerFunc is a peerconn.DataHandler that gives each frame to a function.
+type handlerFunc func([]byte)
+
+func (h handlerFunc) HandleData(frame []byte) { h(frame) }
+func (handlerFunc) BatchEnd()                 {}
+
 // capture is a deliver function that keeps copies of the inner packets.
 type capture struct {
 	mu   sync.Mutex
@@ -206,10 +259,10 @@ func seal(n *node, pkt []byte) []byte {
 // packet or nil. b must have no driver.
 func open(b *Binding, pkt []byte) []byte {
 	c := &capture{}
-	d := newDriver(b, c.deliver)
+	d := fakeDriver(b, c.deliver)
 	b.drv.Store(d)
 	defer b.drv.Store(nil)
-	b.receive(0, pkt)
+	b.demux.Handle(pkt, nil)
 	if len(c.got) == 0 {
 		return nil
 	}

@@ -20,7 +20,7 @@ import (
 func TestPrepareSeal(t *testing.T) {
 	a, b := newPair(t)
 	offer(t, time.Now(), a, b)
-	d := newDriver(a.b, nil)
+	d := fakeDriver(a.b, nil)
 	seal := func(f *netstack.TxFrame, pkt []byte) []byte {
 		phy := make([]byte, 2048)
 		n := d.Seal(f, pkt, phy)
@@ -121,7 +121,7 @@ func TestPrepareSeal(t *testing.T) {
 func TestPrepareSegs(t *testing.T) {
 	a, b := newPair(t)
 	offer(t, time.Now(), a, b)
-	d := newDriver(a.b, nil)
+	d := fakeDriver(a.b, nil)
 	hdr := packet(a.v4, b.v4, 6, 1, 2, 40)
 	one := packet(a.v4, b.v4, 6, 1, 2, 100)
 	g := &a.peer.br.limiter
@@ -189,14 +189,14 @@ func TestPrepareSegs(t *testing.T) {
 	t.Run("no transmit SA", func(t *testing.T) {
 		c, _ := newPair(t)
 		var f netstack.TxFrame
-		assert.False(t, newDriver(c.b, nil).PrepareSegs(hdr, n, size, n*size, &f))
+		assert.False(t, fakeDriver(c.b, nil).PrepareSegs(hdr, n, size, n*size, &f))
 		assert.Equal(t, Stats{}, c.b.Stats())
 	})
 
 	t.Run("last sequence numbers", func(t *testing.T) {
 		c, e := newPair(t)
 		offer(t, time.Now(), c, e)
-		cd := newDriver(c.b, nil)
+		cd := fakeDriver(c.b, nil)
 		sa, _ := c.peer.txSA(hdr)
 		limit := uint64(pspwire.PacketLimit(c.b.mtu))
 		_, err := sa.ReserveN(int(limit) - n)

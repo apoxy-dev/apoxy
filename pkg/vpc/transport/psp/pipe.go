@@ -10,6 +10,8 @@ import (
 	"github.com/apoxy-dev/softpsp/keys"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	"golang.org/x/sys/cpu"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
 const (
@@ -19,7 +21,7 @@ const (
 	// laneSets is the number of sets for each read loop of a pipe with many open workers:
 	// the set that it fills, and the sets of it that wait for the next stages.
 	laneSets = 4
-	// pipeSlots is the most PSP packets in one set. A read of quic-go with GRO can fill
+	// pipeSlots is the most packets in one set. A read of quic-go with GRO can fill
 	// many sets.
 	pipeSlots = 64
 	// fewOpenWorkers is the most open workers of a host with fewer than 20 CPUs.
@@ -47,10 +49,8 @@ func maxSets(workers, lanes int) int {
 	return max(sets, laneSets*lanes)
 }
 
-// rxPipe copies the PSP packets of each read into a set. Open workers open and join the
-// sets, and one consumer checks the replay window and injects the sets in read order.
-// The read loop of the agent socket and of each lane socket has its own set. The pipe
-// makes a set when a read loop finds no free set, up to maxSets.
+// rxPipe copies each read of a read loop into a set of its own. Open workers open and join the
+// sets, and one consumer injects them in read order, up to maxSets sets.
 type rxPipe struct {
 	d       *driver
 	j       *injectBatch
@@ -63,27 +63,42 @@ type rxPipe struct {
 	closed  <-chan struct{}
 	exited  chan struct{} // Closes when the consumer and the open workers stop.
 
-	readers atomic.Int32 // Read loops that added a packet.
+	readers atomic.Int32 // Read loops of sockets that added a packet.
 	made    atomic.Int32 // Sets that the pipe made.
 
 	mu      sync.Mutex // Guards closing and the sends of flush.
 	closing bool       // Set when the consumer stops. Then flush drops the sets.
-
-	// lanes is the state of the read loop of each socket, by lane.
-	lanes [keys.MaxLanes]rxLane
 }
 
-// rxLane is the state of the read loop of one socket. Only that read loop uses it.
-type rxLane struct {
+// rxReader is the state of one read loop in the receive pipe: the agent socket or a lane socket,
+// which read PSP packets, or a relay session, which reads data frames. Only that read loop uses it.
+type rxReader struct {
 	_    cpu.CacheLinePad // Two read loops do not have a cache line in common.
+	lane int              // The lane of the socket, or -1 for a relay session.
+	link *Link            // The link of the relay session, or nil for a socket.
+	p    *rxPipe          // The pipe of cur.
 	cur  *rxSet           // The set of this read. Nil until the read loop adds a packet.
 	used bool             // The read loop is one of the readers of the pipe.
 }
 
-// rxSet is the PSP packets of one read. The first n slots hold packets.
+// retire ends the state of r in a pipe other than p, after a new driver or a new binding. The
+// set that r fills is lost, and its packets count as drops of the binding of the old pipe.
+func (r *rxReader) retire(p *rxPipe) {
+	if r.p == p {
+		return
+	}
+	if r.cur != nil {
+		r.p.d.b.stats.rxDrops.Add(uint64(r.cur.n))
+	}
+	*r = rxReader{lane: r.lane, link: r.link, p: p}
+}
+
+// rxSet is the packets of one read. The first n slots hold packets: PSP packets of a socket, or
+// data frames of the relay session of link.
 type rxSet struct {
 	slots  [][]byte
 	n      int
+	link   *Link        // The link of the relay session, or nil for PSP packets. Nil in a free set.
 	res    []openResult // The result of Open for each slot.
 	out    []rxPacket   // The packets for the netstack, in slot order. The first nout are set.
 	nout   int
@@ -142,25 +157,26 @@ func (p *rxPipe) newSet() *rxSet {
 	return s
 }
 
-// add copies the PSP packet pkt into the set of this read of the socket of lane. It drops
-// pkt when the pipe stops. Only the read loop of that socket calls it.
-func (p *rxPipe) add(lane int, pkt []byte) {
-	l := &p.lanes[lane]
-	if l.cur == nil {
-		if !l.used {
-			// The pipe can have more sets from now on.
-			l.used = true
+// add copies pkt into the set of this read of reader r. It drops pkt when the pipe stops. Only
+// the read loop of r calls it, after retire made r read for p.
+func (p *rxPipe) add(r *rxReader, pkt []byte) {
+	if r.cur == nil {
+		if !r.used && r.lane >= 0 {
+			// The pipe can have more sets from now on. A relay session adds no sets: the
+			// sockets set the number.
+			r.used = true
 			p.readers.Add(1)
 		}
-		if l.cur = p.get(); l.cur == nil {
+		if r.cur = p.get(); r.cur == nil {
 			p.d.b.stats.rxDrops.Add(1)
 			return
 		}
+		r.cur.link = r.link
 	}
-	s := l.cur
+	s := r.cur
 	s.slots[s.n] = append(s.slots[s.n][:0], pkt...)
 	if s.n++; s.n == len(s.slots) {
-		p.flush(lane)
+		p.flush(r)
 	}
 }
 
@@ -198,22 +214,22 @@ func (p *rxPipe) grow() *rxSet {
 	return p.newSet()
 }
 
-// flush gives the set of this read of the socket of lane to the open workers and the
-// consumer, or drops it when the consumer stopped. Only the read loop of that socket
-// calls it.
-func (p *rxPipe) flush(lane int) {
-	l := &p.lanes[lane]
-	s := l.cur
+// flush gives the set of this read of reader r to the open workers and the consumer, or drops
+// it when the consumer stopped. Only the read loop of r calls it, after retire made r read for p.
+func (p *rxPipe) flush(r *rxReader) {
+	s := r.cur
 	if s == nil {
 		return
 	}
-	l.cur = nil
-	p.d.b.stats.rxLanes[lane].Add(uint64(s.n))
+	r.cur = nil
+	if r.lane >= 0 {
+		p.d.b.stats.rxLanes[r.lane].Add(uint64(s.n))
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closing {
 		p.d.b.stats.rxDrops.Add(uint64(s.n))
-		s.n = 0
+		s.n, s.link = 0, nil
 		p.free <- s
 		return
 	}
@@ -237,13 +253,20 @@ func (p *rxPipe) open() {
 	}
 }
 
-// openSet opens the packets of s in place, and makes the packets for the netstack from
-// the ones that passed. It keeps the result of each slot and the packets in s.
+// openSet opens the packets of s in place: data frames with OpenData, PSP packets on the
+// receive queue. It makes the packets for the netstack from the ones that passed, in s.
 func (p *rxPipe) openSet(s *rxSet) {
 	b := p.d.b
 	quic := b.quicPath()
 	for i, pkt := range s.slots[:s.n] {
-		inner, o, err := b.rxq.Open(pkt)
+		var inner []byte
+		var o engine.Opened
+		var err error
+		if s.link != nil {
+			inner, err = peerconn.OpenData(pkt, b.vni, s.link.routed)
+		} else {
+			inner, o, err = b.rxq.Open(pkt)
+		}
 		if err != nil {
 			s.res[i] = openResult{}
 			continue
@@ -269,7 +292,8 @@ func (p *rxPipe) run() {
 			}
 			drops := s.n
 			for _, r := range s.out[:s.nout] {
-				if p.accept(s.res[r.first : r.first+r.n]) {
+				// The data frames of a relay session have no replay window: QUIC has its own.
+				if s.link != nil || p.accept(s.res[r.first:r.first+r.n]) {
 					p.j.push(r.pkb, r.w, r.n)
 					drops -= r.n
 				} else {
@@ -281,7 +305,7 @@ func (p *rxPipe) run() {
 			}
 			// A free set must hold no packet buffer, because release drops all it holds.
 			clear(s.out[:s.nout])
-			s.n, s.nout = 0, 0
+			s.n, s.nout, s.link = 0, 0, nil
 			p.free <- s
 			// When more sets wait, their packets go in the same inject batches.
 			if len(p.full) == 0 {
@@ -355,7 +379,7 @@ func (p *rxPipe) release(s *rxSet) {
 	}
 	clear(s.out[:s.nout])
 	p.d.b.stats.rxDrops.Add(uint64(s.n))
-	s.n, s.nout = 0, 0
+	s.n, s.nout, s.link = 0, 0, nil
 	p.free <- s
 }
 

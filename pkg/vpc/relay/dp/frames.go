@@ -9,28 +9,38 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+// frameBatch is the most datagrams in one read of a connection of A: the size of one quicTurn.
+const frameBatch = 64
+
 // DatagramConn is the part of a QUIC connection of A that FRAME in and FRAME out use. Its
 // TrySendDatagram is the frame writer of the port: SetFrameWriter(port, c.TrySendDatagram).
 type DatagramConn interface {
-	// ReceiveDatagram returns the next datagram. It fails when the connection ends.
-	ReceiveDatagram(ctx context.Context) ([]byte, error)
+	// ReceiveDatagrams puts up to len(bufs) datagrams in bufs and returns their number. It
+	// fails when the connection ends, and then returns no datagram.
+	ReceiveDatagrams(ctx context.Context, bufs [][]byte) (int, error)
 	// TrySendDatagram sends a datagram and never waits. An error means that the datagram was
 	// not queued, and the pipeline drops the frame (datagram_full).
 	TrySendDatagram(b []byte) error
 }
 
-// ReadFrames is the frame reader of a QUIC connection of A: it gives each datagram of c to t as
-// FRAME in of port and session. It returns when c ends or ctx is done.
+// ReadFrames gives each datagram of c to t as FRAME in of port and session, and releases it. It
+// returns when c ends, ctx is done, or PacketOut fails.
 func ReadFrames(ctx context.Context, t Target, c DatagramConn, port, session uint64) error {
 	po := &p4.PacketOut{Metadata: PacketOutMeta{Kind: KindFrame, Port: port, Session: session}.Metadata()}
+	var bufs [frameBatch][]byte
 	for {
-		b, err := c.ReceiveDatagram(ctx)
+		n, err := c.ReceiveDatagrams(ctx, bufs[:])
 		if err != nil {
 			return err
 		}
-		po.Payload = b
-		err = t.PacketOut(po)
-		quic.ReleaseDatagram(b)
+		for i, b := range bufs[:n] {
+			if err == nil {
+				po.Payload = b
+				err = t.PacketOut(po)
+			}
+			quic.ReleaseDatagram(b)
+			bufs[i] = nil
+		}
 		if err != nil {
 			return err
 		}

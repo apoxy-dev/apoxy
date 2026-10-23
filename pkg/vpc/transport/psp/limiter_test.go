@@ -81,13 +81,13 @@ func TestLimiterDatapath(t *testing.T) {
 			a, b := newPair(t)
 			offer(t, time.Now(), a, b)
 			got := &capture{}
-			b.b.drv.Store(newDriver(b.b, got.deliver))
+			b.b.drv.Store(fakeDriver(b.b, got.deliver))
 			g := &a.peer.br.limiter
 			if tc.quic {
 				qa, qb := quicPair(t, a.tr, b.tr)
 				pa, pb := peerconn.New(qa), peerconn.New(qb)
 				t.Cleanup(func() { _ = pa.Close(); _ = pb.Close() })
-				pb.HandleData(b.l.HandleData)
+				pb.HandleData(b.l)
 				require.NoError(t, a.peer.UseQUIC(pa))
 				g = &a.b.quic.limiter
 			}
@@ -102,7 +102,7 @@ func TestLimiterDatapath(t *testing.T) {
 				require.NoError(t, err)
 				sent = n
 			} else {
-				d := newDriver(a.b, nil)
+				d := fakeDriver(a.b, nil)
 				var out [][]byte
 				for _, pkt := range pkts {
 					phy := make([]byte, 2048)

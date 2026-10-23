@@ -45,19 +45,20 @@ const (
 	rxSlot = tunOffset + 1<<16
 )
 
-// driver is the engine and the underlay of a softpsp vtep driver, for sends only. The QUIC
-// read loop and the relay session reader give the received packets to deliver.
+// driver is the engine and the underlay of a softpsp vtep driver, for sends only. The read loops
+// give the received packets to the receive pipe or to batch.
 type driver struct {
 	b *Binding
-	// deliver gives the inner packet buf[off:] to the netstack or the TUN
-	// device. It returns false when it drops the packet.
+	// deliver gives the inner packet buf[off:] to the netstack or the TUN device at once, for
+	// Binding.Deliver. It returns false when it drops the packet.
 	deliver func(buf []byte, off int) bool
-	// batch collects the PSP packets of one read of the QUIC read loop.
+	// batch collects the inner packets of one read of a driver with no pipe. Netstack and Tun set
+	// it before they store the driver, so Binding.deliver and Close do not check for nil.
 	batch readBatch
 	done  chan struct{}
 	once  sync.Once
-	// pipe moves the PSP packets from the QUIC read loop to a goroutine that opens them.
-	// Nil when the read loop opens them.
+	// pipe moves the packets of the read loops to the goroutines that open them. Nil when the
+	// read loops open them.
 	pipe *rxPipe
 
 	// Send state. Only the send goroutine of the vtep driver uses it.
@@ -152,8 +153,7 @@ func ipProto(pkt []byte) (tcpip.NetworkProtocolNumber, bool) {
 	return 0, false
 }
 
-// readBatch collects the PSP packets of one read of the QUIC read loop. Only
-// the goroutine that opens the PSP packets calls it.
+// readBatch collects the inner packets of one read of a read loop. Its callers hold rxMu.
 type readBatch interface {
 	// add copies pkt into the batch.
 	add(pkt []byte)
@@ -161,8 +161,7 @@ type readBatch interface {
 	flush()
 }
 
-// tunWriter writes received packets to a TUN device. The PSP path and the
-// QUIC path both use it.
+// tunWriter writes received packets to a TUN device, for Binding.Deliver and the TUN batch.
 type tunWriter struct {
 	dev     tun.Device
 	mu      sync.Mutex
@@ -187,8 +186,8 @@ func (w *tunWriter) write(buf []byte, off int) bool {
 	return err == nil
 }
 
-// tunBatch copies the PSP packets of one read of the QUIC read loop, and writes them to the TUN
-// device in one call, so that the device can coalesce them. Only the QUIC read loop uses it.
+// tunBatch copies the inner packets of one read, and writes them to the TUN device in one call,
+// so that the device can coalesce them. Its callers hold rxMu.
 type tunBatch struct {
 	w    *tunWriter
 	st   *counters
@@ -437,7 +436,7 @@ func (b *Binding) Send(pkts [][]byte) (int, error) {
 }
 
 // Deliver gives an inner packet from the agent, for example an ICMP error, to the driver.
-// It writes at once and not into the TUN batch, so do not call it on the QUIC read loop.
+// It writes at once and not into the read batch, so do not call it on a read loop.
 func (b *Binding) Deliver(pkt []byte) bool {
 	d := b.drv.Load()
 	return d != nil && d.deliver(pkt, 0)
@@ -466,10 +465,20 @@ func (d *driver) Close() error {
 		if d.pipe != nil {
 			// The next driver can open packets only after the pipe stops.
 			<-d.pipe.exited
+		} else {
+			d.endBatch()
 		}
 		d.b.drv.CompareAndSwap(d, nil)
 	})
 	return nil
+}
+
+// endBatch gives the read batch of a driver with no pipe on, after d or its binding stopped. Each
+// packet counts once: as a packet when a worker or the TUN write takes it, else as a drop.
+func (d *driver) endBatch() {
+	d.b.rxMu.Lock()
+	d.batch.flush()
+	d.b.rxMu.Unlock()
 }
 
 // WriteFrames sends the PSP packets in batches and the data frames on the

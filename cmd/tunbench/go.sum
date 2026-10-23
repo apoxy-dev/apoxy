@@ -17,8 +17,8 @@ github.com/apoxy-dev/quic-go v0.0.0-20261002123340-891424b7ca48 h1:kIyo9ktVhEoB+
 github.com/apoxy-dev/quic-go v0.0.0-20261002123340-891424b7ca48/go.mod h1:MFlGGpcpJqRAfmYi6NC2cptDPSxRWTOGNuP4wqrWmzQ=
 github.com/apoxy-dev/quic-go v0.0.0-20261022210428-cc9f3fe73a85 h1:Wdds/3OrIkx7ucoT5jFUIHt0yPnB/zSBavoo3A4o+D4=
 github.com/apoxy-dev/quic-go v0.0.0-20261022210428-cc9f3fe73a85/go.mod h1:upnsH4Ju1YkqpLXC305eW3yDZ4NfnNbmQRCMWS58IKU=
-github.com/apoxy-dev/quic-go v0.0.0-20261023094537-1d6e9a302ebf h1:hbh4AnbbLKSGc9jCVl271PRV0bd60Yblz8m2RI+rVYs=
-github.com/apoxy-dev/quic-go v0.0.0-20261023094537-1d6e9a302ebf/go.mod h1:upnsH4Ju1YkqpLXC305eW3yDZ4NfnNbmQRCMWS58IKU=
+github.com/apoxy-dev/quic-go v0.0.0-20261023192208-f63a0288e232 h1:Gt+TBY039tldVVT/CJwFuKY2l+s2rt3YAVSNHp5GBD8=
+github.com/apoxy-dev/quic-go v0.0.0-20261023192208-f63a0288e232/go.mod h1:upnsH4Ju1YkqpLXC305eW3yDZ4NfnNbmQRCMWS58IKU=
 github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973/go.mod h1:Dwedo/Wpr24TaqPxmxbtue+5NUziq4I4S80YR8gNf3Q=
 github.com/bradfitz/go-smtpd v0.0.0-20170404230938-deb6d6237625/go.mod h1:HYsPBTaaSFSlLx/70C2HPIMNZpVV8+vt/A+FMnYP11g=
 github.com/buger/jsonparser v0.0.0-20181115193947-bf1c66bbce23/go.mod h1:bbYlZJ7hK1yFx9hf58LP0zeX7UjIGs20ufpu3evjr+s=

@@ -170,9 +170,8 @@ func TestPipe(t *testing.T) {
 	}
 }
 
-// TestPipeReaders gives the PSP packets of each SA lane to the read loop of that lane, as
-// the relay does with lane ports. The read loops run at the same time. For each count of
-// open workers, the netstack must get the packets of each flow as it gets them with no pipe.
+// TestPipeReaders gives PSP packets to the read loop of each lane and data frames to a relay
+// session at the same time. The netstack must get each flow in order, as with no pipe.
 func TestPipeReaders(t *testing.T) {
 	const perFlow, read = 100, 7
 	run := func(t *testing.T, lanes, opens int) map[uint16][]uint32 {
@@ -186,20 +185,36 @@ func TestPipeReaders(t *testing.T) {
 		used := lanesUsed(byLane)
 		require.Greater(t, used, lanes/2, "the flows use too few SA lanes")
 
+		// The relay session has its own flows, with source ports from linkFlow.
+		const linkFlow, linkFlows = 1000, 4
+		var frames [][]byte
+		for i := range linkFlows * perFlow {
+			frames = append(frames, dataFrame(flowPacket(uint16(linkFlow+i%linkFlows), uint32(i/linkFlows))))
+		}
+
 		var readers sync.WaitGroup
+		readers.Go(func() {
+			for i, f := range frames {
+				b.l.HandleData(f)
+				if (i+1)%read == 0 {
+					b.l.BatchEnd()
+				}
+			}
+			b.l.BatchEnd()
+		})
 		for lane, pkts := range byLane {
 			readers.Go(func() {
 				for i, pkt := range pkts {
-					b.b.receive(lane, pkt)
+					laneRead(b.b, lane, pkt)
 					if (i+1)%read == 0 {
-						b.b.batchEnd(lane)
+						laneEnd(b.b, lane)
 					}
 				}
-				b.b.batchEnd(lane)
+				laneEnd(b.b, lane)
 			})
 		}
 		readers.Wait()
-		want := Stats{RxPackets: uint64(flows * perFlow)}
+		want := Stats{RxPackets: uint64((flows + linkFlows) * perFlow)}
 		require.Eventually(t, func() bool { return b.b.Stats() == want },
 			5*time.Second, time.Millisecond, "%d of %d packets", r.count(), want.RxPackets)
 		rx := b.b.RxLanePackets()
@@ -220,7 +235,7 @@ func TestPipeReaders(t *testing.T) {
 	for _, lanes := range []int{1, 4, 16} {
 		t.Run(fmt.Sprintf("lanes=%d", lanes), func(t *testing.T) {
 			want := run(t, lanes, noPipe)
-			require.Len(t, want, 4*lanes)
+			require.Len(t, want, 4*lanes+4)
 			for f, got := range want {
 				require.Equal(t, seqs(perFlow), got, "flow %d with no pipe", f)
 			}
@@ -283,13 +298,13 @@ func TestPipeSets(t *testing.T) {
 			for lane, pkts := range byLane {
 				readers.Go(func() {
 					for i, pkt := range pkts {
-						b.b.receive(lane, pkt)
+						laneRead(b.b, lane, pkt)
 						if (i+1)%(pipeSlots+pipeSlots/2) == 0 {
-							b.b.batchEnd(lane)
+							laneEnd(b.b, lane)
 						}
 						reads.Add(1)
 					}
-					b.b.batchEnd(lane)
+					laneEnd(b.b, lane)
 				})
 			}
 			if tc.hold {
@@ -367,9 +382,9 @@ func TestPipeCloseBusy(t *testing.T) {
 				readers.Go(func() {
 					for !stop.Load() {
 						for _, pkt := range pkts {
-							b.b.receive(lane, pkt)
+							laneRead(b.b, lane, pkt)
 						}
-						b.b.batchEnd(lane)
+						laneEnd(b.b, lane)
 						reads.Add(1)
 					}
 				})
@@ -416,9 +431,9 @@ func TestPipeNoAllocs(t *testing.T) {
 			drops := uint64(0)
 			read := func() {
 				for _, pkt := range pkts {
-					b.b.receive(0, pkt)
+					b.b.demux.Handle(pkt, nil)
 				}
-				b.b.batchEnd(0)
+				b.b.demux.BatchEnd()
 				drops += pipeSlots
 				// The consumer counts the drops, then frees the set.
 				for b.b.Stats().RxDrops != drops || len(d.pipe.free) != int(d.pipe.made.Load()) {
@@ -660,16 +675,14 @@ func TestPipeFull(t *testing.T) {
 	}
 }
 
-// openSlots opens the PSP packets of s and makes their packets for the netstack as an open
-// worker does. It returns the packets, with a reference of the test on each packet buffer.
-func openSlots(t *testing.T, b *Binding, j *injectBatch, s *rxSet) []rxPacket {
+// openSlots opens the packets of s as an open worker does. It returns the packets for the
+// netstack, with a reference of the test on each packet buffer.
+func openSlots(t *testing.T, p *rxPipe, s *rxSet) []rxPacket {
 	t.Helper()
-	for i, pkt := range s.slots[:s.n] {
-		inner, o, err := b.rxq.Open(pkt)
-		require.NoError(t, err)
-		s.res[i] = openResult{o: o, inner: inner, ok: true}
+	p.openSet(s)
+	for i := range s.n {
+		require.True(t, s.res[i].ok, "slot %d did not open", i)
 	}
-	s.nout = j.join(s.res[:s.n], s.out)
 	mine := slices.Clone(s.out[:s.nout])
 	for _, r := range mine {
 		r.pkb.IncRef()
@@ -688,33 +701,47 @@ func released(t *testing.T, pkts []rxPacket) {
 	}
 }
 
-// TestPipeAcceptDrop gives the consumer a set with two copies of the same packet. The
-// replay window drops the second one, and the pipe must release its packet buffer.
+// TestPipeAcceptDrop gives the consumer a set with two copies of a packet. The replay window drops
+// the second PSP packet and releases its buffer; data frames have none, as QUIC has its own.
 func TestPipeAcceptDrop(t *testing.T) {
-	a, b := newPair(t)
-	offer(t, time.Now(), a, b)
-	r, ep := newRecorder(t)
-	d := useNetstack(t, b, ep, 1, 1)
-	s := d.pipe.get()
-	pkt := seal(a, flowPacket(1, 7))[addrLen:]
-	for i := range 2 {
-		s.slots[i] = append(s.slots[i][:0], pkt...)
+	cases := []struct {
+		name string
+		link bool
+		want Stats
+		seqs []uint32
+	}{
+		{name: "PSP packet", want: Stats{RxPackets: 1, RxDrops: 1}, seqs: []uint32{7}},
+		{name: "data frame", link: true, want: Stats{RxPackets: 2}, seqs: []uint32{7, 7}},
 	}
-	s.n = 2
-	mine := openSlots(t, b.b, d.pipe.j, s)
-	require.Len(t, mine, 2)
-	// The test is the open worker of the set.
-	s.opened <- struct{}{}
-	d.pipe.full <- s
-	require.Eventually(t, func() bool {
-		st := b.b.Stats()
-		return st.RxPackets+st.RxDrops == 2
-	}, 5*time.Second, time.Millisecond)
-	assert.Equal(t, Stats{RxPackets: 1, RxDrops: 1}, b.b.Stats())
-	released(t, mine)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	assert.Equal(t, []uint32{7}, r.got[1])
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := newPair(t)
+			offer(t, time.Now(), a, b)
+			r, ep := newRecorder(t)
+			d := useNetstack(t, b, ep, 1, 1)
+			s := d.pipe.get()
+			pkt := seal(a, flowPacket(1, 7))[addrLen:]
+			if tc.link {
+				pkt = dataFrame(flowPacket(1, 7))
+				s.link = b.l
+			}
+			for i := range 2 {
+				s.slots[i] = append(s.slots[i][:0], pkt...)
+			}
+			s.n = 2
+			mine := openSlots(t, d.pipe, s)
+			require.Len(t, mine, 2)
+			// The test is the open worker of the set.
+			s.opened <- struct{}{}
+			d.pipe.full <- s
+			require.Eventually(t, func() bool { return counted(b.b.Stats()) == 2 }, 5*time.Second, time.Millisecond)
+			assert.Equal(t, tc.want, b.b.Stats())
+			released(t, mine)
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			assert.Equal(t, tc.seqs, r.got[1])
+		})
+	}
 }
 
 // TestPipeCloseWhileOpen closes the driver while the consumer waits for a slow open worker.
@@ -744,7 +771,7 @@ func TestPipeCloseWhileOpen(t *testing.T) {
 				}
 				s.n = n
 				if si == 0 {
-					mine = openSlots(t, b.b, d.pipe.j, s)
+					mine = openSlots(t, d.pipe, s)
 				}
 				total += n
 				sets = append(sets, s)
@@ -871,9 +898,9 @@ func BenchmarkPipeLanes(b *testing.B) {
 				readers.Go(func() {
 					for i := 0; left.Add(-1) >= 0; i = (i + pipeSlots) % len(pkts) {
 						for _, p := range pkts[i : i+pipeSlots] {
-							y.b.receive(lane, p)
+							laneRead(y.b, lane, p)
 						}
-						y.b.batchEnd(lane)
+						laneEnd(y.b, lane)
 					}
 				})
 			}

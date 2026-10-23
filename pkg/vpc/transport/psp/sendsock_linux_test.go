@@ -88,7 +88,7 @@ func TestLaneSend(t *testing.T) {
 			defer sink.Close()
 			_ = sink.SetReadBuffer(1 << 20)
 			a.peer.SetAddr(sink.LocalAddr().(*net.UDPAddr).AddrPort())
-			d := newDriver(a.b, nil)
+			d := fakeDriver(a.b, nil)
 			frames := make([][]byte, flows)
 			for i := range frames {
 				frames[i] = seal(a, packet(a.v4, b.v4, 17, uint16(1000+i), 9, 200))
@@ -363,7 +363,7 @@ func blockedLane(t *testing.T, kept bool) (*Binding, *driver, <-chan laneWrites)
 	copy(frame, dst[:])
 	binary.BigEndian.PutUint16(frame[16:], 9)
 	frame[laneOff] = 1
-	d := newDriver(b, nil)
+	d := fakeDriver(b, nil)
 	_, err = d.WriteFrames([][]byte{frame})
 	require.NoError(t, err)
 	require.NotNil(t, d.lanes[1], "lane 1 has a sender")

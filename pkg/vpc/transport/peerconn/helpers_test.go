@@ -25,25 +25,30 @@ const (
 	alpnPeer  = "test-peer"
 )
 
-// fakeQC is a relay session. ReceiveDatagram returns the frames on in, and
+// fakeQC is a relay session. ReceiveDatagrams returns the frames of one read of in, and
 // SendDatagram puts copies on sent (nil sent discards them).
 type fakeQC struct {
-	in   chan []byte
+	in   chan [][]byte // The frames of each read.
+	left [][]byte      // The frames of a read that did not fit in the buffers.
 	sent chan []byte
 	err  error
 }
 
 func newFakeQC() *fakeQC {
-	return &fakeQC{in: make(chan []byte, 16), sent: make(chan []byte, 16)}
+	return &fakeQC{in: make(chan [][]byte, 16), sent: make(chan []byte, 16)}
 }
 
-func (f *fakeQC) ReceiveDatagram(ctx context.Context) ([]byte, error) {
-	select {
-	case b := <-f.in:
-		return b, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+func (f *fakeQC) ReceiveDatagrams(ctx context.Context, bufs [][]byte) (int, error) {
+	if len(f.left) == 0 {
+		select {
+		case f.left = <-f.in:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
 	}
+	n := copy(bufs, f.left)
+	f.left = f.left[n:]
+	return n, nil
 }
 
 func (f *fakeQC) SendDatagram(b []byte) error {

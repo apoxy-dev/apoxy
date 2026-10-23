@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/maphash"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -379,6 +380,58 @@ func TestPipeJoin(t *testing.T) {
 					}
 					got[flow] = rs
 				}
+				assert.Equal(t, tc.want, got)
+			})
+		}
+	}
+}
+
+// TestPipeJoinLink gives 48 TCP segments of the default MTU in one read to the pipe, from a
+// relay session or from a lane socket. The netstack gets one packet for each flow.
+func TestPipeJoinLink(t *testing.T) {
+	const segs, hdrLen = 48, header.IPv4MinimumSize + header.TCPMinimumSize + tcpOpts
+	const mss = DefaultMTU - hdrLen
+	cases := []struct {
+		name string
+		flow func(i int) (flow, seg int) // The flow of slot i, and the index of its segment in the flow.
+		want []int                       // The segments in each packet that the netstack gets.
+	}{
+		{name: "one flow", flow: func(i int) (int, int) { return 0, i }, want: []int{48}},
+		{name: "two flows in runs", flow: func(i int) (int, int) { return i / 24, i % 24 }, want: []int{24, 24}},
+		{name: "two flows that alternate", flow: func(i int) (int, int) { return i % 2, i / 2 }, want: []int{24, 24}},
+	}
+	for _, link := range []bool{true, false} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("link=%v/%s", link, tc.name), func(t *testing.T) {
+				a, b := newPair(t)
+				offer(t, time.Now(), a, b)
+				_, sink := useDriver(t, b, pipeKind)
+				data := pattern(segs * mss)
+				for i := range segs {
+					flow, seg := tc.flow(i)
+					off := seg * mss
+					pkt := tcpPacket(a.v4, b.v4, uint16(1000+flow), uint32(off), 7, header.TCPFlagAck, data[off:off+mss])
+					if link {
+						b.l.HandleData(dataFrame(pkt))
+					} else {
+						laneRead(b.b, 1, seal(a, pkt)[addrLen:])
+					}
+				}
+				if link {
+					b.l.BatchEnd()
+				} else {
+					laneEnd(b.b, 1)
+				}
+				waitCounted(t, b, Stats{}, segs)
+				assert.Equal(t, Stats{RxPackets: segs}, b.b.Stats())
+				require.Eventually(t, func() bool { return len(sink.packets()) == len(tc.want) }, 5*time.Second, time.Millisecond,
+					"%d packets", len(sink.packets()))
+				var got []int
+				for _, p := range sink.packets() {
+					require.Zero(t, (len(p)-hdrLen)%mss, "packet of %d bytes", len(p))
+					got = append(got, (len(p)-hdrLen)/mss)
+				}
+				slices.Sort(got)
 				assert.Equal(t, tc.want, got)
 			})
 		}
