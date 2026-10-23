@@ -96,7 +96,6 @@ func TestSummary(t *testing.T) {
 }
 
 const compareFail = `FAIL c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none
-  min_gbps                   2.1000  baseline     2.0000    +5.0%  ok
   gbps                       2.1000  baseline     2.5000   -16.0%  REGRESSION
 NO BASELINE c7a.8xlarge iperf3-tcp streams=1 duration=30s omit=2s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none
   gbps=30 packets_per_second=0 client_cores_per_gbps=0 server_cores_per_gbps=0

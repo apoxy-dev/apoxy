@@ -38,8 +38,6 @@ func TestCompare(t *testing.T) {
 		"gbps":  {Gbps: 10},
 		"pps":   {PacketsPerSecond: 500000},
 		"loose": {Gbps: 10, ClientCoresPerGbps: 0.2, ServerCoresPerGbps: 0.4, Tolerance: 0.25},
-		"floor": {MinGbps: 2},
-		"both":  {Gbps: 2.2, MinGbps: 2},
 	}}
 	cases := []struct {
 		name          string
@@ -68,14 +66,6 @@ func TestCompare(t *testing.T) {
 			wantOK: true, wantRegressed: []string{"packets_per_second"},
 		},
 		{name: "entry tolerance", baseline: base, res: result("loose", 8, 0.24, 0.48), wantOK: true},
-		{name: "above the floor", baseline: base, res: result("floor", 2.1, 0, 0), wantOK: true},
-		{name: "at the floor", baseline: base, res: result("floor", 2, 0, 0), wantOK: true},
-		{name: "below the floor", baseline: base, res: result("floor", 1.99, 0, 0), wantOK: true, wantRegressed: []string{"min_gbps"}},
-		{name: "floor and baseline ok", baseline: base, res: result("both", 2.05, 0, 0), wantOK: true},
-		{
-			name: "below the floor and the baseline", baseline: base, res: result("both", 1.95, 0, 0),
-			wantOK: true, wantRegressed: []string{"min_gbps", "gbps"},
-		},
 		{
 			name:     "default tolerance",
 			baseline: Baseline{Entries: map[string]BaselineEntry{"k": {Gbps: 10}}},
@@ -102,7 +92,6 @@ func TestCompareResults(t *testing.T) {
 		"k":          {Gbps: 10, ClientCoresPerGbps: 0.2},
 		"pps":        {PacketsPerSecond: 500000},
 		"empty":      {Source: "no numbers"},
-		"floor":      {MinGbps: 2},
 		"info":       {Gbps: 1, Info: true},
 		"info-empty": {Info: true},
 	}}
@@ -139,12 +128,6 @@ func TestCompareResults(t *testing.T) {
 			results:  []Result{result("empty", 3, 0.3, 0.3)},
 			wantErr:  errRegression,
 			wantText: []string{"FAIL empty", "checks no metric"},
-		},
-		{
-			name:     "below the floor fails",
-			results:  []Result{result("floor", 1.5, 0.3, 0.3)},
-			wantErr:  errRegression,
-			wantText: []string{"FAIL floor", "min_gbps", "-25.0%", "REGRESSION"},
 		},
 		{
 			name:     "infra error",
@@ -225,9 +208,9 @@ func TestUpdateEntry(t *testing.T) {
 			want: BaselineEntry{Gbps: 2.4, ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 0.6},
 		},
 		{
-			name: "keeps the floor, the tolerance and the info flag",
-			old:  BaselineEntry{Gbps: 2.1, MinGbps: 2, Tolerance: 0.2, Info: true, Source: "old"},
-			want: BaselineEntry{Gbps: 2.4, ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 0.6, MinGbps: 2, Tolerance: 0.2, Info: true},
+			name: "keeps the tolerance and the info flag",
+			old:  BaselineEntry{Gbps: 2.1, Tolerance: 0.2, Info: true, Source: "old"},
+			want: BaselineEntry{Gbps: 2.4, ClientCoresPerGbps: 0.5, ServerCoresPerGbps: 0.6, Tolerance: 0.2, Info: true},
 		},
 	}
 	for _, tc := range cases {
@@ -242,7 +225,7 @@ func TestUpdateEntry(t *testing.T) {
 
 func TestNeedsRetry(t *testing.T) {
 	base := Baseline{Tolerance: 0.10, Entries: map[string]BaselineEntry{
-		"floor": {Gbps: 2.2, MinGbps: 2, ClientCoresPerGbps: 0.5},
+		"floor": {Gbps: 2.2, ClientCoresPerGbps: 0.5},
 		"info":  {Gbps: 1, Info: true},
 		"empty": {},
 	}}
@@ -252,7 +235,7 @@ func TestNeedsRetry(t *testing.T) {
 		want bool
 	}{
 		{name: "pass", res: result("floor", 2.3, 0.5, 0), want: false},
-		{name: "below the floor", res: result("floor", 1.9, 0.5, 0), want: true},
+		{name: "throughput drop", res: result("floor", 1.9, 0.5, 0), want: true},
 		{name: "cpu rise", res: result("floor", 2.3, 0.6, 0), want: true},
 		{name: "info entry", res: result("info", 0.5, 0, 0), want: false},
 		{name: "entry with no metric", res: result("empty", 1, 0, 0), want: false},
@@ -267,11 +250,11 @@ func TestNeedsRetry(t *testing.T) {
 }
 
 func TestUpdateBaseline(t *testing.T) {
-	b := Baseline{Entries: map[string]BaselineEntry{"k": {Gbps: 1, MinGbps: 2}}}
+	b := Baseline{Entries: map[string]BaselineEntry{"k": {Gbps: 1, Tolerance: 0.25}}}
 	var out bytes.Buffer
 	updateBaseline(&out, b, []Result{result("k", 2.5, 0.1, 0.2), infraResult("bad", "rig setup: no netem")})
 	assert.Equal(t, "SET k\nSKIP bad: rig setup: no netem\n", out.String())
 	assert.Equal(t, 2.5, b.Entries["k"].Gbps)
-	assert.Equal(t, 2.0, b.Entries["k"].MinGbps)
+	assert.Equal(t, 0.25, b.Entries["k"].Tolerance)
 	assert.NotContains(t, b.Entries, "bad")
 }

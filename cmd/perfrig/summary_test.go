@@ -24,7 +24,7 @@ func TestWriteSummary(t *testing.T) {
 	loss.Settings.Streams, loss.Settings.LossPercent, loss.Settings.Rate = 4, 0.1, "1000mbit"
 	loss.summarize()
 	base := Baseline{Tolerance: 0.10, Entries: map[string]BaselineEntry{
-		floor.Key: {Gbps: 2.3, MinGbps: 2.0},
+		floor.Key: {Gbps: 2.3},
 		"info":    {Gbps: 1, Info: true},
 	}}
 
@@ -39,12 +39,12 @@ func TestWriteSummary(t *testing.T) {
 			rows[strings.TrimPrefix(f[0], "| ")] = l
 		}
 	}
-	assert.Equal(t, "| FAIL | vpc-netstack-psp-relay, 4 flows | 2.00 (retried) | 1.90 2.10 | 2.00 | 2.30 (-13.0%) | 0.80, 1.10, 2.25 | 0.00 | 20.8, 39.7 | 25.6, 30.7 | 15, 2310 |",
+	assert.Equal(t, "| FAIL | vpc-netstack-psp-relay, 4 flows | 2.00 (retried) | 1.90 2.10 | 2.30 (-13.0%) | 0.80, 1.10, 2.25 | 0.00 | 20.8, 39.7 | 25.6, 30.7 | 15, 2310 |",
 		rows["FAIL"], "2.00 is more than 10 percent below the 2.30 baseline")
-	assert.Equal(t, "| NO BASELINE | vpc-netstack-psp-relay-loss, 4 flows, loss 0.1%, rate 1000mbit | 0.80 | 0.80 | - | - | 0.90, 1.20, - | - | - | - | - |",
+	assert.Equal(t, "| NO BASELINE | vpc-netstack-psp-relay-loss, 4 flows, loss 0.1%, rate 1000mbit | 0.80 | 0.80 | - | 0.90, 1.20, - | - | - | - | - |",
 		rows["NO BASELINE"])
 	assert.Contains(t, out, "| Status | Workload | Gbps |")
-	assert.Contains(t, out, "- FAIL `aarch64 vpc-netstack-psp-relay streams=4`; min_gbps 2.0000 (baseline 2.0000, +0.0%, ok); gbps 2.0000 (baseline 2.3000, -13.0%, REGRESSION)"+
+	assert.Contains(t, out, "- FAIL `aarch64 vpc-netstack-psp-relay streams=4`; gbps 2.0000 (baseline 2.3000, -13.0%, REGRESSION)"+
 		"; drops omit/window: client link 15/2310, client tx 0/0, relay 0/0, server rcvbuf 0/0, server socket 0/0"+
 		", server rx 0/0, server link 0/0"+
 		"; server retx omit/window: 0/0\n")

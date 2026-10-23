@@ -34,13 +34,69 @@
       "tolerance": 0.2,
       "source": "median of 3 nightly runs: 2026-10-05 run 37355919915, 2026-10-06 run 37491625847, 2026-10-07 run 37652127228; kernel 7.0.0-1012-aws"
     },
-    "c7a.8xlarge vpc-netstack-psp-direct streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
-      "gbps": 11.063,
-      "packets_per_second": 1185564.5867558867,
-      "client_cores_per_gbps": 0.281008,
-      "server_cores_per_gbps": 0.172972,
+    "c7a.8xlarge vpc-netstack-psp-direct streams=1 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 10.541,
+      "packets_per_second": 1129729.7903184355,
+      "client_cores_per_gbps": 0.264073,
+      "server_cores_per_gbps": 0.159942,
       "info": true,
-      "source": "median of 3 nightly runs: 2026-10-05 run 37355919915, 2026-10-06 run 37491625847, 2026-10-07 run 37652127228; kernel 7.0.0-1012-aws"
+      "source": "CI run 39907694437 on 2026-10-23, commit 7688959c, c7a.8xlarge, veth copy mode, kernel 7.0.0-1012-aws"
+    },
+    "c7a.8xlarge vpc-netstack-psp-direct streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 9.119,
+      "packets_per_second": 977258.2824341295,
+      "client_cores_per_gbps": 0.327687,
+      "server_cores_per_gbps": 0.186812,
+      "info": true,
+      "source": "CI run 39907694437 on 2026-10-23, commit 7688959c, c7a.8xlarge, veth copy mode, kernel 7.0.0-1012-aws"
+    },
+    "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=1000mbit queue=2640 mtu=1500 bitrate=none window=none": {
+      "gbps": 0.87,
+      "packets_per_second": 92414.49839657126,
+      "client_cores_per_gbps": 1.273132,
+      "server_cores_per_gbps": 2.722364,
+      "info": true,
+      "source": "CI run 39907694437 on 2026-10-23, commit 7688959c, c7a.8xlarge, veth copy mode, kernel 7.0.0-1012-aws"
+    },
+    "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 3.987,
+      "packets_per_second": 424676.86247137876,
+      "client_cores_per_gbps": 0.424935,
+      "server_cores_per_gbps": 1.139594,
+      "tolerance": 0.25,
+      "source": "median of the 3 reps of CI run 39907694437 on 2026-10-23, commit 7688959c, c7a.8xlarge, veth copy mode, kernel 7.0.0-1012-aws; the repeat runs gave 3.99 / 3.20 / 4.05 Gbps on the same code"
+    },
+    "c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0.1% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 3.115,
+      "packets_per_second": 333459.3449476503,
+      "client_cores_per_gbps": 0.495456,
+      "server_cores_per_gbps": 1.159947,
+      "info": true,
+      "source": "CI run 39907694437 on 2026-10-23, commit 7688959c, c7a.8xlarge, veth copy mode, kernel 7.0.0-1012-aws"
+    },
+    "c7a.8xlarge vpc-netstack-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 4.308,
+      "packets_per_second": 456750.9567586678,
+      "client_cores_per_gbps": 0.485903,
+      "server_cores_per_gbps": 1.068859,
+      "info": true,
+      "source": "CI run 39907694437 on 2026-10-23, commit 7688959c, c7a.8xlarge, veth copy mode, kernel 7.0.0-1012-aws"
+    },
+    "c7a.8xlarge vpc-netstack-quic-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 2.247,
+      "packets_per_second": 239324.94080998664,
+      "client_cores_per_gbps": 0.615157,
+      "server_cores_per_gbps": 2.140386,
+      "info": true,
+      "source": "CI run 39907694437 on 2026-10-23, commit 7688959c, c7a.8xlarge, veth copy mode, kernel 7.0.0-1012-aws"
+    },
+    "c7a.8xlarge vpc-tun-psp-relay-cubic streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none": {
+      "gbps": 3.06,
+      "packets_per_second": 316779.6201660538,
+      "client_cores_per_gbps": 0.26347,
+      "server_cores_per_gbps": 1.063006,
+      "info": true,
+      "source": "CI run 39907694437 on 2026-10-23, commit 7688959c, c7a.8xlarge, veth copy mode, kernel 7.0.0-1012-aws"
     }
   }
 }

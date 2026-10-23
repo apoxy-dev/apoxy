@@ -27,8 +27,8 @@ func appendSummary(path string, outcomes []outcome) error {
 func writeSummary(w io.Writer, outcomes []outcome) {
 	fmt.Fprintln(w, "### perfrig results")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "| Status | Workload | Gbps | Runs | Floor | Baseline | Cores/Gbps client, server, relay | Retx % | Load RTT p50, p99 ms | RTT p90 omit, window ms | Drops omit, window |")
-	fmt.Fprintln(w, "|---|---|--:|---|--:|---|---|--:|---|---|---|")
+	fmt.Fprintln(w, "| Status | Workload | Gbps | Runs | Baseline | Cores/Gbps client, server, relay | Retx % | Load RTT p50, p99 ms | RTT p90 omit, window ms | Drops omit, window |")
+	fmt.Fprintln(w, "|---|---|--:|---|---|---|--:|---|---|---|")
 	for _, o := range outcomes {
 		r := o.Result
 		gbps := fmt.Sprintf("%.2f", r.Throughput.Gbps)
@@ -39,12 +39,9 @@ func writeSummary(w io.Writer, outcomes []outcome) {
 		for i, run := range r.Runs {
 			runs[i] = fmt.Sprintf("%.2f", run.Throughput.Gbps)
 		}
-		floor, base := "-", "-"
+		base := "-"
 		for _, c := range o.Checks {
-			switch c.Metric {
-			case "min_gbps":
-				floor = fmt.Sprintf("%.2f", c.Baseline)
-			case "gbps":
+			if c.Metric == "gbps" {
 				base = fmt.Sprintf("%.2f (%+.1f%%)", c.Baseline, 100*c.Change())
 			}
 		}
@@ -53,8 +50,8 @@ func writeSummary(w io.Writer, outcomes []outcome) {
 			relay = fmt.Sprintf("%.2f", r.CPU.Relay.CoresPerGbps)
 		}
 		cores := fmt.Sprintf("%.2f, %.2f, %s", r.CPU.Client.CoresPerGbps, r.CPU.Server.CoresPerGbps, relay)
-		fmt.Fprintf(w, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
-			o.Status, workloadCell(r), gbps, strings.Join(runs, " "), floor, base, cores,
+		fmt.Fprintf(w, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			o.Status, workloadCell(r), gbps, strings.Join(runs, " "), base, cores,
 			infoCell(r.Info, "%.2f", "retrans_percent"),
 			infoCell(r.Info, "%.1f", "load_rtt_ms.p50", "load_rtt_ms.p99"),
 			infoCell(r.Info, "%.1f", "omit.rtt_ms.p90", "load_rtt_ms.p90"),

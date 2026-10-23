@@ -31,8 +31,6 @@ type BaselineEntry struct {
 	PacketsPerSecond   float64 `json:"packets_per_second"`
 	ClientCoresPerGbps float64 `json:"client_cores_per_gbps"`
 	ServerCoresPerGbps float64 `json:"server_cores_per_gbps"`
-	// MinGbps is a floor for Gbps. It has no tolerance.
-	MinGbps float64 `json:"min_gbps,omitempty"`
 	// Tolerance overrides Baseline.Tolerance for this entry.
 	Tolerance float64 `json:"tolerance,omitempty"`
 	// Info makes the report show the regressions of this entry, but they do not fail.
@@ -76,10 +74,6 @@ func compare(b Baseline, r Result) (checks []Check, ok bool) {
 		}
 		checks = append(checks, Check{Metric: metric, Baseline: base, Got: got, Regressed: bad})
 	}
-	if e.MinGbps > 0 {
-		checks = append(checks, Check{Metric: "min_gbps", Baseline: e.MinGbps, Got: r.Throughput.Gbps,
-			Regressed: r.Throughput.Gbps < e.MinGbps})
-	}
 	add("gbps", e.Gbps, r.Throughput.Gbps, true)
 	add("packets_per_second", e.PacketsPerSecond, r.Throughput.PacketsPerSecond, true)
 	add("client_cores_per_gbps", e.ClientCoresPerGbps, r.CPU.Client.CoresPerGbps, false)
@@ -111,11 +105,11 @@ func updateBaseline(w io.Writer, b Baseline, results []Result) {
 	}
 }
 
-// updateEntry makes a baseline entry from r. It keeps the floor, the
-// tolerance and the info flag of old.
+// updateEntry makes a baseline entry from r. It keeps the tolerance and the
+// info flag of old.
 func updateEntry(old BaselineEntry, r Result) BaselineEntry {
 	e := entryFor(r)
-	e.MinGbps, e.Tolerance, e.Info = old.MinGbps, old.Tolerance, old.Info
+	e.Tolerance, e.Info = old.Tolerance, old.Info
 	return e
 }
 
