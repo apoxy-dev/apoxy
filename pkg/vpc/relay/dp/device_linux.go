@@ -55,6 +55,7 @@ func OpenDevice(ifc Interface) (*Device, error) {
 			publish: publisher(s),
 			kick:    s.KickIfNeeded,
 			pending: func() int { return ring - s.NumFreeTxSlots() },
+			counts:  kickCounts(s),
 		})
 	}
 	d, err := newDevice(ifc, dev, ports, uint32(link.MTU), impair)
@@ -147,6 +148,15 @@ func nameThread(name string) (old string) {
 	}
 	_ = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(b)), 0, 0, 0)
 	return old
+}
+
+// kickCounts returns the counts of the TX port of s. Stats fails after the close; Device.KickCounts
+// then has the counts that Run read before.
+func kickCounts(s *xdp.Socket) func() KickCounts {
+	return func() KickCounts {
+		st, _ := s.Stats() // An error of XDP_STATISTICS still gives the counts of the library.
+		return KickCounts{Sendto: st.Kicks, EAGAIN: st.KickEAGAIN, Exhausted: st.KickExhausted, EBUSY: st.KickEBUSY}
+	}
 }
 
 // publisher returns the publish of the TX queue of s. The txQueue lock keeps it to one call at a

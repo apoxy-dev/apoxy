@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -46,6 +47,11 @@ type Device struct {
 	delays atomic.Pointer[delayTable]
 
 	hops sync.Pool // The next-hop caches of sendUDP. A send takes one, so no other goroutine uses it.
+
+	// kicks are the kick counts that Run read before it closed the sockets, nil before. The lock
+	// keeps a read of the open sockets before the close.
+	kicksMu sync.Mutex
+	kicks   []KickCounts
 }
 
 // txQueue is a transmit queue. The receive loops, quic-go and the netstack send from many
@@ -57,7 +63,8 @@ type txQueue struct {
 	err    error // The kick error that ended the queue.
 
 	txPort
-	wake chan struct{} // Size 1. A send after a publish asks the kicker for a kick.
+	wake        chan struct{} // Size 1. A send after a publish asks the kicker for a kick.
+	activations atomic.Uint64 // Kick calls of the kicker.
 }
 
 // txPort is how the device sends on one TX queue. The kicker calls kick and pending without the
@@ -66,6 +73,17 @@ type txPort struct {
 	publish func(descs []packetio.Desc) int // Puts descriptors on the TX ring, with no kick.
 	kick    func() error                    // Tells the kernel about them, when it asks for it.
 	pending func() int                      // TX descriptors that the kernel did not take.
+	counts  func() KickCounts               // The sendto counts of the socket, with no Activations. Can be nil.
+}
+
+// KickCounts are the kick counts of one TX queue. Activations counts kick calls; the other fields
+// count the sendto calls of those kicks and their results. None of them counts packets.
+type KickCounts struct {
+	Activations uint64 // Kick calls of the kicker, with the kicks after a backoff.
+	Sendto      uint64 // sendto calls, with the retries of a kick.
+	EAGAIN      uint64 // sendto calls that returned EAGAIN. The kick then tries again.
+	Exhausted   uint64 // Kicks that used all their EAGAIN retries.
+	EBUSY       uint64 // sendto calls that returned EBUSY: the kernel completed a frame and did not send it.
 }
 
 // The backoff of a kicker while descriptors stay on its TX ring doubles from kickWaitMin to
@@ -124,6 +142,21 @@ func (d *Device) PacketConn() net.PacketConn { return d.conn }
 // Interface is the interface of the device and its addresses.
 func (d *Device) Interface() Interface { return d.ifc }
 
+// KickCounts returns the kick counts of each TX queue. The counts only increase. After Run closes
+// the sockets, it returns the counts that Run read before the close.
+func (d *Device) KickCounts() []KickCounts {
+	d.kicksMu.Lock()
+	defer d.kicksMu.Unlock()
+	if d.kicks != nil {
+		return slices.Clone(d.kicks)
+	}
+	c := make([]KickCounts, len(d.tx))
+	for i, t := range d.tx {
+		c[i] = t.kickCounts()
+	}
+	return c
+}
+
 // Run receives on all queues, kicks each TX queue on its own OS thread, and reads the impair map
 // each second, until ctx is done or a TX queue fails. Then it closes the QUIC conn, the netstack,
 // the interface and the impair map.
@@ -142,6 +175,11 @@ func (d *Device) Run(ctx context.Context) error {
 		return nil
 	})
 	err := g.Wait()
+	// The counts of a closed socket are 0, so read them while the sockets are open.
+	kicks := d.KickCounts()
+	d.kicksMu.Lock()
+	d.kicks = kicks
+	d.kicksMu.Unlock()
 	d.conn.Close()
 	for _, t := range d.tx {
 		t.mu.Lock()
@@ -452,6 +490,7 @@ func (t *txQueue) kicker(ctx context.Context) error {
 			backoff = 0
 		case <-retry.C:
 		}
+		t.activations.Add(1)
 		// Other kick errors, as a link that is down, keep the frames on the ring for the next kick.
 		if err := t.kick(); kickEnds(err) {
 			t.fail(err)
@@ -464,6 +503,16 @@ func (t *txQueue) kicker(ctx context.Context) error {
 		backoff = min(max(2*backoff, kickWaitMin), kickWaitMax)
 		retry.Reset(backoff)
 	}
+}
+
+// kickCounts returns the kick counts of t.
+func (t *txQueue) kickCounts() KickCounts {
+	var c KickCounts
+	if t.counts != nil {
+		c = t.counts()
+	}
+	c.Activations = t.activations.Load()
+	return c
 }
 
 // kickEnds tells if a kick error ends the TX queue: the socket is closed, or the kernel removed its

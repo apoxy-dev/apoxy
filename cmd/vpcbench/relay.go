@@ -119,7 +119,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 				m := mark{
 					Nanos: time.Since(start).Nanoseconds(), CPU: bench.CPUSeconds(), HostCPU: bench.HostCPUSeconds(),
 					KickCPU: bench.ThreadCPUSeconds(relaydp.KickThread),
-					Drops:   drops, DropReasons: reasons, CPUs: bench.PerCPU(),
+					Drops:   drops, DropReasons: reasons, Kicks: relayKicks(d), CPUs: bench.PerCPU(),
 				}
 				o.marked(req.Index, req.Window)
 				return reply{Mark: m}, nil
@@ -246,6 +246,15 @@ func relayDrops(r *relay.Router) (drops uint64, reasons map[string]uint64) {
 		}
 	}
 	return drops, reasons
+}
+
+// relayKicks returns the kick counts of each TX queue of d.
+func relayKicks(d *relaydp.Device) []kickCounts {
+	var out []kickCounts
+	for _, c := range d.KickCounts() {
+		out = append(out, kickCounts{Activations: c.Activations, Sendto: c.Sendto, EAGAIN: c.EAGAIN, Exhausted: c.Exhausted, EBUSY: c.EBUSY})
+	}
+	return out
 }
 
 // label returns the value of the label name of a counter.

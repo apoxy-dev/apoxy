@@ -691,6 +691,46 @@ func TestDeviceKick(t *testing.T) {
 	}
 }
 
+// TestDeviceKickCounts sends packets through a device with four TX queues and reads the kick counts
+// with no send in progress, and again after Run closed the sockets. Each kick of a kicker is an
+// activation, each sendto result is a sendto, and Run keeps the counts of the open sockets.
+func TestDeviceKickCounts(t *testing.T) {
+	const queues, packets = 4, 200
+	e := newEnv(t, queues)
+	f := e.forward(t, queues, netip.AddrPortFrom(peer4.Addr(), 9002))
+	require.True(t, f.arrive(t, 2*time.Second), "no packet after ARP")
+	first := f.seq + 1
+	for i := range packets {
+		f.send(t, i%queues, first+i)
+	}
+	for got := 0; got < packets; got++ {
+		require.NotNil(t, f.recv(t, 5*time.Second), "%d of %d packets arrived", got, packets)
+	}
+
+	live := e.d.KickCounts()
+	require.Len(t, live, queues, "one count for each TX queue")
+	var sum dp.KickCounts
+	for _, c := range live {
+		assert.LessOrEqual(t, c.EAGAIN+c.EBUSY, c.Sendto, "EAGAIN and EBUSY are sendto results")
+		assert.LessOrEqual(t, c.Exhausted, c.Activations, "only the kicker kicks")
+		sum.Activations += c.Activations
+		sum.Sendto += c.Sendto
+	}
+	assert.Positive(t, sum.Activations)
+	assert.Positive(t, sum.Sendto)
+
+	e.stop()
+	final := e.d.KickCounts()
+	require.Len(t, final, queues)
+	for i, c := range final {
+		l := live[i]
+		assert.True(t, c.Activations >= l.Activations && c.Sendto >= l.Sendto && c.EAGAIN >= l.EAGAIN &&
+			c.Exhausted >= l.Exhausted && c.EBUSY >= l.EBUSY,
+			"queue %d: the counts after Run %+v are less than before %+v", i, c, l)
+	}
+	assert.Equal(t, final, e.d.KickCounts(), "the counts after Run do not change")
+}
+
 // TestDeviceQUICQueue sends bursts of datagrams to UDP 443 and reads them after each burst. The
 // queue holds 1024 datagrams, and each datagram over that drops (quic_full). A read gives the RX
 // frame of a datagram back, so the bursts can have more datagrams than the RX frames.

@@ -90,6 +90,22 @@ func TestInfoCells(t *testing.T) {
 			want: "drops omit/window: relay 40/12 (malformed 7/0, send_queue 33/10, unknown_spi 0/2)",
 		},
 		{name: "relay drops with no reasons", got: dropsDetail(map[string]float64{"relay_drops": 0, "omit.relay_drops": 0}), want: "drops omit/window: relay 0/0"},
+		{
+			name: "relay kicks",
+			got: kicksDetail(map[string]float64{
+				"relay_kicks.activations": 4000, "relay_kicks.sendto": 5000, "relay_kicks.eagain": 1000,
+				"relay_kicks.exhausted": 0, "relay_kicks.ebusy": 3,
+				"omit.relay_kicks.activations": 0, "omit.relay_kicks.sendto": 0, "omit.relay_kicks.eagain": 0,
+				"omit.relay_kicks.exhausted": 0, "omit.relay_kicks.ebusy": 0,
+			}),
+			want: "relay kicks omit/window: activations 0/4000, sendto per activation (of medians) -/1.25, eagain 0/1000, exhausted 0/0, ebusy 0/3",
+		},
+		{
+			name: "relay kicks with no omit period",
+			got:  kicksDetail(map[string]float64{"relay_kicks.activations": 2, "relay_kicks.sendto": 3}),
+			want: "relay kicks omit/window: activations -/2, sendto per activation (of medians) -/1.50, eagain -/-, exhausted -/-, ebusy -/-",
+		},
+		{name: "no relay kicks", got: kicksDetail(info), want: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -152,11 +152,13 @@ func TestNewResult(t *testing.T) {
 				{
 					Nanos: 0, HostCPU: 5, KickCPU: 0.25, Drops: 1,
 					DropReasons: map[string]uint64{"malformed": 1},
+					Kicks:       []kickCounts{{Activations: 10, Sendto: 12, EAGAIN: 2}, {Activations: 1, Sendto: 1}},
 					CPUs:        []bench.CPUTicks{{User: 10, Idle: 90}, {Idle: 100}},
 				},
 				{
 					Nanos: 2 * sec, CPU: 0.5, HostCPU: 7, KickCPU: 0.5, Drops: 5,
 					DropReasons: map[string]uint64{"malformed": 1, "tx_full": 3, "unknown_spi": 1},
+					Kicks:       []kickCounts{{Activations: 30, Sendto: 50, EAGAIN: 18, Exhausted: 1, EBUSY: 2}, {Activations: 5, Sendto: 5}},
 					CPUs:        []bench.CPUTicks{{User: 30, System: 40, Idle: 230}, {IRQ: 150, Idle: 150}},
 				},
 			},
@@ -168,6 +170,8 @@ func TestNewResult(t *testing.T) {
 				ClientTxDrops: 2, ServerRxDrops: 6, RelayDrops: 4, ServerRcvbufErrors: 12, ServerSockDrops: 3,
 				ClientLinkDrops: 5, ServerLinkDrops: 2,
 				RelayDropReasons: map[string]uint64{"tx_full": 3, "unknown_spi": 1},
+				RelayKicks:       &kickCounts{Activations: 24, Sendto: 42, EAGAIN: 16, Exhausted: 1, EBUSY: 2},
+				RelayQueueKicks:  []kickCounts{{Activations: 20, Sendto: 38, EAGAIN: 16, Exhausted: 1, EBUSY: 2}, {Activations: 4, Sendto: 4}},
 				RelayHostCPU:     &cpuKinds{User: 0.1, System: 0.2, IRQ: 0.75}, RelayTopCPUs: []cpuUse{{CPU: 1, IRQ: 75}, {CPU: 0, User: 10, System: 20}},
 				ClientLanePackets: []uint64{500, 400, 100}, ServerLanePackets: []uint64{30},
 				ServerRxLanePackets: []uint64{1000, 0, 1000},
@@ -288,6 +292,48 @@ func TestCounterDelta(t *testing.T) {
 	}
 }
 
+func TestKickDelta(t *testing.T) {
+	cases := []struct {
+		name   string
+		v0, v1 []kickCounts
+		sum    *kickCounts
+		queues []kickCounts
+	}{
+		{name: "no queues"},
+		{name: "no relay at the end", v0: []kickCounts{{Activations: 1}}},
+		{
+			name: "two queues",
+			v0:   []kickCounts{{Activations: 1, Sendto: 2, EAGAIN: 1}, {Activations: 3, Sendto: 3}},
+			v1:   []kickCounts{{Activations: 4, Sendto: 9, EAGAIN: 5, Exhausted: 1}, {Activations: 3, Sendto: 4, EBUSY: 1}},
+			sum:  &kickCounts{Activations: 3, Sendto: 8, EAGAIN: 4, Exhausted: 1, EBUSY: 1},
+			queues: []kickCounts{
+				{Activations: 3, Sendto: 7, EAGAIN: 4, Exhausted: 1}, {Sendto: 1, EBUSY: 1},
+			},
+		},
+		{
+			name:   "a queue with no start counts",
+			v1:     []kickCounts{{Activations: 2, Sendto: 2}},
+			sum:    &kickCounts{Activations: 2, Sendto: 2},
+			queues: []kickCounts{{Activations: 2, Sendto: 2}},
+		},
+		{
+			// A relay that restarted between the marks has lower counts. No delta is negative.
+			name:   "counts go down",
+			v0:     []kickCounts{{Activations: 9, Sendto: 9, EAGAIN: 3}},
+			v1:     []kickCounts{{Activations: 2, Sendto: 4, EAGAIN: 1}},
+			sum:    &kickCounts{},
+			queues: []kickCounts{{}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sum, queues := kickDelta(tc.v0, tc.v1)
+			assert.Equal(t, tc.sum, sum)
+			assert.Equal(t, tc.queues, queues)
+		})
+	}
+}
+
 // TestRelayDrops checks the drop counters that a relay mark reads from the
 // data plane of the relay.
 func TestRelayDrops(t *testing.T) {
@@ -367,13 +413,15 @@ func TestNewPeriod(t *testing.T) {
 			client: [2]mark{{Segments: 100, LinkDrops: 1}, {Nanos: sec, Segments: 300, Retrans: 4, Drops: 2, LinkDrops: 6}},
 			server: [2]mark{{RcvbufErrors: 1}, {Nanos: sec, Retrans: 1, Bytes: 50e6, Drops: 3, RcvbufErrors: 4, SockDrops: 1, LinkDrops: 1}},
 			relay: [2]mark{
-				{Drops: 1, DropReasons: map[string]uint64{"closed": 1}},
-				{Nanos: sec, Drops: 2, DropReasons: map[string]uint64{"closed": 1, "send_queue": 1}},
+				{Drops: 1, DropReasons: map[string]uint64{"closed": 1}, Kicks: []kickCounts{{Activations: 2, Sendto: 3, EAGAIN: 1}}},
+				{Nanos: sec, Drops: 2, DropReasons: map[string]uint64{"closed": 1, "send_queue": 1}, Kicks: []kickCounts{{Activations: 7, Sendto: 9, EAGAIN: 2, EBUSY: 1}}},
 			},
 			want: period{
 				Seconds: 1, BitsPerSecond: 400e6, Retransmits: 4, RetransPercent: 2, ServerRetransmits: 1,
 				ClientTxDrops: 2, ServerRxDrops: 3, RelayDrops: 1, ServerRcvbufErrors: 3, ServerSockDrops: 1,
 				ClientLinkDrops: 5, ServerLinkDrops: 1, RelayDropReasons: map[string]uint64{"send_queue": 1},
+				RelayKicks:      &kickCounts{Activations: 5, Sendto: 6, EAGAIN: 1, EBUSY: 1},
+				RelayQueueKicks: []kickCounts{{Activations: 5, Sendto: 6, EAGAIN: 1, EBUSY: 1}},
 			},
 		},
 		{name: "no omit", server: [2]mark{{Nanos: sec}, {Nanos: sec}}},
@@ -387,7 +435,9 @@ func TestNewPeriod(t *testing.T) {
 
 func TestResultJSON(t *testing.T) {
 	var buf bytes.Buffer
-	require.NoError(t, json.NewEncoder(&buf).Encode(result{Seconds: 30, BitsPerSecond: 2e9, PacketsPerSecond: 1e5, Retransmits: 7}))
+	require.NoError(t, json.NewEncoder(&buf).Encode(result{Seconds: 30, BitsPerSecond: 2e9, PacketsPerSecond: 1e5, Retransmits: 7,
+		RelayKicks: &kickCounts{}, RelayQueueKicks: []kickCounts{{}},
+		Omit: period{RelayKicks: &kickCounts{}, RelayQueueKicks: []kickCounts{{}}}}))
 
 	// perfrig reads these fields of the last line (cmd/perfrig Throughput).
 	var tp struct {
@@ -418,6 +468,14 @@ func TestResultJSON(t *testing.T) {
 	}
 	for _, f := range []string{"probes", "lost", "p50", "p90", "p99", "max"} {
 		assert.Contains(t, fields["load_rtt_ms"], f)
+	}
+	// perfrig reads these keys of the window and of the omit period (cmd/perfrig kicksDetail).
+	omit := fields["omit"].(map[string]any)
+	for _, f := range []string{"activations", "sendto", "eagain", "exhausted", "ebusy"} {
+		assert.Contains(t, fields["relay_kicks"], f)
+		assert.Contains(t, omit["relay_kicks"], f)
+		assert.Contains(t, fields["relay_queue_kicks"].([]any)[0], f)
+		assert.Contains(t, omit["relay_queue_kicks"].([]any)[0], f)
 	}
 	for _, f := range []string{
 		"seconds", "bits_per_second", "retransmits", "retrans_percent", "server_retransmits", "rtt_ms",

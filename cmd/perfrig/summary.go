@@ -75,6 +75,9 @@ func writeSummary(w io.Writer, outcomes []outcome) {
 		if d := dropsDetail(o.Result.Info); d != "" {
 			fmt.Fprintf(w, "; %s", d)
 		}
+		if d := kicksDetail(o.Result.Info); d != "" {
+			fmt.Fprintf(w, "; %s", d)
+		}
 		if d := nicDetail(o.Result.Host.NIC, o.Result.NIC); d != "" {
 			fmt.Fprintf(w, "; %s", d)
 		}
@@ -201,6 +204,34 @@ func relayReasons(info map[string]float64) string {
 		parts = append(parts, fmt.Sprintf("%s %.0f/%.0f", name, info["omit."+prefix+name], info[prefix+name]))
 	}
 	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// kicksDetail lists the kick counts of the TX queues of the relay in the omit period and in the
+// window: the kicks of the kickers, the sendto calls per kick, the sendto calls that returned EAGAIN
+// or EBUSY, and the kicks that used all their EAGAIN retries. It is empty when the result has no
+// kick counts. Each value is the median of the reps, so the sendto per kick is a ratio of medians.
+func kicksDetail(info map[string]float64) string {
+	const prefix = "relay_kicks."
+	if _, ok := info[prefix+"activations"]; !ok {
+		return ""
+	}
+	value := func(k string) string {
+		v, ok := info[k]
+		if !ok {
+			return "-"
+		}
+		return fmt.Sprintf("%.0f", v)
+	}
+	both := func(name string) string { return value("omit."+prefix+name) + "/" + value(prefix+name) }
+	perKick := func(p string) string {
+		kicks, sendto := info[p+prefix+"activations"], info[p+prefix+"sendto"]
+		if kicks <= 0 {
+			return "-"
+		}
+		return fmt.Sprintf("%.2f", sendto/kicks)
+	}
+	return fmt.Sprintf("relay kicks omit/window: activations %s, sendto per activation (of medians) %s/%s, eagain %s, exhausted %s, ebusy %s",
+		both("activations"), perKick("omit."), perKick(""), both("eagain"), both("exhausted"), both("ebusy"))
 }
 
 // nicDetail describes the NIC of a node result and its drop counters in the

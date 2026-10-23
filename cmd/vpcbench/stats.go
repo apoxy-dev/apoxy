@@ -39,6 +39,8 @@ type mark struct {
 	Drops uint64 `json:"drops,omitempty"`
 	// DropReasons are the drops of the relay that are not 0, by reason.
 	DropReasons map[string]uint64 `json:"drop_reasons,omitempty"`
+	// Kicks are the kick counts of each TX queue of the relay.
+	Kicks []kickCounts `json:"kicks,omitempty"`
 	// RcvbufErrors is the UDP RcvbufErrors counter of the server netns, or -1.
 	RcvbufErrors int64 `json:"rcvbuf_errors,omitempty"`
 	// SockDrops are the drops of the agent socket of the server, or -1.
@@ -67,6 +69,17 @@ type sockQueue struct {
 	RxMax  int64 `json:"rx_max"`
 	TxMean int64 `json:"tx_mean"`
 	TxMax  int64 `json:"tx_max"`
+}
+
+// kickCounts are the kick counts of one TX queue of the relay, or the sum of all queues. Activations
+// are the kick calls of the kicker; the others count sendto calls and their results, not packets.
+// See relaydp.KickCounts.
+type kickCounts struct {
+	Activations uint64 `json:"activations"`
+	Sendto      uint64 `json:"sendto"`
+	EAGAIN      uint64 `json:"eagain"`
+	Exhausted   uint64 `json:"exhausted"`
+	EBUSY       uint64 `json:"ebusy"`
 }
 
 // queueSampler reads the queues of the sockets of a side each queueInterval.
@@ -287,6 +300,10 @@ type result struct {
 	// RelayDropReasons are the drops of the relay in the measured window that
 	// are not 0, by reason. RelayDrops is their sum.
 	RelayDropReasons map[string]uint64 `json:"relay_drop_reasons,omitempty"`
+	// RelayKicks are the kick counts of all TX queues of the relay in the window, and
+	// RelayQueueKicks the counts of each queue.
+	RelayKicks      *kickCounts  `json:"relay_kicks,omitempty"`
+	RelayQueueKicks []kickCounts `json:"relay_queue_kicks,omitempty"`
 	// ClientTCP and ServerTCP are the loss recovery counters of the TCP stack of
 	// each agent in the window. dsack are segments that the peer got two times.
 	ClientTCP map[string]uint64 `json:"client_tcp,omitempty"`
@@ -317,6 +334,10 @@ type period struct {
 	ServerLinkDrops    int64          `json:"server_link_drops"`
 	// RelayDropReasons are the drops of the relay that are not 0, by reason.
 	RelayDropReasons map[string]uint64 `json:"relay_drop_reasons,omitempty"`
+	// RelayKicks are the kick counts of all TX queues of the relay, and RelayQueueKicks the
+	// counts of each queue.
+	RelayKicks      *kickCounts  `json:"relay_kicks,omitempty"`
+	RelayQueueKicks []kickCounts `json:"relay_queue_kicks,omitempty"`
 }
 
 // newPeriod computes a period from the marks at its start and at its end.
@@ -327,7 +348,7 @@ func newPeriod(client, server, relay [2]mark) period {
 		ServerRetransmits: r.ServerRetransmits, ClientTxDrops: r.ClientTxDrops, ServerRxDrops: r.ServerRxDrops,
 		RelayDrops: r.RelayDrops, ServerRcvbufErrors: r.ServerRcvbufErrors, ServerSockDrops: r.ServerSockDrops,
 		ClientLinkDrops: r.ClientLinkDrops, ServerLinkDrops: r.ServerLinkDrops,
-		RelayDropReasons: r.RelayDropReasons,
+		RelayDropReasons: r.RelayDropReasons, RelayKicks: r.RelayKicks, RelayQueueKicks: r.RelayQueueKicks,
 	}
 }
 
@@ -369,6 +390,7 @@ func newResult(client, server, relay [2]mark) result {
 	r.ServerRxDrops = server[1].Drops - server[0].Drops
 	r.RelayDrops = relay[1].Drops - relay[0].Drops
 	r.RelayDropReasons = counterDelta(relay[0].DropReasons, relay[1].DropReasons)
+	r.RelayKicks, r.RelayQueueKicks = kickDelta(relay[0].Kicks, relay[1].Kicks)
 	r.ServerRcvbufErrors = delta(server[0].RcvbufErrors, server[1].RcvbufErrors)
 	r.ServerSockDrops = delta(server[0].SockDrops, server[1].SockDrops)
 	r.ClientLinkDrops = delta(client[0].LinkDrops, client[1].LinkDrops)
@@ -389,6 +411,36 @@ func laneDelta(v0, v1 []uint64) []uint64 {
 		}
 	}
 	return out
+}
+
+// kickDelta returns the increase of the kick counts of each queue from v0 to v1, and their sum. It
+// returns nil and nil when v1 has no queue.
+func kickDelta(v0, v1 []kickCounts) (*kickCounts, []kickCounts) {
+	if len(v1) == 0 {
+		return nil, nil
+	}
+	var sum kickCounts
+	queues := make([]kickCounts, len(v1))
+	for i, c := range v1 {
+		var c0 kickCounts
+		if i < len(v0) {
+			c0 = v0[i]
+		}
+		d := kickCounts{
+			Activations: c.Activations - min(c0.Activations, c.Activations),
+			Sendto:      c.Sendto - min(c0.Sendto, c.Sendto),
+			EAGAIN:      c.EAGAIN - min(c0.EAGAIN, c.EAGAIN),
+			Exhausted:   c.Exhausted - min(c0.Exhausted, c.Exhausted),
+			EBUSY:       c.EBUSY - min(c0.EBUSY, c.EBUSY),
+		}
+		queues[i] = d
+		sum.Activations += d.Activations
+		sum.Sendto += d.Sendto
+		sum.EAGAIN += d.EAGAIN
+		sum.Exhausted += d.Exhausted
+		sum.EBUSY += d.EBUSY
+	}
+	return &sum, queues
 }
 
 // counterDelta returns the increase of each counter from v0 to v1, or nil when

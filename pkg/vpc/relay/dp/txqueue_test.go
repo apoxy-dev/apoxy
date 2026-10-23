@@ -50,7 +50,14 @@ func newFakeTx(frames, ring int) *fakeTx {
 }
 
 func (f *fakeTx) port() txPort {
-	return txPort{publish: f.publish, kick: f.kick, pending: f.pending}
+	return txPort{publish: f.publish, kick: f.kick, pending: f.pending, counts: f.counts}
+}
+
+// counts gives one sendto for each kick, as a socket with no EAGAIN.
+func (f *fakeTx) counts() KickCounts {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return KickCounts{Sendto: uint64(f.kicks)}
 }
 
 func (f *fakeTx) publish(descs []packetio.Desc) int {
@@ -230,7 +237,8 @@ func TestTxQueueSend(t *testing.T) {
 
 // TestTxQueueKicker sends one batch and no more. The kicker kicks until the TX ring is empty, also
 // when a kick sends only part of the ring, sends nothing, or fails and the queue continues. A kick
-// error that ends the queue stops the kicker, and a send after it sends nothing.
+// error that ends the queue stops the kicker, and a send after it sends nothing. When the kicker
+// stops, its activations are all its kick calls, with the kicks after a backoff and the failed ones.
 func TestTxQueueKicker(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -281,6 +289,7 @@ func TestTxQueueKicker(t *testing.T) {
 				sent, full := q.send(1, numbered(0))
 				assert.Zero(t, sent, "a failed queue sends nothing")
 				assert.Zero(t, full, "a failed queue counts no tx_full")
+				assert.Equal(t, KickCounts{Activations: 1, Sendto: 1}, q.kickCounts())
 				return
 			}
 			require.Eventually(t, func() bool { return len(f.sent()) == rxBatch && f.pending() == 0 },
@@ -290,6 +299,8 @@ func TestTxQueueKicker(t *testing.T) {
 			}
 			cancel()
 			assert.NoError(t, <-kicked)
+			kicks := uint64(f.kicks)
+			assert.Equal(t, KickCounts{Activations: kicks, Sendto: kicks}, q.kickCounts())
 		})
 	}
 }
