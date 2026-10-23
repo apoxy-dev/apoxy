@@ -12,7 +12,7 @@ require (
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
 	github.com/apoxy-dev/icx v0.19.1-0.20261006074019-0b857f6d1fb8
 	github.com/apoxy-dev/softpsp v0.0.0-20261013000621-34c37d5a9e41
-	github.com/atoonk/go-afxdp v0.12.0
+	github.com/atoonk/go-afxdp v0.12.1-0.20261023084436-bef860e97e8f
 	github.com/atoonk/packetio v0.1.11
 	github.com/avast/retry-go/v4 v4.6.1
 	github.com/aws/aws-sdk-go-v2 v1.41.5
@@ -527,7 +527,9 @@ replace github.com/getsavvyinc/upgrade-cli => github.com/apoxy-dev/upgrade-cli v
 
 replace github.com/quic-go/quic-go => github.com/apoxy-dev/quic-go v0.0.0-20261023072036-3d2a3bd4fdb8
 
-replace github.com/atoonk/go-afxdp => github.com/apoxy-dev/go-afxdp v0.12.1-0.20261023071134-3d125660ded1
+replace github.com/atoonk/go-afxdp => github.com/apoxy-dev/go-afxdp v0.12.1-0.20261023084436-bef860e97e8f
+
+replace github.com/atoonk/packetio => github.com/apoxy-dev/packetio v0.1.12-0.20261023084823-90675c41bf91
 
 replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261017003636-fba071217658
 
