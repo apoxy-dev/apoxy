@@ -10,6 +10,7 @@ import (
 	"time"
 
 	xdp "github.com/atoonk/go-afxdp"
+	"github.com/atoonk/packetio"
 	"github.com/atoonk/packetio/afxdp"
 	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
@@ -17,7 +18,8 @@ import (
 
 // OpenDevice opens the dedicated interface ifc with AF_XDP on all its queues. It takes all packets:
 // the kernel gets no packet of the interface. The relay XDP program drops the packets that the
-// impair map tells it to drop. Transmit does not kick; the kicker of each TX queue does.
+// impair map tells it to drop. A send only publishes with TransmitNoKick; the kicker of each TX
+// queue kicks.
 func OpenDevice(ifc Interface) (*Device, error) {
 	link, err := net.InterfaceByName(ifc.Name)
 	if err != nil {
@@ -27,7 +29,7 @@ func OpenDevice(ifc Interface) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	xdpOpt := afxdp.WithXDP(xdp.WithoutTxKick(), xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
+	xdpOpt := afxdp.WithXDP(xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
 		return loadRelayXDP(sockets, queues, impair)
 	}))
 	// The kernel frees the queues of a stopped relay some milliseconds later, so a relay that
@@ -42,11 +44,12 @@ func OpenDevice(ifc Interface) (*Device, error) {
 		impair.Close()
 		return nil, fmt.Errorf("failed to open %s with AF_XDP: %w", ifc.Name, err)
 	}
-	var kicks []func() error
-	for _, s := range dev.Fleet().Sockets() {
-		kicks = append(kicks, s.KickIfNeeded)
+	var ports []txPort
+	for i := range dev.NumTxQueues() {
+		s := dev.TxQueue(i).(*afxdp.TxQueue).Socket()
+		ports = append(ports, txPort{publish: publisher(s), kick: s.KickIfNeeded})
 	}
-	d, err := newDevice(ifc, dev, kicks, uint32(link.MTU), impair)
+	d, err := newDevice(ifc, dev, ports, uint32(link.MTU), impair)
 	if err != nil {
 		dev.Close()
 		impair.Close()
@@ -54,6 +57,20 @@ func OpenDevice(ifc Interface) (*Device, error) {
 	}
 	slog.Info("Opened the relay interface", "link", ifc.Name, "zero_copy", dev.Capabilities().ZeroCopy)
 	return d, nil
+}
+
+// publisher returns the publish of the TX queue of s. The txQueue lock keeps it to one call at a
+// time, so it can use one slice for the descriptors.
+func publisher(s *xdp.Socket) func([]packetio.Desc) int {
+	var xd []xdp.Desc
+	return func(descs []packetio.Desc) int {
+		xd = xd[:0]
+		for _, d := range descs {
+			// The kernel drops a TX descriptor with an option bit other than the continuation bit.
+			xd = append(xd, xdp.Desc{Addr: d.Addr, Len: d.Len, Options: d.Options & packetio.OptContinued})
+		}
+		return s.TransmitNoKick(xd)
+	}
 }
 
 // loadRelayXDP loads the relay XDP program with the XSK map and the queue map of go-afxdp, and the

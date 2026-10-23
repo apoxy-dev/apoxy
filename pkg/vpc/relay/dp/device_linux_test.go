@@ -561,7 +561,7 @@ func TestDeviceNextHop(t *testing.T) {
 }
 
 // TestDeviceKick sends rounds of packets on each send path and reads all packets of a round before
-// the next round. Transmit does not kick; the kicker of the TX queue kicks after each batch, so a
+// the next round. A send does not kick; the kicker of the TX queue kicks after each batch, so a
 // round arrives in a few ms, not at the next poll of an idle RX goroutine (100 ms).
 func TestDeviceKick(t *testing.T) {
 	const rounds, burst = 40, 16

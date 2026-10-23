@@ -48,19 +48,26 @@ type Device struct {
 }
 
 // txQueue is a transmit queue. The receive loops, quic-go and the netstack send from many
-// goroutines, so a lock keeps the queue to one at a time. Transmit does not kick: its kicker does.
+// goroutines, so a lock keeps the queue to one at a time. A send only publishes: its kicker kicks.
 type txQueue struct {
 	mu     sync.Mutex
 	q      packetio.TxQueue
 	closed bool
 
-	kick func() error  // Tells the kernel about the new TX descriptors, when it asks for it.
-	wake chan struct{} // Size 1. A send after Transmit asks the kicker for a kick.
+	txPort
+	wake chan struct{} // Size 1. A send after a publish asks the kicker for a kick.
 }
 
-// newDevice builds the pipeline, the netstack and the QUIC conn on dev. kicks has the kick of each
+// txPort is how the device sends on one TX queue. publish puts descriptors on the TX ring and does
+// not kick, and kick tells the kernel about them, when it asks for it.
+type txPort struct {
+	publish func(descs []packetio.Desc) int
+	kick    func() error
+}
+
+// newDevice builds the pipeline, the netstack and the QUIC conn on dev. ports has the port of each
 // TX queue of dev. mtu is the IP MTU of the link, and impair the impair map.
-func newDevice(ifc Interface, dev packetio.Device, kicks []func() error, mtu uint32, impair *ebpf.Map) (*Device, error) {
+func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, impair *ebpf.Map) (*Device, error) {
 	d := &Device{ifc: ifc, dev: dev, impair: impair}
 	for _, p := range ifc.Own {
 		switch a := p.Addr(); {
@@ -73,11 +80,11 @@ func newDevice(ifc Interface, dev packetio.Device, kicks []func() error, mtu uin
 	if !d.src4.IsValid() && !d.src6.IsValid() {
 		return nil, errors.New("the relay interface has no own address")
 	}
-	if len(kicks) != dev.NumTxQueues() {
-		return nil, fmt.Errorf("the relay interface has %d TX queues and %d kicks", dev.NumTxQueues(), len(kicks))
+	if len(ports) != dev.NumTxQueues() {
+		return nil, fmt.Errorf("the relay interface has %d TX queues and %d TX ports", dev.NumTxQueues(), len(ports))
 	}
 	for i := range dev.NumTxQueues() {
-		d.tx = append(d.tx, &txQueue{q: dev.TxQueue(i), kick: kicks[i], wake: make(chan struct{}, 1)})
+		d.tx = append(d.tx, &txQueue{q: dev.TxQueue(i), txPort: ports[i], wake: make(chan struct{}, 1)})
 	}
 	if len(d.tx) == 0 || dev.NumRxQueues() == 0 {
 		return nil, errors.New("the relay interface has no queues")
@@ -283,7 +290,7 @@ func (d *Device) encode(f *udpFrame, frame []byte) int {
 // deviceSender gives the batches of the pipeline to the device.
 type deviceSender struct{ d *Device }
 
-// Send sends the packets of b on the TX queue of its RX queue, with one Transmit. A batch with no
+// Send sends the packets of b on the TX queue of its RX queue, in one publish. A batch with no
 // RX queue (PacketOut) sends each packet alone and asks gVisor for each MAC. It never waits.
 func (s deviceSender) Send(b *TxBatch) {
 	d := s.d
@@ -374,7 +381,7 @@ func (d *Device) transmit(t *txQueue, size int, build func(frame []byte) int) bo
 	return sent == 1
 }
 
-// send builds the frames of n packets (at most rxBatch) and sends them with one Transmit. build
+// send builds the frames of n packets (at most rxBatch) and publishes them in one call. build
 // returns 0 to skip packet i. Bit i of full tells that packet i had no room in the ring.
 func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, full uint64) {
 	t.mu.Lock()
@@ -393,7 +400,7 @@ func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, fu
 		}
 	}
 	t.q.Free(descs[k:])
-	sent = t.q.Transmit(descs[:k])
+	sent = t.publish(descs[:k])
 	if sent > 0 {
 		select {
 		case t.wake <- struct{}{}:
