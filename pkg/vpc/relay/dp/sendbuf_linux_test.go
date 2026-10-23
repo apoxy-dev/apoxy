@@ -49,11 +49,10 @@ func TestDeviceSendBuffer(t *testing.T) {
 	}
 	require.NoError(t, netlink.LinkAdd(veth))
 	t.Cleanup(func() { _ = netlink.LinkDel(veth) })
-	for _, name := range []string{"rsb0", "psb0"} {
-		l, err := netlink.LinkByName(name)
-		require.NoError(t, err)
-		require.NoError(t, netlink.LinkSetUp(l))
-	}
+	// The relay end stays down: OpenDevice sets it up.
+	pl, err := netlink.LinkByName("psb0")
+	require.NoError(t, err)
+	require.NoError(t, netlink.LinkSetUp(pl))
 	l, err := netlink.LinkByName("rsb0")
 	require.NoError(t, err)
 

@@ -14,17 +14,26 @@ import (
 	"github.com/atoonk/packetio"
 	"github.com/atoonk/packetio/afxdp"
 	"github.com/cilium/ebpf"
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
 // OpenDevice opens the dedicated interface ifc with AF_XDP on all its queues. It takes all packets:
 // the kernel gets no packet of the interface. The relay XDP program drops the packets that the
 // impair map tells it to drop. A send only publishes with TransmitNoKick; the kicker of each TX
-// queue kicks.
+// queue kicks. OpenDevice sets the link up if it is down; Run does not set it down.
 func OpenDevice(ifc Interface) (*Device, error) {
-	link, err := net.InterfaceByName(ifc.Name)
+	link, err := netlink.LinkByName(ifc.Name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find the relay interface: %w", err)
+	}
+	// The host does not set the dedicated interface up. Set it up before AF_XDP binds its queues,
+	// because ENA sets up its queues again when the link goes up.
+	if link.Attrs().Flags&net.FlagUp == 0 {
+		if err := netlink.LinkSetUp(link); err != nil {
+			return nil, fmt.Errorf("failed to set the relay interface up: %w", err)
+		}
+		slog.Info("Set the relay interface up", "link", ifc.Name)
 	}
 	impair, err := openImpairMap()
 	if err != nil {
@@ -59,7 +68,7 @@ func OpenDevice(ifc Interface) (*Device, error) {
 			counts:  kickCounts(s),
 		})
 	}
-	d, err := newDevice(ifc, dev, ports, uint32(link.MTU), impair)
+	d, err := newDevice(ifc, dev, ports, uint32(link.Attrs().MTU), impair)
 	if err != nil {
 		dev.Close()
 		impair.Close()

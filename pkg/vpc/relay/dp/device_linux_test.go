@@ -95,9 +95,9 @@ func newEnv(t *testing.T, queues int) *env {
 	pe, err := netlink.LinkByName("pe0")
 	require.NoError(t, err)
 	require.NoError(t, netlink.LinkSetNsFd(pe, int(e.peer)))
+	// The relay end stays down, as the dedicated interface on a host: OpenDevice sets it up.
 	rl, err := netlink.LinkByName("rl0")
 	require.NoError(t, err)
-	require.NoError(t, netlink.LinkSetUp(rl))
 
 	h, err := netlink.NewHandleAt(e.peer)
 	require.NoError(t, err)
@@ -393,6 +393,53 @@ func TestDeviceReopen(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	require.NoError(t, d.Run(ctx))
+}
+
+// TestDeviceSetsLinkUp opens a link that is down and a link that is up. The host does not set the
+// dedicated interface up, so the link is up after OpenDevice and stays up after the device stops.
+func TestDeviceSetsLinkUp(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root for veth and AF_XDP")
+	}
+	cases := []struct {
+		name string
+		up   bool
+	}{
+		{name: "link down"},
+		{name: "link already up", up: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			veth := &netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: "rup0", MTU: 1500}, PeerName: "pup0"}
+			require.NoError(t, netlink.LinkAdd(veth))
+			t.Cleanup(func() { _ = netlink.LinkDel(veth) })
+			up := []string{"pup0"}
+			if tc.up {
+				up = append(up, "rup0")
+			}
+			for _, name := range up {
+				l, err := netlink.LinkByName(name)
+				require.NoError(t, err)
+				require.NoError(t, netlink.LinkSetUp(l))
+			}
+			l, err := netlink.LinkByName("rup0")
+			require.NoError(t, err)
+			isUp := func() bool {
+				l, err := netlink.LinkByName("rup0")
+				require.NoError(t, err)
+				return l.Attrs().Flags&net.FlagUp != 0
+			}
+			require.Equal(t, tc.up, isUp())
+
+			d, err := dp.OpenDevice(dp.Interface{Name: "rup0", MAC: l.Attrs().HardwareAddr, Own: []netip.Prefix{relay4}})
+			require.NoError(t, err)
+			assert.True(t, isUp(), "the link is up after OpenDevice")
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			require.NoError(t, d.Run(ctx))
+			assert.True(t, isUp(), "the link is up after the device stops")
+		})
+	}
 }
 
 // TestDeviceZeroCopy opens the link with each zero-copy setting. veth has native XDP but no
