@@ -132,8 +132,8 @@ type options struct {
 	StopRelay bool
 	// IMDS makes the relay find its interface in IMDSv2, as the product relay does.
 	IMDS bool
-	// ZeroCopy is the zero-copy setting of the relay interface. Nil lets the driver decide.
-	ZeroCopy *bool
+	// ZeroCopy makes the relay interface demand zero-copy. False: copy mode.
+	ZeroCopy bool
 	Profiles bench.Profiles
 	// prof are the profiles that main started. Nil: the run has no profiles.
 	prof *bench.Running
@@ -160,15 +160,7 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 	if cmd == "relay" {
 		fs.StringVar(&o.Iface, "iface", "", "link of the relay device, which takes all packets of the link (AF_XDP, Linux only); the relay uses the addresses that the kernel has on it")
 		fs.BoolVar(&o.IMDS, "imds", false, "find the relay link and its address in IMDSv2 of the EC2 instance (the ENI with device number 1), as the product relay does; the kernel has no address on it")
-		fs.Func("zero-copy", "on: the relay link must open AF_XDP in zero-copy; off: driver mode with copy (default: zero-copy when the driver gives it)", func(v string) error {
-			switch v {
-			case "on", "off":
-				zc := v == "on"
-				o.ZeroCopy = &zc
-				return nil
-			}
-			return fmt.Errorf("want on or off, got %q", v)
-		})
+		fs.BoolVar(&o.ZeroCopy, "zero-copy", false, "the relay link must open AF_XDP in zero-copy (default: copy mode)")
 		fs.IntVar(&o.Lanes, "lanes", relay.MaxLaneSources, "most lane ports that the relay takes from a session; 0 makes agents send on one port")
 	}
 	if cmd != "relay" {

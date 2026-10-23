@@ -67,17 +67,13 @@ func OpenDevice(ifc Interface) (*Device, error) {
 	return d, nil
 }
 
-// modeOptions returns the go-afxdp mode of the zero-copy setting zc. With no setting, go-afxdp
-// uses zero-copy when the driver gives it, else copy.
-func modeOptions(zc *bool) []xdp.Option {
-	switch {
-	case zc == nil:
-		return nil
-	case *zc:
+// modeOptions returns the go-afxdp mode of the zero-copy setting zc. go-afxdp uses copy mode
+// unless it gets WithZeroCopy.
+func modeOptions(zc bool) []xdp.Option {
+	if zc {
 		return []xdp.Option{xdp.WithZeroCopy()}
-	default:
-		return []xdp.Option{xdp.WithCopyMode()}
 	}
+	return nil
 }
 
 // nameThread gives the OS thread of the caller a name, for top, perf and /proc. The kernel keeps

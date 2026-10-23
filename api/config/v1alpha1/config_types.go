@@ -299,10 +299,9 @@ type RelayInterface struct {
 	// interface. Only for Static.
 	// +optional
 	Gateways []string `json:"gateways,omitempty"`
-	// ZeroCopy tells how the relay opens AF_XDP on the interface. true
-	// demands zero-copy and the relay fails if the driver cannot give it.
-	// false uses driver mode with copy. Not set uses zero-copy when the
-	// driver gives it, else copy.
+	// ZeroCopy tells how the relay opens AF_XDP on the interface. false (the
+	// default) uses copy mode. true demands zero-copy and the relay fails if
+	// the driver cannot give it.
 	// +optional
-	ZeroCopy *bool `json:"zeroCopy,omitempty"`
+	ZeroCopy bool `json:"zeroCopy,omitempty"`
 }

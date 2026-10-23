@@ -402,15 +402,13 @@ func TestDeviceZeroCopy(t *testing.T) {
 	const queues = 2
 	e := newEnv(t, queues)
 	e.stop()
-	on, off := true, false
 	cases := []struct {
 		name string
-		zc   *bool
+		zc   bool
 		err  bool
 	}{
-		{name: "not set", zc: nil},
-		{name: "copy", zc: &off},
-		{name: "zero-copy", zc: &on, err: true},
+		{name: "copy by default"},
+		{name: "zero-copy", zc: true, err: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

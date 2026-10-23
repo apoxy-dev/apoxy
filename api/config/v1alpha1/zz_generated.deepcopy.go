@@ -187,11 +187,6 @@ func (in *RelayInterface) DeepCopyInto(out *RelayInterface) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
-	if in.ZeroCopy != nil {
-		in, out := &in.ZeroCopy, &out.ZeroCopy
-		*out = new(bool)
-		**out = **in
-	}
 	return
 }
 

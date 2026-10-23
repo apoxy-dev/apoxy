@@ -11,8 +11,8 @@ func TestENIRows(t *testing.T) {
 	const (
 		server    = `-server-argv=["vpcbench","server","-relay","$RELAY_CTL_IP:4443","-listen","$SERVER_IP:4433","-start-timeout","5m"]`
 		client    = `-client-argv=["vpcbench","client","-relay","$RELAY_CTL_IP:4443","-server","$SERVER_IP:4433","-cc","bbr","-streams","$STREAMS","-omit","${OMIT_S}s","-duration","${DURATION_S}s","-start-timeout","5m","-stop-relay"]`
-		relayZC   = `-sidecar-argv=["vpcbench","relay","-imds","-zero-copy","on","-listen","$RELAY_CTL_IP:4443","-kernel","$WORK_DIR/relay-kernel"]`
-		relayCopy = `-sidecar-argv=["vpcbench","relay","-imds","-zero-copy","off","-listen","$RELAY_CTL_IP:4443","-kernel","$WORK_DIR/relay-kernel"]`
+		relayZC   = `-sidecar-argv=["vpcbench","relay","-imds","-zero-copy=true","-listen","$RELAY_CTL_IP:4443","-kernel","$WORK_DIR/relay-kernel"]`
+		relayCopy = `-sidecar-argv=["vpcbench","relay","-imds","-zero-copy=false","-listen","$RELAY_CTL_IP:4443","-kernel","$WORK_DIR/relay-kernel"]`
 	)
 	common := []string{"-omit=5s", "-duration=30s", "-min-cpus=16", "-max-steal=5", "-relay-xdp", "-relay-link=eni1", "-no-nic-poll", server, client}
 	cases := []struct {
@@ -42,11 +42,11 @@ func TestENIRows(t *testing.T) {
 		{
 			id: "netstack-psp-relay-3node-eni-p16-zc-prof",
 			want: append([]string{"-name=vpc-netstack-psp-relay-3node-eni-p16-zc", "-streams=16",
-				`-sidecar-argv=["vpcbench","relay","-imds","-zero-copy","on","-listen","$RELAY_CTL_IP:4443","-kernel","$WORK_DIR/relay-kernel","-cpuprofile","$WORK_DIR/relay-cpu.pprof"]`}, common...),
+				`-sidecar-argv=["vpcbench","relay","-imds","-zero-copy=true","-listen","$RELAY_CTL_IP:4443","-kernel","$WORK_DIR/relay-kernel","-cpuprofile","$WORK_DIR/relay-cpu.pprof"]`}, common...),
 		},
 		{
 			id: "netstack-psp-relay-3node-eni-zc-r1", profile: true,
-			want: []string{`-sidecar-argv=["vpcbench","relay","-imds","-zero-copy","on","-listen","$RELAY_CTL_IP:4443",` +
+			want: []string{`-sidecar-argv=["vpcbench","relay","-imds","-zero-copy=true","-listen","$RELAY_CTL_IP:4443",` +
 				`"-cpuprofile","$WORK_DIR/relay-cpu.pprof","-blockprofile","$WORK_DIR/relay-block.pprof","-mutexprofile","$WORK_DIR/relay-mutex.pprof",` +
 				`"-trace","$WORK_DIR/relay.trace","-kernel","$WORK_DIR/relay-kernel"]`},
 		},

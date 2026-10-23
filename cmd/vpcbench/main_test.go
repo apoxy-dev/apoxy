@@ -49,18 +49,18 @@ func TestParseFlags(t *testing.T) {
 		{name: "relay with no iface", cmd: "relay", args: []string{"-listen", ":4443"}, wantErr: "set one of -iface and -imds"},
 		{name: "relay with iface and imds", cmd: "relay", args: []string{"-iface", "r", "-imds", "-listen", ":4443"}, wantErr: "set one of -iface and -imds"},
 		{
-			name: "relay on IMDS with zero-copy", cmd: "relay", args: []string{"-imds", "-zero-copy", "on", "-listen", ":4443"},
-			want: func(o options) bool { return o.IMDS && o.Iface == "" && o.ZeroCopy != nil && *o.ZeroCopy },
+			name: "relay on IMDS with zero-copy", cmd: "relay", args: []string{"-imds", "-zero-copy", "-listen", ":4443"},
+			want: func(o options) bool { return o.IMDS && o.Iface == "" && o.ZeroCopy },
 		},
 		{
-			name: "relay with copy mode", cmd: "relay", args: []string{"-iface", "r", "-zero-copy", "off", "-listen", ":4443"},
-			want: func(o options) bool { return o.ZeroCopy != nil && !*o.ZeroCopy },
+			name: "relay with copy mode", cmd: "relay", args: []string{"-iface", "r", "-zero-copy=false", "-listen", ":4443"},
+			want: func(o options) bool { return !o.ZeroCopy },
 		},
 		{
-			name: "relay zero-copy not set", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443"},
-			want: func(o options) bool { return o.ZeroCopy == nil },
+			name: "relay copy mode by default", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443"},
+			want: func(o options) bool { return !o.ZeroCopy },
 		},
-		{name: "relay with a bad zero-copy", cmd: "relay", args: []string{"-iface", "r", "-zero-copy", "auto", "-listen", ":4443"}, wantErr: `want on or off, got "auto"`},
+		{name: "relay with a bad zero-copy", cmd: "relay", args: []string{"-iface", "r", "-zero-copy=auto", "-listen", ":4443"}, wantErr: `invalid boolean value "auto" for -zero-copy`},
 		{
 			name: "relay needs no work dir", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-work-dir", ""},
 			want: func(o options) bool { return o.WorkDir == "" },

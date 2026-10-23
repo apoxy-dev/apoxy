@@ -84,10 +84,9 @@ func TestFindInterface(t *testing.T) {
 	static := func(mac string, addrs ...string) *configv1alpha1.RelayInterface {
 		return &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceStatic, MAC: mac, Addresses: addrs, Gateways: []string{"192.0.2.1", "2001:db8::1"}}
 	}
-	on, off := true, false
-	imdsZeroCopy := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, ZeroCopy: &on}
-	staticCopy := static(mac, "192.0.2.10/24")
-	staticCopy.ZeroCopy = &off
+	imdsZeroCopy := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, ZeroCopy: true}
+	staticZeroCopy := static(mac, "192.0.2.10/24")
+	staticZeroCopy.ZeroCopy = true
 	for _, tc := range []struct {
 		name string
 		cfg  *configv1alpha1.RelayInterface
@@ -122,7 +121,7 @@ func TestFindInterface(t *testing.T) {
 				Name: link.Name, MAC: link.HardwareAddr,
 				Own:      []netip.Prefix{netip.MustParsePrefix("10.0.1.25/24")},
 				Gateways: []netip.Addr{netip.MustParseAddr("10.0.1.1")},
-				ZeroCopy: &on,
+				ZeroCopy: true,
 			},
 		},
 		{name: "IMDS: no ENI with device number 1", cfg: imdsCfg, v2: true, data: eni(true, "2"), err: "device number 1"},
@@ -143,14 +142,14 @@ func TestFindInterface(t *testing.T) {
 			},
 		},
 		{
-			name: "Static: zero-copy off",
-			cfg:  staticCopy,
+			name: "Static: zero-copy on",
+			cfg:  staticZeroCopy,
 			want: dp.Interface{
 				Name: link.Name, MAC: link.HardwareAddr,
 				Own:      []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
 				Public:   []netip.Addr{netip.MustParseAddr("192.0.2.10")},
 				Gateways: []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")},
-				ZeroCopy: &off,
+				ZeroCopy: true,
 			},
 		},
 		{name: "Static: an address that is not a prefix", cfg: static(mac, "192.0.2.10"), err: "address"},

@@ -29,7 +29,10 @@ var eniCases = []eniCase{
 }
 
 // eniModes are the zero-copy settings of the relay: the value of vpcbench -zero-copy by ID suffix.
-var eniModes = []struct{ suffix, zeroCopy string }{{"zc", "on"}, {"copy", "off"}}
+var eniModes = []struct {
+	suffix   string
+	zeroCopy bool
+}{{"zc", true}, {"copy", false}}
 
 // eniReps is the number of IDs of each case and mode.
 const eniReps = 2
@@ -46,16 +49,16 @@ func eniPerfTests(o Options) []Row {
 			}
 		}
 	}
-	return append(tests, eniCases[1].perfTest(o, "zc", "on", "-prof", true))
+	return append(tests, eniCases[1].perfTest(o, "zc", true, "-prof", true))
 }
 
 // perfTest returns the node perf test case of the case with the zero-copy setting zc.
-func (c eniCase) perfTest(o Options, mode, zc, idSuffix string, prof bool) Row {
+func (c eniCase) perfTest(o Options, mode string, zc bool, idSuffix string, prof bool) Row {
 	const relay = "$RELAY_CTL_IP:4443"
 	name := "vpc-netstack-psp-relay-3node-" + c.stem + "-" + mode
 	// The BPF IRQ timer of -kernel measures the softirq time, which /proc/stat
 	// can show too low, and the kernel stacks of the second half of the window.
-	sidecar := []string{"vpcbench", "relay", "-imds", "-zero-copy", zc, "-listen", relay, "-kernel", "$WORK_DIR/relay-kernel"}
+	sidecar := []string{"vpcbench", "relay", "-imds", "-zero-copy=" + strconv.FormatBool(zc), "-listen", relay, "-kernel", "$WORK_DIR/relay-kernel"}
 	server := []string{"vpcbench", "server", "-relay", relay, "-listen", "$SERVER_IP:4433", "-start-timeout", nodeStartTimeout}
 	client := []string{"vpcbench", "client", "-relay", relay, "-server", "$SERVER_IP:4433", "-cc", "bbr",
 		"-streams", "$STREAMS", "-omit", "${OMIT_S}s", "-duration", "${DURATION_S}s", "-start-timeout", nodeStartTimeout, "-stop-relay"}
