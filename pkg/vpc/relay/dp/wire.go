@@ -100,60 +100,57 @@ func demux(frame []byte, own func(netip.Addr) bool) (int, datagram) {
 	return toDrop, datagram{}
 }
 
-// encodeUDP writes an Ethernet, IP and UDP frame of payload into frame, as icx udp.Encode does,
-// with DF and the ECN bits set. It returns the frame length, or 0 when frame is too small.
+// encodeUDP writes an Ethernet, IP and UDP frame of payload into frame, with DF and the ECN bits set.
+// It returns the frame length, or 0 when frame is too small.
 func encodeUDP(frame []byte, srcMAC, dstMAC tcpip.LinkAddress, src, dst netip.AddrPort, ecn uint8, payload []byte) int {
-	hdr := header.EthernetMinimumSize + header.UDPMinimumSize
-	if src.Addr().Is4() {
-		hdr += header.IPv4MinimumSize
-	} else {
-		hdr += header.IPv6MinimumSize
+	v4 := src.Addr().Is4()
+	ipLen := header.IPv6MinimumSize
+	if v4 {
+		ipLen = header.IPv4MinimumSize
 	}
-	n := hdr + len(payload)
-	if n > len(frame) || header.UDPMinimumSize+len(payload) > math.MaxUint16 {
+	off := header.EthernetMinimumSize + ipLen
+	n := off + header.UDPMinimumSize + len(payload)
+	// A source and destination of two families cannot be one IP header.
+	if n > len(frame) || header.UDPMinimumSize+len(payload) > math.MaxUint16 || v4 != dst.Addr().Is4() {
 		return 0
 	}
-	copy(frame[hdr:], payload)
-	srcIP, dstIP := tcpipAddr(src.Addr()), tcpipAddr(dst.Addr())
+	copy(frame[off+header.UDPMinimumSize:], payload)
 	udpLen := uint16(header.UDPMinimumSize + len(payload))
-	eth := header.Ethernet(frame)
-	off := header.EthernetMinimumSize
-	if src.Addr().Is4() {
-		eth.Encode(&header.EthernetFields{SrcAddr: srcMAC, DstAddr: dstMAC, Type: header.IPv4ProtocolNumber})
-		ip := header.IPv4(frame[off:])
-		ip.Encode(&header.IPv4Fields{
-			TOS:         ecn & 0x3,
-			TotalLength: header.IPv4MinimumSize + udpLen,
-			Flags:       header.IPv4FlagDontFragment,
-			TTL:         64,
-			Protocol:    uint8(header.UDPProtocolNumber),
-			SrcAddr:     srcIP,
-			DstAddr:     dstIP,
-		})
-		ip.SetChecksum(^ip.CalculateChecksum())
-		off += header.IPv4MinimumSize
+	ip := frame[header.EthernetMinimumSize:off]
+	var addrs []byte // The source and destination addresses in ip, for the pseudo-header sum.
+	if v4 {
+		header.Ethernet(frame).Encode(&header.EthernetFields{SrcAddr: srcMAC, DstAddr: dstMAC, Type: header.IPv4ProtocolNumber})
+		ip[0], ip[1] = 0x45, ecn&0x3 // Version 4, 20-byte header.
+		binary.BigEndian.PutUint16(ip[2:], uint16(ipLen)+udpLen)
+		binary.BigEndian.PutUint32(ip[4:], uint32(header.IPv4FlagDontFragment)<<13) // ID 0, DF.
+		ip[8], ip[9] = 64, uint8(header.UDPProtocolNumber)
+		binary.BigEndian.PutUint16(ip[10:], 0)
+		*(*[4]byte)(ip[12:]) = src.Addr().As4()
+		*(*[4]byte)(ip[16:]) = dst.Addr().As4()
+		binary.BigEndian.PutUint16(ip[10:], ^checksum.Checksum(ip, 0))
+		addrs = ip[12:20]
 	} else {
 		// IPv6 routers never fragment, so DF has no field there.
-		eth.Encode(&header.EthernetFields{SrcAddr: srcMAC, DstAddr: dstMAC, Type: header.IPv6ProtocolNumber})
-		header.IPv6(frame[off:]).Encode(&header.IPv6Fields{
-			TrafficClass:      ecn & 0x3,
-			PayloadLength:     udpLen,
-			TransportProtocol: header.UDPProtocolNumber,
-			HopLimit:          64,
-			SrcAddr:           srcIP,
-			DstAddr:           dstIP,
-		})
-		off += header.IPv6MinimumSize
+		header.Ethernet(frame).Encode(&header.EthernetFields{SrcAddr: srcMAC, DstAddr: dstMAC, Type: header.IPv6ProtocolNumber})
+		binary.BigEndian.PutUint32(ip[0:], 6<<28|uint32(ecn&0x3)<<20)
+		binary.BigEndian.PutUint16(ip[4:], udpLen)
+		ip[6], ip[7] = uint8(header.UDPProtocolNumber), 64
+		*(*[16]byte)(ip[8:]) = src.Addr().As16()
+		*(*[16]byte)(ip[24:]) = dst.Addr().As16()
+		addrs = ip[8:40]
 	}
-	udp := header.UDP(frame[off:])
-	udp.Encode(&header.UDPFields{SrcPort: src.Port(), DstPort: dst.Port(), Length: udpLen})
-	csum := udp.CalculateChecksum(checksum.Combine(
-		header.PseudoHeaderChecksum(header.UDPProtocolNumber, srcIP, dstIP, udpLen),
-		checksum.Checksum(payload, 0),
-	))
-	if csum != math.MaxUint16 {
-		csum = ^csum
+	udp := frame[off:n]
+	binary.BigEndian.PutUint16(udp[0:], src.Port())
+	binary.BigEndian.PutUint16(udp[2:], dst.Port())
+	binary.BigEndian.PutUint16(udp[4:], udpLen)
+	binary.BigEndian.PutUint16(udp[6:], 0)
+	// The pseudo-header is the two addresses, the UDP length and the protocol (RFC 768, RFC 8200).
+	sum := checksum.Combine(checksum.Checksum(addrs, 0), udpLen)
+	sum = checksum.Checksum(udp, checksum.Combine(sum, uint16(header.UDPProtocolNumber)))
+	// A sum of 0xffff gives checksum 0, which means no checksum, so it is sent as 0xffff.
+	if sum != math.MaxUint16 {
+		sum = ^sum
 	}
-	udp.SetChecksum(csum)
+	binary.BigEndian.PutUint16(udp[6:], sum)
 	return n
 }
