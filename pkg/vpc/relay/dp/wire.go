@@ -10,6 +10,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 )
 
 // The UDP ports of the relay on the dedicated interface. PortData carries PSP packets, probes and
@@ -116,34 +118,41 @@ func encodeUDP(frame []byte, srcMAC, dstMAC tcpip.LinkAddress, src, dst netip.Ad
 	}
 	copy(frame[off+header.UDPMinimumSize:], payload)
 	udpLen := uint16(header.UDPMinimumSize + len(payload))
-	ip := frame[header.EthernetMinimumSize:off]
-	var addrs []byte // The source and destination addresses in ip, for the pseudo-header sum.
+	// The addresses are copied from As4 and As16, because a tcpip.Address for each packet is slow.
+	var addrs []byte // The pseudo-header sum uses the two addresses in the IP header.
 	if v4 {
 		header.Ethernet(frame).Encode(&header.EthernetFields{SrcAddr: srcMAC, DstAddr: dstMAC, Type: header.IPv4ProtocolNumber})
-		ip[0], ip[1] = 0x45, ecn&0x3 // Version 4, 20-byte header.
-		binary.BigEndian.PutUint16(ip[2:], uint16(ipLen)+udpLen)
-		binary.BigEndian.PutUint32(ip[4:], uint32(header.IPv4FlagDontFragment)<<13) // ID 0, DF.
-		ip[8], ip[9] = 64, uint8(header.UDPProtocolNumber)
-		binary.BigEndian.PutUint16(ip[10:], 0)
-		*(*[4]byte)(ip[12:]) = src.Addr().As4()
-		*(*[4]byte)(ip[16:]) = dst.Addr().As4()
-		binary.BigEndian.PutUint16(ip[10:], ^checksum.Checksum(ip, 0))
-		addrs = ip[12:20]
+		ip := header.IPv4(frame[header.EthernetMinimumSize:off])
+		setIPv4VersionIHL(ip)
+		ip.SetTOS(ecn&0x3, 0)
+		ip.SetTotalLength(uint16(ipLen) + udpLen)
+		ip.SetID(0)
+		ip.SetFlagsFragmentOffset(header.IPv4FlagDontFragment, 0)
+		ip.SetTTL(ipv4.DefaultTTL)
+		setIPv4Protocol(ip, header.UDPProtocolNumber)
+		ip.SetChecksum(0)
+		*(*[4]byte)(ip.SourceAddressSlice()) = src.Addr().As4()
+		*(*[4]byte)(ip.DestinationAddressSlice()) = dst.Addr().As4()
+		ip.SetChecksum(^ip.CalculateChecksum())
+		// The two addresses are the last bytes of the header.
+		addrs = ip[header.IPv4MinimumSize-2*header.IPv4AddressSize:]
 	} else {
 		// IPv6 routers never fragment, so DF has no field there.
 		header.Ethernet(frame).Encode(&header.EthernetFields{SrcAddr: srcMAC, DstAddr: dstMAC, Type: header.IPv6ProtocolNumber})
-		binary.BigEndian.PutUint32(ip[0:], 6<<28|uint32(ecn&0x3)<<20)
-		binary.BigEndian.PutUint16(ip[4:], udpLen)
-		ip[6], ip[7] = uint8(header.UDPProtocolNumber), 64
-		*(*[16]byte)(ip[8:]) = src.Addr().As16()
-		*(*[16]byte)(ip[24:]) = dst.Addr().As16()
-		addrs = ip[8:40]
+		ip := header.IPv6(frame[header.EthernetMinimumSize:off])
+		ip.SetTOS(ecn&0x3, 0) // It also writes version 6 and flow label 0.
+		ip.SetPayloadLength(udpLen)
+		ip.SetNextHeader(uint8(header.UDPProtocolNumber))
+		ip.SetHopLimit(ipv6.DefaultTTL)
+		*(*[16]byte)(ip.SourceAddressSlice()) = src.Addr().As16()
+		*(*[16]byte)(ip.DestinationAddressSlice()) = dst.Addr().As16()
+		addrs = ip[header.IPv6MinimumSize-2*header.IPv6AddressSize:]
 	}
-	udp := frame[off:n]
-	binary.BigEndian.PutUint16(udp[0:], src.Port())
-	binary.BigEndian.PutUint16(udp[2:], dst.Port())
-	binary.BigEndian.PutUint16(udp[4:], udpLen)
-	binary.BigEndian.PutUint16(udp[6:], 0)
+	udp := header.UDP(frame[off:n])
+	udp.SetSourcePort(src.Port())
+	udp.SetDestinationPort(dst.Port())
+	udp.SetLength(udpLen)
+	udp.SetChecksum(0)
 	// The pseudo-header is the two addresses, the UDP length and the protocol (RFC 768, RFC 8200).
 	sum := checksum.Combine(checksum.Checksum(addrs, 0), udpLen)
 	sum = checksum.Checksum(udp, checksum.Combine(sum, uint16(header.UDPProtocolNumber)))
@@ -151,6 +160,22 @@ func encodeUDP(frame []byte, srcMAC, dstMAC tcpip.LinkAddress, src, dst netip.Ad
 	if sum != math.MaxUint16 {
 		sum = ^sum
 	}
-	binary.BigEndian.PutUint16(udp[6:], sum)
+	udp.SetChecksum(sum)
 	return n
+}
+
+// setIPv4Protocol writes the protocol field of an IPv4 header (RFC 791). gVisor has no setter for it.
+func setIPv4Protocol(ip header.IPv4, p tcpip.TransportProtocolNumber) {
+	const protocolOffset = 9
+	ip[protocolOffset] = uint8(p)
+}
+
+// setIPv4VersionIHL writes version 4 and a header length of 20 bytes. It does not use SetHeaderLength,
+// because SetHeaderLength has a panic check that stops the compiler from inlining it.
+func setIPv4VersionIHL(ip header.IPv4) {
+	const (
+		versionIHLOffset = 0
+		versionShift     = 4 // The version is the high 4 bits of the byte.
+	)
+	ip[versionIHLOffset] = header.IPv4Version<<versionShift | header.IPv4MinimumSize/header.IPv4IHLStride
 }
