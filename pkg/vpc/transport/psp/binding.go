@@ -240,6 +240,9 @@ func New(cfg Config) (*Binding, error) {
 		if err := setSockBufs(uc, sockBuf, sockBuf); err != nil {
 			slog.Debug("Failed to set the agent socket buffers", "bytes", sockBuf, "error", err)
 		}
+		if err := acceptZeroSum(uc); err != nil {
+			slog.Debug("Failed to make the agent socket accept a zero UDP checksum", "error", err)
+		}
 	}
 	if err := cfg.Transport.Start(); err != nil {
 		_ = b.Close()
@@ -444,6 +447,9 @@ func (b *Binding) listenLane(uc *net.UDPConn) (*net.UDPConn, *udpbatch.SendSocke
 	}
 	if err := setSockBufs(c, laneRcvBuf, sockBuf); err != nil {
 		slog.Debug("Failed to set the lane socket buffers", "rcvBytes", laneRcvBuf, "sndBytes", sockBuf, "error", err)
+	}
+	if err := acceptZeroSum(c); err != nil {
+		slog.Debug("Failed to make the lane socket accept a zero UDP checksum", "error", err)
 	}
 	syncSend(s)
 	return c, s, nil

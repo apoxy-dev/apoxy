@@ -45,7 +45,17 @@ const testVNI = 0x1234
 // its NonQUICPacketHandler.
 func newTransport(t testing.TB, h func([]byte, net.Addr)) *quic.Transport {
 	t.Helper()
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	return newTransportOn(t, "udp4", h)
+}
+
+// newTransportOn is newTransport on the loopback address of network: udp4 or udp6.
+func newTransportOn(t testing.TB, network string, h func([]byte, net.Addr)) *quic.Transport {
+	t.Helper()
+	ip := net.IPv4(127, 0, 0, 1)
+	if network == "udp6" {
+		ip = net.IPv6loopback
+	}
+	udp, err := net.ListenUDP(network, &net.UDPAddr{IP: ip})
 	require.NoError(t, err)
 	tr := &quic.Transport{Conn: udp, NonQUICPacketHandler: h}
 	t.Cleanup(func() {
@@ -94,12 +104,19 @@ func newPairMTU(t testing.TB, mtu int) (*node, *node) {
 // other as its relay, and receives from it on lanes SAs.
 func newPairLanes(t testing.TB, mtu, lanes int) (*node, *node) {
 	t.Helper()
+	return newPairOn(t, "udp4", mtu, lanes)
+}
+
+// newPairOn is newPairLanes with the agent sockets on the loopback address of network.
+func newPairOn(t testing.TB, network string, mtu, lanes int) (*node, *node) {
+	t.Helper()
 	a := &node{v4: netip.MustParseAddr("10.0.0.1"), v6: netip.MustParseAddr("fd00::1")}
 	b := &node{v4: netip.MustParseAddr("10.0.0.2"), v6: netip.MustParseAddr("fd00::2")}
 	a.other, b.other = b, a
 	for _, n := range []*node{a, b} {
 		dm := &Demux{}
-		n.tr = demuxTransport(t, dm)
+		n.tr = newTransportOn(t, network, dm.Handle)
+		n.tr.NonQUICBatchEnd = dm.BatchEnd
 		var err error
 		n.b, err = New(Config{Transport: n.tr, Demux: dm, VNI: testVNI, MTU: mtu})
 		require.NoError(t, err)

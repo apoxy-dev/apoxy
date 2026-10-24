@@ -147,6 +147,20 @@ func (e *env) listen(t *testing.T, addr netip.AddrPort) *net.UDPConn {
 	return c
 }
 
+// zeroChecksum makes c send UDP checksum 0.
+func zeroChecksum(t *testing.T, c *net.UDPConn, v6 bool) {
+	t.Helper()
+	level, opt := unix.SOL_SOCKET, unix.SO_NO_CHECK
+	if v6 {
+		level, opt = unix.SOL_UDP, unix.UDP_NO_CHECK6_TX
+	}
+	rc, err := c.SyscallConn()
+	require.NoError(t, err)
+	var serr error
+	require.NoError(t, rc.Control(func(fd uintptr) { serr = unix.SetsockoptInt(int(fd), level, opt, 1) }))
+	require.NoError(t, serr)
+}
+
 func (e *env) drops(t *testing.T, reason uint8) int64 {
 	return counts(t, e.d.Target(), dp.CounterDrops)[int64(reason)]
 }
@@ -232,18 +246,35 @@ func TestDevice(t *testing.T) {
 			run  func(t *testing.T)
 		}{
 			{name: "UDP 1000 to the pipeline", run: func(t *testing.T) {
-				c := e.listen(t, netip.AddrPortFrom(peer4.Addr(), 7002))
-				_, err := c.WriteToUDPAddrPort(probe, netip.AddrPortFrom(relay4.Addr(), 1000))
-				require.NoError(t, err)
-				select {
-				case p := <-e.packets:
-					md, err := dp.DecodePacketInMeta(p.GetMetadata())
-					require.NoError(t, err)
-					assert.Equal(t, dp.KindPunt, md.Kind)
-					assert.Equal(t, netip.AddrPortFrom(peer4.Addr(), 7002), md.From)
-					assert.Equal(t, probe, p.GetPayload())
-				case <-time.After(5 * time.Second):
-					t.Fatal("no PUNT of the probe")
+				// The relay takes UDP checksum 0 on IPv4 and IPv6, as PSP requires.
+				for _, tc := range []struct {
+					name     string
+					from, to netip.AddrPort
+					zero     bool // The peer sends UDP checksum 0.
+				}{
+					{name: "IPv4", from: netip.AddrPortFrom(peer4.Addr(), 7002), to: netip.AddrPortFrom(relay4.Addr(), 1000)},
+					{name: "IPv4 with checksum 0", from: netip.AddrPortFrom(peer4.Addr(), 7008), to: netip.AddrPortFrom(relay4.Addr(), 1000), zero: true},
+					{name: "IPv6", from: netip.AddrPortFrom(peer6.Addr(), 7002), to: netip.AddrPortFrom(relay6.Addr(), 1000)},
+					{name: "IPv6 with checksum 0", from: netip.AddrPortFrom(peer6.Addr(), 7008), to: netip.AddrPortFrom(relay6.Addr(), 1000), zero: true},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						c := e.listen(t, tc.from)
+						if tc.zero {
+							zeroChecksum(t, c, tc.from.Addr().Is6())
+						}
+						_, err := c.WriteToUDPAddrPort(probe, tc.to)
+						require.NoError(t, err)
+						select {
+						case p := <-e.packets:
+							md, err := dp.DecodePacketInMeta(p.GetMetadata())
+							require.NoError(t, err)
+							assert.Equal(t, dp.KindPunt, md.Kind)
+							assert.Equal(t, tc.from, md.From)
+							assert.Equal(t, probe, p.GetPayload())
+						case <-time.After(5 * time.Second):
+							t.Fatal("no PUNT of the probe")
+						}
+					})
 				}
 			}},
 			{name: "UDP 443 to the QUIC conn, with ECN", run: func(t *testing.T) {
