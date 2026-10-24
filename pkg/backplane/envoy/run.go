@@ -31,10 +31,10 @@ const (
 	// 1.38.x jump (picked up implicitly via GetLatestRelease when the
 	// v0.11.22/23 images were built) regressed the golang filter with a
 	// tcmalloc SIGSEGV on the cgo thread-adoption path (x_cgo_getstackbound
-	// → pthread_getattr_np → calloc). 1.35.13 is the same minor as the
-	// last known-good 1.35.3 plus upstream security backports. Bump only
-	// after soak-testing the golang filter under listener-reload churn.
-	DefaultVersion = "v1.35.13"
+	// → pthread_getattr_np → calloc). 1.36.13 matched 1.35.13 (no crashes)
+	// in a golang-filter soak under listener-reload churn, while 1.37.10 and
+	// 1.38.8 crashed. Bump only after the same soak.
+	DefaultVersion = "v1.36.13"
 
 	accessLogsPath = "/var/log/accesslogs"
 	tapsPath       = "/var/log/taps"

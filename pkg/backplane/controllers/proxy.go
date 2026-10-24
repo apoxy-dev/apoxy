@@ -120,7 +120,7 @@ func WithEnvoyContrib() Option {
 	}
 }
 
-// WithEnvoyVersion pins the Envoy release tag (e.g. "v1.35.13") downloaded
+// WithEnvoyVersion pins the Envoy release tag (e.g. "v1.36.13") downloaded
 // from GitHub. An empty version falls back to the latest upstream release —
 // never do that in production builds; see envoy.DefaultVersion for why.
 func WithEnvoyVersion(version string) Option {
