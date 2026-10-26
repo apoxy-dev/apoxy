@@ -531,7 +531,7 @@ replace github.com/atoonk/go-afxdp => github.com/apoxy-dev/go-afxdp v0.12.1-0.20
 
 replace github.com/atoonk/packetio => github.com/apoxy-dev/packetio v0.1.12-0.20261023084823-90675c41bf91
 
-replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261017003636-fba071217658
+replace gvisor.dev/gvisor => github.com/apoxy-dev/gvisor v0.0.0-20261026180445-cc379a47fab0
 
 // Pin otelgrpc to v0.59.0: v0.60.0+ removed UnaryServerInterceptor/UnaryClientInterceptor
 // which go.temporal.io/server v1.23.0 still calls. cloud.google.com/go/auth wants v0.61.0
