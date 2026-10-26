@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -159,17 +160,19 @@ func setSendBuffer(fd, n int) (int, error) {
 }
 
 // nameThread gives the OS thread of the caller a name, for top, perf and /proc, and returns its old
-// name. The kernel keeps the first 15 bytes.
+// name. The kernel keeps the first 15 bytes. It calls syscall.Syscall, not unix.Prctl: only in the
+// arguments of syscall.Syscall does the compiler keep buf and b alive and in place during the call.
 func nameThread(name string) (old string) {
 	var buf [16]byte
-	if unix.Prctl(unix.PR_GET_NAME, uintptr(unsafe.Pointer(&buf[0])), 0, 0, 0) == nil {
+	_, _, e := syscall.Syscall(unix.SYS_PRCTL, unix.PR_GET_NAME, uintptr(unsafe.Pointer(&buf[0])), 0)
+	if e == 0 {
 		old = unix.ByteSliceToString(buf[:])
 	}
 	b, err := unix.BytePtrFromString(name)
 	if err != nil {
 		return old
 	}
-	_ = unix.Prctl(unix.PR_SET_NAME, uintptr(unsafe.Pointer(b)), 0, 0, 0)
+	_, _, _ = syscall.Syscall(unix.SYS_PRCTL, unix.PR_SET_NAME, uintptr(unsafe.Pointer(b)), 0)
 	return old
 }
 
