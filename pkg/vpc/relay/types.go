@@ -105,9 +105,9 @@ type Config struct {
 	// Busy gives the busy time of each thread of the data plane for the busy metric, as
 	// dp.Device.Busy. nil: no busy metric.
 	Busy func() []dp.ThreadBusy
-	// TableWriteInterval is the shortest time between two table writes. The root writes the table
-	// changes of this time in one batch. nil means DefaultTableWriteInterval; 0 writes each change
-	// at once.
+	// TableWriteInterval is the shortest time between two table writes, except for a change that a
+	// call or Welcome waits for: it writes the batch at once. The root writes the other table changes
+	// of this time in one batch. nil means DefaultTableWriteInterval; 0 writes each change at once.
 	TableWriteInterval *time.Duration
 }
 

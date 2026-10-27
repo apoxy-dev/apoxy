@@ -97,12 +97,14 @@ type Router struct {
 	fetchN  uint64
 	fetches map[uint64]*fetchRun
 	// interval is the table write interval. pending has the table changes of each event that
-	// waits for the next write, which is at mark when it is set.
+	// waits for the next write, which is at mark when it is set, or after the events of this turn
+	// when writeNow is set.
 	interval  time.Duration
 	pending   []tablesEvent
 	lastWrite time.Time
 	mark      *time.Timer
 	markC     <-chan time.Time
+	writeNow  bool
 }
 
 // tablesEvent is the table changes of one event in the pending batch. done gets the result of
@@ -308,6 +310,9 @@ func (r *Router) Run(ctx context.Context) error {
 			}
 			r.handle(e)
 		}
+		if r.writeNow {
+			r.writeTables()
+		}
 		if r.stopping && len(r.vs) == 0 && len(r.mall) == 0 && !r.hookOn && len(r.hooks) == 0 && len(r.pending) == 0 {
 			r.pins.close()
 			for _, e := range r.box.close() {
@@ -323,7 +328,6 @@ func (r *Router) Run(ctx context.Context) error {
 				r.tick(now)
 			}
 		case <-r.markC:
-			r.markC = nil
 			r.writeTables()
 		case <-done:
 			done = nil
@@ -763,7 +767,7 @@ func (r *Router) answerStats(ask uint64) {
 func (r *Router) tick(now time.Time) {
 	ticks, rx := r.keys.tick(bg, now)
 	for _, kt := range ticks {
-		r.addTables(kt.b, func(err error) {
+		r.addTables(kt.b, false, func(err error) {
 			if err != nil {
 				slog.Warn("Failed to write keys entries", "port", kt.port, "error", err)
 				return
@@ -821,7 +825,7 @@ func (r *Router) fromV(v *vChild, msg any) {
 	case vKeys:
 		r.runKeys(v, m)
 	case vTables:
-		r.addTables(m.b, func(err error) { v.box.send(toTablesDone{port: m.port, err: err}) })
+		r.addTables(m.b, m.chain, func(err error) { v.box.send(toTablesDone{port: m.port, err: err}) })
 	case vAttachmentStart:
 		r.hook(m.port, func() { r.cfg.Addresses.Attached(m.att) })
 	case vAttachmentEnd:
@@ -898,7 +902,7 @@ func (r *Router) runKeys(v *vChild, m vKeys) {
 			v.down.Delete(rxKey(m.port))
 		}
 	}
-	r.addTables(b, func(err error) {
+	r.addTables(b, m.chain, func(err error) {
 		switch {
 		case err == nil:
 		case m.op == opRevoke || m.op == opClose:
@@ -914,33 +918,37 @@ func (r *Router) runKeys(v *vChild, m vKeys) {
 	})
 }
 
-// addTables adds the table changes b of one event to the pending batch. The root writes the batch
-// at once when the last write was the write interval ago or more, else at the next mark. done gets
-// the result after the write.
-func (r *Router) addTables(b batch, done func(error)) {
+// addTables adds the table changes b of one event to the pending batch, and done gets the result
+// after the write. When a waiting chain needs the event (chain), or the last write was the write
+// interval ago or more, the root writes the batch after the events of this turn. Else it writes the
+// batch at the next mark.
+func (r *Router) addTables(b batch, chain bool, done func(error)) {
 	if len(b) == 0 && len(r.pending) == 0 {
 		done(nil)
 		return
 	}
 	r.pending = append(r.pending, tablesEvent{b: b, done: done})
-	if r.markC != nil {
-		return
-	}
-	if wait := r.interval - time.Since(r.lastWrite); wait > 0 {
+	switch wait := r.interval - time.Since(r.lastWrite); {
+	case chain || wait <= 0:
+		r.writeNow = true
+	case r.markC == nil:
 		if r.mark == nil {
 			r.mark = time.NewTimer(wait)
 		} else {
 			r.mark.Reset(wait)
 		}
 		r.markC = r.mark.C
-		return
 	}
-	r.writeTables()
 }
 
 // writeTables writes the pending batch in one Write and answers each event in order. When the
 // batch fails, the root writes each event alone, so that a bad change does not stop the others.
 func (r *Router) writeTables() {
+	r.writeNow = false
+	if r.markC != nil {
+		r.mark.Stop()
+		r.markC = nil
+	}
 	evs := r.pending
 	r.pending = nil
 	if len(evs) == 0 {

@@ -704,7 +704,7 @@ func (m *mProc) sendTables() {
 		for vpc, rs := range m.later {
 			m.records(vpc, rs)
 		}
-	}, func(b batch) { m.toRoot(mTables{b: b}) })
+	}, func(b batch, _ bool) { m.toRoot(mTables{b: b}) })
 }
 
 // tablesWait reports whether table changes of M wait for the next event.

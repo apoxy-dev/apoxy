@@ -322,8 +322,6 @@ func TestAttachmentMemory(t *testing.T) {
 		return
 	}
 	w := newWorld(t)
-	// The relay writes each change at once, so the 2000 calls do not wait for the write interval.
-	w.relayCfg.TableWriteInterval = new(time.Duration(0))
 	ta := w.agent(t, "a", w.relay(t, "relay-1"), agentOptions{mode: TransportQUIC})
 	ta.attached(t)
 	a := ta.a

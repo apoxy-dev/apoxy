@@ -273,8 +273,10 @@ type RelayConfig struct {
 	// +optional
 	CPUs string `json:"cpus,omitempty"`
 	// TableWriteInterval is the shortest time between two writes of the
-	// relay tables. The relay writes the table changes of this time in one
-	// batch. Omitted (the default) is 100ms; 0 writes each change at once.
+	// relay tables, except for a change that an agent call or Welcome waits
+	// for: the relay writes it at once, with the changes that wait. The relay
+	// writes the other table changes of this time in one batch. Omitted (the
+	// default) is 100ms; 0 writes each change at once.
 	// +optional
 	TableWriteInterval *metav1.Duration `json:"tableWriteInterval,omitempty"`
 }

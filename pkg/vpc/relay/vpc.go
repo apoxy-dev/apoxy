@@ -314,12 +314,12 @@ func (v *vpcProc) attach(e aAttach) {
 	}
 	reply := func(err error) { a.box.send(attached{id: e.att.ID, err: err}) }
 	if v.ending {
-		v.answer(func() { reply(rpc.Errorf(rpc.Unavailable, "relay does not serve the VPC")) })
+		v.answerCall(func() { reply(rpc.Errorf(rpc.Unavailable, "relay does not serve the VPC")) })
 		return
 	}
 	for _, p := range e.att.Addresses {
 		if set := v.sets[p.Masked()]; set != nil && slices.ContainsFunc(set.entries, func(o *announcer) bool { return o.own && o.port != e.port }) {
-			v.answer(func() {
+			v.answerCall(func() {
 				reply(rpc.Errorf(rpc.AlreadyExists, "address %s has another attachment on this relay", p.Masked()))
 			})
 			return
@@ -332,7 +332,7 @@ func (v *vpcProc) attach(e aAttach) {
 	var ann *dpv1.Presence
 	if v.r.mesh != nil {
 		if ann = v.announcement(a, e.att.ID, ps, c, c.attached); !fitsOneMessage(ann) {
-			v.answer(func() {
+			v.answerCall(func() {
 				reply(rpc.Errorf(rpc.InvalidArgument, "announcement of the attachment does not fit in one message to the mesh"))
 			})
 			return
@@ -354,7 +354,7 @@ func (v *vpcProc) attach(e aAttach) {
 	if ann != nil {
 		v.ann[e.att.ID], v.annDirty = ann, true
 	}
-	v.w.then(func(err error) {
+	v.w.chainThen(func(err error) {
 		if err == nil {
 			reply(nil)
 			return
@@ -363,7 +363,7 @@ func (v *vpcProc) attach(e aAttach) {
 		if v.as[e.port] == a && a.cands[e.att.ID] == c {
 			v.drop(a, e.att.ID, time.Now())
 		}
-		v.answer(func() { reply(rpc.Errorf(rpc.Unavailable, "failed to write route entries: %v", err)) })
+		v.answerCall(func() { reply(rpc.Errorf(rpc.Unavailable, "failed to write route entries: %v", err)) })
 	})
 }
 
@@ -380,7 +380,7 @@ func (v *vpcProc) detach(e aDetach) {
 		return
 	}
 	v.drop(a, e.id, time.Now())
-	v.answer(func() { a.box.send(detached{id: e.id}) })
+	v.answerCall(func() { a.box.send(detached{id: e.id}) })
 }
 
 // drop removes the candidates of attachment id of a, and writes the route entries of their
@@ -525,7 +525,7 @@ func (v *vpcProc) sendTables() {
 				store(a.down, keyRoutes, t)
 			}
 		}
-	}, func(b batch) { v.up(vTables{b: b}) })
+	}, func(b batch, chain bool) { v.up(vTables{b: b, chain: chain}) })
 }
 
 // forwardOf returns the route action of set: the winner, and the best local candidate.
@@ -691,10 +691,16 @@ func (v *vpcProc) answerAsk(ask uint64) {
 
 // answer queues an answer that needs the new values: it goes after the next tables event that
 // stores them. After a failed write, it waits for the next event.
-func (v *vpcProc) answer(fn func()) {
-	v.w.then(func(err error) {
+func (v *vpcProc) answer(fn func()) { v.answerAfter(v.w.then, fn) }
+
+// answerCall is answer for the answer of a call. The call waits, so the root writes the event at
+// once.
+func (v *vpcProc) answerCall(fn func()) { v.answerAfter(v.w.chainThen, fn) }
+
+func (v *vpcProc) answerAfter(then func(func(error)), fn func()) {
+	then(func(err error) {
 		if err != nil && !v.final {
-			v.answer(fn)
+			v.answerAfter(then, fn)
 			return
 		}
 		fn()

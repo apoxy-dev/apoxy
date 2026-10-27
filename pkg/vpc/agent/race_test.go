@@ -130,9 +130,6 @@ func TestRelayChoice(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			w := newWorld(t)
-			// The relays write each change at once. With the write interval, the attach takes longer
-			// than the dial of the last relay, and the agent keeps that session.
-			w.relayCfg.TableWriteInterval = new(time.Duration(0))
 			slow := &slowConn{}
 			var relays []*testRelay
 			var list []identity.Relay

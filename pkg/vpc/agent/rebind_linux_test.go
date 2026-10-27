@@ -87,9 +87,6 @@ func roam(t *testing.T, noRoute time.Duration) {
 	w := newWorld(t)
 	// The relay takes lane ports, and drops them when the agent moves.
 	w.relayCfg.LaneSources = relay.MaxLaneSources
-	// The relay writes each change at once. With the write interval, the QUIC keepalive of agent a
-	// can come after its next BFD packet, and the relay takes the new address one BFD period later.
-	w.relayCfg.TableWriteInterval = new(time.Duration(0))
 	r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP), tap)
 	b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), mode: TransportAuto})
 	a := w.agent(t, "a", r, agentOptions{udp: udp, mode: TransportAuto, lanes: 4})

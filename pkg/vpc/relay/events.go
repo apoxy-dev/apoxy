@@ -133,13 +133,15 @@ type (
 		port uint64
 		att  *Attachment
 	}
-	// vKeys asks for a key operation for the port of an A.
+	// vKeys asks for a key operation for the port of an A. chain is set for the operation of a
+	// call: the root writes its keys entries at once.
 	vKeys struct {
-		port uint64
-		op   keyOp
-		req  keys.Request
-		vni  uint32
-		mtu  int
+		port  uint64
+		op    keyOp
+		req   keys.Request
+		vni   uint32
+		mtu   int
+		chain bool
 	}
 	vAttachmentStart struct {
 		port uint64
@@ -170,10 +172,12 @@ type (
 	}
 	vEnded struct{}
 	// vTables has the table changes of one event of the A of port, or of V for port 0. The root
-	// answers it with toTablesDone after its write.
+	// answers it with toTablesDone after its write. chain is set when a waiting chain needs the
+	// event: the root writes the pending batch at once.
 	vTables struct {
-		port uint64
-		b    batch
+		port  uint64
+		b     batch
+		chain bool
 	}
 )
 

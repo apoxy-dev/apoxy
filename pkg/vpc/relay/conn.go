@@ -223,7 +223,7 @@ func (a *connProc) finished() bool {
 	return a.closing && a.keysClosed && !a.readerOn && !a.writerOn && !a.w.pending() && !a.tablesWait()
 }
 
-// start sends the entries of the port in QUIC mode up. A opens after their write.
+// start sends the entries of the port in QUIC mode up. A opens and sends Welcome after their write.
 func (a *connProc) start() {
 	var b batch
 	md := portKey(a.port)
@@ -238,7 +238,7 @@ func (a *connProc) start() {
 	}
 	a.t.SetFrameWriter(a.port, a.writeFrame)
 	a.next = b
-	a.w.then(a.started)
+	a.w.chainThen(a.started)
 }
 
 // started takes the result of the write of the first entries: A opens, or closes.
@@ -446,7 +446,7 @@ func (a *connProc) call(e aCall) {
 			return
 		}
 		// The answer goes after the write of the ports entry.
-		a.w.then(func(error) { e.res <- callResult{out: &emptypb.Empty{}} })
+		a.w.chainThen(func(error) { e.res <- callResult{out: &emptypb.Empty{}} })
 	}
 }
 
@@ -517,7 +517,7 @@ func (a *connProc) assigned(e toAssigned) {
 		}
 	}
 	a.srcDirty = true
-	a.w.then(func(err error) {
+	a.w.chainThen(func(err error) {
 		if a.pend[ca.att.ID] != ca {
 			// A closed and answered the call.
 			return
@@ -535,7 +535,7 @@ func (a *connProc) fail(ca *connAtt, err error) {
 	delete(a.pend, ca.att.ID)
 	a.srcDirty = true
 	a.next.zeroCell(ca.cell)
-	a.w.then(func(error) {
+	a.w.chainThen(func(error) {
 		a.vbox.send(vAttachmentEnd{port: a.port, att: ca.att, cell: ca.cell})
 		ca.res <- callResult{err: err}
 	})
@@ -630,7 +630,7 @@ func (a *connProc) detached(e detached) {
 		a.handovers++
 	}
 	a.srcDirty = true
-	a.w.then(func(error) {
+	a.w.chainThen(func(error) {
 		rx := a.rx()
 		st := a.statsOf(ca, oldest, rx)
 		if oldest {
@@ -639,7 +639,7 @@ func (a *connProc) detached(e detached) {
 			a.handovers--
 		}
 		a.next.zeroCell(ca.cell)
-		a.w.then(func(err error) {
+		a.w.chainThen(func(err error) {
 			if err != nil {
 				slog.Error("Failed to reset a counter cell", "vpc", a.l.vpc.UID, "error", err)
 			}
@@ -771,7 +771,7 @@ func (a *connProc) sendTables() {
 				a.sources = want
 			}
 		}
-	}, func(b batch) { a.vbox.send(vTables{port: a.port, b: b}) })
+	}, func(b batch, chain bool) { a.vbox.send(vTables{port: a.port, b: b, chain: chain}) })
 }
 
 // tablesWait reports whether table changes of A wait for the next event.
@@ -822,7 +822,7 @@ func (a *connProc) runJobs() {
 			j.op = opOffer
 		}
 		a.cur = &j
-		a.vbox.send(vKeys{port: a.port, op: j.op, req: j.req, vni: a.net.ID, mtu: int(a.net.MTU)})
+		a.vbox.send(vKeys{port: a.port, op: j.op, req: j.req, vni: a.net.ID, mtu: int(a.net.MTU), chain: j.res != nil})
 	}
 }
 
@@ -839,7 +839,7 @@ func (a *connProc) keysDone(e toKeysDone) {
 			a.mode = dpv1.Mode_MODE_PSP
 			a.writePort()
 			// The check, the relay offer and the answer go after the write of the address.
-			a.w.then(func(error) {
+			a.w.chainThen(func(error) {
 				if !a.closing {
 					a.startCheck()
 					rk := keyproto.ToProto(e.offer)
@@ -985,7 +985,7 @@ func (a *connProc) probe(b []byte, src netip.AddrPort, now time.Time) {
 	}
 	if a.mode == dpv1.Mode_MODE_PSP && a.written != a.addr {
 		// In PSP mode, the reply goes after the write of the address.
-		a.w.then(reply)
+		a.w.chainThen(reply)
 		return
 	}
 	reply(nil)

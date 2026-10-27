@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
@@ -29,14 +31,43 @@ import (
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// writeLog is the data plane target of a test relay. It keeps each Write, and refuses a Write
-// whose updates bad matches.
+// writeLog is the data plane target of a test relay. It keeps each Write, refuses a Write whose
+// updates bad matches, and holds a Read of keys entries for hold.
 type writeLog struct {
 	*vpctest.SocketTarget
-	bad func([]*p4.Update) bool // Set it before the relay starts.
+	bad  func([]*p4.Update) bool // Set it before the relay starts.
+	hold atomic.Pointer[readHold]
 
 	mu     sync.Mutex
 	writes []loggedWrite
+}
+
+// readHold holds the first Read of keys entries that starts at from or later: it closes held, and
+// the Read continues after free.
+type readHold struct {
+	from     time.Time
+	held     chan struct{}
+	release  chan struct{}
+	once     sync.Once
+	freeOnce sync.Once
+}
+
+func newReadHold(from time.Time) *readHold {
+	return &readHold{from: from, held: make(chan struct{}), release: make(chan struct{})}
+}
+
+// free lets the held Read continue.
+func (h *readHold) free() { h.freeOnce.Do(func() { close(h.release) }) }
+
+func (w *writeLog) Read(ctx context.Context, req *p4.ReadRequest, each func(*p4.Entity)) error {
+	h := w.hold.Load()
+	if h != nil && !time.Now().Before(h.from) && slices.ContainsFunc(req.GetEntities(), func(e *p4.Entity) bool { return e.GetExternEntry() != nil }) {
+		h.once.Do(func() {
+			close(h.held)
+			<-h.release
+		})
+	}
+	return w.SocketTarget.Read(ctx, req, each)
 }
 
 // loggedWrite is one Write of the relay.
@@ -117,7 +148,18 @@ func isKeys(typ p4.Update_Type) func(*p4.Update) bool {
 	return func(u *p4.Update) bool { return u.GetType() == typ && u.GetEntity().GetExternEntry() != nil }
 }
 
-var portsInsert = isTable(p4.Update_INSERT, dp.TablePorts)
+// isKeysIn matches an update of type typ of a keys entry in direction dir.
+func isKeysIn(typ p4.Update_Type, dir dpv1.PspSaDirection) func(*p4.Update) bool {
+	return func(u *p4.Update) bool {
+		se := &dpv1.PspSaEntry{}
+		return u.GetType() == typ && u.GetEntity().GetExternEntry().GetEntry().UnmarshalTo(se) == nil && se.GetDirection() == dir
+	}
+}
+
+var (
+	portsInsert = isTable(p4.Update_INSERT, dp.TablePorts)
+	portsDelete = isTable(p4.Update_DELETE, dp.TablePorts)
+)
 
 // anyOf matches the updates of a Write when f matches one of them.
 func anyOf(f func(*p4.Update) bool) func([]*p4.Update) bool {
@@ -181,24 +223,24 @@ func (a *agent) arrival(f func(*dpv1.SessionResponse) bool) time.Time {
 	return at
 }
 
-// TestTableWriteBatches checks the write rate of the root: one Write in each table write interval
-// at most, and that Write has the changes of the interval. A change after a quiet interval writes
-// at once.
+// TestTableWriteBatches checks the write rate of the root for events that no chain waits for, the
+// ends of connections: one Write in each table write interval at most, and that Write has the
+// changes of the interval. A change after a quiet interval writes at once.
 func TestTableWriteBatches(t *testing.T) {
 	cases := []struct {
 		name     string
 		interval *time.Duration // The config field. nil is omitted.
-		pause    time.Duration  // The wait after the first connection opened.
-		next     int            // The connections that then open at once.
-		want     []int          // The ports inserts of each Write that has one. nil is any.
+		pause    time.Duration  // The wait after the Writes of the end of the first connection.
+		next     int            // The connections that then end at once.
+		want     []int          // The ports deletes of each Write that has one. nil is any.
 		hold     time.Duration  // The least time from the end of a Write to the next Write.
-		atOnce   bool           // The next connections write with no wait.
+		atOnce   bool           // The ends of the next connections write with no wait.
 	}{
-		{name: "quiet", interval: new(time.Second), pause: time.Second, next: 1, want: []int{1, 1}, hold: time.Second, atOnce: true},
+		{name: "quiet", interval: new(time.Second), pause: 1100 * time.Millisecond, next: 1, want: []int{1, 1}, hold: time.Second, atOnce: true},
 		{name: "burst", interval: new(time.Second), next: 3, want: []int{1, 3}, hold: time.Second},
-		{name: "interval 0", interval: new(time.Duration(0)), next: 3, want: []int{1, 1, 1, 1}, atOnce: true},
+		{name: "interval 0", interval: new(time.Duration(0)), next: 3, atOnce: true},
 		{name: "config omitted", next: 3, hold: relay.DefaultTableWriteInterval},
-		// The Hellos can come in two intervals of 400ms, so this case checks only the time between Writes.
+		// The ends can come in two intervals of 400ms, so this case checks only the time between Writes.
 		{name: "config set", interval: new(400 * time.Millisecond), next: 3, hold: 400 * time.Millisecond},
 	}
 	for _, tc := range cases {
@@ -208,46 +250,147 @@ func TestTableWriteBatches(t *testing.T) {
 			as := make([]*agent, 1+tc.next)
 			for i := range as {
 				as[i] = e.dial(t, fmt.Sprintf("agent-%d", i))
+				as[i].open(dpv1.Mode_MODE_QUIC)
 			}
-			as[0].open(dpv1.Mode_MODE_QUIC)
-			time.Sleep(tc.pause)
+			// The first end comes after a quiet interval.
+			time.Sleep(1100 * time.Millisecond)
 			start := time.Now()
-			var cs []<-chan first
+			require.NoError(t, as[0].qc.CloseWithError(0, ""))
+			log.firstAfter(t, start, isTable(p4.Update_DELETE, dp.TableClassify))
+			time.Sleep(tc.pause)
+			next := time.Now()
 			for _, a := range as[1:] {
-				cs = append(cs, a.begin(hello(dpv1.Mode_MODE_QUIC)))
-			}
-			for _, c := range cs {
-				f := firstOf(t, c)
-				require.NoError(t, f.err)
-				require.NotNil(t, f.m.GetWelcome())
-				// The wait of a Welcome is one interval at most.
-				assert.Less(t, f.at.Sub(start), tc.hold+500*time.Millisecond)
+				require.NoError(t, a.qc.CloseWithError(0, ""))
 			}
 
-			ws := log.with(portsInsert)
+			var ws []loggedWrite
+			require.Eventually(t, func() bool {
+				ws = log.with(portsDelete)
+				n := 0
+				for _, w := range ws {
+					n += w.count(portsDelete)
+				}
+				return n == len(as)
+			}, wait, 10*time.Millisecond, "ports deletes of the ends")
 			var got []int
 			for _, w := range ws {
 				require.NoError(t, w.err)
-				got = append(got, w.count(portsInsert))
+				got = append(got, w.count(portsDelete))
+				if !w.start.Before(next) {
+					// The wait of a ports delete is one interval at most.
+					assert.Less(t, w.end.Sub(next), tc.hold+500*time.Millisecond, "wait of a ports delete of the next ends")
+				}
 			}
 			if tc.want != nil {
-				assert.Equal(t, tc.want, got, "ports inserts of each Write; the Hellos come in one interval")
+				assert.Equal(t, tc.want, got, "ports deletes of each Write; the next ends come in one interval")
 			}
-			all := log.all()
-			for i := 1; i < len(all); i++ {
-				assert.GreaterOrEqual(t, all[i].start.Sub(all[i-1].end), tc.hold, "time from Write %d to Write %d", i-1, i)
+			var after []loggedWrite
+			for _, w := range log.all() {
+				if !w.start.Before(start) {
+					after = append(after, w)
+				}
+			}
+			for i := 1; i < len(after); i++ {
+				assert.GreaterOrEqual(t, after[i].start.Sub(after[i-1].end), tc.hold, "time from Write %d to Write %d", i-1, i)
 			}
 			if tc.atOnce {
-				require.GreaterOrEqual(t, len(ws), 2)
-				assert.Less(t, ws[1].start.Sub(start), 300*time.Millisecond, "wait of the first Write of the next connections")
+				w := log.firstAfter(t, next, portsDelete)
+				assert.Less(t, w.start.Sub(next), 300*time.Millisecond, "wait of the first Write of the next ends")
 			}
 		})
 	}
 }
 
 // TestTableWriteBadEvent checks a batch with one bad event: the root writes each event alone, so
-// that the other events apply, and the bad event gets its error.
+// that the other events apply, and only the call of the bad event gets an error.
 func TestTableWriteBadEvent(t *testing.T) {
+	const badSPI = 0x2002
+	vpcB := relay.VPCKey{Project: project, UID: "vpc-b"}
+	netB := relay.Network{ID: 0x2345, Name: "net-b"}
+	// The TX entry of the SA of the call of b is bad.
+	bad := func(u *p4.Update) bool {
+		se := &dpv1.PspSaEntry{}
+		return isKeysIn(p4.Update_INSERT, dpv1.PspSaDirection_PSP_SA_DIRECTION_TX)(u) &&
+			u.GetEntity().GetExternEntry().GetEntry().UnmarshalTo(se) == nil && se.GetSpi() == badSPI
+	}
+	log := &writeLog{bad: anyOf(bad)}
+	e := newEnvWith(t, envOpts{interval: new(time.Second), writes: log})
+	e.r.AddVPC(vpcB, netB)
+	b, err := e.dialVPC(t, vpcB.UID, "agent-b")
+	require.NoError(t, err)
+	calls := []struct {
+		a   *agent
+		spi uint32
+		vni uint32
+	}{{e.dial(t, "agent-1"), 0x2001, netID}, {b, badSPI, netB.ID}, {e.dial(t, "agent-2"), 0x2003, netID}}
+	for _, c := range calls {
+		c.a.open(dpv1.Mode_MODE_QUIC)
+		c.a.probe(e, pspSocket(t), 1)
+	}
+
+	// The root waits in the Read of its next tick, and the three Rekey calls come in that time, so
+	// their events go in one batch.
+	hold := newReadHold(time.Now())
+	t.Cleanup(hold.free)
+	log.hold.Store(hold)
+	select {
+	case <-hold.held:
+	case <-time.After(wait):
+		t.Fatal("no tick of the key engine")
+	}
+	key := make([]byte, 16)
+	_, _ = rand.Read(key)
+	errs := make([]chan error, len(calls))
+	for i, c := range calls {
+		errs[i] = make(chan error, 1)
+		go func() {
+			_, err := c.a.rc.Rekey(t.Context(), offer(c.spi, key, c.vni, 1))
+			errs[i] <- err
+		}()
+	}
+	time.Sleep(time.Second)
+	t0 := time.Now()
+	hold.free()
+	for i, c := range calls {
+		select {
+		case err := <-errs[i]:
+			if c.spi == badSPI {
+				assert.Equal(t, rpc.Unavailable, rpc.CodeOf(err), "error of the call of b: %v", err)
+			} else {
+				assert.NoError(t, err)
+			}
+		case <-time.After(wait):
+			t.Fatal("no answer to Rekey")
+		}
+	}
+
+	rxInsert := isKeysIn(p4.Update_INSERT, dpv1.PspSaDirection_PSP_SA_DIRECTION_RX)
+	var ws []loggedWrite
+	for _, w := range log.with(rxInsert) {
+		if w.start.After(t0) {
+			ws = append(ws, w)
+		}
+	}
+	require.Len(t, ws, 4, "the batch, and the three events alone")
+	assert.Equal(t, 3, ws[0].count(rxInsert))
+	assert.Error(t, ws[0].err)
+	failed := 0
+	for _, w := range ws[1:] {
+		assert.Equal(t, 1, w.count(rxInsert))
+		if w.count(bad) > 0 {
+			assert.Error(t, w.err)
+			failed++
+		} else {
+			assert.NoError(t, w.err)
+		}
+	}
+	assert.Equal(t, 1, failed)
+	assert.Less(t, ws[3].start.Sub(ws[0].end), 300*time.Millisecond, "the events alone write at once")
+}
+
+// TestTableWriteBadOpen checks a batch with the bad first entries of a connection: the root writes
+// each event alone, so the other event applies, and the relay closes the connection with its reason.
+func TestTableWriteBadOpen(t *testing.T) {
 	vpcB := relay.VPCKey{Project: project, UID: "vpc-b"}
 	// The classify entry of a connection of vpc-b is bad.
 	bad := func(u *p4.Update) bool {
@@ -262,39 +405,44 @@ func TestTableWriteBadEvent(t *testing.T) {
 	log := &writeLog{bad: anyOf(bad)}
 	e := newEnvWith(t, envOpts{interval: new(time.Second), writes: log})
 	e.r.AddVPC(vpcB, relay.Network{ID: 0x2345, Name: "net-b"})
-	a1, a2, a3 := e.dial(t, "agent-1"), e.dial(t, "agent-2"), e.dial(t, "agent-3")
-	b1, err := e.dialVPC(t, vpcB.UID, "agent-b")
+	a, x := e.dial(t, "agent-a"), e.dial(t, "agent-x")
+	b, err := e.dialVPC(t, vpcB.UID, "agent-b")
 	require.NoError(t, err)
-	a1.open(dpv1.Mode_MODE_QUIC)
-	// The three Hellos come in one interval, so their events go in one batch.
-	c2, cb, c3 := a2.begin(hello(dpv1.Mode_MODE_QUIC)), b1.begin(hello(dpv1.Mode_MODE_QUIC)), a3.begin(hello(dpv1.Mode_MODE_QUIC))
-	for _, c := range []<-chan first{c2, c3} {
-		f := firstOf(t, c)
-		require.NoError(t, f.err)
-		assert.NotNil(t, f.m.GetWelcome())
-	}
-	assert.Error(t, firstOf(t, cb).err)
-	code, msg := b1.closed()
+	a.open(dpv1.Mode_MODE_QUIC)
+	x.open(dpv1.Mode_MODE_QUIC)
+	before := log.all()
+	mark := before[len(before)-1].end.Add(time.Second)
+
+	// The end of x comes just after its Write, so the delete of its ports entry waits for the mark.
+	t0 := time.Now()
+	require.NoError(t, x.qc.CloseWithError(0, ""))
+	time.Sleep(200 * time.Millisecond)
+	// The Welcome of b waits for its first entries, so they go at once with the delete in one batch.
+	f := firstOf(t, b.begin(hello(dpv1.Mode_MODE_QUIC)))
+	assert.Error(t, f.err)
+	assert.Nil(t, f.m.GetWelcome(), "first message of b: %v", f.m)
+	code, msg := b.closed()
 	assert.Equal(t, dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, code)
 	assert.Equal(t, "relay failed to add the connection", msg)
 
-	ws := log.with(portsInsert)
-	require.Len(t, ws, 5, "the Write of a1, the batch, and the three events alone")
-	assert.Equal(t, 3, ws[1].count(portsInsert))
-	assert.Error(t, ws[1].err)
-	failed := 0
-	for _, w := range ws[2:] {
-		assert.Equal(t, 1, w.count(portsInsert))
-		if w.count(bad) > 0 {
-			assert.Error(t, w.err)
-			failed++
-		} else {
-			assert.NoError(t, w.err)
+	var ws []loggedWrite
+	for _, w := range log.with(func(u *p4.Update) bool { return portsDelete(u) || bad(u) }) {
+		if !w.start.Before(t0) {
+			ws = append(ws, w)
 		}
 	}
-	assert.Equal(t, 1, failed)
-	assert.Less(t, ws[4].start.Sub(ws[1].end), 300*time.Millisecond, "the events alone write at once")
-	// a1, a2 and a3 have their classify entries, and b1 has none.
+	require.Len(t, ws, 3, "the batch, and the two events alone")
+	assert.True(t, ws[0].start.Before(mark), "Write of the batch at %v, mark at %v", ws[0].start, mark)
+	for i, want := range []struct {
+		deletes, bad int
+		ok           bool
+	}{{1, 1, false}, {1, 0, true}, {0, 1, false}} {
+		assert.Equal(t, want.deletes, ws[i].count(portsDelete), "ports deletes of Write %d", i)
+		assert.Equal(t, want.bad, ws[i].count(bad), "bad entries of Write %d", i)
+		assert.Equal(t, want.ok, ws[i].err == nil, "result of Write %d: %v", i, ws[i].err)
+	}
+	// a has its classify entry, x deletes its own after its ports entry, and b has none.
+	log.firstAfter(t, t0, isTable(p4.Update_DELETE, dp.TableClassify))
 	n := 0
 	require.NoError(t, log.SocketTarget.Read(t.Context(), &p4.ReadRequest{Entities: []*p4.Entity{{Entity: &p4.Entity_TableEntry{
 		TableEntry: &p4.TableEntry{TableId: dp.TableClassify},
@@ -302,7 +450,7 @@ func TestTableWriteBadEvent(t *testing.T) {
 		assert.False(t, bad(&p4.Update{Type: p4.Update_INSERT, Entity: e}))
 		n++
 	}))
-	assert.Equal(t, 3, n)
+	assert.Equal(t, 1, n)
 }
 
 // TestTableWriteVPCEnd checks the end of a VPC with no agents on the relay while the route of a
@@ -425,10 +573,12 @@ func TestTableWriteFailedFallback(t *testing.T) {
 			x2 := e2.dial(t, "agent-x")
 			x2.open(dpv1.Mode_MODE_QUIC)
 			resX2 := x2.attachRank(1)
+			pa := netip.MustParsePrefix(resX1.GetAddresses()[0])
+			// relay-2 wrote the route of the record of x on relay-1.
+			require.NoError(t, log.firstAfter(t, time.Time{}, routeTo(pa)).err)
 			// The Write of a new connection comes just before, so the reports wait for the mark.
 			e2.dial(t, "agent-h").open(dpv1.Mode_MODE_QUIC)
 
-			pa := netip.MustParsePrefix(resX1.GetAddresses()[0])
 			refuse.Store(&pa)
 			t0 := time.Now()
 			x2.report(resX2.GetAttachmentId(), "relay-1", resX1.GetAttachmentId(), pa.String())
@@ -462,15 +612,18 @@ func TestTableWriteFailedFallback(t *testing.T) {
 	}
 }
 
-// TestTableWriteReplyOrder checks that each answer of the relay comes after the write of its
-// changes, also when the changes wait for the interval.
-func TestTableWriteReplyOrder(t *testing.T) {
+// TestTableWriteChain checks the events that a waiting chain needs: the root writes each step of
+// the chain at once, also when the last Write was just before, and each answer comes after the
+// write of its changes.
+func TestTableWriteChain(t *testing.T) {
+	var attID string // The attachment that Detach ends.
 	cases := []struct {
 		name string
-		// setup runs before the call. Then the changes of the call wait for the interval.
+		// setup runs before the call. Its last step writes, so the interval is not over at the call.
 		setup func(t *testing.T, e *env, a *agent)
 		// call makes the call and returns the arrival time of each answer.
 		call func(t *testing.T, e *env, a *agent) []time.Time
+		// need has the changes of the steps of the chain, in order.
 		need []func(*p4.Update) bool
 	}{
 		{
@@ -494,6 +647,23 @@ func TestTableWriteReplyOrder(t *testing.T) {
 			need: []func(*p4.Update) bool{isTable(p4.Update_INSERT, dp.TableSource), isTable(p4.Update_INSERT, dp.TableRoute)},
 		},
 		{
+			name: "Detach",
+			setup: func(t *testing.T, _ *env, a *agent) {
+				a.open(dpv1.Mode_MODE_QUIC)
+				attID = a.attach().GetAttachmentId()
+			},
+			call: func(t *testing.T, _ *env, a *agent) []time.Time {
+				_, err := a.rc.Detach(t.Context(), &dpv1.DetachRequest{AttachmentId: attID})
+				require.NoError(t, err)
+				return []time.Time{time.Now()}
+			},
+			need: []func(*p4.Update) bool{
+				isTable(p4.Update_DELETE, dp.TableRoute),
+				isTable(p4.Update_DELETE, dp.TableSource),
+				func(u *p4.Update) bool { return u.GetEntity().GetCounterEntry() != nil },
+			},
+		},
+		{
 			name: "Rekey to PSP mode",
 			setup: func(t *testing.T, e *env, a *agent) {
 				a.open(dpv1.Mode_MODE_QUIC)
@@ -510,22 +680,158 @@ func TestTableWriteReplyOrder(t *testing.T) {
 			},
 			need: []func(*p4.Update) bool{isKeys(p4.Update_INSERT), isTable(p4.Update_MODIFY, dp.TablePorts)},
 		},
+		{
+			name: "RegisterLanes",
+			setup: func(t *testing.T, e *env, a *agent) {
+				a.open(dpv1.Mode_MODE_QUIC)
+				a.toPSP(e, pspSocket(t), 1)
+			},
+			call: func(t *testing.T, _ *env, a *agent) []time.Time {
+				_, err := a.rc.RegisterLanes(t.Context(), &dpv1.RegisterLanesRequest{Ports: []uint32{40000}})
+				require.NoError(t, err)
+				return []time.Time{time.Now()}
+			},
+			need: []func(*p4.Update) bool{isTable(p4.Update_MODIFY, dp.TablePorts)},
+		},
+		{
+			name: "probe from a new address in PSP mode",
+			setup: func(t *testing.T, e *env, a *agent) {
+				a.open(dpv1.Mode_MODE_QUIC)
+				a.toPSP(e, pspSocket(t), 1)
+			},
+			call: func(t *testing.T, e *env, a *agent) []time.Time {
+				sock := pspSocket(t)
+				a.probes++
+				require.Equal(t, sock.LocalAddr().(*net.UDPAddr).AddrPort(), a.probe(e, sock, a.probes))
+				return []time.Time{time.Now()}
+			},
+			need: []func(*p4.Update) bool{isTable(p4.Update_MODIFY, dp.TablePorts)},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &writeLog{}
-			e := newEnvWith(t, envOpts{interval: new(300 * time.Millisecond), writes: log})
+			e := newEnvWith(t, envOpts{interval: new(time.Second), writes: log})
 			a := e.dial(t, "agent-a")
 			tc.setup(t, e, a)
 			t0 := time.Now()
 			ats := tc.call(t, e, a)
+			prev := t0
 			for i, f := range tc.need {
 				w := log.firstAfter(t, t0, f)
 				require.NoError(t, w.err)
+				assert.False(t, w.start.Before(prev), "Write of step %d at %v, before the end %v of the step before", i, w.start, prev)
+				assert.Less(t, w.start.Sub(t0), 300*time.Millisecond, "wait of the Write of step %d", i)
+				prev = w.end
 				for _, at := range ats {
-					assert.True(t, at.After(w.end), "answer %v before the end %v of the Write of change %d", at, w.end, i)
+					assert.True(t, at.After(w.end), "answer %v before the end %v of the Write of step %d", at, w.end, i)
 				}
 			}
+		})
+	}
+}
+
+// TestTableWriteKeyChanges checks the changes of the key engine, here the delete of the TX entry of
+// an agent SA that expired: they wait for the next mark, and chain events that come in that time
+// write once with them.
+func TestTableWriteKeyChanges(t *testing.T) {
+	// The interval is longer than the time to the tick after the expiry and the hold of its Read.
+	const interval = 4 * time.Second
+	cases := []struct {
+		name  string
+		burst int // The Rekey calls that come while the change waits.
+	}{
+		{name: "alone"},
+		{name: "chain burst", burst: 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &writeLog{}
+			e := newEnvWith(t, envOpts{interval: new(interval), writes: log})
+			bs := make([]*agent, tc.burst)
+			for i := range bs {
+				bs[i] = e.dial(t, fmt.Sprintf("agent-%d", i))
+				bs[i].open(dpv1.Mode_MODE_QUIC)
+				bs[i].probe(e, pspSocket(t), 1)
+			}
+			// a changes to PSP mode with an agent SA that expires after 1.5s.
+			a := e.dial(t, "agent-a")
+			a.open(dpv1.Mode_MODE_QUIC)
+			sock := pspSocket(t)
+			a.probes++
+			a.probe(e, sock, a.probes)
+			key := make([]byte, 16)
+			_, _ = rand.Read(key)
+			req := offer(0x1001, key, netID, 1)
+			req.GetOffer().GetSas()[0].ExpiresIn = durationpb.New(1500 * time.Millisecond)
+			_, err := a.rc.Rekey(t.Context(), req)
+			require.NoError(t, err)
+			expiry := time.Now().Add(1500 * time.Millisecond)
+			a.keepPath(e, sock)
+
+			// A Write just before the expiry, so the delete of the TX entry waits for the mark.
+			time.Sleep(time.Until(expiry.Add(-200 * time.Millisecond)))
+			th := time.Now()
+			e.dial(t, "agent-h").open(dpv1.Mode_MODE_QUIC)
+			last := log.firstAfter(t, th, portsInsert)
+			t1 := time.Now()
+			if tc.burst > 0 {
+				// The tick of the key engine after the expiry waits in its Read, and the Rekey calls
+				// come in that time.
+				hold := newReadHold(expiry.Add(50 * time.Millisecond))
+				t.Cleanup(hold.free)
+				log.hold.Store(hold)
+				require.True(t, time.Now().Before(hold.from), "the Write of agent-h came after the expiry")
+				select {
+				case <-hold.held:
+				case <-time.After(wait):
+					t.Fatal("no tick of the key engine after the expiry")
+				}
+				errs := make(chan error, len(bs))
+				for i, b := range bs {
+					go func() {
+						_, err := b.rc.Rekey(t.Context(), offer(uint32(0x2001+i), key, netID, 1))
+						errs <- err
+					}()
+				}
+				time.Sleep(time.Second)
+				t1 = time.Now()
+				hold.free()
+				for range bs {
+					select {
+					case err := <-errs:
+						require.NoError(t, err)
+					case <-time.After(wait):
+						t.Fatal("no answer to Rekey")
+					}
+				}
+			}
+
+			del := log.firstAfter(t, last.end, isKeysIn(p4.Update_DELETE, dpv1.PspSaDirection_PSP_SA_DIRECTION_TX))
+			require.NoError(t, del.err)
+			var after []loggedWrite
+			for _, w := range log.all() {
+				if w.start.After(last.end) {
+					after = append(after, w)
+				}
+			}
+			require.NotEmpty(t, after)
+			assert.Equal(t, del.start, after[0].start, "the first Write after the Write of agent-h has the key change")
+			mark := last.end.Add(interval)
+			if tc.burst == 0 {
+				assert.False(t, del.start.Before(mark), "Write of the key change at %v, before the mark %v", del.start, mark)
+				return
+			}
+			assert.True(t, del.start.Before(mark), "Write of the burst at %v, after the mark %v", del.start, mark)
+			assert.Less(t, del.start.Sub(t1), 300*time.Millisecond, "the chain events write at once")
+			assert.Equal(t, tc.burst, del.count(isKeysIn(p4.Update_INSERT, dpv1.PspSaDirection_PSP_SA_DIRECTION_RX)), "RX inserts of the Rekey calls in the Write of the key change")
+			n := 0
+			for _, w := range after {
+				if w.count(isKeys(p4.Update_INSERT)) > 0 {
+					n++
+				}
+			}
+			assert.Equal(t, 1, n, "Writes with keys inserts")
 		})
 	}
 }
@@ -607,24 +913,32 @@ func TestTableWriteFinalCounts(t *testing.T) {
 }
 
 // TestTableWriteStop checks a stop of the relay while a batch waits for the interval: the relay
-// ends, each call gets its answer, no connection opens, and no entry stays in the data plane.
+// ends, the root writes the batch at its mark and keeps the interval until it ends, an Attach that
+// waits gets its answer, a Hello at the stop gets no Welcome, and no entry stays in the data plane.
 func TestTableWriteStop(t *testing.T) {
 	log := &writeLog{}
 	e := newEnvWith(t, envOpts{interval: new(time.Second), writes: log})
-	a := e.dial(t, "agent-a")
-	b := e.dial(t, "agent-b")
+	a, b, c := e.dial(t, "agent-a"), e.dial(t, "agent-b"), e.dial(t, "agent-c")
 	a.open(dpv1.Mode_MODE_QUIC)
-	opened := log.all()
-	require.Len(t, opened, 1)
-
+	// The Attach of a waits in Assign until the connection of a closes.
+	held := e.addrs.holdOne()
 	attached := make(chan error, 1)
 	go func() {
 		_, err := a.rc.Attach(context.Background(), &dpv1.AttachRequest{Vpc: vpcRef, Name: a.name})
 		attached <- err
 	}()
-	cb := b.begin(hello(dpv1.Mode_MODE_QUIC))
-	time.Sleep(time.Until(opened[0].end.Add(500 * time.Millisecond)))
-	require.Len(t, log.all(), 1, "the changes of the attachment and of b wait for the interval")
+	select {
+	case <-held:
+	case <-time.After(wait):
+		t.Fatal("the relay did not call Assign")
+	}
+	b.open(dpv1.Mode_MODE_QUIC)
+	opened := log.all()
+	require.Len(t, opened, 2)
+	// The end of b comes just after the Write of b, so the delete of its ports entry waits.
+	require.NoError(t, b.qc.CloseWithError(0, ""))
+	time.Sleep(time.Until(opened[1].end.Add(500 * time.Millisecond)))
+	require.Len(t, log.all(), 2, "the delete of the ports entry of b waits for the interval")
 
 	stopAt := time.Now()
 	stopped := make(chan struct{})
@@ -632,23 +946,28 @@ func TestTableWriteStop(t *testing.T) {
 		e.stop()
 		close(stopped)
 	}()
+	// The stop closes a, so its Attach gets an answer before the end of the connection.
+	select {
+	case err := <-attached:
+		assert.Equal(t, rpc.Unavailable, rpc.CodeOf(err), "error of the Attach: %v", err)
+		assert.NoError(t, a.qc.Context().Err(), "the connection of a closed before the answer")
+	case <-time.After(wait):
+		t.Fatal("no answer to Attach")
+	}
+	// The relay stops now, so it refuses a Hello.
+	f := firstOf(t, c.begin(hello(dpv1.Mode_MODE_QUIC)))
+	assert.Error(t, f.err)
+	assert.Nil(t, f.m.GetWelcome(), "first message of c: %v", f.m)
 	select {
 	case <-stopped:
 	case <-time.After(wait):
 		t.Fatal("the relay did not stop")
 	}
-	select {
-	case <-attached:
-	case <-time.After(wait):
-		t.Fatal("no answer to Attach")
-	}
-	f := firstOf(t, cb)
-	assert.Nil(t, f.m.GetWelcome(), "first message of b: %v", f.m)
 	// The root writes the pending batch at its mark, and keeps the interval until it ends.
-	w := log.firstAfter(t, stopAt, portsInsert)
-	assert.False(t, w.start.Before(opened[0].end.Add(time.Second)), "Write of the pending batch at %v", w.start)
+	w := log.firstAfter(t, stopAt, portsDelete)
+	assert.False(t, w.start.Before(opened[1].end.Add(time.Second)), "Write of the pending batch at %v", w.start)
 	all := log.all()
-	for i := 1; i < len(all); i++ {
+	for i := 2; i < len(all); i++ {
 		assert.GreaterOrEqual(t, all[i].start.Sub(all[i-1].end), time.Second, "time from Write %d to Write %d", i-1, i)
 	}
 	tables, keys := log.entries(t)

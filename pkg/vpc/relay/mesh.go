@@ -689,7 +689,7 @@ func (r *Router) fromM(c *mChild, msg any) {
 	case mKeys:
 		r.runTrunkKeys(c, m)
 	case mTables:
-		r.addTables(m.b, func(err error) { c.box.send(toTablesDone{err: err}) })
+		r.addTables(m.b, false, func(err error) { c.box.send(toTablesDone{err: err}) })
 	case mChange:
 		c.isUp = m.c.Up
 		if !m.c.Up {
@@ -752,7 +752,7 @@ func (r *Router) runTrunkKeys(c *mChild, m mKeys) {
 			slog.Warn("Failed to delete the keys entries of a trunk", "relay", c.name, "error", err)
 		}
 	}
-	r.addTables(b, func(err error) {
+	r.addTables(b, false, func(err error) {
 		switch {
 		case err == nil:
 		case m.op == opClose:

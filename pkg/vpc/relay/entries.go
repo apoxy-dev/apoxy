@@ -84,22 +84,31 @@ func (b batch) write(ctx context.Context, t dp.Target) error {
 // tableWriter sends the table changes of a process up to the root as tables events, one at a
 // time. The changes of later steps wait for the answer, tablesDone, and go in the next event.
 type tableWriter struct {
-	busy bool          // An event is at the root.
-	wait []func(error) // They run after the next event.
-	run  []func(error) // They run after the event at the root.
+	busy  bool          // An event is at the root.
+	chain bool          // A waiting chain needs the next event.
+	wait  []func(error) // They run after the next event.
+	run   []func(error) // They run after the event at the root.
 }
 
 // then runs fn after the next event, with the error of its write.
 func (w *tableWriter) then(fn func(error)) { w.wait = append(w.wait, fn) }
 
+// chainThen runs fn after the next event, as then does. A waiting chain (a call, Welcome or a probe
+// reply) needs that event, so the root writes it at once.
+func (w *tableWriter) chainThen(fn func(error)) {
+	w.chain = true
+	w.then(fn)
+}
+
 // pending reports whether an event is at the root or a function waits for the next one.
 func (w *tableWriter) pending() bool { return w.busy || len(w.wait) > 0 }
 
-// send sends b up with up. After the answer, commit runs, then each function of then. With no
-// updates in b, they run at once.
-func (w *tableWriter) send(b batch, commit func(error), up func(batch)) {
+// send sends b up with up, and tells it whether a waiting chain needs the event. After the answer,
+// commit runs, then each function of then. With no updates in b, they run at once.
+func (w *tableWriter) send(b batch, commit func(error), up func(b batch, chain bool)) {
 	fns := append([]func(error){commit}, w.wait...)
-	w.wait = nil
+	chain := w.chain
+	w.wait, w.chain = nil, false
 	if len(b) == 0 {
 		for _, fn := range fns {
 			fn(nil)
@@ -107,7 +116,7 @@ func (w *tableWriter) send(b batch, commit func(error), up func(batch)) {
 		return
 	}
 	w.busy, w.run = true, fns
-	up(b)
+	up(b, chain)
 }
 
 // done takes the answer of the root to the event.
