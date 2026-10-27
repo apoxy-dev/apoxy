@@ -181,6 +181,24 @@ func TestWrite(t *testing.T) {
 			read:    []*p4.TableEntry{port50, ctx50, src50v4b},
 		},
 		{
+			name:    "a route DELETE and an INSERT of another prefix in one Write",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50v4), insert(route51v4)},
+			updates: []*p4.Update{remove(route50v4), insert(route50v4sub)},
+			read:    []*p4.TableEntry{port50, ctx50, route51v4, route50v4sub},
+		},
+		{
+			name:    "two route DELETEs and two INSERTs of other prefixes in one Write",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50v4), insert(route51v4)},
+			updates: []*p4.Update{remove(route50v4), insert(route50v4sub), remove(route51v4), insert(route50)},
+			read:    []*p4.TableEntry{port50, ctx50, route50v4sub, route50},
+		},
+		{
+			name:    "a source DELETE and an INSERT of another prefix in one Write",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(src50v4), insert(src50v6)},
+			updates: []*p4.Update{remove(src50v4), insert(src50v4host)},
+			read:    []*p4.TableEntry{port50, ctx50, src50v6, src50v4host},
+		},
+		{
 			name:    "a Read gives back a ports and a classify MODIFY",
 			before:  []*p4.Update{insert(port50), insert(ctx50)},
 			updates: []*p4.Update{modify(port50b), modify(ctx50b)},

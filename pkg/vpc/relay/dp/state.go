@@ -120,12 +120,13 @@ func lookup[V any](t *bart.Table[V], a netip.Addr) (V, bool) {
 	return t.Lookup(a)
 }
 
-// trieChange is the change of one source or route trie in a Write. A DELETE removes its prefix
-// from old with the path-copy call. The INSERTs and MODIFYs go into add, a new trie that no part
-// reads, and at the end of the Write one path-copy call adds them to old, so they copy each changed
-// node once. The readers keep the old trie.
+// trieChange is the change of one source or route trie in a Write. The DELETEs of prefixes of old
+// go into del, and the INSERTs and MODIFYs into add: new tries that no part reads. At the end of
+// the Write one path-copy call removes del from old and one adds add, and each call copies each
+// changed node once. The readers keep old.
 type trieChange[V any] struct {
-	old *bart.Table[V] // The trie of cur without the deleted prefixes, or nil.
+	old *bart.Table[V] // The trie of cur, or nil.
+	del *bart.Table[V] // The prefixes of old to delete, or nil. Its values are not used.
 	add *bart.Table[V]
 }
 
@@ -147,15 +148,27 @@ func (tc *trieChange[V]) has(p netip.Prefix) bool {
 	if _, ok := tc.add.Get(p); ok || tc.old == nil {
 		return ok
 	}
+	if tc.del != nil {
+		if _, ok := tc.del.Get(p); ok {
+			return false
+		}
+	}
 	_, ok := tc.old.Get(p)
 	return ok
 }
 
-// delete removes the prefix p from add, and from old with the path-copy call.
+// delete removes the prefix p from add, and puts it in del when old has it.
 func (tc *trieChange[V]) delete(p netip.Prefix) {
 	tc.add.Delete(p)
-	if tc.old != nil {
-		tc.old = tc.old.DeletePersist(p)
+	if tc.old == nil {
+		return
+	}
+	if _, ok := tc.old.Get(p); ok {
+		if tc.del == nil {
+			tc.del = new(bart.Table[V])
+		}
+		var zero V
+		tc.del.Insert(p, zero)
 	}
 }
 
@@ -163,6 +176,9 @@ func (tc *trieChange[V]) delete(p netip.Prefix) {
 func commitTries[K comparable, V any](m *map[K]*bart.Table[V], copied *bool, tcs map[K]*trieChange[V]) {
 	for k, tc := range tcs {
 		t := tc.old
+		if tc.del != nil {
+			t = t.DifferencePersist(tc.del)
+		}
 		switch {
 		case t == nil || t.Size() == 0:
 			t = tc.add // No part reads add, so it becomes the trie.

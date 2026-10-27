@@ -193,7 +193,8 @@ func BenchmarkRoute(b *testing.B) {
 }
 
 // BenchmarkWrite measures Writes with 100k routes of one VPC: one Write of 100k route INSERTs, one
-// Write of one route MODIFY, and one Write of one ports entry MODIFY. One op is one Write.
+// Write of 100k route DELETEs, one Write of one route MODIFY, and one Write of one ports entry
+// MODIFY. One op is one Write.
 func BenchmarkWrite(b *testing.B) {
 	const routes = 100_000
 	routeAt := func(i int, port uint64) *p4.TableEntry {
@@ -223,6 +224,17 @@ func BenchmarkWrite(b *testing.B) {
 			b.StopTimer()
 			mustWrite(b, p, del...)
 			b.StartTimer()
+		}
+	})
+	b.Run("delete_100k", func(b *testing.B) {
+		p := benchPipeline(b, 1)
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			b.StopTimer()
+			mustWrite(b, p, ins...)
+			b.StartTimer()
+			mustWrite(b, p, del...)
 		}
 	})
 	for _, tc := range cases {

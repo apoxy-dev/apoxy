@@ -177,6 +177,8 @@ github.com/antlr4-go/antlr/v4 v4.13.1/go.mod h1:GKmUxMtwp6ZgGwZSva4eWPC5mS6vUAmO
 github.com/apache/thrift v0.16.0/go.mod h1:PHK3hniurgQaNMZYaCLEqXKsYK8upmhPbmdP2FXSqgU=
 github.com/apache/thrift v0.20.0 h1:631+KvYbsBZxmuJjYwhezVsrfc/TbqtZV4QcxOX1fOI=
 github.com/apache/thrift v0.20.0/go.mod h1:hOk1BQqcp2OLzGsyVXdfMk7YFlMxK3aoEVhjD06QhB8=
+github.com/apoxy-dev/bart v0.30.1-0.20261027204316-0b58927f3bcb h1:EX9lCLBISIAHu3ovtXgs6+lO2EXC2wTSx6HU5767lkg=
+github.com/apoxy-dev/bart v0.30.1-0.20261027204316-0b58927f3bcb/go.mod h1:GREWQfTLRWz/c5FTOsIw+KkscuFkIV5t8Rp7Nd1Td5c=
 github.com/apoxy-dev/connect-ip-go v0.0.0-20261002135041-baadecfb9616 h1:hDLy2NntF24bCJ4SRCyFnIq3HIA6H7oyEo0b/MNYifE=
 github.com/apoxy-dev/connect-ip-go v0.0.0-20261002135041-baadecfb9616/go.mod h1:z5rtgIizc+/K27UtB0occwZgqg/mz3IqgyUJW8aubbI=
 github.com/apoxy-dev/go-afxdp v0.12.1-0.20261023084436-bef860e97e8f h1:6yKBJBgNEJcOwKqcUYqOYH+cBnucYHytx7a4jixG7m4=
