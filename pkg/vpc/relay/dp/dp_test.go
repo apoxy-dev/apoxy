@@ -450,6 +450,24 @@ func TestPipeline(t *testing.T) {
 			}(),
 			drop: dp.ReasonOpen,
 		},
+		{
+			name: "Next Header 41 on an IPv4 packet that authenticates",
+			from: addrA1, wire: func() []byte {
+				a, err := psp.NewAEAD(key(spiA1In))
+				if err != nil {
+					panic(err)
+				}
+				inner := ipv4("100.64.1.5", "100.64.2.5", 100)
+				b := make([]byte, len(inner)+psp.Overhead)
+				h := psp.Header{NextHdr: psp.NextHdrV6, Version: psp.AESGCM128, SPI: spiA1In, IV: 1, VNI: vniA, Flags: psp.FlagSeq, Seq: 1}
+				if err := psp.PutHeader(h, b); err != nil {
+					panic(err)
+				}
+				a.Seal(b[psp.PrefixLen:psp.PrefixLen], b[4:psp.HeaderLen], inner, b[:psp.PrefixLen])
+				return b
+			}(),
+			drop: dp.ReasonOpen,
+		},
 		{name: "old_session: no ports entry", from: addrA1, wire: seal(spiNoPort, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)), drop: dp.ReasonOldSession},
 		{
 			name:  "old_session after a new MS",

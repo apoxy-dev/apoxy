@@ -541,3 +541,5 @@ replace go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelg
 replace github.com/buraksezer/olric => github.com/apoxy-dev/olric v0.5.7-0.20261021235425-d0050ba08461
 
 replace github.com/gaissmai/bart => github.com/apoxy-dev/bart v0.30.1-0.20261027204316-0b58927f3bcb
+
+replace github.com/apoxy-dev/softpsp => ../softpsp

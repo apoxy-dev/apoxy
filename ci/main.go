@@ -950,8 +950,8 @@ fi
 echo "console: no codegen drift"
 `
 
-// Test runs the tunnel data path unit tests under the race detector, and the
-// tests of the CI packages that need no generated Dagger code.
+// Test runs the tunnel data path tests with the race detector, the CI tests that
+// need no generated Dagger code, and the relay AES-GCM tests on BoringSSL.
 func (m *ApoxyCli) Test(ctx context.Context, src *dagger.Directory) (string, error) {
 	return m.BuilderContainer(ctx, src).
 		WithEnvVariable("CGO_ENABLED", "1").
@@ -964,6 +964,9 @@ func (m *ApoxyCli) Test(ctx context.Context, src *dagger.Directory) (string, err
 		WithExec([]string{"go", "test", "-count=1", "./awsx/..."}).
 		WithWorkdir("/src/ci/modules/perf").
 		WithExec([]string{"go", "test", "-count=1", "./perfspec/..."}).
+		With(func(c *dagger.Container) *dagger.Container { return m.withBoringSSL(c, "") }).
+		WithWorkdir("/src").
+		WithExec([]string{"go", "test", "-race", "-count=1", "./pkg/vpc/relay/dp/aead/..."}).
 		Stdout(ctx)
 }
 

@@ -240,7 +240,12 @@ func (m *ApoxyCli) perfRun(ctx context.Context, src *dagger.Directory, s perfsui
 
 // perfGo is a Go container with no C toolchain, for the perf binaries and tests.
 func perfGo(src *dagger.Directory) *dagger.Container {
-	return dag.Container().
+	return perfGoOn(src, "")
+}
+
+// perfGoOn is perfGo in a container of platform (the engine platform when empty).
+func perfGoOn(src *dagger.Directory, platform dagger.Platform) *dagger.Container {
+	return dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From("golang:1.26.8-bookworm").
 		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod")).
 		WithEnvVariable("GOMODCACHE", "/go/pkg/mod").
@@ -251,13 +256,23 @@ func perfGo(src *dagger.Directory) *dagger.Container {
 		WithWorkdir("/src")
 }
 
-// perfBins builds static linux binaries of the commands for goarch.
+// perfBins builds static linux binaries of the commands for goarch. vpcbench builds with cgo and
+// BoringSSL in a container of goarch, for the relay AES-GCM of dp/aead; the others with no cgo.
 func (m *ApoxyCli) perfBins(src *dagger.Directory, goarch string, cmds []string) *dagger.Directory {
 	ctr := perfGo(src).
 		WithEnvVariable("GOOS", "linux").
-		WithEnvVariable("GOARCH", goarch)
+		WithEnvVariable("GOARCH", goarch).
+		WithExec([]string{"mkdir", "-p", "/out"})
+	platform := dagger.Platform("linux/" + goarch)
+	cgo := m.withBoringSSL(perfGoOn(src, platform), platform)
 	for _, c := range cmds {
-		ctr = ctr.WithExec([]string{"go", "build", "-o", "/out/" + c, "./cmd/" + c})
+		if c != "vpcbench" {
+			ctr = ctr.WithExec([]string{"go", "build", "-o", "/out/" + c, "./cmd/" + c})
+			continue
+		}
+		bin := cgo.WithExec([]string{"go", "build", "-tags", "netgo,osusergo",
+			"-ldflags", "-linkmode=external -extldflags=-static", "-o", "/out/" + c, "./cmd/" + c}).File("/out/" + c)
+		ctr = ctr.WithFile("/out/"+c, bin)
 	}
 	return ctr.Directory("/out")
 }
