@@ -149,6 +149,9 @@ type (
 	}
 	// mEnded is the end of M, with the final counts of its trunk port.
 	mEnded struct{ final trunkCounts }
+	// mTables has the table changes of one event of M. The root answers it with toTablesDone
+	// after its write.
+	mTables struct{ b batch }
 )
 
 // Messages of the root to M.
@@ -158,7 +161,8 @@ type (
 		open msOpen
 		res  chan error
 	}
-	toTxExpired struct{}
+	// toTxExpired tells M that the trunk of session has no TX SA.
+	toTxExpired struct{ session uint64 }
 	toAsk       struct{ reply chan askAnswer }
 	toFetch     struct{ n uint64 }
 	toMEnd      struct {
@@ -285,12 +289,29 @@ type mProc struct {
 
 	parts map[VPCKey]*recordSet
 	tags  map[uint32]*tagState
+	// later has the records of each VPC that wait for the delete of other entries (see tagWaits).
+	// They go in after that write.
+	later map[VPCKey]*recordSet
 	// tagSession is the session of the classify and source entries in the data plane.
 	tagSession uint64
+
+	// w sends the table changes of M up to the root. touched has the tags whose entries go in the
+	// next event; portDel and portDirty ask for the delete and the write of the ports entry; next
+	// has the other updates.
+	w         tableWriter
+	touched   map[uint32]bool
+	portDel   bool
+	portDirty bool
+	next      batch
 
 	ending     bool
 	endDown    MeshDown
 	keysClosed bool
+	// final is true after the end of M and its tasks: M resets its counts. over is true after
+	// that write.
+	final  bool
+	over   bool
+	counts trunkCounts
 }
 
 // startMember starts the M of c.
@@ -300,6 +321,7 @@ func startMember(r *Router, c *mChild) {
 		r: r, c: c, box: c.box, ctx: ctx, cancel: cancel, dialer: r.mesh.name < c.name,
 		answers: rate.NewLimiter(probeRate, probeRate), senders: map[string]*pProc{}, receivers: map[string]*pProc{},
 		failed: map[string]bool{}, ps: map[*pProc]context.CancelFunc{}, parts: map[VPCKey]*recordSet{}, tags: map[uint32]*tagState{},
+		later: map[VPCKey]*recordSet{}, touched: map[uint32]bool{},
 	}
 	watch(ctx, c.down, func(keys []string) { m.box.send(valuesChanged{keys: keys}) })
 	go m.loop()
@@ -307,44 +329,67 @@ func startMember(r *Router, c *mChild) {
 
 func (m *mProc) loop() {
 	m.startDial()
-	for !m.done() {
+	for !m.over {
 		<-m.box.sig
 		for _, e := range m.box.take() {
 			m.handle(e)
+		}
+		// The key jobs go up after the table changes of the same step.
+		m.nextJob()
+		if !m.final && m.done() {
+			m.finish()
+			m.flush()
 		}
 	}
 	m.cancel()
 	for _, e := range m.box.close() {
 		m.refuse(e)
 	}
-	// The ports entry is gone: read the final counts, then reset the indices for the pools.
-	final, err := readTrunk(bg, m.r.cfg.Target, m.c.cell, m.c.meter)
-	if err != nil {
-		slog.Error("Failed to read the final counts of a trunk", "relay", m.c.name, "error", err)
-	}
-	var b batch
-	b.zeroCell(m.c.cell)
-	b.zeroPortDrops(m.c.meter)
-	if err := b.write(bg, m.r.cfg.Target); err != nil {
-		slog.Error("Failed to reset the counts of a trunk", "relay", m.c.name, "error", err)
-	}
 	if m.everUp && m.endDown != 0 {
 		m.toRoot(mChange{c: MeshChange{Name: m.c.name, Down: m.endDown}})
 	}
-	m.toRoot(mEnded{final: final})
+	m.toRoot(mEnded{final: m.counts})
 }
 
-// done reports whether M ended and each of its children and tasks ended.
+// done reports whether M ended and each of its children, tasks and tables events ended.
 func (m *mProc) done() bool {
 	return m.ending && m.keysClosed && m.cur == nil && len(m.jobs) == 0 && m.ms == nil && m.opening == nil &&
-		len(m.ps) == 0 && !m.dialing && m.kst != kCalling && m.fetches == 0
+		len(m.ps) == 0 && !m.dialing && m.kst != kCalling && m.fetches == 0 && !m.w.pending() && !m.tablesWait()
+}
+
+// finish reads the final counts after the ports entry is gone, then resets the indices for the
+// pools. M refuses new events from here, and ends after that write.
+func (m *mProc) finish() {
+	m.final = true
+	var err error
+	if m.counts, err = readTrunk(bg, m.r.cfg.Target, m.c.cell, m.c.meter); err != nil {
+		slog.Error("Failed to read the final counts of a trunk", "relay", m.c.name, "error", err)
+	}
+	m.next.zeroCell(m.c.cell)
+	m.next.zeroPortDrops(m.c.meter)
+	m.w.then(func(err error) {
+		if err != nil {
+			slog.Error("Failed to reset the counts of a trunk", "relay", m.c.name, "error", err)
+		}
+		m.over = true
+	})
 }
 
 // toRoot sends msg to the root.
 func (m *mProc) toRoot(msg any) { m.r.box.send(fromM{m: m.c, msg: msg}) }
 
 func (m *mProc) handle(e any) {
+	if m.final {
+		if e, ok := e.(toTablesDone); ok {
+			m.w.done(e.err)
+		} else {
+			m.refuse(e)
+		}
+		return
+	}
 	switch e := e.(type) {
+	case toTablesDone:
+		m.w.done(e.err)
 	case dialed:
 		m.dialed(e)
 	case redialEv:
@@ -374,17 +419,19 @@ func (m *mProc) handle(e any) {
 			m.stepKeys()
 		}
 	case toRekeyed:
-		if m.ms != nil && !m.ending {
+		if m.ms != nil && !m.ending && e.session == m.ms.n {
 			m.pending = append(m.pending, e.req)
 			m.stepKeys()
 		}
 	case toTxExpired:
-		m.txOK = false
-		if m.ms != nil && m.sub != subKeying {
-			slog.Info("Trunk has no transmit SA, keys again", "relay", m.c.name)
-			m.stopProbe()
-			m.sub = subKeying
-			m.up().Delete(keyValues)
+		if m.ms != nil && e.session == m.ms.n {
+			m.txOK = false
+			if m.sub != subKeying {
+				slog.Info("Trunk has no transmit SA, keys again", "relay", m.c.name)
+				m.stopProbe()
+				m.sub = subKeying
+				m.up().Delete(keyValues)
+			}
 		}
 	case toPacketIn:
 		m.packetIn(e.pin)
@@ -549,14 +596,7 @@ func (m *mProc) msEnded(e msEnded) {
 			m.downWhy = MeshRestart
 		}
 		m.drop()
-		if m.ported {
-			var b batch
-			b.remove(dp.PortsKey{Port: m.c.port}.Entry(nil))
-			if err := b.write(bg, m.r.cfg.Target); err != nil {
-				slog.Error("Failed to delete the ports entry of a trunk", "relay", m.c.name, "error", err)
-			}
-			m.ported = false
-		}
+		m.portDel = true
 		if !m.ending {
 			m.closing = true
 			m.job(mJob{op: opClose, ms: e.ms})
@@ -578,6 +618,7 @@ func (m *mProc) drop() {
 	clear(m.senders)
 	clear(m.receivers)
 	clear(m.failed)
+	clear(m.later)
 	for vpc := range m.parts {
 		m.records(vpc, nil)
 	}
@@ -593,28 +634,82 @@ func (m *mProc) stopWatch(p *pProc) {
 	}
 }
 
-// writePort writes the ports entry of the trunk for the session now.
-func (m *mProc) writePort() {
+// writePort puts the ports entry of the trunk for the session in the next tables event.
+func (m *mProc) writePort() { m.portDirty = true }
+
+// flush sends the table changes of M up when no event of M is at the root.
+func (m *mProc) flush() {
+	// An event with no updates runs its functions at once, and they can add changes.
+	for !m.w.busy {
+		// The session changes only after the writes before it put in their entries.
+		m.newTagSession()
+		if !m.tablesWait() && len(m.w.wait) == 0 {
+			return
+		}
+		m.sendTables()
+	}
+}
+
+// sendTables sends the table changes of M up in one tables event: the entries of the tags, then
+// the delete of the ports entry, then the ports entry of the session now, then the other updates.
+func (m *mProc) sendTables() {
 	var b batch
+	tags := m.tagChanges(&b)
 	md := trunkKey(m.c.port)
-	pa := dp.PortAction{Trunk: true, Session: m.ms.n, Addr: m.ms.open.psp, MTU: uint16(m.mtu()), MeterIndex: m.c.meter}
-	if !m.metered {
-		// The meter indices can have the config of an ended agent connection.
-		b.meter(dp.MeterPort, m.c.meter, 0, 0)
-		for lane := range uint32(dpLanes) {
-			b.meter(dp.MeterLane, dpLanes*m.c.meter+lane, 0, 0)
+	del := m.portDel && m.ported
+	if del {
+		b.remove(dp.PortsKey{Port: m.c.port}.Entry(nil))
+	}
+	put, meter := m.portDirty && m.ms != nil && !m.ending, false
+	if put {
+		pa := dp.PortAction{Trunk: true, Session: m.ms.n, Addr: m.ms.open.psp, MTU: uint16(m.mtu()), MeterIndex: m.c.meter}
+		if meter = !m.metered; meter {
+			// The meter indices can have the config of an ended agent connection.
+			b.meter(dp.MeterPort, m.c.meter, 0, 0)
+			for lane := range uint32(dpLanes) {
+				b.meter(dp.MeterLane, dpLanes*m.c.meter+lane, 0, 0)
+			}
+		}
+		if m.ported && !del {
+			b.modify(dp.PortsKey{Port: m.c.port}.Entry(pa), md)
+		} else {
+			b.insert(dp.PortsKey{Port: m.c.port}.Entry(pa), md)
 		}
 	}
-	if m.ported {
-		b.modify(dp.PortsKey{Port: m.c.port}.Entry(pa), md)
-	} else {
-		b.insert(dp.PortsKey{Port: m.c.port}.Entry(pa), md)
-	}
-	if err := b.write(bg, m.r.cfg.Target); err != nil {
-		slog.Error("Failed to write the ports entry of a trunk", "relay", m.c.name, "error", err)
-		return
-	}
-	m.ported, m.metered = true, true
+	m.portDel, m.portDirty = false, false
+	b = append(b, m.next...)
+	m.next = nil
+	m.w.send(b, func(err error) {
+		if tags != nil {
+			if err != nil {
+				slog.Error("Failed to write the entries of the records of a mesh member", "relay", m.c.name, "error", err)
+			} else {
+				m.commitTags(tags)
+			}
+		}
+		if del {
+			if err != nil {
+				slog.Error("Failed to delete the ports entry of a trunk", "relay", m.c.name, "error", err)
+			}
+			m.ported = false
+		}
+		if put {
+			if err != nil {
+				slog.Error("Failed to write the ports entry of a trunk", "relay", m.c.name, "error", err)
+			} else {
+				m.ported, m.metered = true, true
+			}
+		}
+		// The records that waited for this write go in now, or wait for the next one.
+		for vpc, rs := range m.later {
+			m.records(vpc, rs)
+		}
+	}, func(b batch) { m.toRoot(mTables{b: b}) })
+}
+
+// tablesWait reports whether table changes of M wait for the next event.
+func (m *mProc) tablesWait() bool {
+	return len(m.touched) > 0 || m.portDel || m.portDirty || len(m.next) > 0
 }
 
 // mtu returns the MTU of the trunk now. A new session at the same address keeps the last path.
@@ -649,14 +744,7 @@ func (m *mProc) end(e toMEnd) {
 		}
 	}
 	m.drop()
-	if m.ported {
-		var b batch
-		b.remove(dp.PortsKey{Port: m.c.port}.Entry(nil))
-		if err := b.write(bg, m.r.cfg.Target); err != nil {
-			slog.Error("Failed to delete the ports entry of a trunk", "relay", m.c.name, "error", err)
-		}
-		m.ported = false
-	}
+	m.portDel = true
 	for _, j := range m.jobs {
 		if j.res != nil {
 			j.res <- callResult{err: rpc.Errorf(rpc.Unavailable, "mesh session ended")}
@@ -674,8 +762,11 @@ func (m *mProc) job(j mJob) {
 	m.nextJob()
 }
 
+// nextJob sends the next key job to the root when none runs. The table changes of M go up first, so
+// the root writes them before the keys entries.
 func (m *mProc) nextJob() {
-	if m.cur != nil || len(m.jobs) == 0 {
+	m.flush()
+	if m.cur != nil || len(m.jobs) == 0 || m.tablesWait() {
 		return
 	}
 	j := m.jobs[0]
@@ -881,7 +972,13 @@ func (m *mProc) probed(ok bool) {
 		m.retryT = time.AfterFunc(trunkProbeRetry, func() { m.box.send(probeAgain{run: run}) })
 	}
 	m.ver++
-	store(m.up(), keyValues, &memberValues{inc: m.c.inc, ver: m.ver, ref: m.ms.open.ref, port: m.c.port, cell: m.c.cell, mtu: m.mtu()})
+	ms, vals := m.ms, &memberValues{inc: m.c.inc, ver: m.ver, ref: m.ms.open.ref, port: m.c.port, cell: m.c.cell, mtu: m.mtu()}
+	// V gets the member values after the write of the ports entry.
+	m.w.then(func(error) {
+		if m.ms == ms && m.sub != subKeying && m.ver == vals.ver {
+			store(m.up(), keyValues, vals)
+		}
+	})
 }
 
 // seal sends msg, a message of this relay with tag 0, to the member.
@@ -992,6 +1089,11 @@ func (m *mProc) incoming(e mIncoming) {
 
 // dropTenant deletes the records of each VPC of tenant.
 func (m *mProc) dropTenant(tenant string) {
+	for vpc := range m.later {
+		if vpc.Project == tenant {
+			delete(m.later, vpc)
+		}
+	}
 	for vpc := range m.parts {
 		if vpc.Project == tenant {
 			m.records(vpc, nil)
@@ -1026,18 +1128,19 @@ func (m *mProc) pEnded(e pEnded) {
 	m.syncSenders()
 }
 
-// records makes the trunk entries of vpc match the records rs, then stores the part of vpc for
-// the root. A nil rs deletes them.
+// records makes the trunk entries of vpc match the records rs, and stores the part of vpc for the
+// root after their write. A nil rs deletes them.
 func (m *mProc) records(vpc VPCKey, rs *recordSet) {
 	if rs != nil && len(rs.recs) == 0 {
 		rs = nil
 	}
-	old := m.parts[vpc]
-	touched := map[uint32]bool{}
-	if len(m.tags) == 0 && m.ms != nil {
-		// The entries of the records are all of one session.
-		m.tagSession = m.ms.n
+	if m.tagWaits(rs) {
+		m.later[vpc] = rs
+		return
 	}
+	delete(m.later, vpc)
+	old := m.parts[vpc]
+	touched := m.touched
 	if old != nil {
 		for id, rec := range old.recs {
 			if rs == nil || rs.recs[id] != rec {
@@ -1052,15 +1155,51 @@ func (m *mProc) records(vpc VPCKey, rs *recordSet) {
 			}
 		}
 	}
-	m.writeTags(touched)
-	key := setKey(keyPart, vpc)
 	if rs == nil {
 		delete(m.parts, vpc)
-		m.up().Delete(key)
-		return
+	} else {
+		m.parts[vpc] = rs
 	}
-	m.parts[vpc] = rs
-	store(m.up(), key, rs)
+	// The part goes up after the write of the entries of its records, if no later part replaced it.
+	key := setKey(keyPart, vpc)
+	m.w.then(func(error) {
+		if m.parts[vpc] != rs {
+			return
+		}
+		if rs == nil {
+			m.up().Delete(key)
+			return
+		}
+		store(m.up(), key, rs)
+	})
+}
+
+// hasTagEntries reports whether the data plane has entries of the records.
+func (m *mProc) hasTagEntries() bool {
+	for _, ts := range m.tags {
+		if ts.classify || len(ts.sources) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// tagWaits reports whether the entries of rs wait for the delete of other entries: the entries of
+// the session before, also the ones of an event at the root, or the entries of another VPC with
+// the tag of a record of rs.
+func (m *mProc) tagWaits(rs *recordSet) bool {
+	if rs == nil {
+		return false
+	}
+	if m.ms != nil && m.ms.n != m.tagSession && (m.hasTagEntries() || m.w.busy) {
+		return true
+	}
+	for _, rec := range rs.recs {
+		if ts := m.tags[rec.tag]; ts != nil && len(ts.recs) == 0 && ts.name != vpcName(rec.vpc, rec.networkID) {
+			return true
+		}
+	}
+	return false
 }
 
 // ref adds rec to the entries of its tag. A tag names one VPC: a record of another VPC with that
@@ -1100,27 +1239,47 @@ func (m *mProc) unref(rec *record, touched map[uint32]bool) {
 	touched[rec.tag] = true
 }
 
-// writeTags writes the classify and source entries of the touched tags in one Write.
-func (m *mProc) writeTags(touched map[uint32]bool) {
-	if len(touched) == 0 {
+// tagEntries is the classify entry and the source entries of one tag after a write.
+type tagEntries struct {
+	classify bool
+	sources  map[netip.Prefix]struct{}
+}
+
+// newTagSession makes the session of the MS that is up the session of the entries of the records,
+// when the data plane has no entries of the records: they are all of one session.
+func (m *mProc) newTagSession() {
+	if m.ms == nil || m.ms.n == m.tagSession || m.hasTagEntries() {
 		return
 	}
-	var b batch
-	md := trunkKey(m.c.port)
-	type next struct {
-		classify bool
-		sources  map[netip.Prefix]struct{}
+	m.tagSession = m.ms.n
+	for tag, ts := range m.tags {
+		if len(ts.recs) > 0 {
+			m.touched[tag] = true
+		}
 	}
-	nexts := map[uint32]next{}
-	tags := make([]uint32, 0, len(touched))
-	for tag := range touched {
+}
+
+// tagChanges adds to b the changes of the classify and source entries of the touched tags, and
+// returns the entries of each tag after the write, or nil for no touched tag.
+func (m *mProc) tagChanges(b *batch) map[uint32]tagEntries {
+	if len(m.touched) == 0 {
+		return nil
+	}
+	md := trunkKey(m.c.port)
+	nexts := map[uint32]tagEntries{}
+	tags := make([]uint32, 0, len(m.touched))
+	for tag := range m.touched {
 		tags = append(tags, tag)
 	}
+	clear(m.touched)
 	slices.Sort(tags)
 	session := m.tagSession
 	for _, tag := range tags {
 		ts := m.tags[tag]
-		want := next{classify: len(ts.recs) > 0 && m.ms != nil && m.ms.n == session, sources: map[netip.Prefix]struct{}{}}
+		if ts == nil {
+			continue
+		}
+		want := tagEntries{classify: len(ts.recs) > 0 && m.ms != nil && m.ms.n == session, sources: map[netip.Prefix]struct{}{}}
 		if want.classify {
 			for p := range ts.refs {
 				want.sources[p] = struct{}{}
@@ -1145,14 +1304,16 @@ func (m *mProc) writeTags(touched map[uint32]bool) {
 		}
 		nexts[tag] = want
 	}
-	if err := b.write(bg, m.r.cfg.Target); err != nil {
-		slog.Error("Failed to write the entries of the records of a mesh member", "relay", m.c.name, "error", err)
-		return
-	}
+	return nexts
+}
+
+// commitTags keeps the entries of the tags after their write. A tag with no records and no entries
+// goes; a tag whose last record went after the build keeps its entries until the next event.
+func (m *mProc) commitTags(nexts map[uint32]tagEntries) {
 	for tag, n := range nexts {
 		ts := m.tags[tag]
 		ts.classify, ts.sources = n.classify, n.sources
-		if len(ts.recs) == 0 {
+		if len(ts.recs) == 0 && !ts.classify && len(ts.sources) == 0 {
 			delete(m.tags, tag)
 		}
 	}

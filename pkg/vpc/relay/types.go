@@ -32,6 +32,8 @@ const (
 	rebindOverlap = 5 * time.Second
 	// noRouteInterval is the minimum time between two NoRoute messages for one address.
 	noRouteInterval = time.Second
+	// DefaultTableWriteInterval is the table write interval of a Config with none.
+	DefaultTableWriteInterval = 100 * time.Millisecond
 )
 
 // VPCKey is the key of a routing domain: one VPC of one project. The VPC name and the network ID
@@ -103,6 +105,10 @@ type Config struct {
 	// Busy gives the busy time of each thread of the data plane for the busy metric, as
 	// dp.Device.Busy. nil: no busy metric.
 	Busy func() []dp.ThreadBusy
+	// TableWriteInterval is the shortest time between two table writes. The root writes the table
+	// changes of this time in one batch. nil means DefaultTableWriteInterval; 0 writes each change
+	// at once.
+	TableWriteInterval *time.Duration
 }
 
 // Attachment is one attachment of an agent connection.

@@ -272,6 +272,11 @@ type RelayConfig struct {
 	// default) uses the CPU set of the relay process at start.
 	// +optional
 	CPUs string `json:"cpus,omitempty"`
+	// TableWriteInterval is the shortest time between two writes of the
+	// relay tables. The relay writes the table changes of this time in one
+	// batch. Omitted (the default) is 100ms; 0 writes each change at once.
+	// +optional
+	TableWriteInterval *metav1.Duration `json:"tableWriteInterval,omitempty"`
 }
 
 // RelayInterfaceSource tells where the relay finds its interface and the

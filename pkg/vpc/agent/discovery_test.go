@@ -204,6 +204,9 @@ func TestPrimaryRoutes(t *testing.T) {
 // of relay-b do not delay the redial of relay-a.
 func TestRelayBackoff(t *testing.T) {
 	w := newWorld(t)
+	// The relays write each change at once. With the write interval, relay-b can refuse two dials
+	// before the first attach on relay-a, and the agent then stops.
+	w.relayCfg.TableWriteInterval = new(time.Duration(0))
 	w.refuse = map[string]string{"relay-b": "agent too old"}
 	ra, rb := w.relay(t, "relay-a"), w.relay(t, "relay-b")
 	a := w.agent(t, "a", ra, agentOptions{sessions: 2, relays: []identity.Relay{ra.ref(), rb.ref()}, runErr: make(chan error, 1)})

@@ -189,6 +189,10 @@ type envOpts struct {
 	dataSend func(net.PacketConn) net.PacketConn
 	// quicSend wraps the QUIC socket of the agent connections and the mesh sessions.
 	quicSend func(net.PacketConn) net.PacketConn
+	// interval is the table write interval of the relay. nil is the default.
+	interval *time.Duration
+	// writes, when set, is the data plane target of the relay: it keeps each Write.
+	writes *writeLog
 }
 
 func newEnv(t *testing.T) *env {
@@ -224,12 +228,18 @@ func newEnvWith(t *testing.T, o envOpts) *env {
 		changes:  make(chan relay.MeshChange, 64),
 		sessions: make(chan *relay.MeshSession, 64),
 	}
+	var target relay.PortTarget = lo.Target
+	if o.writes != nil {
+		o.writes.SocketTarget = lo.Target
+		target = o.writes
+	}
 	e.r, err = relay.NewRouter(relay.Config{
-		Relay:       &dpv1.RelayRef{Id: o.id, Addresses: []string{fmt.Sprintf("192.0.2.%d", 1+o.slot)}},
-		Trust:       e.trust,
-		Addresses:   e.addrs,
-		Target:      lo.Target,
-		LaneSources: 3,
+		Relay:              &dpv1.RelayRef{Id: o.id, Addresses: []string{fmt.Sprintf("192.0.2.%d", 1+o.slot)}},
+		Trust:              e.trust,
+		Addresses:          e.addrs,
+		Target:             target,
+		LaneSources:        3,
+		TableWriteInterval: o.interval,
 	})
 	require.NoError(t, err)
 	e.r.OnAttachmentEnd(func(s relay.AttachmentStats) { e.ends <- s })
@@ -306,6 +316,7 @@ type agent struct {
 
 	mu      sync.Mutex
 	msgs    []*dpv1.SessionResponse
+	at      []time.Time // The arrival time of each message of msgs.
 	routes  map[string]*dpv1.Route
 	recvErr error
 
@@ -365,19 +376,37 @@ func hello(mode dpv1.Mode) *dpv1.Hello {
 // session runs the Session call with h and returns the first message of the relay. Then a task
 // keeps the next messages.
 func (a *agent) session(h *dpv1.Hello) (*dpv1.SessionResponse, error) {
+	f := <-a.begin(h)
+	return f.m, f.err
+}
+
+// first is the first message of the relay on a Session call, or its error, and its arrival time.
+type first struct {
+	m   *dpv1.SessionResponse
+	err error
+	at  time.Time
+}
+
+// begin sends h on a new Session call. The channel gets the first message of the relay. Then a
+// task keeps the next messages.
+func (a *agent) begin(h *dpv1.Hello) <-chan first {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.t.Cleanup(cancel)
 	st, err := a.rc.Session(ctx)
 	require.NoError(a.t, err)
 	require.NoError(a.t, st.Send(&dpv1.SessionRequest{Msg: &dpv1.SessionRequest_Hello{Hello: h}}))
-	m, err := st.Recv()
-	if err != nil {
-		return nil, err
-	}
-	a.st = st
+	out := make(chan first, 1)
 	go func() {
+		m, err := st.Recv()
+		if err != nil {
+			out <- first{err: err, at: time.Now()}
+			return
+		}
+		a.st = st
+		out <- first{m: m, at: time.Now()}
 		for {
 			m, err := st.Recv()
+			now := time.Now()
 			a.mu.Lock()
 			if err != nil {
 				a.recvErr = err
@@ -385,6 +414,7 @@ func (a *agent) session(h *dpv1.Hello) (*dpv1.SessionResponse, error) {
 				return
 			}
 			a.msgs = append(a.msgs, m)
+			a.at = append(a.at, now)
 			if d := m.GetRouteDelta(); d != nil {
 				for _, r := range d.GetRemove() {
 					delete(a.routes, r.GetPrefix())
@@ -396,7 +426,7 @@ func (a *agent) session(h *dpv1.Hello) (*dpv1.SessionResponse, error) {
 			a.mu.Unlock()
 		}
 	}()
-	return m, nil
+	return out
 }
 
 // open runs the Session call in mode and returns Welcome.

@@ -81,6 +81,47 @@ func (b batch) write(ctx context.Context, t dp.Target) error {
 	return t.Write(ctx, &p4.WriteRequest{Atomicity: p4.WriteRequest_DATAPLANE_ATOMIC, Updates: b})
 }
 
+// tableWriter sends the table changes of a process up to the root as tables events, one at a
+// time. The changes of later steps wait for the answer, tablesDone, and go in the next event.
+type tableWriter struct {
+	busy bool          // An event is at the root.
+	wait []func(error) // They run after the next event.
+	run  []func(error) // They run after the event at the root.
+}
+
+// then runs fn after the next event, with the error of its write.
+func (w *tableWriter) then(fn func(error)) { w.wait = append(w.wait, fn) }
+
+// pending reports whether an event is at the root or a function waits for the next one.
+func (w *tableWriter) pending() bool { return w.busy || len(w.wait) > 0 }
+
+// send sends b up with up. After the answer, commit runs, then each function of then. With no
+// updates in b, they run at once.
+func (w *tableWriter) send(b batch, commit func(error), up func(batch)) {
+	fns := append([]func(error){commit}, w.wait...)
+	w.wait = nil
+	if len(b) == 0 {
+		for _, fn := range fns {
+			fn(nil)
+		}
+		return
+	}
+	w.busy, w.run = true, fns
+	up(b)
+}
+
+// done takes the answer of the root to the event.
+func (w *tableWriter) done(err error) {
+	if !w.busy {
+		return
+	}
+	fns := w.run
+	w.busy, w.run = false, nil
+	for _, fn := range fns {
+		fn(err)
+	}
+}
+
 // tally counts packets and bytes.
 type tally struct{ packets, bytes uint64 }
 

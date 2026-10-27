@@ -52,12 +52,18 @@ type vpcProc struct {
 	// reports is the number of attachments with a report of remote addresses.
 	reports int
 
-	// dirty is true when the route table changed in this step. answers go out after the new
-	// table is stored.
-	dirty   bool
-	answers []func()
-	asks    map[uint64]map[uint64]struct{} // The ports that did not answer each stats ask.
-	out     map[uint64][]AttachmentStats
+	// dirty is true when the route table changed. unsynced has the prefixes whose route entries
+	// go in the next tables event. shown is the route table that the A processes have: V stores a
+	// new one after the write of its route entries.
+	dirty    bool
+	unsynced map[netip.Prefix]struct{}
+	shown    *routeTable
+	w        tableWriter
+	asks     map[uint64]map[uint64]struct{} // The ports that did not answer each stats ask.
+	out      map[uint64][]AttachmentStats
+	// final is true after the last A ended: V deletes its entries, and over is true after that.
+	final bool
+	over  bool
 }
 
 // vMember is the candidates of the records of one member in V.
@@ -93,27 +99,34 @@ type vAtt struct {
 	report []remoteAddr
 	// fallback has the fallback candidate of each remote address that V accepted.
 	fallback map[netip.Prefix]*announcer
+	// failed is true after the write of the fallback candidates of report failed. Only a new
+	// report makes candidates again.
+	failed bool
+	// gen counts the changes of the fallback candidates.
+	gen uint64
 }
 
 // startVPC starts the V of v.
 func startVPC(r *Router, c *vChild) {
 	ctx, cancel := context.WithCancel(context.Background())
 	v := &vpcProc{
-		r:       r,
-		c:       c,
-		ctx:     ctx,
-		cancel:  cancel,
-		net:     c.net,
-		name:    vpcName(c.key, c.net.ID),
-		sets:    map[netip.Prefix]*routeSet{},
-		entries: map[netip.Prefix]dp.ForwardAction{},
-		holds:   map[netip.Prefix]time.Time{},
-		as:      map[uint64]*aChild{},
-		asks:    map[uint64]map[uint64]struct{}{},
-		out:     map[uint64][]AttachmentStats{},
-		ann:     map[string]*dpv1.Presence{},
-		members: map[string]*vMember{},
+		r:        r,
+		c:        c,
+		ctx:      ctx,
+		cancel:   cancel,
+		net:      c.net,
+		name:     vpcName(c.key, c.net.ID),
+		sets:     map[netip.Prefix]*routeSet{},
+		entries:  map[netip.Prefix]dp.ForwardAction{},
+		holds:    map[netip.Prefix]time.Time{},
+		as:       map[uint64]*aChild{},
+		asks:     map[uint64]map[uint64]struct{}{},
+		out:      map[uint64][]AttachmentStats{},
+		ann:      map[string]*dpv1.Presence{},
+		members:  map[string]*vMember{},
+		unsynced: map[netip.Prefix]struct{}{},
 	}
+	v.shown = v.table()
 	v.trust = load[*trustGen](c.down, keyTrust)
 	watch(ctx, c.down, func(keys []string) { c.box.send(valuesChanged{keys: keys}) })
 	go v.run()
@@ -126,10 +139,15 @@ func (v *vpcProc) run() {
 		for _, e := range v.c.box.take() {
 			v.handle(e)
 		}
-		v.recheck(time.Now())
-		v.publish()
-		if v.ending && len(v.as) == 0 {
-			v.end()
+		if !v.final {
+			v.recheck(time.Now())
+			if v.ending && len(v.as) == 0 {
+				v.end()
+			}
+		}
+		v.flush()
+		if v.over {
+			v.finish()
 			return
 		}
 		<-v.c.box.sig
@@ -140,6 +158,10 @@ func (v *vpcProc) run() {
 func (v *vpcProc) up(msg any) { v.r.box.send(fromV{v: v.c, msg: msg}) }
 
 func (v *vpcProc) handle(e any) {
+	if v.final {
+		v.refuse(e)
+		return
+	}
 	switch e := e.(type) {
 	case toConn:
 		v.startConn(e)
@@ -153,6 +175,12 @@ func (v *vpcProc) handle(e any) {
 		v.toA(e.port, e)
 	case toRekeyed:
 		v.toA(e.port, e)
+	case toTablesDone:
+		if e.port == 0 {
+			v.w.done(e.err)
+		} else {
+			v.toA(e.port, e)
+		}
 	case toPacketIn:
 		v.toA(e.port, e)
 	case toSlotLost:
@@ -172,7 +200,7 @@ func (v *vpcProc) handle(e any) {
 		for _, a := range v.as {
 			a.box.send(e)
 		}
-	case vAssign, vKeys, vAttachmentStart, vAttachmentEnd, vLanes:
+	case vAssign, vKeys, vTables, vAttachmentStart, vAttachmentEnd, vLanes:
 		v.up(e)
 	case aAttach:
 		v.attach(e)
@@ -227,7 +255,7 @@ func (v *vpcProc) startConn(e toConn) {
 	n := v.net
 	store(a.down, keyNetwork, &n)
 	store(a.down, keyTrust, v.trust)
-	store(a.down, keyRoutes, v.table())
+	store(a.down, keyRoutes, v.shown)
 	if rx := load[*rxValue](v.c.down, rxKey(a.port)); rx != nil {
 		store(a.down, keyRx, rx)
 	}
@@ -284,14 +312,16 @@ func (v *vpcProc) attach(e aAttach) {
 	if a == nil {
 		return
 	}
-	reply := func(err error) { v.answer(func() { a.box.send(attached{id: e.att.ID, err: err}) }) }
+	reply := func(err error) { a.box.send(attached{id: e.att.ID, err: err}) }
 	if v.ending {
-		reply(rpc.Errorf(rpc.Unavailable, "relay does not serve the VPC"))
+		v.answer(func() { reply(rpc.Errorf(rpc.Unavailable, "relay does not serve the VPC")) })
 		return
 	}
 	for _, p := range e.att.Addresses {
 		if set := v.sets[p.Masked()]; set != nil && slices.ContainsFunc(set.entries, func(o *announcer) bool { return o.own && o.port != e.port }) {
-			reply(rpc.Errorf(rpc.AlreadyExists, "address %s has another attachment on this relay", p.Masked()))
+			v.answer(func() {
+				reply(rpc.Errorf(rpc.AlreadyExists, "address %s has another attachment on this relay", p.Masked()))
+			})
 			return
 		}
 	}
@@ -302,7 +332,9 @@ func (v *vpcProc) attach(e aAttach) {
 	var ann *dpv1.Presence
 	if v.r.mesh != nil {
 		if ann = v.announcement(a, e.att.ID, ps, c, c.attached); !fitsOneMessage(ann) {
-			reply(rpc.Errorf(rpc.InvalidArgument, "announcement of the attachment does not fit in one message to the mesh"))
+			v.answer(func() {
+				reply(rpc.Errorf(rpc.InvalidArgument, "announcement of the attachment does not fit in one message to the mesh"))
+			})
 			return
 		}
 	}
@@ -316,18 +348,23 @@ func (v *vpcProc) attach(e aAttach) {
 			set.entries = append(set.entries, newAnnouncer(t, c, p))
 		}
 	}
-	if err := v.sync(ps, now); err != nil {
-		v.remove(e.port, e.att.ID, ps)
-		_ = v.sync(ps, now)
-		reply(rpc.Errorf(rpc.Unavailable, "failed to write route entries: %v", err))
-		return
-	}
+	v.sync(ps, now)
 	a.cands[e.att.ID], a.prefixes[e.att.ID] = c, ps
 	a.atts[e.att.ID] = &vAtt{cell: e.cell, addrs: slices.Clone(e.att.Addresses), fallback: map[netip.Prefix]*announcer{}}
 	if ann != nil {
 		v.ann[e.att.ID], v.annDirty = ann, true
 	}
-	reply(nil)
+	v.w.then(func(err error) {
+		if err == nil {
+			reply(nil)
+			return
+		}
+		// The route entries did not go in: the attachment goes, and A gets the error after that.
+		if v.as[e.port] == a && a.cands[e.att.ID] == c {
+			v.drop(a, e.att.ID, time.Now())
+		}
+		v.answer(func() { reply(rpc.Errorf(rpc.Unavailable, "failed to write route entries: %v", err)) })
+	})
 }
 
 // announcement returns the announcement of attachment id of a to the members.
@@ -364,9 +401,7 @@ func (v *vpcProc) drop(a *aChild, id string, now time.Time) {
 		v.annDirty = true
 	}
 	v.remove(a.port, id, ps)
-	if err := v.sync(ps, now); err != nil {
-		slog.Error("Failed to write route entries", "vpc", v.c.key.UID, "error", err)
-	}
+	v.sync(ps, now)
 }
 
 // remove removes the candidates of the attachment id on port for ps, as today's removeAnnouncer.
@@ -378,55 +413,119 @@ func (v *vpcProc) remove(port uint64, id string, ps []netip.Prefix) {
 	}
 }
 
-// sync selects again for ps at now and writes their route entries: both targets of each prefix
-// with candidates, and no entry for a prefix with none.
-func (v *vpcProc) sync(ps []netip.Prefix, now time.Time) error {
-	var b batch
-	want := map[netip.Prefix]dp.ForwardAction{}
-	gone := map[netip.Prefix]bool{}
-	md := "v/" + v.name
+// sync selects again for ps at now. The next tables event has their route entries: both targets of
+// each prefix with candidates, and no entry for a prefix with none.
+func (v *vpcProc) sync(ps []netip.Prefix, now time.Time) {
+	seen := make(map[netip.Prefix]struct{}, len(ps))
 	for _, p := range ps {
-		if _, done := want[p]; done || gone[p] {
+		if _, done := seen[p]; done {
 			continue
 		}
+		seen[p] = struct{}{}
 		if v.reports > 0 {
 			if v.touched == nil {
 				v.touched = map[netip.Prefix]struct{}{}
 			}
 			v.touched[p] = struct{}{}
 		}
+		v.unsynced[p] = struct{}{}
 		set := v.sets[p]
 		if set == nil || len(set.entries) == 0 {
 			delete(v.sets, p)
 			delete(v.holds, p)
-			gone[p] = true
-			if _, ok := v.entries[p]; ok {
-				b.remove(dp.RouteKey{VPC: v.name, Dst: p}.Entry(nil))
-			}
 			continue
 		}
 		set.selectAgain(now)
 		v.holdUntil(p, set.nextHold(now))
+	}
+	v.dirty = true
+}
+
+// flush sends the changes of the route entries up when no event of V is at the root.
+func (v *vpcProc) flush() {
+	// An event with no updates runs its functions at once, and they can add changes.
+	for !v.w.busy && (len(v.unsynced) > 0 || v.dirty || v.annDirty || len(v.w.wait) > 0) {
+		v.sendTables()
+	}
+}
+
+// sendTables sends the changes of the route entries up in one tables event. After a good write,
+// V stores the announcement set and the route table of that time, then the answers go.
+func (v *vpcProc) sendTables() {
+	if v.final {
+		// The last event deletes each entry that the writes before it put in.
+		for p := range v.entries {
+			v.unsynced[p] = struct{}{}
+		}
+	}
+	var b batch
+	want := map[netip.Prefix]dp.ForwardAction{}
+	var gone []netip.Prefix
+	md := "v/" + v.name
+	for p := range v.unsynced {
+		have, ok := v.entries[p]
+		set := v.sets[p]
+		if set == nil || len(set.entries) == 0 {
+			if ok {
+				b.remove(dp.RouteKey{VPC: v.name, Dst: p}.Entry(nil))
+				gone = append(gone, p)
+			}
+			continue
+		}
 		fa := forwardOf(set)
-		want[p] = fa
-		switch have, ok := v.entries[p]; {
+		switch {
 		case !ok:
 			b.insert(dp.RouteKey{VPC: v.name, Dst: p}.Entry(fa), md)
 		case have != fa:
 			b.modify(dp.RouteKey{VPC: v.name, Dst: p}.Entry(fa), md)
+		default:
+			continue
 		}
+		want[p] = fa
 	}
-	v.dirty = true
-	if err := b.write(bg, v.r.cfg.Target); err != nil {
-		return err
+	clear(v.unsynced)
+	var t *routeTable
+	if v.dirty {
+		v.dirty = false
+		t = v.table()
 	}
-	for p, fa := range want {
-		v.entries[p] = fa
+	var set *annSet
+	if v.annDirty {
+		v.annDirty = false
+		set = &annSet{vpc: v.c.key, entries: maps.Clone(v.ann)}
 	}
-	for p := range gone {
-		delete(v.entries, p)
-	}
-	return nil
+	v.w.send(b, func(err error) {
+		if err != nil {
+			msg := "Failed to write route entries"
+			if v.final {
+				msg = "Failed to delete route entries"
+			}
+			slog.Error(msg, "vpc", v.c.key.UID, "error", err)
+			if !v.final {
+				// The next event stores the values of the selection after the functions of this
+				// event, as after a good write. The answers of this event wait for it.
+				v.dirty = v.dirty || t != nil
+				v.annDirty = v.annDirty || set != nil
+				return
+			}
+		} else {
+			for p, fa := range want {
+				v.entries[p] = fa
+			}
+			for _, p := range gone {
+				delete(v.entries, p)
+			}
+		}
+		if set != nil {
+			store(v.c.up, keyAnnounce, set)
+		}
+		if t != nil {
+			v.shown = t
+			for _, a := range v.as {
+				store(a.down, keyRoutes, t)
+			}
+		}
+	}, func(b batch) { v.up(vTables{b: b}) })
 }
 
 // forwardOf returns the route action of set: the winner, and the best local candidate.
@@ -481,9 +580,7 @@ func (v *vpcProc) holdsEnded(now time.Time) {
 			delete(v.holds, p)
 		}
 	}
-	if err := v.sync(ps, now); err != nil {
-		slog.Error("Failed to write route entries", "vpc", v.c.key.UID, "error", err)
-	}
+	v.sync(ps, now)
 	v.timerAt = time.Time{}
 	v.arm()
 }
@@ -523,9 +620,7 @@ func (v *vpcProc) setState(a *aChild, state dpv1.AnnouncerState, reason string, 
 	if len(ps) == 0 {
 		return
 	}
-	if err := v.sync(ps, now); err != nil {
-		slog.Error("Failed to write route entries", "vpc", v.c.key.UID, "error", err)
-	}
+	v.sync(ps, now)
 	v.r.stateChanges[state].Add(1)
 	slog.Info("Changed the state of an agent connection", "vpc", v.c.key.UID, "agent", a.s.agent.name,
 		"relay", v.r.cfg.Relay.GetId(), "state", stateLabel(state), "reason", reason)
@@ -560,8 +655,7 @@ func (v *vpcProc) connEnded(e aEnded) {
 		v.answerAsk(ask)
 	}
 	// The root takes the tag back after the set with no announcement of A goes to the members.
-	v.storeSet()
-	v.up(vConnEnded{port: e.port, ends: e.ends})
+	v.answer(func() { v.up(vConnEnded{port: e.port, ends: e.ends}) })
 }
 
 func (v *vpcProc) stats(ask uint64) {
@@ -595,33 +689,16 @@ func (v *vpcProc) answerAsk(ask uint64) {
 	delete(v.out, ask)
 }
 
-// answer queues an answer to A that needs the new route table.
-func (v *vpcProc) answer(fn func()) { v.answers = append(v.answers, fn) }
-
-// storeSet stores the announcement set for the root when it changed.
-func (v *vpcProc) storeSet() {
-	if !v.annDirty {
-		return
-	}
-	v.annDirty = false
-	store(v.c.up, keyAnnounce, &annSet{vpc: v.c.key, entries: maps.Clone(v.ann)})
-}
-
-// publish stores the new route table in the map of each A and the announcement set, then sends
-// the answers.
-func (v *vpcProc) publish() {
-	v.storeSet()
-	if v.dirty {
-		v.dirty = false
-		t := v.table()
-		for _, a := range v.as {
-			store(a.down, keyRoutes, t)
+// answer queues an answer that needs the new values: it goes after the next tables event that
+// stores them. After a failed write, it waits for the next event.
+func (v *vpcProc) answer(fn func()) {
+	v.w.then(func(err error) {
+		if err != nil && !v.final {
+			v.answer(fn)
+			return
 		}
-	}
-	for _, fn := range v.answers {
 		fn()
-	}
-	v.answers = nil
+	})
 }
 
 // table returns the route table of the selection now.
@@ -662,39 +739,47 @@ func (v *vpcProc) memberRefs() map[string]*dpv1.RelayRef {
 	return refs
 }
 
-// end deletes the route entries that are left and tells the root.
+// end deletes the route entries that are left and stores an empty announcement set. V refuses
+// new events from here, and ends after that write.
 func (v *vpcProc) end() {
-	var ps []netip.Prefix
-	for p := range v.entries {
-		ps = append(ps, p)
-	}
+	v.final = true
 	clear(v.sets)
-	if err := v.sync(ps, time.Now()); err != nil {
-		slog.Error("Failed to delete route entries", "vpc", v.c.key.UID, "error", err)
-	}
 	if v.r.mesh != nil {
 		clear(v.ann)
 		v.annDirty = true
-		v.storeSet()
 	}
+	v.w.then(func(error) { v.over = true })
+}
+
+// finish tells the root that V ended.
+func (v *vpcProc) finish() {
 	if v.timer != nil {
 		v.timer.Stop()
 	}
 	v.cancel()
 	for _, e := range v.c.box.close() {
-		switch e := e.(type) {
-		case toConn:
-			e.l.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "relay does not serve the VPC")
-			e.l.streamEnd()
-			e.box.close()
-			v.up(vConnEnded{port: e.port})
-		case toSlotLost:
-			close(e.done)
-		case toStats:
-			v.up(vStatsAnswer{ask: e.ask})
-		}
+		v.refuse(e)
 	}
 	v.up(vEnded{})
+}
+
+// refuse answers an event that comes after the last A ended.
+func (v *vpcProc) refuse(e any) {
+	switch e := e.(type) {
+	case toConn:
+		e.l.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "relay does not serve the VPC")
+		e.l.streamEnd()
+		e.box.close()
+		v.up(vConnEnded{port: e.port})
+	case toSlotLost:
+		close(e.done)
+	case toStats:
+		v.up(vStatsAnswer{ask: e.ask})
+	case toTablesDone:
+		if e.port == 0 {
+			v.w.done(e.err)
+		}
+	}
 }
 
 // memberChanged makes the candidates of the member of key k match the records of its part:
@@ -750,7 +835,5 @@ func (v *vpcProc) memberChanged(k string, now time.Time) {
 	if vals == nil {
 		delete(v.members, k)
 	}
-	if err := v.sync(ps, now); err != nil {
-		slog.Error("Failed to write route entries", "vpc", v.c.key.UID, "error", err)
-	}
+	v.sync(ps, now)
 }

@@ -169,6 +169,12 @@ type (
 		stats []AttachmentStats
 	}
 	vEnded struct{}
+	// vTables has the table changes of one event of the A of port, or of V for port 0. The root
+	// answers it with toTablesDone after its write.
+	vTables struct {
+		port uint64
+		b    batch
+	}
 )
 
 // Messages down the tree, from the root to V and from V to A.
@@ -202,9 +208,17 @@ type (
 		tx  bool
 		err error
 	}
+	// toRekeyed gives a rekey of the port keys of session. M takes only a rekey of its MS now.
 	toRekeyed struct {
+		port    uint64
+		session uint64
+		req     keys.Request
+	}
+	// toTablesDone answers a tables event after its write: of the A of port, or of V or M for
+	// port 0.
+	toTablesDone struct {
 		port uint64
-		req  keys.Request
+		err  error
 	}
 	toPacketIn struct {
 		port uint64

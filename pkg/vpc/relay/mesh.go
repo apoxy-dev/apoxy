@@ -688,6 +688,8 @@ func (r *Router) fromM(c *mChild, msg any) {
 	switch m := msg.(type) {
 	case mKeys:
 		r.runTrunkKeys(c, m)
+	case mTables:
+		r.addTables(m.b, func(err error) { c.box.send(toTablesDone{err: err}) })
 	case mChange:
 		c.isUp = m.c.Up
 		if !m.c.Up {
@@ -731,25 +733,38 @@ func (r *Router) fromM(c *mChild, msg any) {
 	}
 }
 
-// runTrunkKeys runs a key operation of an M on its trunk port, writes its keys entries and
-// answers it.
+// runTrunkKeys runs a key operation of an M on its trunk port, adds its keys entries to the
+// pending batch and answers it after their write.
 func (r *Router) runTrunkKeys(c *mChild, m mKeys) {
 	done := toKeysDone{port: c.port, op: m.op}
 	now := time.Now()
+	var b batch
 	switch m.op {
 	case opOffer:
-		done.offer, done.err = r.keys.trunkOffer(bg, c.port, m.session, now)
+		b, done.offer, done.err = r.keys.trunkOffer(c.port, m.session, now)
 	case opRefused:
-		done.offer, done.err = r.keys.trunkRefused(bg, c.port, m.session, m.spis, now)
+		b, done.offer, done.err = r.keys.trunkRefused(c.port, m.session, m.spis, now)
 	case opApply:
-		done.refused, done.err = r.keys.trunkApply(bg, c.port, m.session, m.req, now)
-		done.tx = r.keys.hasTx(c.port)
+		b, done.refused, done.err = r.keys.trunkApply(c.port, m.session, m.req, now)
 	case opClose:
-		if err := r.keys.close(bg, c.port); err != nil {
+		var err error
+		if b, err = r.keys.close(c.port); err != nil {
 			slog.Warn("Failed to delete the keys entries of a trunk", "relay", c.name, "error", err)
 		}
 	}
-	c.box.send(done)
+	r.addTables(b, func(err error) {
+		switch {
+		case err == nil:
+		case m.op == opClose:
+			slog.Warn("Failed to delete the keys entries of a trunk", "relay", c.name, "error", err)
+		case done.err == nil:
+			done.err = rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
+		}
+		if m.op == opApply {
+			done.tx = r.keys.hasTx(c.port)
+		}
+		c.box.send(done)
+	})
 }
 
 // viewKey is the key of the member values and part of c in the map of a V.

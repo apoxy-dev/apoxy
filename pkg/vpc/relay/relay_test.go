@@ -46,6 +46,9 @@ func TestNewRouter(t *testing.T) {
 		{name: "no relay ID", cfg: relay.Config{Relay: &dpv1.RelayRef{}, Target: target, Addresses: &vpctest.Addresses{}}, wantErr: true},
 		{name: "no target", cfg: relay.Config{Relay: ref, Addresses: &vpctest.Addresses{}}, wantErr: true},
 		{name: "no addresses", cfg: relay.Config{Relay: ref, Target: target}, wantErr: true},
+		{name: "table write interval 0", cfg: relay.Config{Relay: ref, Target: target, Addresses: &vpctest.Addresses{}, TableWriteInterval: new(time.Duration(0))}},
+		{name: "negative table write interval", cfg: relay.Config{Relay: ref, Target: target, Addresses: &vpctest.Addresses{},
+			TableWriteInterval: new(-time.Millisecond)}, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

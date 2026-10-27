@@ -97,6 +97,7 @@ type connProc struct {
 
 	mode    dpv1.Mode
 	addr    netip.AddrPort // The source of the newest path probe.
+	written netip.AddrPort // The PSP address of the ports entry in the data plane.
 	prev    netip.AddrPort
 	prevT   *time.Timer
 	lanes   []uint16
@@ -119,14 +120,34 @@ type connProc struct {
 	drained bool
 	alts    []*dpv1.RelayRef
 
+	// handovers counts the detaches of the oldest attachment that did not read the receive count
+	// yet. Until then, rxBase stays the base of that attachment.
+	handovers int
+
 	jobs []keyJob
 	cur  *keyJob // The job that the root runs now.
+
+	// w sends the table changes of A up through V. portDirty and srcDirty ask for the ports entry
+	// and the source entries of now in the next event, and next has the other updates.
+	w         tableWriter
+	portDirty bool
+	srcDirty  bool
+	next      batch
+	// opened is true after the write of the first entries. A keeps the calls until then.
+	opened bool
+	calls  []aCall
 
 	closing    bool
 	keysClosed bool
 	readerOn   bool
 	writerOn   bool
 	ends       []vAttachmentEnd
+	// code and msg close the connection. lost has the slot losses that wait for the delete of the
+	// ports entry, and portGone is true after it.
+	code     dpv1.RelayCloseCode
+	msg      string
+	lost     []chan struct{}
+	portGone bool
 }
 
 // startConn starts the A of e. V owns down and up.
@@ -174,6 +195,7 @@ func (a *connProc) run() {
 	a.live.received = func() uint64 { return a.l.qc.ConnectionStats().PacketsReceived }
 	a.live.count = a.live.received()
 	a.start()
+	a.runJobs()
 	tick := time.NewTicker(livenessInterval)
 	defer tick.Stop()
 	for !a.finished() {
@@ -185,6 +207,8 @@ func (a *connProc) run() {
 		case now := <-tick.C:
 			a.tick(now)
 		}
+		// The key jobs go up after the table changes of the same step.
+		a.runJobs()
 	}
 	a.cancel()
 	for _, e := range a.box.close() {
@@ -194,12 +218,12 @@ func (a *connProc) run() {
 	a.l.streamEnd()
 }
 
-// finished reports whether A closed and each of its tasks ended.
+// finished reports whether A closed and each of its tasks and tables events ended.
 func (a *connProc) finished() bool {
-	return a.closing && a.keysClosed && !a.readerOn && !a.writerOn
+	return a.closing && a.keysClosed && !a.readerOn && !a.writerOn && !a.w.pending() && !a.tablesWait()
 }
 
-// start writes the entries of the port in QUIC mode and starts the tasks of the connection.
+// start sends the entries of the port in QUIC mode up. A opens after their write.
 func (a *connProc) start() {
 	var b batch
 	md := portKey(a.port)
@@ -213,14 +237,33 @@ func (a *connProc) start() {
 		b.meter(dp.MeterLane, dpLanes*a.meter+lane, cfg.LaneRate, cfg.LaneBurst)
 	}
 	a.t.SetFrameWriter(a.port, a.writeFrame)
-	if err := b.write(bg, a.t); err != nil {
+	a.next = b
+	a.w.then(a.started)
+}
+
+// started takes the result of the write of the first entries: A opens, or closes.
+func (a *connProc) started(err error) {
+	if err != nil {
 		slog.Error("Failed to write the entries of an agent connection", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
 		a.t.SetFrameWriter(a.port, nil)
 		a.l.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "relay failed to add the connection")
-		a.closing = true
-		a.keysClosed = true
+		a.closing, a.keysClosed = true, true
+		a.refuseCalls()
+		a.portIsGone()
 		return
 	}
+	a.opened = true
+	if a.closing {
+		a.closePort()
+		return
+	}
+	a.open()
+}
+
+// open starts the tasks of the connection and sends Welcome, Config and the route table. Then A
+// takes the calls that came before.
+func (a *connProc) open() {
+	cfg := &a.r.cfg
 	a.setState(a.stateNow(), "connection started")
 	go func() { _ = dp.ReadFrames(a.ctx, a.t, a.l.qc, a.port, accessSession) }()
 	head := []*dpv1.SessionResponse{
@@ -249,6 +292,19 @@ func (a *connProc) start() {
 		a.box.send(writerDone{})
 	}()
 	go func() { a.box.send(readerDone{err: a.read()}) }()
+	calls := a.calls
+	a.calls = nil
+	for _, c := range calls {
+		a.call(c)
+	}
+}
+
+// refuseCalls answers the calls that came before A opened.
+func (a *connProc) refuseCalls() {
+	for _, c := range a.calls {
+		c.res <- callResult{err: rpc.Errorf(rpc.Unavailable, "relay connection closed")}
+	}
+	a.calls = nil
 }
 
 // writeFrame is the frame writer of the port: it sends on the session connection. It runs under
@@ -290,7 +346,13 @@ func (a *connProc) handle(e any) {
 	}
 	switch e := e.(type) {
 	case aCall:
+		if !a.opened {
+			a.calls = append(a.calls, e)
+			return
+		}
 		a.call(e)
+	case toTablesDone:
+		a.w.done(e.err)
 	case toAssigned:
 		a.assigned(e)
 	case attached:
@@ -313,11 +375,14 @@ func (a *connProc) handle(e any) {
 		a.vbox.send(aStatsAnswer{port: a.port, ask: e.ask, stats: a.stats()})
 	case toSlotLost:
 		a.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "attachment address lease ended")
-		close(e.done)
+		a.whenPortGone(e.done)
 	case toDrain:
 		a.drained, a.alts = true, e.alternates
-		a.setState(a.stateNow(), "relay drains")
-		a.out.queue(a.drainMsg())
+		// Before Welcome, the Drain goes after it.
+		if a.opened {
+			a.setState(a.stateNow(), "relay drains")
+			a.out.queue(a.drainMsg())
+		}
 	case toEndConn:
 		a.close(e.code, e.msg)
 	case toEnd:
@@ -352,11 +417,13 @@ func (a *connProc) refuse(e any) {
 	case aCall:
 		e.res <- callResult{err: rpc.Errorf(rpc.Unavailable, "relay connection closed")}
 	case toSlotLost:
-		close(e.done)
+		a.whenPortGone(e.done)
 	case toStats:
 		a.vbox.send(aStatsAnswer{port: a.port, ask: e.ask})
 	case toKeysDone:
 		a.keysDone(e)
+	case toTablesDone:
+		a.w.done(e.err)
 	case readerDone:
 		a.readerOn = false
 	case writerDone:
@@ -374,7 +441,12 @@ func (a *connProc) call(e aCall) {
 		a.rekey(e.in.(*dpv1.KeysRequest), e.res)
 	case callLanes:
 		in := e.in.(*dpv1.RegisterLanesRequest)
-		e.res <- callResult{out: &emptypb.Empty{}, err: a.registerLanes(in.GetPorts(), in.GetReceive())}
+		if err := a.registerLanes(in.GetPorts(), in.GetReceive()); err != nil {
+			e.res <- callResult{err: err}
+			return
+		}
+		// The answer goes after the write of the ports entry.
+		a.w.then(func(error) { e.res <- callResult{out: &emptypb.Empty{}} })
 	}
 }
 
@@ -444,24 +516,29 @@ func (a *connProc) assigned(e toAssigned) {
 			return
 		}
 	}
-	if err := a.syncSources(); err != nil {
-		a.fail(ca, rpc.Errorf(rpc.Unavailable, "failed to write source entries: %v", err))
-		return
-	}
-	a.vbox.send(aAttach{port: a.port, att: ca.att, cell: ca.cell})
+	a.srcDirty = true
+	a.w.then(func(err error) {
+		if a.pend[ca.att.ID] != ca {
+			// A closed and answered the call.
+			return
+		}
+		if err != nil {
+			a.fail(ca, rpc.Errorf(rpc.Unavailable, "failed to write source entries: %v", err))
+			return
+		}
+		a.vbox.send(aAttach{port: a.port, att: ca.att, cell: ca.cell})
+	})
 }
 
 // fail ends an attachment that did not attach. The root frees its addresses and its cell.
 func (a *connProc) fail(ca *connAtt, err error) {
 	delete(a.pend, ca.att.ID)
-	if serr := a.syncSources(); serr != nil {
-		slog.Error("Failed to write source entries", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", serr)
-	}
-	var b batch
-	b.zeroCell(ca.cell)
-	_ = b.write(bg, a.t)
-	a.vbox.send(vAttachmentEnd{port: a.port, att: ca.att, cell: ca.cell})
-	ca.res <- callResult{err: err}
+	a.srcDirty = true
+	a.next.zeroCell(ca.cell)
+	a.w.then(func(error) {
+		a.vbox.send(vAttachmentEnd{port: a.port, att: ca.att, cell: ca.cell})
+		ca.res <- callResult{err: err}
+	})
 }
 
 // attached answers the Attach call after V wrote the route entries.
@@ -476,7 +553,7 @@ func (a *connProc) attached(e attached) {
 	}
 	delete(a.pend, e.id)
 	ca.since = time.Now()
-	if len(a.atts) == 0 {
+	if len(a.atts) == 0 && a.handovers == 0 {
 		// The first attachment does not get what the agent sent before it.
 		a.rxBase = a.rx()
 	}
@@ -540,31 +617,36 @@ func (a *connProc) detach(id string, res chan callResult) {
 	a.vbox.send(aDetach{port: a.port, id: id})
 }
 
-// detached ends an attachment after V deleted its route entries: its source entries go, and its
-// final counts go to the root.
+// detached ends an attachment after V deleted its route entries: its source entries go, then A
+// reads and resets its transmit cell, and its final counts go to the root.
 func (a *connProc) detached(e detached) {
 	i := slices.IndexFunc(a.atts, func(ca *connAtt) bool { return ca.att.ID == e.id })
 	if i < 0 {
 		return
 	}
-	ca := a.atts[i]
+	ca, oldest := a.atts[i], i == 0
 	a.atts = slices.Delete(a.atts, i, i+1)
-	if err := a.syncSources(); err != nil {
-		slog.Error("Failed to write source entries", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
+	if oldest {
+		a.handovers++
 	}
-	rx := a.rx()
-	st := a.statsOf(ca, i == 0, rx)
-	if i == 0 {
-		// The next oldest attachment gets the receive counts from here on.
-		a.rxBase = rx
-	}
-	var b batch
-	b.zeroCell(ca.cell)
-	if err := b.write(bg, a.t); err != nil {
-		slog.Error("Failed to reset a counter cell", "vpc", a.l.vpc.UID, "error", err)
-	}
-	a.vbox.send(vAttachmentEnd{port: a.port, att: ca.att, cell: ca.cell, stats: &st})
-	ca.detach <- callResult{out: &emptypb.Empty{}}
+	a.srcDirty = true
+	a.w.then(func(error) {
+		rx := a.rx()
+		st := a.statsOf(ca, oldest, rx)
+		if oldest {
+			// The next oldest attachment gets the receive counts from here on.
+			a.rxBase = rx
+			a.handovers--
+		}
+		a.next.zeroCell(ca.cell)
+		a.w.then(func(err error) {
+			if err != nil {
+				slog.Error("Failed to reset a counter cell", "vpc", a.l.vpc.UID, "error", err)
+			}
+			a.vbox.send(vAttachmentEnd{port: a.port, att: ca.att, cell: ca.cell, stats: &st})
+			ca.detach <- callResult{out: &emptypb.Empty{}}
+		})
+	})
 }
 
 // remote sends V the addresses that the agent reports for an attached attachment: the
@@ -601,15 +683,13 @@ func (a *connProc) remoteAccepted(e remoteAccepted) {
 		return
 	}
 	a.atts[i].remote = e.addrs
-	if err := a.syncSources(); err != nil {
-		slog.Error("Failed to write source entries", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
-	}
+	a.srcDirty = true
 }
 
-// syncSources writes the source entries of the prefixes of the attachments that V has or gets,
-// and of the remote addresses that V accepted. A remote address is local only: its packets never
-// go out on a trunk port.
-func (a *connProc) syncSources() error {
+// sourceChanges adds to b the changes of the source entries to the prefixes of the attachments
+// that V has or gets, and the remote addresses that V accepted, and returns that set. A remote
+// address is local only: its packets never go out on a trunk port.
+func (a *connProc) sourceChanges(b *batch) map[netip.Prefix]bool {
 	want := map[netip.Prefix]bool{}
 	for _, ca := range a.atts {
 		for _, p := range ca.remote {
@@ -628,7 +708,6 @@ func (a *connProc) syncSources() error {
 			}
 		}
 	}
-	var b batch
 	md := portKey(a.port)
 	for p, local := range want {
 		var act dp.Action = dp.NoAction{}
@@ -647,12 +726,56 @@ func (a *connProc) syncSources() error {
 			b.remove(dp.SourceKey{Port: a.port, Session: accessSession, Src: p}.Entry(nil))
 		}
 	}
-	if err := b.write(bg, a.t); err != nil {
-		return err
-	}
-	a.sources = want
-	return nil
+	return want
 }
+
+// flush sends the table changes of A up through V when no event of A is at the root.
+func (a *connProc) flush() {
+	// An event with no updates runs its functions at once, and they can add changes.
+	for !a.w.busy && (a.tablesWait() || len(a.w.wait) > 0) {
+		a.sendTables()
+	}
+}
+
+// sendTables sends the table changes of A up in one tables event: the ports entry, then the
+// source entries, then the other updates.
+func (a *connProc) sendTables() {
+	var b batch
+	var pa *dp.PortAction
+	// After close, the ports entry and the source entries go with the deletes of close.
+	if a.portDirty && !a.closing {
+		p := a.portAction()
+		pa = &p
+		b.modify(dp.PortsKey{Port: a.port}.Entry(p), portKey(a.port))
+	}
+	var want map[netip.Prefix]bool
+	if a.srcDirty && !a.closing {
+		want = a.sourceChanges(&b)
+	}
+	a.portDirty, a.srcDirty = false, false
+	b = append(b, a.next...)
+	a.next = nil
+	a.w.send(b, func(err error) {
+		if pa != nil {
+			if err != nil {
+				slog.Error("Failed to write the ports entry of an agent connection", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
+			} else {
+				a.written = pa.Addr
+				a.tellLanes(*pa)
+			}
+		}
+		if want != nil {
+			if err != nil {
+				slog.Error("Failed to write source entries", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
+			} else {
+				a.sources = want
+			}
+		}
+	}, func(b batch) { a.vbox.send(vTables{port: a.port, b: b}) })
+}
+
+// tablesWait reports whether table changes of A wait for the next event.
+func (a *connProc) tablesWait() bool { return a.portDirty || a.srcDirty || len(a.next) > 0 }
 
 // rekey queues a key change of the agent. In QUIC mode it is the change to PSP mode.
 func (a *connProc) rekey(in *dpv1.KeysRequest, res chan callResult) {
@@ -677,9 +800,11 @@ func (a *connProc) rekey(in *dpv1.KeysRequest, res chan callResult) {
 	a.runJobs()
 }
 
-// runJobs sends the next key job to the root when no job runs.
+// runJobs sends the next key job to the root when no job runs. The table changes of A go up
+// first, so the root writes them before the keys entries.
 func (a *connProc) runJobs() {
-	for a.cur == nil && len(a.jobs) > 0 {
+	a.flush()
+	for a.cur == nil && len(a.jobs) > 0 && !a.tablesWait() {
 		j := a.jobs[0]
 		a.jobs = a.jobs[1:]
 		if j.op == opApply && a.mode == dpv1.Mode_MODE_QUIC {
@@ -713,11 +838,18 @@ func (a *connProc) keysDone(e toKeysDone) {
 		if e.err == nil && e.ok && !a.closing {
 			a.mode = dpv1.Mode_MODE_PSP
 			a.writePort()
-			a.startCheck()
-			rk := keyproto.ToProto(e.offer)
-			rk.Generation = j.gen
-			a.out.queue(&dpv1.SessionResponse{Msg: &dpv1.SessionResponse_Rekey{Rekey: rk}})
-			modeChanges.Inc()
+			// The check, the relay offer and the answer go after the write of the address.
+			a.w.then(func(error) {
+				if !a.closing {
+					a.startCheck()
+					rk := keyproto.ToProto(e.offer)
+					rk.Generation = j.gen
+					a.out.queue(&dpv1.SessionResponse{Msg: &dpv1.SessionResponse_Rekey{Rekey: rk}})
+					modeChanges.Inc()
+				}
+				a.answerKeys(j, e)
+			})
+			break
 		}
 		a.answerKeys(j, e)
 	case opApply:
@@ -774,15 +906,11 @@ func (a *connProc) portAction() dp.PortAction {
 	return pa
 }
 
-// writePort writes the ports entry of the connection now, and tells the root its lane ports.
-func (a *connProc) writePort() {
-	pa := a.portAction()
-	var b batch
-	b.modify(dp.PortsKey{Port: a.port}.Entry(pa), portKey(a.port))
-	if err := b.write(bg, a.t); err != nil {
-		slog.Error("Failed to write the ports entry of an agent connection", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
-		return
-	}
+// writePort puts the ports entry of the connection in the next tables event.
+func (a *connProc) writePort() { a.portDirty = true }
+
+// tellLanes tells the root the lane ports of the ports entry pa after its write.
+func (a *connProc) tellLanes(pa dp.PortAction) {
 	m := vLanes{port: a.port, seen: pa.Seen}
 	for i := range m.lanes {
 		if port := uint16(pa.Lanes >> (48 - 16*(i+1))); port != 0 {
@@ -843,15 +971,24 @@ func (a *connProc) probe(b []byte, src netip.AddrPort, now time.Time) {
 		a.probes = pr.Counter
 		a.setAddr(src)
 	}
-	if pr.BFD != nil {
-		// The relay end of the check sends its own packets: no reply.
-		if a.check != nil {
-			a.check.box.send(checkProbe{pr: pr})
+	n := len(b)
+	reply := func(error) {
+		if pr.BFD != nil {
+			// The relay end of the check sends its own packets: no reply.
+			if a.check != nil {
+				a.check.box.send(checkProbe{pr: pr})
+			}
+			return
 		}
+		pr.Reply, pr.Seen = true, src
+		sendRaw(a.t, src, p2p.AppendProbe(nil, pr, n, &a.l.probe.Listener))
+	}
+	if a.mode == dpv1.Mode_MODE_PSP && a.written != a.addr {
+		// In PSP mode, the reply goes after the write of the address.
+		a.w.then(reply)
 		return
 	}
-	pr.Reply, pr.Seen = true, src
-	sendRaw(a.t, src, p2p.AppendProbe(nil, pr, len(b), &a.l.probe.Listener))
+	reply(nil)
 }
 
 // setAddr makes src the PSP address. The previous address stays valid for rebindOverlap, and the
@@ -982,7 +1119,7 @@ func (a *connProc) trustChecked(e trustChecked) {
 
 // tick checks the liveness of the agent and forgets old NoRoute times.
 func (a *connProc) tick(now time.Time) {
-	if a.closing {
+	if a.closing || !a.opened {
 		return
 	}
 	a.live.observe(now)
@@ -1084,18 +1221,55 @@ func sub(x, y uint64) uint64 {
 }
 
 // close ends the connection: the ports entry goes first, then the final counts are read, then the
-// other entries go and the root deletes the keys. A ends when the root answers.
+// other entries go and the root deletes the keys. A ends when the root answers. Before the first
+// entries are in, the delete waits for their write.
 func (a *connProc) close(code dpv1.RelayCloseCode, msg string) {
 	if a.closing {
 		return
 	}
 	a.closing = true
+	a.code, a.msg = code, msg
 	a.t.SetFrameWriter(a.port, nil)
-	var b batch
-	b.remove(dp.PortsKey{Port: a.port}.Entry(nil))
-	if err := b.write(bg, a.t); err != nil {
-		slog.Error("Failed to delete the ports entry of an agent connection", "vpc", a.l.vpc.UID, "error", err)
+	a.refuseCalls()
+	if a.opened {
+		a.closePort()
 	}
+}
+
+// closePort deletes the ports entry, so that the cells of A count no more packets.
+func (a *connProc) closePort() {
+	a.portDirty, a.srcDirty = false, false
+	a.next.remove(dp.PortsKey{Port: a.port}.Entry(nil))
+	a.w.then(func(err error) {
+		if err != nil {
+			slog.Error("Failed to delete the ports entry of an agent connection", "vpc", a.l.vpc.UID, "error", err)
+		}
+		a.closeRest()
+	})
+}
+
+// portIsGone closes the slot losses that waited for the delete of the ports entry.
+func (a *connProc) portIsGone() {
+	a.portGone = true
+	for _, done := range a.lost {
+		close(done)
+	}
+	a.lost = nil
+}
+
+// whenPortGone closes done after the delete of the ports entry.
+func (a *connProc) whenPortGone(done chan struct{}) {
+	if a.portGone {
+		close(done)
+		return
+	}
+	a.lost = append(a.lost, done)
+}
+
+// closeRest reads the final counts after the delete of the ports entry, then deletes the other
+// entries and closes the keys.
+func (a *connProc) closeRest() {
+	a.portIsGone()
 	rx := a.rx()
 	for i, ca := range a.atts {
 		st := a.statsOf(ca, i == 0, rx)
@@ -1104,7 +1278,7 @@ func (a *connProc) close(code dpv1.RelayCloseCode, msg string) {
 			ca.detach <- callResult{out: &emptypb.Empty{}}
 		}
 	}
-	b = nil
+	var b batch
 	b.remove(dp.ClassifyKey{Port: a.port, Session: accessSession}.Entry(nil))
 	for p := range a.sources {
 		b.remove(dp.SourceKey{Port: a.port, Session: accessSession, Src: p}.Entry(nil))
@@ -1120,12 +1294,16 @@ func (a *connProc) close(code dpv1.RelayCloseCode, msg string) {
 		}
 		ca.res <- callResult{err: rpc.Errorf(rpc.Unavailable, "relay connection closed")}
 	}
-	if err := b.write(bg, a.t); err != nil {
-		slog.Error("Failed to delete the entries of an agent connection", "vpc", a.l.vpc.UID, "error", err)
-	}
+	a.next = append(a.next, b...)
 	a.atts, a.pend, a.sources = nil, nil, nil
-	a.l.close(code, msg)
-	a.cancel()
+	code, msg := a.code, a.msg
+	a.w.then(func(err error) {
+		if err != nil {
+			slog.Error("Failed to delete the entries of an agent connection", "vpc", a.l.vpc.UID, "error", err)
+		}
+		a.l.close(code, msg)
+		a.cancel()
+	})
 	a.stopCheck()
 	if a.prevT != nil {
 		a.prevT.Stop()

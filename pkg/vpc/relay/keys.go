@@ -91,21 +91,23 @@ func newKeyEngine(t dp.Target) (*keyEngine, error) {
 // maxUDP is the largest UDP payload of a sealed packet to an agent.
 const maxUDP = 1452
 
-// offer makes the relay SAs of port and applies the SAs of the agent in tx, then writes their keys
-// entries. It returns the offer for the agent and the SPIs that the relay refused. With no SA of the
-// agent for lane 0 it keeps no keys and returns false, as today.
-func (k *keyEngine) offer(ctx context.Context, port uint64, vni uint32, mtu int, tx keys.Request, now time.Time) (keys.Request, []uint32, bool, error) {
-	if err := k.close(ctx, port); err != nil {
-		return keys.Request{}, nil, false, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
+// offer makes the relay SAs of port and applies the SAs of the agent in tx. It returns the keys
+// entries to write, the offer for the agent, the SPIs that the relay refused, and undo, which takes
+// the keys back when their write fails. The deletes of the keys before are in the batch also with an
+// error. With no SA of the agent for lane 0 it keeps no keys and returns false, as today.
+func (k *keyEngine) offer(port uint64, vni uint32, mtu int, tx keys.Request, now time.Time) (batch, keys.Request, []uint32, bool, func(), error) {
+	b, err := k.close(port)
+	if err != nil {
+		return nil, keys.Request{}, nil, false, nil, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
 	}
 	p, err := k.recv.NewPeer(keys.PeerConfig{VNI: vni, MTU: mtu, Lanes: 1, Sources: noSource})
 	if err != nil {
-		return keys.Request{}, nil, false, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
+		return b, keys.Request{}, nil, false, nil, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
 	}
 	req, err := p.Offer(now)
 	if err != nil {
 		p.Revoke()
-		return keys.Request{}, nil, false, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
+		return b, keys.Request{}, nil, false, nil, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
 	}
 	pk := &portKeys{rx: p, tx: k.send.NewPeer(), mtu: mtu, session: accessSession, rxSPIs: map[uint32]struct{}{}}
 	refused, err := pk.tx.Apply(tx, now)
@@ -113,99 +115,108 @@ func (k *keyEngine) offer(ctx context.Context, port uint64, vni uint32, mtu int,
 		pk.rx.Revoke()
 		revokeTx(pk.tx)
 		if err != nil {
-			return keys.Request{}, refused, false, rpc.Errorf(rpc.InvalidArgument, "%v", err)
+			return b, keys.Request{}, refused, false, nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 		}
-		return keys.Request{}, refused, false, nil
+		return b, keys.Request{}, refused, false, nil, nil
 	}
-	var b batch
-	if err := k.addRx(&b, port, pk, req.SAs); err == nil {
-		err = k.syncTx(&b, port, pk, tx.SAs)
-	}
-	if err == nil {
-		err = b.write(ctx, k.t)
+	var nb batch
+	if err = k.addRx(&nb, port, pk, req.SAs); err == nil {
+		err = k.syncTx(&nb, port, pk, tx.SAs)
 	}
 	if err != nil {
 		pk.rx.Revoke()
 		revokeTx(pk.tx)
-		return keys.Request{}, refused, false, rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
+		return b, keys.Request{}, refused, false, nil, rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
 	}
 	k.ports[port] = pk
-	return req, refused, true, nil
+	undo := func() {
+		pk.rx.Revoke()
+		revokeTx(pk.tx)
+		if k.ports[port] == pk {
+			delete(k.ports, port)
+		}
+	}
+	return append(b, nb...), req, refused, true, undo, nil
 }
 
-// apply applies a key change of the agent of port in PSP mode, and writes the TX entries.
-func (k *keyEngine) apply(ctx context.Context, port uint64, tx keys.Request, now time.Time) ([]uint32, error) {
+// apply applies a key change of the agent of port in PSP mode, and returns the changes of the TX
+// entries.
+func (k *keyEngine) apply(port uint64, tx keys.Request, now time.Time) (batch, []uint32, error) {
 	pk := k.ports[port]
 	if pk == nil {
-		return nil, rpc.Errorf(rpc.FailedPrecondition, "connection has no keys")
+		return nil, nil, rpc.Errorf(rpc.FailedPrecondition, "connection has no keys")
 	}
 	refused, err := pk.tx.Apply(tx, now)
 	if err != nil {
-		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
+		return nil, nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
 	var b batch
-	err = k.syncTx(&b, port, pk, tx.SAs)
-	if err == nil {
-		err = b.write(ctx, k.t)
+	if err := k.syncTx(&b, port, pk, tx.SAs); err != nil {
+		return nil, refused, rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
 	}
-	if err != nil {
-		return refused, rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
-	}
-	return refused, nil
+	return b, refused, nil
 }
 
 // trunkPort returns the keys of a trunk port for the MS session. Keys of an older session go
-// first.
-func (k *keyEngine) trunkPort(ctx context.Context, port, session uint64) (*portKeys, error) {
+// first: the batch has the deletes of their entries.
+func (k *keyEngine) trunkPort(port, session uint64) (*portKeys, batch, error) {
 	if pk := k.ports[port]; pk != nil && pk.session == session {
-		return pk, nil
+		return pk, nil, nil
 	}
-	if err := k.close(ctx, port); err != nil {
-		return nil, rpc.Errorf(rpc.Unavailable, "failed to delete keys entries: %v", err)
+	b, err := k.close(port)
+	if err != nil {
+		return nil, nil, rpc.Errorf(rpc.Unavailable, "failed to delete keys entries: %v", err)
 	}
 	pk := &portKeys{tx: k.send.NewPeer(), mtu: trunkMTU, session: session, rxSPIs: map[uint32]struct{}{}}
 	k.ports[port] = pk
-	return pk, nil
+	return pk, b, nil
 }
 
-// trunkOffer makes new relay SAs of a trunk port and writes their RX entries. The SAs of an
-// earlier offer of the session stay for the overlap.
-func (k *keyEngine) trunkOffer(ctx context.Context, port, session uint64, now time.Time) (keys.Request, error) {
-	pk, err := k.trunkPort(ctx, port, session)
+// trunkOffer makes new relay SAs of a trunk port and returns the changes of their RX entries. The
+// SAs of an earlier offer of the session stay for the overlap.
+func (k *keyEngine) trunkOffer(port, session uint64, now time.Time) (batch, keys.Request, error) {
+	pk, b, err := k.trunkPort(port, session)
 	if err != nil {
-		return keys.Request{}, err
+		return nil, keys.Request{}, err
 	}
 	if pk.rx == nil {
 		// The largest payload sets the packet limit of the SA.
 		if pk.rx, err = k.recv.NewPeer(keys.PeerConfig{Trunk: true, MTU: trunkMTU, Lanes: trunkLanes}); err != nil {
-			return keys.Request{}, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
+			return b, keys.Request{}, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
 		}
 	}
 	req, err := pk.rx.Offer(now)
 	if err != nil {
-		return keys.Request{}, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
+		return b, keys.Request{}, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
 	}
-	return req, k.writeRx(ctx, port, pk, req.SAs, nil)
+	if err := k.rxUpdates(&b, port, pk, req.SAs, nil); err != nil {
+		return b, keys.Request{}, err
+	}
+	return b, req, nil
 }
 
 // trunkRefused deletes the relay SAs that the peer relay refused, and makes new SAs for their
 // lanes.
-func (k *keyEngine) trunkRefused(ctx context.Context, port, session uint64, spis []uint32, now time.Time) (keys.Request, error) {
+func (k *keyEngine) trunkRefused(port, session uint64, spis []uint32, now time.Time) (batch, keys.Request, error) {
 	pk := k.ports[port]
 	if pk == nil || pk.session != session || pk.rx == nil {
-		return keys.Request{}, rpc.Errorf(rpc.FailedPrecondition, "trunk has no keys of the session")
+		return nil, keys.Request{}, rpc.Errorf(rpc.FailedPrecondition, "trunk has no keys of the session")
 	}
 	req, err := pk.rx.Refused(spis, now)
 	if err != nil {
-		return keys.Request{}, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
+		return nil, keys.Request{}, rpc.Errorf(rpc.Unavailable, "relay SAs: %v", err)
 	}
-	return req, k.writeRx(ctx, port, pk, req.SAs, spis)
+	var b batch
+	if err := k.rxUpdates(&b, port, pk, req.SAs, spis); err != nil {
+		return nil, keys.Request{}, err
+	}
+	return b, req, nil
 }
 
-// writeRx writes the RX entries of the new SAs sas of port, and deletes the entries of the SPIs
-// in gone that the engine deleted.
-func (k *keyEngine) writeRx(ctx context.Context, port uint64, pk *portKeys, sas []keys.SA, gone []uint32) error {
-	var b batch
+// rxUpdates adds to b the RX entries of the new SAs sas of port, and the deletes of the entries of
+// the SPIs in gone that the engine deleted. With an error, b is as before.
+func (k *keyEngine) rxUpdates(b *batch, port uint64, pk *portKeys, sas []keys.SA, gone []uint32) error {
+	var nb batch
 	for _, spi := range gone {
 		if _, held := pk.rxSPIs[spi]; !held {
 			continue
@@ -213,40 +224,34 @@ func (k *keyEngine) writeRx(ctx context.Context, port uint64, pk *portKeys, sas 
 		if _, ok := k.table.Stats(spi); ok {
 			continue
 		}
-		if err := b.keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_RX, Spi: spi}); err != nil {
-			return err
+		if err := nb.keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_RX, Spi: spi}); err != nil {
+			return rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
 		}
 		delete(pk.rxSPIs, spi)
 	}
-	if err := k.addRx(&b, port, pk, sas); err != nil {
-		return err
-	}
-	if err := b.write(ctx, k.t); err != nil {
+	if err := k.addRx(&nb, port, pk, sas); err != nil {
 		return rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
 	}
+	*b = append(*b, nb...)
 	return nil
 }
 
-// trunkApply applies a key change of the peer relay of a trunk port, and writes the TX entries.
-// It returns the SPIs that the sender holds from another receiver.
-func (k *keyEngine) trunkApply(ctx context.Context, port, session uint64, tx keys.Request, now time.Time) ([]uint32, error) {
-	pk, err := k.trunkPort(ctx, port, session)
+// trunkApply applies a key change of the peer relay of a trunk port, and returns the changes of the
+// TX entries. It returns the SPIs that the sender holds from another receiver.
+func (k *keyEngine) trunkApply(port, session uint64, tx keys.Request, now time.Time) (batch, []uint32, error) {
+	pk, b, err := k.trunkPort(port, session)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	refused, err := pk.tx.Apply(tx, now)
 	if err != nil {
-		return nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
+		return b, nil, rpc.Errorf(rpc.InvalidArgument, "%v", err)
 	}
-	var b batch
-	err = k.syncTx(&b, port, pk, tx.SAs)
-	if err == nil {
-		err = b.write(ctx, k.t)
+	var nb batch
+	if err := k.syncTx(&nb, port, pk, tx.SAs); err != nil {
+		return b, refused, rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
 	}
-	if err != nil {
-		return refused, rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
-	}
-	return refused, nil
+	return append(b, nb...), refused, nil
 }
 
 // hasTx reports whether port has a TX SA for lane 0.
@@ -255,11 +260,12 @@ func (k *keyEngine) hasTx(port uint64) bool {
 	return pk != nil && pk.tx.SA(0) != nil
 }
 
-// close deletes all keys of port: the relay SAs end at once, as at a revoke.
-func (k *keyEngine) close(ctx context.Context, port uint64) error {
+// close deletes all keys of port: the relay SAs end at once, as at a revoke. It returns the deletes
+// of their entries.
+func (k *keyEngine) close(port uint64) (batch, error) {
 	pk := k.ports[port]
 	if pk == nil {
-		return nil
+		return nil, nil
 	}
 	delete(k.ports, port)
 	if pk.rx != nil {
@@ -269,17 +275,17 @@ func (k *keyEngine) close(ctx context.Context, port uint64) error {
 	var b batch
 	for spi := range pk.rxSPIs {
 		if err := b.keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_RX, Spi: spi}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	for _, spi := range pk.txSPIs {
 		if spi != 0 {
 			if err := b.keys(p4.Update_DELETE, txEntry(port, pk.session, spi, 0, nil)); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
-	return b.write(ctx, k.t)
+	return b, nil
 }
 
 // addRx adds the RX entries of the new relay SAs of port to b.
@@ -363,11 +369,21 @@ func readRx(ctx context.Context, t dp.Target) ([]*dpv1.PspSaEntry, error) {
 	return out, err
 }
 
-// tick runs the rekeys and the expiry of the engine, and makes the keys entries the same. It reads
-// the counts of each RX entry: a relay SA rekeys after 3/4 of its packet limit too. It returns the
-// rekey of each port, the receive counts of each port, and the ports whose TX SA of lane 0 ended.
+// keyTick is the result of a tick for one port: the changes of its keys entries, its rekey or nil,
+// and expired when its TX SA of lane 0 ended.
+type keyTick struct {
+	port    uint64
+	session uint64
+	b       batch
+	rekey   *keys.Request
+	expired bool
+}
+
+// tick runs the rekeys and the expiry of the engine, and returns the changes that make the keys
+// entries the same. It reads the counts of each RX entry: a relay SA rekeys after 3/4 of its packet
+// limit too. It returns the result of each port with a change, and the receive counts of each port.
 // A LoadTarget also gets a sample of the receive rates, for the placement of new sessions.
-func (k *keyEngine) tick(ctx context.Context, now time.Time) (map[uint64]keys.Request, map[uint64]*rxValue, []uint64) {
+func (k *keyEngine) tick(ctx context.Context, now time.Time) ([]keyTick, map[uint64]*rxValue) {
 	if lt, ok := k.t.(LoadTarget); ok {
 		lt.SampleLoad(now)
 	}
@@ -412,12 +428,13 @@ func (k *keyEngine) tick(ctx context.Context, now time.Time) (map[uint64]keys.Re
 			}
 		}
 	}
-	var expired []uint64
+	var out []keyTick
 	for port, pk := range k.ports {
 		var b batch
 		var err error
 		had := pk.txSPIs[0]
-		if req, ok := rekeyed[port]; ok {
+		req, due := rekeyed[port]
+		if due {
 			err = k.addRx(&b, port, pk, req.SAs)
 		}
 		// The engine deleted the RX SAs whose time ended, also the old SAs of a rekey.
@@ -430,19 +447,19 @@ func (k *keyEngine) tick(ctx context.Context, now time.Time) (map[uint64]keys.Re
 		if err == nil {
 			err = k.syncTx(&b, port, pk, nil)
 		}
-		if err == nil {
-			err = b.write(ctx, k.t)
-		}
 		if err != nil {
 			slog.Warn("Failed to write keys entries", "port", port, "error", err)
-			delete(rekeyed, port)
 			continue
 		}
-		if had != 0 && pk.txSPIs[0] == 0 {
-			expired = append(expired, port)
+		kt := keyTick{port: port, session: pk.session, b: b, expired: had != 0 && pk.txSPIs[0] == 0}
+		if due {
+			kt.rekey = &req
+		}
+		if len(b) > 0 || kt.rekey != nil || kt.expired {
+			out = append(out, kt)
 		}
 	}
-	return rekeyed, rx, expired
+	return out, rx
 }
 
 // revokeTx deletes the SAs of tx, so that the sender can hold their SPIs from another receiver.

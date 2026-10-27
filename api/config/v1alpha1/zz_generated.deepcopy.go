@@ -161,6 +161,11 @@ func (in *RelayConfig) DeepCopyInto(out *RelayConfig) {
 		*out = new(RelayInterface)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.TableWriteInterval != nil {
+		in, out := &in.TableWriteInterval, &out.TableWriteInterval
+		*out = new(v1.Duration)
+		**out = **in
+	}
 	return
 }
 

@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/apoxy-dev/softpsp/keys"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 	p4 "github.com/p4lang/p4runtime/go/p4/v1"
 
@@ -36,8 +37,8 @@ const (
 	maxMeters = 1 << 16
 )
 
-// bg is the context of the entry writes. A process writes and deletes its entries also while the
-// relay stops.
+// bg is the context of the entry writes and reads. The root writes the changes of the processes,
+// and their deletes, also while the relay stops.
 var bg = context.Background()
 
 // desiredState is what the host wants the relay to serve. It is immutable.
@@ -95,6 +96,20 @@ type Router struct {
 	sets    map[VPCKey]*annSet
 	fetchN  uint64
 	fetches map[uint64]*fetchRun
+	// interval is the table write interval. pending has the table changes of each event that
+	// waits for the next write, which is at mark when it is set.
+	interval  time.Duration
+	pending   []tablesEvent
+	lastWrite time.Time
+	mark      *time.Timer
+	markC     <-chan time.Time
+}
+
+// tablesEvent is the table changes of one event in the pending batch. done gets the result of
+// their write.
+type tablesEvent struct {
+	b    batch
+	done func(error)
 }
 
 // fetchRun is one FetchSnapshot ask: the members that it did not ask yet, in name order.
@@ -174,30 +189,37 @@ func NewRouter(cfg Config) (*Router, error) {
 	}
 	cfg.TunnelBurst = max(cfg.TunnelBurst, minBurst)
 	cfg.LaneSources = min(max(cfg.LaneSources, 0), MaxLaneSources)
+	interval := DefaultTableWriteInterval
+	if cfg.TableWriteInterval != nil {
+		if interval = *cfg.TableWriteInterval; interval < 0 {
+			return nil, errors.New("relay config has a negative table write interval")
+		}
+	}
 	k, err := newKeyEngine(cfg.Target)
 	if err != nil {
 		return nil, err
 	}
 	r := &Router{
-		cfg:     cfg,
-		ver:     dpv1.LocalVersion(build.BuildVersion),
-		box:     newMailbox(0),
-		pins:    newMailbox(maxPacketIns),
-		keys:    k,
-		vs:      map[VPCKey]*vChild{},
-		conns:   map[uint64]*rootConn{},
-		sids:    map[[8]byte]uint64{},
-		lanes:   map[netip.AddrPort]uint64{},
-		tags:    map[uint32]struct{}{},
-		cells:   pool{max: maxCells},
-		meters:  pool{max: maxMeters},
-		asks:    map[uint64]*statsRun{},
-		trust:   map[string]*trustGen{},
-		ms:      map[string]*mChild{},
-		mall:    map[*mChild]struct{}{},
-		trunks:  map[uint64]*mChild{},
-		sets:    map[VPCKey]*annSet{},
-		fetches: map[uint64]*fetchRun{},
+		cfg:      cfg,
+		ver:      dpv1.LocalVersion(build.BuildVersion),
+		box:      newMailbox(0),
+		pins:     newMailbox(maxPacketIns),
+		keys:     k,
+		vs:       map[VPCKey]*vChild{},
+		conns:    map[uint64]*rootConn{},
+		sids:     map[[8]byte]uint64{},
+		lanes:    map[netip.AddrPort]uint64{},
+		tags:     map[uint32]struct{}{},
+		cells:    pool{max: maxCells},
+		meters:   pool{max: maxMeters},
+		asks:     map[uint64]*statsRun{},
+		trust:    map[string]*trustGen{},
+		ms:       map[string]*mChild{},
+		mall:     map[*mChild]struct{}{},
+		trunks:   map[uint64]*mChild{},
+		sets:     map[VPCKey]*annSet{},
+		fetches:  map[uint64]*fetchRun{},
+		interval: interval,
 	}
 	r.desired.Store(&desiredState{tenants: map[string]struct{}{}, vpcs: map[VPCKey]Network{}})
 	return r, nil
@@ -265,6 +287,11 @@ func (r *Router) Run(ctx context.Context) error {
 	defer r.cfg.Target.OnPacketIn(nil)
 	tick := time.NewTicker(tickInterval)
 	defer tick.Stop()
+	defer func() {
+		if r.mark != nil {
+			r.mark.Stop()
+		}
+	}()
 	done := ctx.Done()
 	for {
 		for _, e := range r.box.take() {
@@ -281,7 +308,7 @@ func (r *Router) Run(ctx context.Context) error {
 			}
 			r.handle(e)
 		}
-		if r.stopping && len(r.vs) == 0 && len(r.mall) == 0 && !r.hookOn && len(r.hooks) == 0 {
+		if r.stopping && len(r.vs) == 0 && len(r.mall) == 0 && !r.hookOn && len(r.hooks) == 0 && len(r.pending) == 0 {
 			r.pins.close()
 			for _, e := range r.box.close() {
 				r.refuse(e)
@@ -295,6 +322,9 @@ func (r *Router) Run(ctx context.Context) error {
 			if !r.stopping {
 				r.tick(now)
 			}
+		case <-r.markC:
+			r.markC = nil
+			r.writeTables()
 		case <-done:
 			done = nil
 			r.stop()
@@ -728,20 +758,27 @@ func (r *Router) answerStats(ask uint64) {
 }
 
 // tick runs the rekeys and the expiry of the key engine, and gives each V the receive counts of
-// its connections.
+// its connections. The keys entries of each port go in the pending batch, and the rekey and the
+// expiry go down after their write.
 func (r *Router) tick(now time.Time) {
-	rekeyed, rx, expired := r.keys.tick(bg, now)
-	for port, req := range rekeyed {
-		if c := r.conns[port]; c != nil && !c.ended {
-			c.v.box.send(toRekeyed{port: port, req: req})
-		} else if m := r.trunks[port]; m != nil {
-			m.box.send(toRekeyed{port: port, req: req})
-		}
-	}
-	for _, port := range expired {
-		if m := r.trunks[port]; m != nil {
-			m.box.send(toTxExpired{})
-		}
+	ticks, rx := r.keys.tick(bg, now)
+	for _, kt := range ticks {
+		r.addTables(kt.b, func(err error) {
+			if err != nil {
+				slog.Warn("Failed to write keys entries", "port", kt.port, "error", err)
+				return
+			}
+			if kt.rekey != nil {
+				if c := r.conns[kt.port]; c != nil && !c.ended {
+					c.v.box.send(toRekeyed{port: kt.port, session: kt.session, req: *kt.rekey})
+				} else if m := r.trunks[kt.port]; m != nil {
+					m.box.send(toRekeyed{port: kt.port, session: kt.session, req: *kt.rekey})
+				}
+			}
+			if m := r.trunks[kt.port]; m != nil && kt.expired {
+				m.box.send(toTxExpired{session: kt.session})
+			}
+		})
 	}
 	for port, v := range rx {
 		if c := r.conns[port]; c != nil && !c.ended && int64(v.packets) != c.rx {
@@ -783,6 +820,8 @@ func (r *Router) fromV(v *vChild, msg any) {
 		r.assign(m)
 	case vKeys:
 		r.runKeys(v, m)
+	case vTables:
+		r.addTables(m.b, func(err error) { v.box.send(toTablesDone{port: m.port, err: err}) })
 	case vAttachmentStart:
 		r.hook(m.port, func() { r.cfg.Addresses.Attached(m.att) })
 	case vAttachmentEnd:
@@ -837,17 +876,21 @@ func (r *Router) assign(m vAssign) {
 	})
 }
 
-// runKeys runs a key operation of an A, writes its keys entries and answers it.
+// runKeys runs a key operation of an A, adds its keys entries to the pending batch and answers it
+// after their write.
 func (r *Router) runKeys(v *vChild, m vKeys) {
 	done := toKeysDone{port: m.port, op: m.op}
 	now := time.Now()
+	var b batch
+	var undo func()
 	switch m.op {
 	case opOffer:
-		done.offer, done.refused, done.ok, done.err = r.keys.offer(bg, m.port, m.vni, m.mtu, m.req, now)
+		b, done.offer, done.refused, done.ok, undo, done.err = r.keys.offer(m.port, m.vni, m.mtu, m.req, now)
 	case opApply:
-		done.refused, done.err = r.keys.apply(bg, m.port, m.req, now)
+		b, done.refused, done.err = r.keys.apply(m.port, m.req, now)
 	case opRevoke, opClose:
-		if err := r.keys.close(bg, m.port); err != nil {
+		var err error
+		if b, err = r.keys.close(m.port); err != nil {
 			slog.Warn("Failed to delete the keys entries of a connection", "port", m.port, "error", err)
 		}
 		if c := r.conns[m.port]; c != nil && c.rx >= 0 {
@@ -855,7 +898,71 @@ func (r *Router) runKeys(v *vChild, m vKeys) {
 			v.down.Delete(rxKey(m.port))
 		}
 	}
-	v.box.send(done)
+	r.addTables(b, func(err error) {
+		switch {
+		case err == nil:
+		case m.op == opRevoke || m.op == opClose:
+			slog.Warn("Failed to delete the keys entries of a connection", "port", m.port, "error", err)
+		case done.err == nil:
+			if undo != nil {
+				undo()
+			}
+			done.offer, done.ok = keys.Request{}, false
+			done.err = rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
+		}
+		v.box.send(done)
+	})
+}
+
+// addTables adds the table changes b of one event to the pending batch. The root writes the batch
+// at once when the last write was the write interval ago or more, else at the next mark. done gets
+// the result after the write.
+func (r *Router) addTables(b batch, done func(error)) {
+	if len(b) == 0 && len(r.pending) == 0 {
+		done(nil)
+		return
+	}
+	r.pending = append(r.pending, tablesEvent{b: b, done: done})
+	if r.markC != nil {
+		return
+	}
+	if wait := r.interval - time.Since(r.lastWrite); wait > 0 {
+		if r.mark == nil {
+			r.mark = time.NewTimer(wait)
+		} else {
+			r.mark.Reset(wait)
+		}
+		r.markC = r.mark.C
+		return
+	}
+	r.writeTables()
+}
+
+// writeTables writes the pending batch in one Write and answers each event in order. When the
+// batch fails, the root writes each event alone, so that a bad change does not stop the others.
+func (r *Router) writeTables() {
+	evs := r.pending
+	r.pending = nil
+	if len(evs) == 0 {
+		return
+	}
+	var all batch
+	for _, e := range evs {
+		all = append(all, e.b...)
+	}
+	err := all.write(bg, r.cfg.Target)
+	if err != nil && len(evs) > 1 {
+		slog.Warn("Failed to write a batch of table changes; writing each change alone", "changes", len(evs), "error", err)
+		for _, e := range evs {
+			e.done(e.b.write(bg, r.cfg.Target))
+		}
+		r.lastWrite = time.Now()
+		return
+	}
+	r.lastWrite = time.Now()
+	for _, e := range evs {
+		e.done(err)
+	}
 }
 
 func (r *Router) attachmentEnd(m vAttachmentEnd) {

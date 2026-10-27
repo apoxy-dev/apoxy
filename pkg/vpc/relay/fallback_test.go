@@ -211,7 +211,9 @@ func TestFallbackChecks(t *testing.T) {
 			require.Equal(t, bad, resZ.GetAddresses()[0])
 			y.waitDelivers(z, overlay(py), src)
 			x2.drain()
-			assert.False(t, x2.delivers(y, src, overlay(py), 300*time.Millisecond), "packet of x from the address of z")
+			// The source entries of x go in the next event of its A, after the route write of V.
+			assert.Eventually(t, func() bool { return !x2.delivers(y, src, overlay(py), 300*time.Millisecond) },
+				wait, 10*time.Millisecond, "packet of x from the address of z")
 		})
 	}
 }

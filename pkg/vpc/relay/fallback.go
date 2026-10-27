@@ -29,7 +29,7 @@ func (v *vpcProc) remote(e aRemote) {
 	if len(at.report) > 0 {
 		v.reports--
 	}
-	at.report = e.addrs
+	at.report, at.failed = e.addrs, false
 	if len(at.report) > 0 {
 		v.reports++
 	}
@@ -40,7 +40,7 @@ func (v *vpcProc) remote(e aRemote) {
 // that pass the checks now, and tells A the new accepted set. fresh is true for a new report.
 func (v *vpcProc) reconcile(a *aChild, id string, fresh bool, now time.Time) {
 	at, c := a.atts[id], a.cands[id]
-	if at == nil || c == nil {
+	if at == nil || c == nil || at.failed {
 		return
 	}
 	want := map[netip.Prefix]remoteAddr{}
@@ -83,12 +83,28 @@ func (v *vpcProc) reconcile(a *aChild, id string, fresh bool, now time.Time) {
 	if len(ps) == 0 {
 		return
 	}
-	if err := v.sync(ps, now); err != nil {
-		slog.Error("Failed to write route entries", "vpc", v.c.key.UID, "error", err)
-		_ = v.sync(v.removeFallback(at), now)
-	}
+	v.sync(ps, now)
+	at.gen++
+	gen := at.gen
 	accepted := slices.SortedFunc(maps.Keys(at.fallback), netip.Prefix.Compare)
-	v.answer(func() { a.box.send(remoteAccepted{att: id, addrs: accepted}) })
+	v.w.then(func(err error) {
+		if err == nil {
+			a.box.send(remoteAccepted{att: id, addrs: accepted})
+			return
+		}
+		if v.as[a.port] == a && a.atts[id] == at {
+			if at.gen != gen {
+				// The candidates of a later change go in the next event, and its function answers A.
+				v.sync(slices.Collect(maps.Keys(at.fallback)), time.Now())
+				return
+			}
+			// The route entries did not go in: the fallback candidates go, and A gets the set after that.
+			at.failed = true
+			v.sync(v.removeFallback(at), time.Now())
+		}
+		accepted := slices.SortedFunc(maps.Keys(at.fallback), netip.Prefix.Compare)
+		v.answer(func() { a.box.send(remoteAccepted{att: id, addrs: accepted}) })
+	})
 }
 
 // checkRemote checks a remote address of attachment at of a: in the VPC network, the length of an
