@@ -1,0 +1,6 @@
+name: a file that ends early
+error: found "end of file", want an annotation name
+nonewline: true
+-- prog.p4 --
+#include <core.p4>
+@ // here

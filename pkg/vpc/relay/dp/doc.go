@@ -3,8 +3,9 @@
 // Package dp is the data plane of the VPC relay: a Go pipeline that does what relay.p4 says. The
 // control plane reaches it only through Target, with P4Runtime messages in process.
 //
-// relay.p4info.txtpb is the output of `p4test --arch v1model --p4runtime-files` for relay.p4, and
-// CI compares it. `go generate` makes relay.gen.go from both files.
+// `go generate` runs p4gen, which reads only relay.p4 and writes relay.gen.go and
+// relay.p4info.txtpb. The P4Info file has the text layout of `p4test --arch v1model
+// --p4runtime-files`, and CI compares the two files.
 //
 // Device is the dedicated interface of the relay (AF_XDP, Linux): a fixed demux gives its packets
 // to the pipeline, to quic-go and to a netstack. FindInterface gives the interface and its
@@ -12,4 +13,4 @@
 // the send path drop and delay packets as the impair map tells them. Only tests write that map.
 package dp
 
-//go:generate go run ./internal/p4gen -p4info relay.p4info.txtpb -p4 relay.p4 -out relay.gen.go
+//go:generate go run ./internal/p4gen -p4 relay.p4 -p4info relay.p4info.txtpb -out relay.gen.go

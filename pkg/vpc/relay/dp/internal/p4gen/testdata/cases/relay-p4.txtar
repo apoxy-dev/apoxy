@@ -1,0 +1,11 @@
+name: relay.p4
+file: ../../relay.p4
+info: ../../relay.p4info.txtpb
+gen: ../../relay.gen.go
+# The IDs of today's relay.p4, as p4test gives them, and the PspSa instance.
+ids: NoAction=21257015 Relay.cells=317147353 Relay.classify=37194576 Relay.context=25404084
+ids: Relay.drop=16983990 Relay.drops=309103603 Relay.forward=22957411 Relay.keys=0x81621bac
+ids: Relay.lane_meter=339716295 Relay.local_only=24976605 Relay.port=24992955
+ids: Relay.port_drops=306017222 Relay.port_meter=345235978 Relay.ports=48524748
+ids: Relay.punt_meter=338249407 Relay.route=42238873 Relay.source=37945331 packet_in=80671331
+ids: packet_out=75327753

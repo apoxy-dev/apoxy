@@ -1,0 +1,488 @@
+name: two controls, defaults and a hash collision
+# The hashes of c2002 and c3002 are the same in the low 24 bits; the first name in sorted
+# order gets it.
+ids: NoAction=21257015 SmallEgress.t=37562719 SmallIngress.c2002=0x02b3e7ee
+ids: SmallIngress.c3002=0x02b3e7ef SmallIngress.t=33722580
+-- prog.p4 --
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// A small program for the p4gen test. p4info.txtpb is the output of
+// `p4test --arch v1model --p4runtime-files p4info.txtpb prog.p4` (p4c 1.2.5.18).
+
+#include <core.p4>
+#include <v1model.p4>
+
+const bit<8> R_ONE = 1;
+const bit<32> SIZE = 1 << 10;
+
+@p4runtime_translation("apoxy.dev/test/name", string)
+type bit<32> name_t;
+
+@controller_header("packet_in")
+header to_cp_t {
+    bit<8> kind;
+    bit<16> port;
+}
+@controller_header("packet_out")
+header from_cp_t {
+    bit<8> kind;
+}
+header eth_t {
+    bit<48> dst;
+}
+struct headers_t {
+    to_cp_t to_cp;
+    from_cp_t from_cp;
+    eth_t eth;
+}
+struct inner_t {
+    bit<64> session;
+}
+struct meta_t {
+    bit<64> port;
+    name_t vpc;
+    bool flag;
+    bit<128> dst;
+    inner_t p;
+}
+
+extern PspSa {
+    PspSa(bit<32> size);
+    void count(in bit<32> spi);
+}
+
+parser SmallParser(packet_in pkt, out headers_t h, inout meta_t m, inout standard_metadata_t sm) {
+    state start {
+        pkt.extract(h.eth);
+        transition accept;
+    }
+}
+
+control SmallIngress(inout headers_t h, inout meta_t m, inout standard_metadata_t sm) {
+    counter(SIZE, CounterType.packets_and_bytes) cells;
+    counter(32, CounterType.packets) drops;
+    meter(1 << 4, MeterType.bytes) rate;
+    PspSa(16) keys;
+    @hidden action step() {
+    }
+    action unused(bit<8> x) {
+        m.port = (bit<64>)x;
+    }
+    // p4c inlines helper, which only an action calls, and removes it.
+    action helper() {
+        m.flag = false;
+    }
+    action drop(bit<8> reason) {
+        helper();
+        drops.count((bit<32>)reason);
+        mark_to_drop(sm);
+        exit;
+    }
+    action set(name_t vpc, bit<64> session, bool flag) {
+        m.vpc = vpc;
+        m.p.session = session;
+        m.flag = flag;
+    }
+    action pin(bit<64> session, bool flag) {
+        m.p.session = session;
+        m.flag = flag;
+    }
+    // Only apply calls note, so p4c removes its parameter.
+    action note(bit<64> x) {
+        m.port = x;
+    }
+    action mark() {
+        m.flag = true;
+    }
+    table t {
+        key = {
+            m.port: exact;
+            m.vpc: exact;
+            m.flag: exact;
+            m.dst: lpm;
+        }
+        actions = { set; drop; }
+    }
+    table c3002 {
+        key = { m.p.session: exact; }
+        actions = { pin; NoAction; }
+        const default_action = pin((bit<64>)((128w1 << 64) >> 64) + (bit<64>)(8w255 + 8w3), true); // 1 + 2: 8w255 + 8w3 wraps.
+        size = 4096;
+    }
+    table c2002 {
+        key = { h.eth.dst: exact; }
+        actions = { NoAction; drop; }
+        default_action = drop(R_ONE);
+    }
+    table spare {
+        key = { m.port: exact; }
+        actions = { drop; }
+    }
+    apply {
+        step();
+        t.apply();
+        c3002.apply();
+        c2002.apply();
+        mark();
+        note(5);
+    }
+}
+
+control SmallEgress(inout headers_t h, inout meta_t m, inout standard_metadata_t sm) {
+    counter(8, CounterType.bytes) drops;
+    meter(4, MeterType.packets) rate;
+    action set(bit<16> port) {
+        h.to_cp.port = port;
+    }
+    table t {
+        key = { m.port: exact; }
+        actions = { set; NoAction; }
+        size = SIZE;
+    }
+    apply {
+        if (h.from_cp.isValid()) {
+            t.apply();
+        }
+    }
+}
+
+control SmallVerify(inout headers_t h, inout meta_t m) {
+    apply {
+    }
+}
+
+control SmallCompute(inout headers_t h, inout meta_t m) {
+    apply {
+    }
+}
+
+control SmallDeparser(packet_out pkt, in headers_t h) {
+    apply {
+        pkt.emit(h.to_cp);
+        pkt.emit(h.eth);
+    }
+}
+
+V1Switch(SmallParser(), SmallVerify(), SmallIngress(), SmallEgress(), SmallCompute(), SmallDeparser()) main;
+-- p4info.txtpb --
+# proto-file: p4/config/v1/p4info.proto
+# proto-message: p4.config.v1.P4Info
+
+pkg_info {
+  arch: "v1model"
+}
+tables {
+  preamble {
+    id: 33722580
+    name: "SmallIngress.t"
+    alias: "SmallIngress.t"
+  }
+  match_fields {
+    id: 1
+    name: "m.port"
+    bitwidth: 64
+    match_type: EXACT
+  }
+  match_fields {
+    id: 2
+    name: "m.vpc"
+    match_type: EXACT
+    type_name {
+      name: "name_t"
+    }
+  }
+  match_fields {
+    id: 3
+    name: "m.flag"
+    bitwidth: 1
+    match_type: EXACT
+  }
+  match_fields {
+    id: 4
+    name: "m.dst"
+    bitwidth: 128
+    match_type: LPM
+  }
+  action_refs {
+    id: 24073057
+  }
+  action_refs {
+    id: 22751065
+  }
+  action_refs {
+    id: 21257015
+    annotations: "@defaultonly"
+    scope: DEFAULT_ONLY
+  }
+  initial_default_action {
+    action_id: 21257015
+  }
+  size: 1024
+}
+tables {
+  preamble {
+    id: 45344751
+    name: "SmallIngress.c3002"
+    alias: "c3002"
+  }
+  match_fields {
+    id: 1
+    name: "m.p.session"
+    bitwidth: 64
+    match_type: EXACT
+  }
+  action_refs {
+    id: 17796918
+  }
+  action_refs {
+    id: 21257015
+  }
+  const_default_action_id: 17796918
+  initial_default_action {
+    action_id: 17796918
+    arguments {
+      param_id: 1
+      value: "\000\000\000\000\000\000\000\003"
+    }
+    arguments {
+      param_id: 2
+      value: "\001"
+    }
+  }
+  size: 4096
+}
+tables {
+  preamble {
+    id: 45344750
+    name: "SmallIngress.c2002"
+    alias: "c2002"
+  }
+  match_fields {
+    id: 1
+    name: "h.eth.dst"
+    bitwidth: 48
+    match_type: EXACT
+  }
+  action_refs {
+    id: 21257015
+  }
+  action_refs {
+    id: 22751065
+  }
+  initial_default_action {
+    action_id: 22751065
+    arguments {
+      param_id: 1
+      value: "\001"
+    }
+  }
+  size: 1024
+}
+tables {
+  preamble {
+    id: 37562719
+    name: "SmallEgress.t"
+    alias: "SmallEgress.t"
+  }
+  match_fields {
+    id: 1
+    name: "m.port"
+    bitwidth: 64
+    match_type: EXACT
+  }
+  action_refs {
+    id: 27863308
+  }
+  action_refs {
+    id: 21257015
+  }
+  initial_default_action {
+    action_id: 21257015
+  }
+  size: 1024
+}
+actions {
+  preamble {
+    id: 21257015
+    name: "NoAction"
+    alias: "NoAction"
+    annotations: "@noWarn(\"unused\")"
+  }
+}
+actions {
+  preamble {
+    id: 22751065
+    name: "SmallIngress.drop"
+    alias: "drop"
+  }
+  params {
+    id: 1
+    name: "reason"
+    bitwidth: 8
+  }
+}
+actions {
+  preamble {
+    id: 24073057
+    name: "SmallIngress.set"
+    alias: "SmallIngress.set"
+  }
+  params {
+    id: 1
+    name: "vpc"
+    type_name {
+      name: "name_t"
+    }
+  }
+  params {
+    id: 2
+    name: "session"
+    bitwidth: 64
+  }
+  params {
+    id: 3
+    name: "flag"
+    bitwidth: 1
+  }
+}
+actions {
+  preamble {
+    id: 17796918
+    name: "SmallIngress.pin"
+    alias: "pin"
+  }
+  params {
+    id: 1
+    name: "session"
+    bitwidth: 64
+  }
+  params {
+    id: 2
+    name: "flag"
+    bitwidth: 1
+  }
+}
+actions {
+  preamble {
+    id: 30024041
+    name: "SmallIngress.note"
+    alias: "note"
+  }
+}
+actions {
+  preamble {
+    id: 33433996
+    name: "SmallIngress.mark"
+    alias: "mark"
+  }
+}
+actions {
+  preamble {
+    id: 27863308
+    name: "SmallEgress.set"
+    alias: "SmallEgress.set"
+  }
+  params {
+    id: 1
+    name: "port"
+    bitwidth: 16
+  }
+}
+counters {
+  preamble {
+    id: 312482096
+    name: "SmallIngress.cells"
+    alias: "cells"
+  }
+  spec {
+    unit: BOTH
+  }
+  size: 1024
+}
+counters {
+  preamble {
+    id: 318327070
+    name: "SmallIngress.drops"
+    alias: "SmallIngress.drops"
+  }
+  spec {
+    unit: PACKETS
+  }
+  size: 32
+}
+counters {
+  preamble {
+    id: 318496610
+    name: "SmallEgress.drops"
+    alias: "SmallEgress.drops"
+  }
+  spec {
+    unit: BYTES
+  }
+  size: 8
+}
+meters {
+  preamble {
+    id: 337814728
+    name: "SmallIngress.rate"
+    alias: "SmallIngress.rate"
+  }
+  spec {
+    unit: BYTES
+  }
+  size: 16
+}
+meters {
+  preamble {
+    id: 348504587
+    name: "SmallEgress.rate"
+    alias: "SmallEgress.rate"
+  }
+  spec {
+    unit: PACKETS
+  }
+  size: 4
+}
+controller_packet_metadata {
+  preamble {
+    id: 78481517
+    name: "packet_in"
+    alias: "packet_in"
+    annotations: "@controller_header(\"packet_in\")"
+  }
+  metadata {
+    id: 1
+    name: "kind"
+    bitwidth: 8
+  }
+  metadata {
+    id: 2
+    name: "port"
+    bitwidth: 16
+  }
+}
+controller_packet_metadata {
+  preamble {
+    id: 77144101
+    name: "packet_out"
+    alias: "packet_out"
+    annotations: "@controller_header(\"packet_out\")"
+  }
+  metadata {
+    id: 1
+    name: "kind"
+    bitwidth: 8
+  }
+}
+type_info {
+  new_types {
+    key: "name_t"
+    value {
+      translated_type {
+        uri: "apoxy.dev/test/name"
+        sdn_string {
+        }
+      }
+    }
+  }
+}

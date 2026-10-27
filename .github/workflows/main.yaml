@@ -8,6 +8,13 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2204
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test p4gen, and that relay.gen.go and the P4Info are current
+        timeout-minutes: 10
+        run: go test ./pkg/vpc/relay/dp/internal/p4gen/
       - name: Check relay.p4 and its P4Info
         working-directory: pkg/vpc/relay/dp
         timeout-minutes: 10
