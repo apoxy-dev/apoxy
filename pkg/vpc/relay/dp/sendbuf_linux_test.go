@@ -57,7 +57,7 @@ func TestDeviceSendBuffer(t *testing.T) {
 	require.NoError(t, err)
 
 	own := []netip.Prefix{netip.MustParsePrefix("10.98.0.1/24")}
-	d, err := OpenDevice(Interface{Name: "rsb0", MAC: l.Attrs().HardwareAddr, Own: own})
+	d, err := OpenDevice(Interface{Name: "rsb0", MAC: l.Attrs().HardwareAddr, Own: own}, goAEAD{})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

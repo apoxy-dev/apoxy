@@ -19,11 +19,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// OpenDevice opens the dedicated interface ifc with AF_XDP on all its queues. It takes all packets:
-// the kernel gets no packet of the interface. The relay XDP program drops the packets that the
-// impair map tells it to drop. A send only publishes with TransmitNoKick; the kicker of each TX
-// queue kicks. OpenDevice sets the link up if it is down; Run does not set it down.
-func OpenDevice(ifc Interface) (*Device, error) {
+// OpenDevice opens the dedicated interface ifc with AF_XDP on all its queues, with aead for the PSP
+// packets. It takes all packets: the kernel gets no packet of the interface. The relay XDP program
+// drops the packets that the impair map tells it to drop. A send only publishes with
+// TransmitNoKick; the kicker of each TX queue kicks. OpenDevice sets the link up if it is down; Run
+// does not set it down. OpenDevice places the queue interrupts and the relay threads on the CPUs of
+// ifc.CPUs, or of the CPU set of the process; Run puts the interrupts back when it stops.
+func OpenDevice(ifc Interface, aead AEAD) (*Device, error) {
+	cpus, err := relayCPUs(ifc.CPUs)
+	if err != nil {
+		return nil, err
+	}
 	link, err := netlink.LinkByName(ifc.Name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find the relay interface: %w", err)
@@ -41,6 +47,8 @@ func OpenDevice(ifc Interface) (*Device, error) {
 		return nil, err
 	}
 	xdpOpts := append(modeOptions(ifc.ZeroCopy), frameOptions()...)
+	// The relay places its threads and the queue interrupts itself, so go-afxdp does neither.
+	xdpOpts = append(xdpOpts, xdp.WithoutAffinity())
 	xdpOpts = append(xdpOpts, xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
 		return loadRelayXDP(sockets, queues, impair)
 	}))
@@ -69,11 +77,17 @@ func OpenDevice(ifc Interface) (*Device, error) {
 			counts:  kickCounts(s),
 		})
 	}
-	d, err := newDevice(ifc, dev, ports, uint32(link.Attrs().MTU), impair)
+	d, err := newDevice(ifc, dev, ports, uint32(link.Attrs().MTU), &Impair{m: impair}, aead)
 	if err != nil {
 		dev.Close()
 		impair.Close()
 		return nil, err
+	}
+	if err := d.placeCPUs("/sys", "/proc", cpus); err != nil {
+		d.ns.close()
+		dev.Close()
+		impair.Close()
+		return nil, fmt.Errorf("failed to place the queue interrupts and the threads of the relay: %w", err)
 	}
 	// Info reads the zero-copy state of each socket and the XDP mode from the kernel.
 	info, err := dev.Fleet().Info()
@@ -94,16 +108,16 @@ func modeOptions(zc bool) []xdp.Option {
 	return nil
 }
 
-// frameOptions sizes the UMEM of each queue. The RX frames are a full fill ring, a full RX ring and
-// the frames that QUIC holds: quicQueue datagrams, and the read datagrams of the turn that quic-go
-// reads (at most rxBatch), because a turn gives its frames back when quic-go read all of it. The
-// QUIC datagrams of all queues can come on one queue, so each queue has frames for a full QUIC
-// queue: with a full RX ring and a full QUIC queue, a fill ring of frames is still for the fill ring
-// and the NIC (in zero-copy the NIC holds frames that it took from the fill ring). The TX frames and
-// the rings keep the go-afxdp defaults.
+// frameOptions sizes the UMEM of each queue. The RX frames are a full fill ring, a full RX ring,
+// the frames at the workers (frameAllowance) and the frames that QUIC holds: quicQueue datagrams,
+// and the read datagrams of the turn that quic-go reads (at most rxBatch), because a turn gives its
+// frames back when quic-go read all of it. The QUIC datagrams of all queues can come on one queue,
+// so each queue has frames for a full QUIC queue: with a full RX ring and a full QUIC queue, a fill
+// ring of frames is still for the fill ring and the NIC (in zero-copy the NIC holds frames that it
+// took from the fill ring). The TX frames and the rings keep the go-afxdp defaults.
 func frameOptions() []xdp.Option {
 	o := xdp.DefaultOptions()
-	rx := o.FillRingNumDescs + o.RxRingNumDescs + quicQueue + rxBatch
+	rx := o.FillRingNumDescs + o.RxRingNumDescs + frameAllowance + quicQueue + rxBatch
 	return []xdp.Option{xdp.WithNumFrames(o.TxFrames + rx), xdp.WithTxFrames(o.TxFrames)}
 }
 
@@ -174,6 +188,47 @@ func nameThread(name string) (old string) {
 	}
 	_, _, _ = syscall.Syscall(unix.SYS_PRCTL, unix.PR_SET_NAME, uintptr(unsafe.Pointer(b)), 0)
 	return old
+}
+
+// The build fails when maxCPUs is not the number of CPUs that unix.CPUSet holds.
+const (
+	_ = maxCPUs - 8*unsafe.Sizeof(unix.CPUSet{})
+	_ = 8*unsafe.Sizeof(unix.CPUSet{}) - maxCPUs
+)
+
+// relayCPUs returns the CPU set of the relay: cpus, which must be in the CPU set of the process, or
+// the CPU set of the process when cpus is empty.
+func relayCPUs(cpus []int) ([]int, error) {
+	var set unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &set); err != nil {
+		return nil, fmt.Errorf("failed to read the CPU set of the relay: %w", err)
+	}
+	if len(cpus) == 0 {
+		for c := range maxCPUs {
+			if set.IsSet(c) {
+				cpus = append(cpus, c)
+			}
+		}
+		return cpus, nil
+	}
+	for _, c := range cpus {
+		if !set.IsSet(c) {
+			return nil, fmt.Errorf("CPU %d of the relay CPUs is not in the CPU set of the process", c)
+		}
+	}
+	return cpus, nil
+}
+
+// pinThread sets the CPU affinity of the calling OS thread to cpu, and logs it. The caller locks
+// its goroutine to the thread first. A pin that fails stops Run, as a plan failure does.
+func pinThread(role string, cpu int) error {
+	var set unix.CPUSet
+	set.Set(cpu)
+	if err := unix.SchedSetaffinity(0, &set); err != nil {
+		return fmt.Errorf("failed to pin the %s thread to CPU %d: %w", role, cpu, err)
+	}
+	slog.Info("Pinned a relay thread", "role", role, "tid", unix.Gettid(), "cpu", cpu)
+	return nil
 }
 
 // kickCounts returns the counts of the TX port of s. Stats fails after the close; Device.KickCounts

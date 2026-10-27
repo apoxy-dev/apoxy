@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/netip"
 	"testing"
+	"time"
 
 	p4 "github.com/p4lang/p4runtime/go/p4/v1"
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp/aead"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -169,7 +171,21 @@ func ipv4(src, dst string, n int) []byte {
 	return b
 }
 
-// seal returns a PSP packet as a sender with the key of spi makes it.
+// ipv6 returns a UDP packet from src to dst of n bytes.
+func ipv6(src, dst string, n int) []byte {
+	b := make([]byte, n)
+	b[0], b[6], b[7] = 0x60, 17, 64
+	binary.BigEndian.PutUint16(b[4:], uint16(n-40))
+	s, d := netip.MustParseAddr(src).As16(), netip.MustParseAddr(dst).As16()
+	copy(b[8:], s[:])
+	copy(b[24:], d[:])
+	binary.BigEndian.PutUint16(b[40:], 5000)
+	binary.BigEndian.PutUint16(b[42:], 6000)
+	return b
+}
+
+// seal returns a PSP packet as a sender with the key of spi makes it: with Next Header 4 or 41 for an
+// IPv4 or IPv6 payload, else as a message.
 func seal(spi, vni, seq uint32, payload []byte) []byte {
 	aead, err := psp.NewAEAD(key(spi))
 	if err != nil {
@@ -178,10 +194,10 @@ func seal(spi, vni, seq uint32, payload []byte) []byte {
 	h := psp.Header{Version: psp.AESGCM128, SPI: spi, IV: uint64(seq), VNI: vni, Flags: psp.FlagSeq, Seq: seq}
 	out := make([]byte, len(payload)+psp.Overhead)
 	var n int
-	if payload[0]>>4 == 4 {
+	if payload[0]>>4 == 4 || payload[0]>>4 == 6 {
 		n, err = psp.Seal(aead, h, out, payload)
 	} else {
-		n, err = psp.SealPSP(aead, h, out, payload)
+		n, err = psp.SealMessage(aead, h, out, payload)
 	}
 	if err != nil {
 		panic(err)
@@ -195,16 +211,37 @@ type sent struct {
 	b  []byte
 }
 
-// opened opens a sealed packet that the relay sent, with the key of its SPI.
-func opened(t *testing.T, b []byte) (spi, vni uint32, payload []byte) {
+// sealedHeader is the PSP header of the packet with sequence number seq that the relay seals with
+// the TX entry spi, with the Next Header nh and the VNI field vni.
+func sealedHeader(nh uint8, spi, vni, seq uint32) psp.Header {
+	return psp.Header{NextHdr: nh, Version: psp.AESGCM128, SPI: spi, IV: uint64(seq), VNI: vni, Flags: psp.FlagSeq, Seq: seq}
+}
+
+// opened checks that a packet that the relay sealed has the PSP header want, and opens a copy of
+// it with the key of want.SPI and the package code. An inner IP packet opens with psp.OpenInPlace,
+// which checks Next Header. A message opens as the relay opens a trunk packet: the Open of
+// aead.GCM, then psp.CheckTrunk. It returns the payload.
+func opened(t *testing.T, b []byte, want psp.Header) []byte {
 	t.Helper()
 	h, err := psp.ParseTrunkHeader(b)
 	require.NoError(t, err)
-	aead, err := psp.NewAEAD(key(h.SPI))
+	require.Equal(t, want, h, "PSP header")
+	pkt := bytes.Clone(b)
+	if want.NextHdr != psp.NextHdrMessage {
+		a, err := psp.NewAEAD(key(want.SPI))
+		require.NoError(t, err)
+		payload, err := psp.OpenInPlace(a, pkt)
+		require.NoError(t, err)
+		return payload
+	}
+	k, err := aead.GCM{}.NewKey(key(want.SPI))
 	require.NoError(t, err)
-	p, err := psp.OpenTrunkInPlace(aead, bytes.Clone(b))
-	require.NoError(t, err)
-	return h.SPI, h.VNI, p
+	ops := []dp.AEADOp{{Key: k, Len: len(pkt)}}
+	aead.GCM{}.Open([][]byte{pkt}, ops)
+	require.True(t, ops[0].OK, "the message authenticates")
+	payload := pkt[psp.PrefixLen : len(pkt)-psp.ICVLen]
+	require.NoError(t, psp.CheckTrunk(pkt, payload))
+	return payload
 }
 
 // relay is a pipeline with the base entries and what it gave out.
@@ -216,6 +253,7 @@ type relay struct {
 	frames  map[uint64][][]byte
 	full    bool
 	dgramEr error
+	onSend  func() // Runs at the end of each Send, or nil.
 }
 
 // Send keeps a copy of each packet of b.
@@ -224,6 +262,9 @@ func (r *relay) Send(b *dp.TxBatch) {
 	for i := range b.Len() {
 		to, p := b.Packet(i)
 		r.sent = append(r.sent, sent{to, bytes.Clone(p)})
+	}
+	if r.onSend != nil {
+		r.onSend()
 	}
 }
 
@@ -235,7 +276,7 @@ func (r *relay) receive(from netip.AddrPort, b []byte) {
 func newRelay(t *testing.T, extra ...*p4.Update) *relay {
 	t.Helper()
 	r := &relay{frames: map[uint64][][]byte{}}
-	r.Pipeline = dp.New(r)
+	r.Pipeline = dp.New(r, aead.GCM{})
 	r.OnPacketIn(func(p *p4.PacketIn) bool {
 		if r.full {
 			return false
@@ -286,6 +327,7 @@ func TestPipeline(t *testing.T) {
 		to    netip.AddrPort
 		spi   uint32 // 0: a RAW packet.
 		vni   uint32
+		nh    uint8 // The Next Header of a sealed packet.
 		inner []byte
 	}
 	type pin struct {
@@ -310,29 +352,29 @@ func TestPipeline(t *testing.T) {
 		{
 			name: "winner from access",
 			from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)),
-			out:   &out{to: addrA2, spi: spiA2Out, vni: vniA, inner: ipv4("100.64.1.5", "100.64.2.5", 100)},
+			out:   &out{to: addrA2, spi: spiA2Out, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.1.5", "100.64.2.5", 100)},
 			cells: map[int64]int64{2: 1, 2*32 + 1: 1},
 		},
 		{
 			name: "winner on a trunk gets the sender's tag",
 			from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.9.5", 100)),
-			out: &out{to: addrT, spi: spiTOut, vni: 7, inner: ipv4("100.64.1.5", "100.64.9.5", 100)},
+			out: &out{to: addrT, spi: spiTOut, vni: 7, nh: psp.NextHdrV4, inner: ipv4("100.64.1.5", "100.64.9.5", 100)},
 		},
 		{
 			name: "lane port source",
 			from: netip.AddrPortFrom(addrA1.Addr(), 4002), wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)),
-			out: &out{to: addrA2, spi: spiA2Out, vni: vniA, inner: ipv4("100.64.1.5", "100.64.2.5", 100)},
+			out: &out{to: addrA2, spi: spiA2Out, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.1.5", "100.64.2.5", 100)},
 		},
 		{
 			name: "local target from a trunk",
 			from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.8.5", 100)),
-			out:   &out{to: addrA2, spi: spiA2Out, vni: vniA, inner: ipv4("100.64.9.5", "100.64.8.5", 100)},
+			out:   &out{to: addrA2, spi: spiA2Out, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.9.5", "100.64.8.5", 100)},
 			cells: map[int64]int64{40: 1, 2*32 + 1: 1},
 		},
 		{
 			name: "local target for a local_only packet",
 			from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.77.7", "100.64.8.5", 100)),
-			out: &out{to: addrA2, spi: spiA2Out, vni: vniA, inner: ipv4("100.64.77.7", "100.64.8.5", 100)},
+			out: &out{to: addrA2, spi: spiA2Out, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.77.7", "100.64.8.5", 100)},
 		},
 		{
 			name: "FRAME out",
@@ -342,25 +384,25 @@ func TestPipeline(t *testing.T) {
 		{
 			name: "FRAME in",
 			po:   frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
-			out:  &out{to: addrA1, spi: spiA1Out, vni: vniA, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
+			out:  &out{to: addrA1, spi: spiA1Out, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
 			name:  "a TX entry of a lane sends to the port address before a keepalive of the lane",
 			extra: lane2(0),
 			po:    frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
-			out:   &out{to: addrA1, spi: 0x113, vni: vniA, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
+			out:   &out{to: addrA1, spi: 0x113, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
 			name:  "a keepalive of another lane does not move the lane",
 			extra: lane2(0b101),
 			po:    frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
-			out:   &out{to: addrA1, spi: 0x113, vni: vniA, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
+			out:   &out{to: addrA1, spi: 0x113, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
 			name:  "a TX entry of a lane sends to the lane port after its keepalive",
 			extra: lane2(0b010),
 			po:    frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
-			out:   &out{to: netip.AddrPortFrom(addrA1.Addr(), 4002), spi: 0x113, vni: vniA, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
+			out:   &out{to: netip.AddrPortFrom(addrA1.Addr(), 4002), spi: 0x113, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
 			name: "PUNT of a probe",
@@ -385,7 +427,7 @@ func TestPipeline(t *testing.T) {
 		{
 			name: "SEAL",
 			po:   &p4.PacketOut{Payload: []byte("mesh probe"), Metadata: dp.PacketOutMeta{Kind: dp.KindSeal, Port: 10, Session: 5}.Metadata()},
-			out:  &out{to: addrT, spi: spiTOut, vni: 0, inner: []byte("mesh probe")},
+			out:  &out{to: addrT, spi: spiTOut, vni: 0, nh: psp.NextHdrMessage, inner: []byte("mesh probe")},
 		},
 		{
 			name: "RAW",
@@ -481,9 +523,8 @@ func TestPipeline(t *testing.T) {
 				if tc.out.spi == 0 {
 					assert.Equal(t, tc.out.inner, s.b)
 				} else {
-					spi, vni, payload := opened(t, s.b)
-					assert.Equal(t, tc.out.spi, spi)
-					assert.Equal(t, tc.out.vni, vni)
+					// The first packet of each TX entry has sequence number 0.
+					payload := opened(t, s.b, sealedHeader(tc.out.nh, tc.out.spi, tc.out.vni, 0))
 					assert.Equal(t, tc.out.inner, payload)
 				}
 			}
@@ -508,15 +549,92 @@ func TestPipeline(t *testing.T) {
 	}
 }
 
+// TestSealNextHdr parses the Next Header of each packet that the relay seals. The path sets it, not
+// the first byte of the payload: a SEAL is a message, and apply seals only IPv4 or IPv6.
+func TestSealNextHdr(t *testing.T) {
+	sealOut := func(b []byte) *p4.PacketOut {
+		return &p4.PacketOut{Payload: b, Metadata: dp.PacketOutMeta{Kind: dp.KindSeal, Port: 10, Session: 5}.Metadata()}
+	}
+	v6 := []*p4.Update{
+		insert(source(1, 1, 0, "fd00:1::/64", dp.NoAction{})),
+		insert(source(3, 1, 0, "fd00:3::/64", dp.NoAction{})),
+		insert(route(vpcA, "fd00:1::/64", 1, 31, 1, 31)),
+		insert(route(vpcA, "fd00:2::/64", 2, 32, 2, 32)),
+	}
+	// The packets that drop have the addresses of A1 to A2.
+	notIP := append([]byte{0x10}, ipv4("100.64.1.5", "100.64.2.5", 100)[1:]...)
+	shortV4 := ipv4("100.64.1.5", "100.64.2.5", 24)[:19]
+	cases := []struct {
+		name     string
+		extra    []*p4.Update
+		from     netip.AddrPort
+		wire     []byte        // A packet in on UDP 1000, or
+		po       *p4.PacketOut // a PacketOut.
+		to       netip.AddrPort
+		spi      uint32
+		nextHdr  uint8 // 0: the packet drops as malformed, at portDrop.
+		inner    []byte
+		portDrop int64
+	}{
+		{name: "SEAL of a message", po: sealOut([]byte("mesh probe")), to: addrT, spi: spiTOut, nextHdr: psp.NextHdrMessage, inner: []byte("mesh probe")},
+		{name: "SEAL of a message that starts with 0x45", po: sealOut(ipv4("100.64.1.5", "100.64.2.5", 100)),
+			to: addrT, spi: spiTOut, nextHdr: psp.NextHdrMessage, inner: ipv4("100.64.1.5", "100.64.2.5", 100)},
+		{name: "SEAL of a message that starts with 0x60", po: sealOut(ipv6("fd00:1::5", "fd00:2::5", 100)),
+			to: addrT, spi: spiTOut, nextHdr: psp.NextHdrMessage, inner: ipv6("fd00:1::5", "fd00:2::5", 100)},
+		{name: "IPv4 from an agent", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)),
+			to: addrA2, spi: spiA2Out, nextHdr: psp.NextHdrV4, inner: ipv4("100.64.1.5", "100.64.2.5", 100)},
+		{name: "IPv6 from an agent", extra: v6, from: addrA1, wire: seal(spiA1In, vniA, 1, ipv6("fd00:1::5", "fd00:2::5", 100)),
+			to: addrA2, spi: spiA2Out, nextHdr: psp.NextHdrV6, inner: ipv6("fd00:1::5", "fd00:2::5", 100)},
+		{name: "IPv4 in a FRAME", po: frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
+			to: addrA1, spi: spiA1Out, nextHdr: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
+		{name: "IPv6 in a FRAME", extra: v6, po: frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv6("fd00:3::5", "fd00:1::5", 100))),
+			to: addrA1, spi: spiA1Out, nextHdr: psp.NextHdrV6, inner: ipv6("fd00:3::5", "fd00:1::5", 100)},
+		// The sender labels these as a message (NextHdrMessage) or as IPv4.
+		{name: "not IP from an agent", from: addrA1, wire: seal(spiA1In, vniA, 1, notIP), portDrop: pd(1, dp.ReasonMalformed)},
+		{name: "short IPv4 from an agent", from: addrA1, wire: seal(spiA1In, vniA, 1, shortV4), portDrop: pd(1, dp.ReasonMalformed)},
+		{name: "not IP in a FRAME", po: frameOut(3, 1, peerconn.EncodeData(nil, vniA, notIP)), portDrop: pd(3, dp.ReasonMalformed)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRelay(t, tc.extra...)
+			if tc.po != nil {
+				require.NoError(t, r.PacketOut(tc.po))
+			} else {
+				r.receive(tc.from, bytes.Clone(tc.wire))
+			}
+			if tc.nextHdr == 0 {
+				assert.Empty(t, r.sent)
+				assert.Equal(t, map[int64]int64{int64(dp.ReasonMalformed): 1}, counts(t, r, dp.CounterDrops))
+				assert.Equal(t, map[int64]int64{tc.portDrop: 1}, counts(t, r, dp.CounterPortDrops))
+				// The next packet to A2 must get the first sequence number of its TX entry.
+				r.receive(addrA1, seal(spiA1In, vniA, 2, ipv4("100.64.1.5", "100.64.2.5", 100)))
+				tc.to, tc.spi, tc.nextHdr, tc.inner = addrA2, spiA2Out, psp.NextHdrV4, ipv4("100.64.1.5", "100.64.2.5", 100)
+			}
+			require.Len(t, r.sent, 1)
+			assert.Equal(t, tc.to, r.sent[0].to)
+			// A message has no VNI. The packet has the first sequence number of its TX entry.
+			vni := uint32(vniA)
+			if tc.nextHdr == psp.NextHdrMessage {
+				vni = 0
+			}
+			payload := opened(t, r.sent[0].b, sealedHeader(tc.nextHdr, tc.spi, vni, 0))
+			assert.Equal(t, tc.inner, payload)
+		})
+	}
+}
+
 func TestReceiveBatch(t *testing.T) {
 	toA2 := func(seq uint32) dp.RxPacket {
 		return dp.RxPacket{From: addrA1, Payload: seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "100.64.2.5", 100+int(seq)))}
 	}
 	type out struct {
-		to    netip.AddrPort
-		inner []byte
+		to       netip.AddrPort
+		spi, vni uint32
+		inner    []byte
 	}
-	a2 := func(seq uint32) out { return out{addrA2, ipv4("100.64.1.5", "100.64.2.5", 100+int(seq))} }
+	a2 := func(seq uint32) out {
+		return out{addrA2, spiA2Out, vniA, ipv4("100.64.1.5", "100.64.2.5", 100+int(seq))}
+	}
 	many := func(n uint32) ([]dp.RxPacket, []out) {
 		var rx []dp.RxPacket
 		var want []out
@@ -539,7 +657,7 @@ func TestReceiveBatch(t *testing.T) {
 				{From: addrA1, Payload: seal(spiA1In, vniA, 2, ipv4("100.64.1.5", "100.64.9.5", 100))},
 				toA2(3),
 			},
-			want:    []out{a2(1), {addrT, ipv4("100.64.1.5", "100.64.9.5", 100)}, a2(3)},
+			want:    []out{a2(1), {addrT, spiTOut, 7, ipv4("100.64.1.5", "100.64.9.5", 100)}, a2(3)},
 			batches: []int{3},
 		},
 		{
@@ -571,11 +689,282 @@ func TestReceiveBatch(t *testing.T) {
 			}
 			assert.Equal(t, len(tc.want), total)
 			require.Len(t, r.sent, len(tc.want))
+			seq := map[uint32]uint32{} // The next sequence number of each TX entry.
 			for i, w := range tc.want {
 				assert.Equal(t, w.to, r.sent[i].to)
-				_, _, inner := opened(t, r.sent[i].b)
+				inner := opened(t, r.sent[i].b, sealedHeader(psp.NextHdrV4, w.spi, w.vni, seq[w.spi]))
+				seq[w.spi]++
 				assert.Equal(t, w.inner, inner, "packet %d", i)
 			}
+		})
+	}
+}
+
+// dropCounts returns the drop reasons that are not zero, with their packets and bytes.
+func dropCounts(t *testing.T, tg dp.Target) map[int64][2]int64 {
+	t.Helper()
+	got := map[int64][2]int64{}
+	err := tg.Read(t.Context(), &p4.ReadRequest{Entities: []*p4.Entity{{Entity: &p4.Entity_CounterEntry{CounterEntry: &p4.CounterEntry{CounterId: dp.CounterDrops}}}}},
+		func(e *p4.Entity) {
+			c := e.GetCounterEntry()
+			got[c.GetIndex().GetIndex()] = [2]int64{c.GetData().GetPacketCount(), c.GetData().GetByteCount()}
+		})
+	require.NoError(t, err)
+	return got
+}
+
+// sealWith returns a PSP packet of A1 with header h for payload, sealed with the key of spiA1In.
+func sealWith(t *testing.T, h psp.Header, payload []byte) []byte {
+	t.Helper()
+	out := make([]byte, len(payload)+psp.Overhead)
+	require.NoError(t, psp.PutHeader(h, out))
+	a, err := psp.NewAEAD(key(spiA1In))
+	require.NoError(t, err)
+	a.Seal(out[psp.PrefixLen:psp.PrefixLen], out[4:psp.HeaderLen], payload, out[:psp.PrefixLen])
+	return out
+}
+
+// TestReceiveParts checks the parts of Receive. A part of up to 64 packets opens its packets with
+// one AEAD call and then applies them in RX order: the drops, the replay window and the punts
+// follow the RX order, and a Write between two parts applies to the second part. A batch with no
+// memories of a device opens copies, so the RX payloads stay as they are.
+func TestReceiveParts(t *testing.T) {
+	// Packet seq from A1 to A2 has an inner packet of 100+seq bytes.
+	toA2 := func(seq uint32) dp.RxPacket {
+		return dp.RxPacket{From: addrA1, Payload: seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "100.64.2.5", 100+int(seq)))}
+	}
+	run := func(lo, hi uint32) ([]dp.RxPacket, []uint32) {
+		var rx []dp.RxPacket
+		var seqs []uint32
+		for seq := lo; seq <= hi; seq++ {
+			rx, seqs = append(rx, toA2(seq)), append(seqs, seq)
+		}
+		return rx, seqs
+	}
+	forged := func(seq uint32) dp.RxPacket {
+		p := toA2(seq)
+		p.Payload[len(p.Payload)-1] ^= 1
+		return p
+	}
+	from := func(a netip.AddrPort, b []byte) dp.RxPacket { return dp.RxPacket{From: a, Payload: b} }
+	wire := func(seq uint32) int64 { return int64(100 + int(seq) + psp.Overhead) }
+	probeKey := [32]byte{1}
+	probe := p2p.AppendProbe(nil, p2p.Probe{SID: [8]byte{9}, Counter: 1}, 0, &probeKey)
+	probe2 := p2p.AppendProbe(nil, p2p.Probe{SID: [8]byte{8}, Counter: 2}, 0, &probeKey)
+	miss := seal(spiA1In, vniA, 5, ipv4("100.64.1.5", "100.64.200.1", 100))
+	tag0 := seal(spiTIn, 0, 1, []byte("trunk message"))
+	h := func(v psp.Version) psp.Header {
+		return psp.Header{NextHdr: psp.NextHdrV4, Version: v, SPI: spiA1In, IV: 1, VNI: vniA, Flags: psp.FlagSeq, Seq: 1}
+	}
+	inner6 := make([]byte, 60)
+	inner6[0] = 0x60
+	part1, seqs1 := run(1, 64)
+	cases := []struct {
+		name    string
+		extra   []*p4.Update
+		rx      []dp.RxPacket
+		onSend  []*p4.Update // A Write in the Send of the first part.
+		sent    []uint32     // The seq of each packet to A2, in order.
+		batches []int
+		drops   map[int64][2]int64 // Packets and bytes of each drop reason.
+		punts   [][]byte
+	}{
+		{
+			name: "an auth failure does not move the replay window",
+			rx:   []dp.RxPacket{toA2(1), forged(2), toA2(3), toA2(2)},
+			sent: []uint32{1, 3, 2}, batches: []int{3},
+			drops: map[int64][2]int64{int64(dp.ReasonOpen): {1, wire(2)}},
+		},
+		{
+			name: "a replay inside a part",
+			rx:   []dp.RxPacket{toA2(1), toA2(2), toA2(1)},
+			sent: []uint32{1, 2}, batches: []int{2},
+			drops: map[int64][2]int64{int64(dp.ReasonOpen): {1, wire(1)}},
+		},
+		{
+			name: "a replay of the first part in the second part",
+			rx:   append(append([]dp.RxPacket{}, part1...), toA2(1)),
+			sent: seqs1, batches: []int{64},
+			drops: map[int64][2]int64{int64(dp.ReasonOpen): {1, wire(1)}},
+		},
+		{
+			name:   "a key removal between parts",
+			rx:     append(append([]dp.RxPacket{}, part1...), toA2(65)),
+			onSend: []*p4.Update{keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_RX, Spi: spiA1In, Port: 1, Session: 1})},
+			sent:   seqs1, batches: []int{64},
+			drops: map[int64][2]int64{int64(dp.ReasonUnknownSPI): {1, wire(65)}},
+		},
+		{
+			name: "a bad Next Header, then a packet with the same sequence number",
+			rx:   []dp.RxPacket{from(addrA1, sealWith(t, h(psp.AESGCM128), inner6)), toA2(1)},
+			sent: []uint32{1}, batches: []int{1},
+			drops: map[int64][2]int64{int64(dp.ReasonOpen): {1, int64(len(inner6) + psp.Overhead)}},
+		},
+		{
+			name: "no sequence number flag",
+			rx: []dp.RxPacket{from(addrA1, func() []byte {
+				hd := h(psp.AESGCM128)
+				hd.Flags = 0
+				return sealWith(t, hd, ipv4("100.64.1.5", "100.64.2.5", 120))
+			}()), toA2(1)},
+			sent: []uint32{1}, batches: []int{1},
+			drops: map[int64][2]int64{int64(dp.ReasonOpen): {1, 120 + psp.Overhead}},
+		},
+		{
+			name: "a wrong version",
+			rx:   []dp.RxPacket{from(addrA1, sealWith(t, h(psp.AESGCM256), ipv4("100.64.1.5", "100.64.2.5", 120))), toA2(2)},
+			sent: []uint32{2}, batches: []int{1},
+			drops: map[int64][2]int64{int64(dp.ReasonOpen): {1, 120 + psp.Overhead}},
+		},
+		{
+			name: "punts in RX order",
+			rx:   []dp.RxPacket{from(addrA2, probe), toA2(1), from(addrA1, miss), from(addrA1, []byte{p2p.TypeKeepalive}), from(addrT, tag0), from(addrA2, probe2)},
+			sent: []uint32{1}, batches: []int{1},
+			punts: [][]byte{probe, ipv4("100.64.1.5", "100.64.200.1", 100), {p2p.TypeKeepalive}, []byte("trunk message"), probe2},
+		},
+		{
+			name: "keepalive and probe lengths",
+			rx: []dp.RxPacket{
+				from(addrA1, []byte{p2p.TypeKeepalive}), from(addrA1, []byte{p2p.TypeKeepalive, 0}),
+				from(addrA2, probe[:p2p.MinProbeLen-1]), from(addrA2, probe[:p2p.MinProbeLen]),
+			},
+			punts: [][]byte{{p2p.TypeKeepalive}, probe[:p2p.MinProbeLen]},
+			drops: map[int64][2]int64{int64(dp.ReasonMalformed): {2, 2 + p2p.MinProbeLen - 1}},
+		},
+		{
+			name: "the bytes of each drop reason",
+			extra: []*p4.Update{
+				keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_TX, Spi: spiA2Out, Port: 2, Session: 1}),
+			},
+			rx: []dp.RxPacket{
+				from(addrA1, []byte("not a packet of the relay")),
+				from(addrA1, seal(0x999, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 110))),
+				from(netip.MustParseAddrPort("192.0.2.99:4000"), seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 120))),
+				from(addrA1, seal(spiA1In, vniA, 2, ipv4("100.64.1.5", "100.64.4.5", 130))),
+				toA2(3),
+			},
+			drops: map[int64][2]int64{
+				int64(dp.ReasonMalformed):     {1, int64(len("not a packet of the relay"))},
+				int64(dp.ReasonUnknownSPI):    {1, 110 + psp.Overhead},
+				int64(dp.ReasonUnknownSource): {1, 120 + psp.Overhead},
+				int64(dp.ReasonNoTarget):      {1, 130 + psp.Overhead},
+				int64(dp.ReasonNoKeys):        {1, 103}, // The inner packet: the seal fails.
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRelay(t, tc.extra...)
+			if tc.onSend != nil {
+				once := false
+				r.onSend = func() {
+					if !once {
+						once = true
+						require.NoError(t, write(t.Context(), r, tc.onSend...))
+					}
+				}
+			}
+			var payloads [][]byte
+			for _, p := range tc.rx {
+				payloads = append(payloads, bytes.Clone(p.Payload))
+			}
+			r.Receive(tc.rx, &dp.TxBatch{})
+
+			var got, want [][]byte
+			for i, s := range r.sent {
+				assert.Equal(t, addrA2, s.to)
+				got = append(got, opened(t, s.b, sealedHeader(psp.NextHdrV4, spiA2Out, vniA, uint32(i))))
+			}
+			for _, seq := range tc.sent {
+				want = append(want, ipv4("100.64.1.5", "100.64.2.5", 100+int(seq)))
+			}
+			assert.Equal(t, want, got, "the packets to A2")
+			assert.Equal(t, tc.batches, r.batches, "one batch for each part with packets")
+			drops := dropCounts(t, r)
+			if tc.drops == nil {
+				assert.Empty(t, drops)
+			} else {
+				assert.Equal(t, tc.drops, drops)
+			}
+			var punts [][]byte
+			for _, p := range r.in {
+				punts = append(punts, p.GetPayload())
+			}
+			assert.Equal(t, tc.punts, punts, "the punts in RX order")
+			for i, p := range tc.rx {
+				assert.Equal(t, payloads[i], p.Payload, "RX payload %d", i)
+			}
+		})
+	}
+}
+
+// TestReceiveWriteInPart checks that a Write waits for the part of Receive that runs. The Write
+// starts in the punt of the first packet: the other packets of the part use the key that it
+// removes, and the next packet does not.
+func TestReceiveWriteInPart(t *testing.T) {
+	r := newRelay(t)
+	removed := make(chan error, 1)
+	r.OnPacketIn(func(*p4.PacketIn) bool {
+		started := make(chan struct{})
+		go func() {
+			close(started)
+			removed <- write(context.Background(), r, keys(p4.Update_DELETE, &dpv1.PspSaEntry{
+				Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_RX, Spi: spiA1In, Port: 1, Session: 1,
+			}))
+		}()
+		<-started
+		// The Write cannot end while the part runs. 50 ms is time for it to end if it did not wait.
+		select {
+		case err := <-removed:
+			t.Errorf("the Write did not wait for the part: %v", err)
+			removed <- err
+		case <-time.After(50 * time.Millisecond):
+		}
+		return true
+	})
+	r.Receive([]dp.RxPacket{
+		{From: addrA1, Payload: []byte{p2p.TypeKeepalive}},
+		{From: addrA1, Payload: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100))},
+		{From: addrA1, Payload: seal(spiA1In, vniA, 2, ipv4("100.64.1.5", "100.64.2.5", 100))},
+	}, &dp.TxBatch{})
+	select {
+	case err := <-removed:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Write did not end after the part")
+	}
+	assert.Len(t, r.sent, 2, "the packets of the part")
+	r.receive(addrA1, seal(spiA1In, vniA, 3, ipv4("100.64.1.5", "100.64.2.5", 100)))
+	assert.Len(t, r.sent, 2)
+	assert.Equal(t, map[int64]int64{int64(dp.ReasonUnknownSPI): 1}, counts(t, r, dp.CounterDrops))
+}
+
+// TestPacketOutMaxPacket sends SEAL packets at and over maxPacket, the largest UDP payload.
+func TestPacketOutMaxPacket(t *testing.T) {
+	cases := []struct {
+		name string
+		n    int // The size of the payload.
+		sent bool
+	}{
+		{name: "the largest packet", n: 65535 - psp.Overhead, sent: true},
+		{name: "one byte over", n: 65535 - psp.Overhead + 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRelay(t)
+			po := &p4.PacketOut{Payload: bytes.Repeat([]byte{'x'}, tc.n), Metadata: dp.PacketOutMeta{Kind: dp.KindSeal, Port: 10, Session: 5}.Metadata()}
+			require.NoError(t, r.PacketOut(po))
+			if tc.sent {
+				require.Len(t, r.sent, 1)
+				assert.Equal(t, addrT, r.sent[0].to)
+				payload := opened(t, r.sent[0].b, sealedHeader(psp.NextHdrMessage, spiTOut, 0, 0))
+				assert.Equal(t, bytes.Repeat([]byte{'x'}, tc.n), payload)
+				assert.Empty(t, dropCounts(t, r))
+				return
+			}
+			assert.Empty(t, r.sent)
+			assert.Equal(t, map[int64][2]int64{int64(dp.ReasonNoKeys): {1, int64(tc.n)}}, dropCounts(t, r))
+			assert.Empty(t, counts(t, r, dp.CounterPortDrops))
 		})
 	}
 }

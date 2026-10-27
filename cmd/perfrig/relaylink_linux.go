@@ -32,7 +32,7 @@ func relayENI(ctx context.Context, wait time.Duration) (string, error) {
 	var ifc relaydp.Interface
 	for {
 		var err error
-		ifc, err = relaydp.FindInterface(ctx, &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS})
+		ifc, err = relaydp.FindInterface(ctx, &configv1alpha1.RelayConfig{Interface: &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS}})
 		if err == nil {
 			break
 		}

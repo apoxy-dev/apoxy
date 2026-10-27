@@ -105,30 +105,36 @@ func buildLabel(build string) string {
 
 // dropLabels are the labels of the drop reasons of the data plane, by reason.
 var dropLabels = map[uint8]string{
-	dp.ReasonOldSession:    "old_session",
-	dp.ReasonNoContext:     "no_context",
-	dp.ReasonSource:        "source",
-	dp.ReasonDemux:         "demux",
-	dp.ReasonUnknownSPI:    "unknown_spi",
-	dp.ReasonUnknownSource: "unknown_source",
-	dp.ReasonMeter:         "meter",
-	dp.ReasonNoRoute:       "no_route",
-	dp.ReasonNoTarget:      "no_target",
-	dp.ReasonTrunkToTrunk:  "trunk_to_trunk",
-	dp.ReasonLocalOnly:     "local_only",
-	dp.ReasonMTU:           "mtu",
-	dp.ReasonNoKeys:        "no_keys",
-	dp.ReasonDatagramFull:  "datagram_full",
-	dp.ReasonNoNeighbor:    "no_neighbor",
-	dp.ReasonPuntFull:      "punt_full",
-	dp.ReasonMalformed:     "malformed",
-	dp.ReasonOpen:          "open",
-	dp.ReasonTXFull:        "tx_full",
-	dp.ReasonQUICFull:      "quic_full",
+	dp.ReasonOldSession:      "old_session",
+	dp.ReasonNoContext:       "no_context",
+	dp.ReasonSource:          "source",
+	dp.ReasonDemux:           "demux",
+	dp.ReasonUnknownSPI:      "unknown_spi",
+	dp.ReasonUnknownSource:   "unknown_source",
+	dp.ReasonMeter:           "meter",
+	dp.ReasonNoRoute:         "no_route",
+	dp.ReasonNoTarget:        "no_target",
+	dp.ReasonTrunkToTrunk:    "trunk_to_trunk",
+	dp.ReasonLocalOnly:       "local_only",
+	dp.ReasonMTU:             "mtu",
+	dp.ReasonNoKeys:          "no_keys",
+	dp.ReasonDatagramFull:    "datagram_full",
+	dp.ReasonNoNeighbor:      "no_neighbor",
+	dp.ReasonPuntFull:        "punt_full",
+	dp.ReasonMalformed:       "malformed",
+	dp.ReasonOpen:            "open",
+	dp.ReasonTXFull:          "tx_full",
+	dp.ReasonQUICFull:        "quic_full",
+	dp.ReasonWorkerFull:      "worker_full",
+	dp.ReasonWorkerAllowance: "worker_allowance",
 }
 
 var dropsDesc = prometheus.NewDesc("apoxy_vpc_relay_dropped_packets_total",
 	"Packets that the relay data plane dropped, by reason.", []string{"reason"}, nil)
+
+var busyDesc = prometheus.NewDesc("apoxy_vpc_relay_busy_seconds_total",
+	"Busy time of each thread of the relay data plane: the elapsed time of its loop passes minus their idle waits, by thread kind (rx, worker, kick) and index.",
+	[]string{"kind", "index"}, nil)
 
 // stateLabel returns the label of an announcer state in logs and metrics.
 func stateLabel(state dpv1.AnnouncerState) string {
@@ -271,6 +277,7 @@ func (r *Router) collectTrunk(ctx context.Context, ch chan<- prometheus.Metric) 
 // Describe implements prometheus.Collector.
 func (r *Router) Describe(ch chan<- *prometheus.Desc) {
 	ch <- dropsDesc
+	ch <- busyDesc
 	ch <- stateChangesDesc
 	ch <- trunkPacketsDesc
 	ch <- trunkBytesDesc
@@ -278,8 +285,8 @@ func (r *Router) Describe(ch chan<- *prometheus.Desc) {
 	ch <- meshRTTDesc
 }
 
-// Collect implements prometheus.Collector with the drop counters of the data plane, the state
-// changes and the trunk metrics.
+// Collect implements prometheus.Collector with the drop counters and the busy times of the data
+// plane, the state changes and the trunk metrics.
 func (r *Router) Collect(ch chan<- prometheus.Metric) {
 	drops := map[uint8]uint64{}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -292,6 +299,11 @@ func (r *Router) Collect(ch chan<- prometheus.Metric) {
 	})
 	for reason, label := range dropLabels {
 		ch <- prometheus.MustNewConstMetric(dropsDesc, prometheus.CounterValue, float64(drops[reason]), label)
+	}
+	if r.cfg.Busy != nil {
+		for _, b := range r.cfg.Busy() {
+			ch <- prometheus.MustNewConstMetric(busyDesc, prometheus.CounterValue, b.Busy.Seconds(), b.Kind, strconv.Itoa(b.Index))
+		}
 	}
 	for i := range r.stateChanges {
 		ch <- prometheus.MustNewConstMetric(stateChangesDesc, prometheus.CounterValue, float64(r.stateChanges[i].Load()), stateLabel(dpv1.AnnouncerState(i)))

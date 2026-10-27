@@ -102,22 +102,44 @@ func demux(frame []byte, own func(netip.Addr) bool) (int, datagram) {
 	return toDrop, datagram{}
 }
 
+// udpHeaderRoom is the room for the Ethernet, IP and UDP headers in front of a packet that the
+// pipeline seals into a TX frame: the length of the IPv6 headers.
+const udpHeaderRoom = header.EthernetMinimumSize + header.IPv6MinimumSize + header.UDPMinimumSize
+
+// udpHeaderLen is the length of the Ethernet, IP and UDP headers of a datagram from src.
+func udpHeaderLen(src netip.AddrPort) int {
+	if src.Addr().Is4() {
+		return header.EthernetMinimumSize + header.IPv4MinimumSize + header.UDPMinimumSize
+	}
+	return udpHeaderRoom
+}
+
 // encodeUDP writes an Ethernet, IP and UDP frame of payload into frame, with DF and the ECN bits set.
 // It returns the frame length, or 0 when frame is too small.
 func encodeUDP(frame []byte, srcMAC, dstMAC tcpip.LinkAddress, src, dst netip.AddrPort, ecn uint8, payload []byte) int {
+	hdr := udpHeaderLen(src)
+	n := hdr + len(payload)
+	// A source and destination of two families cannot be one IP header.
+	if n > len(frame) || header.UDPMinimumSize+len(payload) > math.MaxUint16 || src.Addr().Is4() != dst.Addr().Is4() {
+		return 0
+	}
+	copy(frame[hdr:], payload)
+	putUDP(frame[:n], srcMAC, dstMAC, src, dst, ecn)
+	return n
+}
+
+// putUDP writes the Ethernet, IP and UDP headers into the first udpHeaderLen(src) bytes of frame,
+// for the payload in the rest of frame. src and dst have one family, and the payload fits a UDP
+// datagram.
+func putUDP(frame []byte, srcMAC, dstMAC tcpip.LinkAddress, src, dst netip.AddrPort, ecn uint8) {
 	v4 := src.Addr().Is4()
 	ipLen := header.IPv6MinimumSize
 	if v4 {
 		ipLen = header.IPv4MinimumSize
 	}
 	off := header.EthernetMinimumSize + ipLen
-	n := off + header.UDPMinimumSize + len(payload)
-	// A source and destination of two families cannot be one IP header.
-	if n > len(frame) || header.UDPMinimumSize+len(payload) > math.MaxUint16 || v4 != dst.Addr().Is4() {
-		return 0
-	}
-	copy(frame[off+header.UDPMinimumSize:], payload)
-	udpLen := uint16(header.UDPMinimumSize + len(payload))
+	n := len(frame)
+	udpLen := uint16(n - off)
 	// The addresses are copied from As4 and As16, because a tcpip.Address for each packet is slow.
 	var addrs []byte // The pseudo-header sum uses the two addresses in the IP header.
 	if v4 {
@@ -161,7 +183,6 @@ func encodeUDP(frame []byte, srcMAC, dstMAC tcpip.LinkAddress, src, dst netip.Ad
 		sum = ^sum
 	}
 	udp.SetChecksum(sum)
-	return n
 }
 
 // setIPv4Protocol writes the protocol field of an IPv4 header (RFC 791). gVisor has no setter for it.

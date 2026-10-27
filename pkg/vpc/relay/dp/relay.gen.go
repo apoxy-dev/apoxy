@@ -58,26 +58,28 @@ const (
 
 // Drop reasons of relay.p4: the index in the drops counter.
 const (
-	ReasonOldSession    uint8 = 1
-	ReasonNoContext     uint8 = 2
-	ReasonSource        uint8 = 3
-	ReasonDemux         uint8 = 4
-	ReasonUnknownSPI    uint8 = 5
-	ReasonUnknownSource uint8 = 6
-	ReasonMeter         uint8 = 7
-	ReasonNoRoute       uint8 = 8
-	ReasonNoTarget      uint8 = 9
-	ReasonTrunkToTrunk  uint8 = 10
-	ReasonLocalOnly     uint8 = 11
-	ReasonMTU           uint8 = 12
-	ReasonNoKeys        uint8 = 13
-	ReasonDatagramFull  uint8 = 14
-	ReasonNoNeighbor    uint8 = 15
-	ReasonPuntFull      uint8 = 16
-	ReasonMalformed     uint8 = 17
-	ReasonOpen          uint8 = 18
-	ReasonTXFull        uint8 = 19
-	ReasonQUICFull      uint8 = 20
+	ReasonOldSession      uint8 = 1
+	ReasonNoContext       uint8 = 2
+	ReasonSource          uint8 = 3
+	ReasonDemux           uint8 = 4
+	ReasonUnknownSPI      uint8 = 5
+	ReasonUnknownSource   uint8 = 6
+	ReasonMeter           uint8 = 7
+	ReasonNoRoute         uint8 = 8
+	ReasonNoTarget        uint8 = 9
+	ReasonTrunkToTrunk    uint8 = 10
+	ReasonLocalOnly       uint8 = 11
+	ReasonMTU             uint8 = 12
+	ReasonNoKeys          uint8 = 13
+	ReasonDatagramFull    uint8 = 14
+	ReasonNoNeighbor      uint8 = 15
+	ReasonPuntFull        uint8 = 16
+	ReasonMalformed       uint8 = 17
+	ReasonOpen            uint8 = 18
+	ReasonTXFull          uint8 = 19
+	ReasonQUICFull        uint8 = 20
+	ReasonWorkerFull      uint8 = 21
+	ReasonWorkerAllowance uint8 = 22
 )
 
 // counterSizes has the size of each counter.

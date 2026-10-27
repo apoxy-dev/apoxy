@@ -33,8 +33,11 @@ import (
 	xipv6 "golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 
+	"github.com/apoxy-dev/softpsp/psp"
+
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp/aead"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 )
 
@@ -115,7 +118,7 @@ func newEnv(t *testing.T, queues int) *env {
 	}
 
 	e.ifc = dp.Interface{Name: "rl0", MAC: rl.Attrs().HardwareAddr, Own: []netip.Prefix{relay4, relay6}}
-	e.d, err = dp.OpenDevice(e.ifc)
+	e.d, err = dp.OpenDevice(e.ifc, aead.GCM{})
 	require.NoError(t, err)
 	e.d.Target().OnPacketIn(func(p *p4.PacketIn) bool {
 		select {
@@ -419,7 +422,7 @@ func TestDevice(t *testing.T) {
 func TestDeviceReopen(t *testing.T) {
 	e := newEnv(t, 4)
 	e.stop()
-	d, err := dp.OpenDevice(e.ifc)
+	d, err := dp.OpenDevice(e.ifc, aead.GCM{})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -462,7 +465,7 @@ func TestDeviceSetsLinkUp(t *testing.T) {
 			}
 			require.Equal(t, tc.up, isUp())
 
-			d, err := dp.OpenDevice(dp.Interface{Name: "rup0", MAC: l.Attrs().HardwareAddr, Own: []netip.Prefix{relay4}})
+			d, err := dp.OpenDevice(dp.Interface{Name: "rup0", MAC: l.Attrs().HardwareAddr, Own: []netip.Prefix{relay4}}, aead.GCM{})
 			require.NoError(t, err)
 			assert.True(t, isUp(), "the link is up after OpenDevice")
 			ctx, cancel := context.WithCancel(context.Background())
@@ -492,7 +495,7 @@ func TestDeviceZeroCopy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ifc := e.ifc
 			ifc.ZeroCopy = tc.zc
-			d, err := dp.OpenDevice(ifc)
+			d, err := dp.OpenDevice(ifc, aead.GCM{})
 			if tc.err {
 				require.Error(t, err)
 				return
@@ -528,7 +531,8 @@ type fwd struct {
 	socks []*net.UDPConn // A1, then its lane ports.
 	dst   *net.UDPConn
 	buf   []byte
-	seq   int // The last packet that send sent.
+	seq   int    // The last packet that send sent.
+	out   uint64 // The lowest sequence number that the next packet to A2 can have.
 }
 
 // forward writes the entries of A1 with the given number of lanes and of A2, which the device
@@ -584,10 +588,13 @@ func (f *fwd) recv(t *testing.T, wait time.Duration) []byte {
 		return nil
 	}
 	assert.Equal(t, netip.AddrPortFrom(relay4.Addr(), 1000), netip.AddrPortFrom(from.Addr().Unmap(), from.Port()))
-	spi, vni, payload := opened(t, f.buf[:n])
-	assert.Equal(t, uint32(spiA2Out), spi)
-	assert.Equal(t, uint32(vniA), vni)
-	return payload
+	// Packets of A1 can drop before they arrive, so the sequence number of the next packet is not
+	// known here. The sequence numbers increase.
+	h, err := psp.ParseTrunkHeader(f.buf[:n])
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, uint64(h.Seq), f.out, "the sequence numbers to A2 increase")
+	f.out = uint64(h.Seq) + 1
+	return opened(t, f.buf[:n], sealedHeader(psp.NextHdrV4, spiA2Out, vniA, h.Seq))
 }
 
 // arrive sends packets of A1 until one arrives at A2, for at most wait, and then reads all that
@@ -625,6 +632,29 @@ func TestDeviceForward(t *testing.T) {
 		require.NotNil(t, got, "%d packets did not arrive", len(want))
 		delete(want, string(got))
 	}
+}
+
+// TestDeviceDropsGiveFramesBack sends more PSP packets with an unknown SPI than a TX queue has
+// frames. The pipeline drops each of them, and the device still forwards a packet after them.
+func TestDeviceDropsGiveFramesBack(t *testing.T) {
+	const frames = 4096 // The TX frames of the queue.
+	e := newEnv(t, 1)
+	f := e.forward(t, 1, netip.AddrPortFrom(peer4.Addr(), 9002))
+	require.True(t, f.arrive(t, 2*time.Second), "no packet after ARP")
+	to := netip.AddrPortFrom(relay4.Addr(), 1000)
+	// Send bursts until the pipeline dropped more packets than the queue has frames. The veth and
+	// the RX ring can drop a part of each burst.
+	deadline := time.Now().Add(10 * time.Second)
+	for seq := uint32(0); e.drops(t, dp.ReasonUnknownSPI) <= frames+100; {
+		require.True(t, time.Now().Before(deadline), "the pipeline dropped too few packets")
+		for range 256 {
+			seq++
+			_, err := f.socks[0].WriteToUDPAddrPort(seal(spiA1In+100, vniA, seq, inner(0, 0)), to)
+			require.NoError(t, err)
+		}
+	}
+	require.True(t, f.arrive(t, 2*time.Second), "no packet after the drops")
+	assert.Zero(t, e.drops(t, dp.ReasonTXFull), "tx_full")
 }
 
 // TestDeviceNextHop sends packets to the MAC of the next hop, from the pipeline and from the QUIC

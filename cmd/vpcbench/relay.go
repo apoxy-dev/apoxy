@@ -25,6 +25,7 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/tunnel"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	relaydp "github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp/aead"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -40,7 +41,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	if err != nil {
 		return err
 	}
-	ifc, err := relaydp.FindInterface(ctx, cfg)
+	ifc, err := relaydp.FindInterface(ctx, &configv1alpha1.RelayConfig{Interface: cfg})
 	if err != nil {
 		return err
 	}
@@ -48,7 +49,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	defer wg.Wait()
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	d, err := relaydp.OpenDevice(ifc)
+	d, err := relaydp.OpenDevice(ifc, aead.GCM{})
 	if err != nil {
 		return err
 	}
@@ -81,6 +82,7 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 		Addresses:   &addresses{},
 		Target:      d.Target(),
 		LaneSources: o.Lanes,
+		Busy:        d.Busy,
 	})
 	if err != nil {
 		return err

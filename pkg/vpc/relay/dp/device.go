@@ -17,9 +17,9 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/atoonk/packetio"
-	"github.com/cilium/ebpf"
 	"golang.org/x/sync/errgroup"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -29,8 +29,9 @@ import (
 // TxBatch.
 const rxBatch = 64
 
-// Device is the dedicated interface of the relay. Its demux gives UDP 1000 to the pipeline, UDP
-// 443 to the QUIC conn, ARP, ICMP, ICMPv6 and NDP to the netstack, and drops all else.
+// Device is the dedicated interface of the relay. Its demux gives UDP 1000 to the workers of the
+// pipeline, UDP 443 to the QUIC conn, ARP, ICMP, ICMPv6 and NDP to the netstack, and drops all
+// else.
 type Device struct {
 	ifc  Interface
 	dev  packetio.Device
@@ -39,11 +40,18 @@ type Device struct {
 	conn *quicConn
 	tx   []*txQueue
 
+	// workers run the pipeline (handoff.go): worker w sends on TX queue w. plan is the CPU of each
+	// thread, and restore puts back the interrupt affinities that the plan changed, or is nil.
+	workers []*worker
+	plan    cpuPlan
+	restore func()
+	rxBusy  []atomic.Int64 // The busy time of each RX goroutine in nanoseconds.
+
 	src4, src6 netip.Addr
 
-	// impair is the impair map, and delays the copy of it that the send path reads. delays is nil
-	// when no entry delays a packet.
-	impair *ebpf.Map
+	// impair reads the impair map, and delays is the copy of it that the send path reads. delays is
+	// nil when no entry delays a packet.
+	impair impairReader
 	delays atomic.Pointer[delayTable]
 
 	hops sync.Pool // The next-hop caches of sendUDP. A send takes one, so no other goroutine uses it.
@@ -65,6 +73,8 @@ type txQueue struct {
 	txPort
 	wake        chan struct{} // Size 1. A send after a publish asks the kicker for a kick.
 	activations atomic.Uint64 // Kick calls of the kicker.
+	cpu         int           // The CPU of the kicker in the plan, or -1.
+	busy        atomic.Int64  // The busy time of the kicker in nanoseconds.
 }
 
 // txPort is how the device sends on one TX queue. The kicker calls kick and pending without the
@@ -93,9 +103,17 @@ const (
 	kickWaitMax = 200 * time.Microsecond
 )
 
-// newDevice builds the pipeline, the netstack and the QUIC conn on dev. ports has the port of each
-// TX queue of dev. mtu is the IP MTU of the link, and impair the impair map.
-func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, impair *ebpf.Map) (*Device, error) {
+// impairReader reads the entries of the impair map. On the relay interface it is the Impair of the
+// pinned map.
+type impairReader interface {
+	Show() ([]Impairment, error)
+	Close() error
+}
+
+// newDevice builds the pipeline, the workers, the netstack and the QUIC conn on dev. ports has the
+// port of each TX queue of dev. mtu is the IP MTU of the link, impair the impair map, and aead the
+// AEAD of the pipeline.
+func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, impair impairReader, aead AEAD) (*Device, error) {
 	d := &Device{ifc: ifc, dev: dev, impair: impair}
 	for _, p := range ifc.Own {
 		switch a := p.Addr(); {
@@ -122,7 +140,12 @@ func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, i
 		return nil, err
 	}
 	d.ns = ns
-	d.p = New(deviceSender{d})
+	d.p = New(deviceSender{d}, aead)
+	for i, t := range d.tx {
+		d.workers = append(d.workers, newWorker(i, t))
+	}
+	d.p.setWorkers(len(d.workers))
+	d.rxBusy = make([]atomic.Int64, dev.NumRxQueues())
 	d.hops.New = func() any { return hopCache{} }
 	local := d.src4
 	if !local.IsValid() {
@@ -157,15 +180,56 @@ func (d *Device) KickCounts() []KickCounts {
 	return c
 }
 
-// Run receives on all queues, kicks each TX queue on its own OS thread, and reads the impair map
-// each second, until ctx is done or a TX queue fails. Then it closes the QUIC conn, the netstack,
-// the interface and the impair map.
+// ThreadBusy is the busy time of one thread of the device: the elapsed time of its loop passes
+// minus their idle waits. Kind is "rx" with the RX queue as Index, "worker" with the worker, or
+// "kick" with the TX queue.
+type ThreadBusy struct {
+	Kind  string
+	Index int
+	Busy  time.Duration
+}
+
+// Busy returns the busy time of each RX goroutine, worker and kicker. The times only increase.
+func (d *Device) Busy() []ThreadBusy {
+	var out []ThreadBusy
+	for i := range d.rxBusy {
+		out = append(out, ThreadBusy{Kind: "rx", Index: i, Busy: time.Duration(d.rxBusy[i].Load())})
+	}
+	for _, w := range d.workers {
+		out = append(out, ThreadBusy{Kind: "worker", Index: w.idx, Busy: time.Duration(w.busy.Load())})
+	}
+	for i, t := range d.tx {
+		out = append(out, ThreadBusy{Kind: "kick", Index: i, Busy: time.Duration(t.busy.Load())})
+	}
+	return out
+}
+
+// Run receives on all queues, runs the workers, kicks each TX queue on its own OS thread, and
+// reads the impair map each second, until ctx is done, a TX queue fails or a thread cannot get its
+// CPU of the plan. Then it closes the QUIC conn, the netstack, the interface and the impair map,
+// and puts back the interrupt affinities of the CPU plan. The close frees all frames, also the RX
+// frames of the items that no worker did.
 func (d *Device) Run(ctx context.Context) error {
-	g, gctx := errgroup.WithContext(ctx)
+	rxMem := d.setMemories()
+	// A worker that cannot start stops the RX goroutines and the kickers with its error.
+	rctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	// The workers start first and stop after the RX goroutines, so that each item that an RX
+	// goroutine gives goes to a worker that runs.
+	wctx, wcancel := context.WithCancel(context.Background())
+	defer wcancel()
+	var wg sync.WaitGroup
+	for _, w := range d.workers {
+		wg.Go(func() {
+			if err := d.work(wctx, w); err != nil {
+				stop(err)
+			}
+		})
+	}
+	g, gctx := errgroup.WithContext(rctx)
 	for i := range d.dev.NumRxQueues() {
 		q := d.dev.RxQueue(i)
-		tx := &TxBatch{txq: d.tx[i%len(d.tx)], hops: hopCache{}}
-		g.Go(func() error { return d.receive(gctx, q, tx) })
+		g.Go(func() error { return d.receive(gctx, i, q, rxMem[i]) })
 	}
 	for _, t := range d.tx {
 		g.Go(func() error { return t.kicker(gctx) })
@@ -175,6 +239,11 @@ func (d *Device) Run(ctx context.Context) error {
 		return nil
 	})
 	err := g.Wait()
+	wcancel()
+	wg.Wait()
+	if errors.Is(err, context.Canceled) && ctx.Err() == nil {
+		err = context.Cause(rctx) // A worker stopped Run.
+	}
 	// The counts of a closed socket are 0, so read them while the sockets are open.
 	kicks := d.KickCounts()
 	d.kicksMu.Lock()
@@ -190,6 +259,9 @@ func (d *Device) Run(ctx context.Context) error {
 	if cerr := d.dev.Close(); cerr != nil && err == nil {
 		err = cerr
 	}
+	if d.restore != nil {
+		d.restore()
+	}
 	d.impair.Close()
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		return nil
@@ -197,17 +269,59 @@ func (d *Device) Run(ctx context.Context) error {
 	return err
 }
 
-// receive is the receive loop of one queue. The pipeline sends the packets of each turn in tx. The
-// QUIC datagrams of a turn go to quic-go as one item, in their RX frames.
-func (d *Device) receive(ctx context.Context, q packetio.RxQueue, tx *TxBatch) error {
-	rx := make([]RxPacket, 0, rxBatch)
+// setMemories gives the batch of each worker the memories of the queues: the TX frames of its TX
+// queue and the RX frames of each RX queue. It returns the memory of each RX queue. With AF_XDP an
+// RX queue and the TX queue of the same index are one socket, with one memory.
+func (d *Device) setMemories() (rxMem []int) {
+	var mems [][]byte
+	index := func(m []byte) int {
+		for i, x := range mems {
+			if len(x) == len(m) && unsafe.SliceData(x) == unsafe.SliceData(m) {
+				return i
+			}
+		}
+		mems = append(mems, m)
+		return len(mems) - 1
+	}
+	txMem := make([]int, len(d.tx))
+	for i, t := range d.tx {
+		txMem[i] = index(t.q.Region().Bytes())
+	}
+	for i := range d.dev.NumRxQueues() {
+		rxMem = append(rxMem, index(d.dev.RxQueue(i).Region().Bytes()))
+	}
+	for _, w := range d.workers {
+		w.tx.mems, w.tx.txMem = mems, txMem[w.idx]
+	}
+	return rxMem
+}
+
+// receive is the receive loop of RX queue qi, with its frames in memory mem of the workers. It
+// gives the UDP 1000 packets of each turn to the workers of their sessions (handoff.go), and takes
+// back the frames of the items that the workers are done with. The QUIC datagrams of a turn go to
+// quic-go as one item, in their RX frames. The goroutine is the only user of the RX and fill rings.
+// The poll for frames is idle; the rest of each pass adds to the busy time of the queue.
+func (d *Device) receive(ctx context.Context, qi int, q packetio.RxQueue, mem int) error {
+	runtime.LockOSThread()
+	defer nameThread(nameThread(RxThread))
+	if cpu := d.plan.rxCPU(qi); cpu >= 0 {
+		if err := pinThread("rx", cpu); err != nil {
+			return err
+		}
+	}
+	busy := &d.rxBusy[qi]
 	free := make([]packetio.Desc, 0, rxBatch)
+	var back []packetio.Desc
 	var qt quicTurns
+	h := d.newRxHandoff()
 	for ctx.Err() == nil {
-		q.Recycle(qt.read())
+		start := time.Now()
+		back = h.reclaim(append(back[:0], qt.read()...))
+		q.Recycle(back)
 		q.Fill(q.NumFreeFillSlots())
 		descs := q.Receive(rxBatch)
 		if len(descs) == 0 {
+			busy.Add(int64(time.Since(start)))
 			// Poll only when no frame waits: in copy mode a poll also sends the TX ring of the socket,
 			// on this core.
 			if _, err := q.Poll(100 * time.Millisecond); err != nil {
@@ -215,13 +329,17 @@ func (d *Device) receive(ctx context.Context, q packetio.RxQueue, tx *TxBatch) e
 			}
 			continue
 		}
-		rx, free = rx[:0], free[:0]
+		// The steering map comes after the frames of the turn: a packet with a new SPI comes after
+		// the table change that published its worker.
+		sm := d.p.steering.Load()
+		free = free[:0]
 		turn := qt.next()
 		for _, desc := range descs {
 			frame := q.Region().Frame(desc)
 			switch to, dg := demux(frame, d.own); to {
 			case toPipeline:
-				rx = append(rx, RxPacket{From: dg.from, Payload: dg.payload})
+				h.pend = append(h.pend, rxPending{pkt: RxPacket{From: dg.from, Payload: dg.payload, mem: mem}, desc: desc})
+				continue // The frame goes to a worker.
 			case toQUIC:
 				turn.dgs, turn.descs = append(turn.dgs, dg), append(turn.descs, desc)
 				continue // The frame stays with the datagram until quic-go reads it.
@@ -235,8 +353,11 @@ func (d *Device) receive(ctx context.Context, q packetio.RxQueue, tx *TxBatch) e
 			free = append(free, desc)
 		}
 		free = qt.give(d.conn, turn, free)
-		d.p.Receive(rx, tx)
+		if len(h.pend) > 0 {
+			free = d.handoff(h, sm, free)
+		}
 		q.Recycle(free)
+		busy.Add(int64(time.Since(start)))
 	}
 	return ctx.Err()
 }
@@ -247,7 +368,7 @@ func (d *Device) readDelays(ctx context.Context) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
-		entries, err := impairments(d.impair)
+		entries, err := d.impair.Show()
 		if err != nil {
 			slog.Warn("Failed to read the impair map", "error", err)
 		} else if t := newDelayTable(entries); t != nil {
@@ -339,8 +460,10 @@ func (d *Device) encode(f *udpFrame, frame []byte) int {
 // deviceSender gives the batches of the pipeline to the device.
 type deviceSender struct{ d *Device }
 
-// Send sends the packets of b on the TX queue of its RX queue, in one publish. A batch with no
-// RX queue (PacketOut) sends each packet alone and asks gVisor for each MAC. It never waits.
+// Send sends the packets of b on the TX queue of its worker, in one publish. Each packet is in its
+// TX frame, and Send writes its headers in front of it there. It gives the other frames back. A
+// batch with no worker (PacketOut) sends each packet alone and asks gVisor for each MAC. It never
+// waits.
 func (s deviceSender) Send(b *TxBatch) {
 	d := s.d
 	if b.txq == nil {
@@ -350,8 +473,9 @@ func (s deviceSender) Send(b *TxBatch) {
 		}
 		return
 	}
-	var fs [rxBatch]udpFrame
+	var sizes [rxBatch]int // The size of each packet to send, for a tx_full drop.
 	n := 0
+	mem := b.mems[b.txMem]
 	t, now := d.delays.Load(), time.Now()
 	for i := range b.Len() {
 		to, payload := b.Packet(i)
@@ -360,23 +484,26 @@ func (s deviceSender) Send(b *TxBatch) {
 			d.p.drop(ReasonNoNeighbor, len(payload))
 			continue
 		}
-		f.payload = payload
 		if t != nil {
 			if w := t.wait(PortData, f.to.Addr()); w > 0 {
 				d.sendLater(w, b.txq, f, segments{b: payload})
 				continue
 			}
 		}
-		fs[n] = f
+		start := b.starts[i] - udpHeaderLen(f.from)
+		putUDP(mem[start:b.ends[i]], tcpip.LinkAddress(d.ifc.MAC), f.mac, f.from, f.to, f.ecn)
+		fr := b.frames[i]
+		fr.Addr, fr.Len = uint64(start), uint32(b.ends[i]-start)
+		// The packets to send come first; the frames of the other packets move after them.
+		b.frames[i], b.frames[n] = b.frames[n], fr
+		sizes[n] = len(payload)
 		n++
 	}
-	if n == 0 {
-		return
+	sent := b.txq.put(b.frames, n)
+	for _, size := range sizes[sent:n] {
+		d.p.drop(ReasonTXFull, size)
 	}
-	_, full := b.txq.send(n, func(i int, frame []byte) int { return d.encode(&fs[i], frame) })
-	for ; full != 0; full &= full - 1 {
-		d.p.drop(ReasonTXFull, len(fs[bits.TrailingZeros64(full)].payload))
-	}
+	b.frames = b.frames[:0]
 }
 
 // segments is UDP datagrams back to back in b, seg bytes each; the last can be shorter. With seg 0,
@@ -470,7 +597,7 @@ func (d *Device) transmit(t *txQueue, size int, build func(frame []byte) int) bo
 }
 
 func newTxQueue(q packetio.TxQueue, p txPort) *txQueue {
-	return &txQueue{q: q, txPort: p, wake: make(chan struct{}, 1)}
+	return &txQueue{q: q, txPort: p, wake: make(chan struct{}, 1), cpu: -1}
 }
 
 // send builds the frames of n packets (at most rxBatch) and publishes them in one call. build
@@ -495,10 +622,7 @@ func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, fu
 	t.q.Free(descs[k:])
 	sent = t.publish(descs[:k])
 	if sent > 0 {
-		select {
-		case t.wake <- struct{}{}:
-		default: // The kicker has a wake that it did not take yet. Its next kick sends these frames too.
-		}
+		t.wakeKicker()
 	}
 	t.q.Free(descs[sent:k])
 	for _, j := range pkts[sent:k] {
@@ -510,6 +634,42 @@ func (t *txQueue) send(n int, build func(i int, frame []byte) int) (sent int, fu
 	return sent, full
 }
 
+// take takes back the completed frames of t, and appends up to n free TX frames to out. The caller
+// writes them with no lock, and gives them all back to put.
+func (t *txQueue) take(n int, out []packetio.Desc) []packetio.Desc {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed || t.err != nil {
+		return out
+	}
+	t.q.Complete(t.q.NumCompleted())
+	return append(out, t.q.Alloc(n)...)
+}
+
+// put publishes descs[:n], frames of take with their packets, in one call, and gives the other
+// frames of descs back to the pool. It returns how many it published: a prefix of descs.
+func (t *txQueue) put(descs []packetio.Desc, n int) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sent := 0
+	if n > 0 && !t.closed && t.err == nil {
+		sent = t.publish(descs[:n])
+	}
+	if sent > 0 {
+		t.wakeKicker()
+	}
+	t.q.Free(descs[sent:])
+	return sent
+}
+
+// wakeKicker asks the kicker of t for a kick after a publish.
+func (t *txQueue) wakeKicker() {
+	select {
+	case t.wake <- struct{}{}:
+	default: // The kicker has a wake that it did not take yet. Its next kick sends these frames too.
+	}
+}
+
 // KickThread is the name of the OS thread of each kicker, as /proc/PID/task/TID/comm shows it.
 const KickThread = "relay-kick"
 
@@ -517,11 +677,17 @@ const KickThread = "relay-kick"
 // core. One kick covers all wakes since the last kick. While descriptors stay on the ring, it kicks
 // again after a backoff: no frame waits for the next send. It runs until ctx is done or a kick error
 // ends the queue. The thread has the name KickThread, and the goroutine ends with it locked, so the
-// Go runtime ends the named thread too.
+// Go runtime ends the named thread too. The wait for a wake or a backoff is idle; the rest of each
+// pass adds to the busy time of t.
 func (t *txQueue) kicker(ctx context.Context) error {
 	runtime.LockOSThread()
 	// The Go runtime keeps the main thread when its locked goroutine ends, so it gets its old name back.
 	defer nameThread(nameThread(KickThread))
+	if t.cpu >= 0 {
+		if err := pinThread("kicker", t.cpu); err != nil {
+			return err
+		}
+	}
 	retry := time.NewTimer(kickWaitMax)
 	retry.Stop()
 	var backoff time.Duration
@@ -533,6 +699,7 @@ func (t *txQueue) kicker(ctx context.Context) error {
 			backoff = 0
 		case <-retry.C:
 		}
+		start := time.Now()
 		t.activations.Add(1)
 		// Other kick errors, as a link that is down, keep the frames on the ring for the next kick.
 		if err := t.kick(); kickEnds(err) {
@@ -541,10 +708,11 @@ func (t *txQueue) kicker(ctx context.Context) error {
 		}
 		if t.pending() == 0 {
 			retry.Stop()
-			continue
+		} else {
+			backoff = min(max(2*backoff, kickWaitMin), kickWaitMax)
+			retry.Reset(backoff)
 		}
-		backoff = min(max(2*backoff, kickWaitMin), kickWaitMax)
-		retry.Reset(backoff)
+		t.busy.Add(int64(time.Since(start)))
 	}
 }
 

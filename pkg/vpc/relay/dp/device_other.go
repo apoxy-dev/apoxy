@@ -7,9 +7,12 @@ package dp
 import "errors"
 
 // OpenDevice needs AF_XDP, which only Linux has.
-func OpenDevice(Interface) (*Device, error) {
+func OpenDevice(Interface, AEAD) (*Device, error) {
 	return nil, errors.New("the relay interface needs Linux")
 }
 
 // nameThread needs Linux.
 func nameThread(string) string { return "" }
+
+// pinThread needs Linux.
+func pinThread(string, int) error { return nil }

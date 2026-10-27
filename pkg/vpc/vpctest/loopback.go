@@ -8,6 +8,7 @@ import (
 	"net/netip"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp/aead"
 )
 
 // Sockets is a relay data plane on two UDP sockets, in place of the dedicated interface of a
@@ -44,7 +45,7 @@ type SocketTarget struct {
 // NewSocketTarget returns a pipeline that sends its packets from sock.
 func NewSocketTarget(sock net.PacketConn) *SocketTarget {
 	return &SocketTarget{
-		Pipeline: dp.New(socketSender{sock}),
+		Pipeline: dp.New(socketSender{sock}, aead.GCM{}),
 		port:     sock.LocalAddr().(*net.UDPAddr).AddrPort().Port(),
 	}
 }

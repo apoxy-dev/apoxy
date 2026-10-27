@@ -45,13 +45,19 @@ var (
 func newFakeDevice(t *testing.T, f *fakeTx) *Device {
 	t.Helper()
 	ifc := Interface{Name: "fake0", MAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, Own: []netip.Prefix{fakeOwn}}
-	d, err := newDevice(ifc, fakeDev{tx: []*fakeTx{f}}, []txPort{f.port()}, 1500, nil)
+	d, err := newDevice(ifc, fakeDev{tx: []*fakeTx{f}}, []txPort{f.port()}, 1500, emptyImpair{}, goAEAD{})
 	require.NoError(t, err)
 	t.Cleanup(d.ns.close)
 	addr := tcpip.AddrFromSlice(fakePeer.Addr().AsSlice())
 	require.Nil(t, d.ns.s.AddStaticNeighbor(nicID, ipv4.ProtocolNumber, addr, fakePeerMAC))
 	return d
 }
+
+// emptyImpair is an impair map with no entries, for a device on fake queues.
+type emptyImpair struct{}
+
+func (emptyImpair) Show() ([]Impairment, error) { return nil, nil }
+func (emptyImpair) Close() error                { return nil }
 
 // onRing returns the frames on the TX ring of f, oldest first.
 func (f *fakeTx) onRing() [][]byte {

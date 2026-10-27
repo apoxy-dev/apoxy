@@ -88,12 +88,14 @@ func TestFindInterface(t *testing.T) {
 	staticZeroCopy := static(mac, "192.0.2.10/24")
 	staticZeroCopy.ZeroCopy = true
 	for _, tc := range []struct {
-		name string
-		cfg  *configv1alpha1.RelayInterface
-		v2   bool
-		data map[string]string
-		want dp.Interface
-		err  string
+		name  string
+		cfg   *configv1alpha1.RelayInterface
+		cpus  string // relay.cpus of the config.
+		v2    bool
+		data  map[string]string
+		want  dp.Interface
+		err   string
+		errIs error
 	}{
 		{
 			name: "IMDS: the ENI with device number 1",
@@ -152,6 +154,19 @@ func TestFindInterface(t *testing.T) {
 				ZeroCopy: true,
 			},
 		},
+		{
+			name: "the relay CPUs of the config",
+			cfg:  static(mac, "192.0.2.10/24"), cpus: "2-3",
+			want: dp.Interface{
+				Name: link.Name, MAC: link.HardwareAddr,
+				Own:      []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+				Public:   []netip.Addr{netip.MustParseAddr("192.0.2.10")},
+				Gateways: []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")},
+				CPUs:     []int{2, 3},
+			},
+		},
+		{name: "a bad CPU list", cfg: static(mac, "192.0.2.10/24"), cpus: "3-2", errIs: dp.ErrCPUList},
+		{name: "a CPU list that is not numbers", cfg: imdsCfg, cpus: "two", errIs: dp.ErrCPUList},
 		{name: "Static: an address that is not a prefix", cfg: static(mac, "192.0.2.10"), err: "address"},
 		{name: "Static: no addresses", cfg: static(mac), err: "no addresses"},
 		{name: "Static: no link with the MAC", cfg: static("0a:00:00:00:00:99", "192.0.2.10/24"), err: "no link has MAC"},
@@ -164,7 +179,11 @@ func TestFindInterface(t *testing.T) {
 				url := imdsServer(t, tc.v2, tc.data)
 				opts = append(opts, func(o *imds.Options) { o.Endpoint = url })
 			}
-			got, err := dp.FindInterface(t.Context(), tc.cfg, opts...)
+			got, err := dp.FindInterface(t.Context(), &configv1alpha1.RelayConfig{Interface: tc.cfg, CPUs: tc.cpus}, opts...)
+			if tc.errIs != nil {
+				require.ErrorIs(t, err, tc.errIs)
+				return
+			}
 			if tc.err != "" {
 				require.ErrorContains(t, err, tc.err)
 				return

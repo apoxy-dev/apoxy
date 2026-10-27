@@ -36,6 +36,10 @@ const bit<8> R_OPEN = 18;
 const bit<8> R_TX_FULL = 19;
 // The packet I/O of the interface: the receive queue of the UDP 443 conn is full.
 const bit<8> R_QUIC_FULL = 20;
+// The handoff of the interface: the channel of the worker of the packet is full.
+const bit<8> R_WORKER_FULL = 21;
+// The handoff of the interface: the RX queue of the packet has its frame allowance at the workers.
+const bit<8> R_WORKER_ALLOWANCE = 22;
 
 // A VPC name: "<VPC UID>/<network ID>". The CP sends a string; the DP maps it to a number.
 @p4runtime_translation("apoxy.dev/relay/name", string)

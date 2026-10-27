@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
+	"github.com/atoonk/packetio"
 	p4 "github.com/p4lang/p4runtime/go/p4/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,21 +42,36 @@ const (
 	KindRaw   uint8 = 6
 )
 
-// RxPacket is one UDP payload of port 1000 and its outer source address. The payload is in the RX
-// frame, and the pipeline opens it in place.
+// RxPacket is one UDP payload of port 1000 and its outer source address. In a batch of a worker of
+// the device, the payload is in its RX frame, and the pipeline opens it in place. In another batch,
+// the pipeline opens a copy and does not change the payload.
 type RxPacket struct {
 	From    netip.AddrPort
 	Payload []byte
+
+	mem int // In a batch of a worker: the memory of Payload in the batch.
 }
 
-// TxBatch is the sealed PSP and RAW payloads of one batch, in order: at most rxBatch, in one
-// buffer of one RX goroutine. The zero value is an empty batch.
+// TxBatch is the sealed PSP and RAW payloads of one batch, in order: at most rxBatch. A batch of a
+// worker of the device has the memories of the device (mems): packet i is in TX frame i of the
+// batch, from the TX queue of the worker. Another batch has its packets, and the copies of the
+// packets that it opens, in buf. The zero value is an empty batch.
 type TxBatch struct {
-	to   []netip.AddrPort
-	ends []int
-	buf  []byte
-	txq  *txQueue // The TX queue of the RX queue of the batch, or nil.
-	hops hopCache // The next-hop MACs of the RX goroutine of the batch, or nil.
+	to     []netip.AddrPort
+	starts []int
+	ends   []int
+	buf    []byte
+	one    [1][]byte // The memories of a batch with no mems: buf.
+
+	mems   [][]byte        // The memories of a batch of a worker, or nil.
+	txMem  int             // The memory of the TX frames in mems.
+	frames []packetio.Desc // The TX frames that the worker took for the part.
+	txq    *txQueue        // The TX queue of the worker, or nil.
+	hops   hopCache        // The next-hop MACs of the worker, or nil.
+
+	rx    []rxState // The parse result of each RX packet of the part of Receive.
+	opens []AEADOp  // The open ops of the part.
+	seals []AEADOp  // The seal ops of the part.
 }
 
 // Len is the number of packets in the batch.
@@ -62,28 +79,86 @@ func (b *TxBatch) Len() int { return len(b.to) }
 
 // Packet returns packet i and its outer address. The payload is valid until the batch is reset.
 func (b *TxBatch) Packet(i int) (to netip.AddrPort, payload []byte) {
-	start := 0
-	if i > 0 {
-		start = b.ends[i-1]
+	m := b.memories()[b.txMem]
+	return b.to[i], m[b.starts[i]:b.ends[i]:b.ends[i]]
+}
+
+// memories returns the memories of the ops and the packets of the batch: mems, or buf alone.
+func (b *TxBatch) memories() [][]byte {
+	if b.mems != nil {
+		return b.mems
 	}
-	return b.to[i], b.buf[start:b.ends[i]:b.ends[i]]
+	b.one[0] = b.buf
+	return b.one[:]
 }
 
-// room returns n bytes after the last packet, for the next packet.
-func (b *TxBatch) room(n int) []byte {
-	b.buf = slices.Grow(b.buf, n)
-	return b.buf[len(b.buf) : len(b.buf)+n]
+// slot adds n bytes at the end of buf and returns their offset. buf can move, so a caller keeps
+// the offset, not a slice.
+func (b *TxBatch) slot(n int) int {
+	off := len(b.buf)
+	b.buf = slices.Grow(b.buf, n)[:off+n]
+	return off
 }
 
-// add adds the first n bytes of room as the next packet, to the outer address to.
-func (b *TxBatch) add(to netip.AddrPort, n int) {
-	b.buf = b.buf[:len(b.buf)+n]
+// in returns the memory and the offset of p in the batch. A batch of a worker has p in memory mem;
+// another batch copies p into a new slot of buf, memory 0.
+func (b *TxBatch) in(mem int, p []byte) (int, int) {
+	if b.mems == nil {
+		off := b.slot(len(p))
+		copy(b.buf[off:], p)
+		return 0, off
+	}
+	return mem, b.offset(mem, p)
+}
+
+// offset returns the offset of p in memory mem of the batch, or 0 for an empty p. A p that is not
+// in it is a program error: offset panics.
+func (b *TxBatch) offset(mem int, p []byte) int {
+	if len(p) == 0 {
+		return 0
+	}
+	m := b.memories()[mem]
+	off := uintptr(unsafe.Pointer(unsafe.SliceData(p))) - uintptr(unsafe.Pointer(unsafe.SliceData(m)))
+	if off > uintptr(len(m)) || uintptr(len(p)) > uintptr(len(m))-off {
+		panic("dp: a packet is not in the memory of its batch")
+	}
+	return int(off)
+}
+
+// room returns the offset of n bytes for the next packet, in the memory of the TX packets:
+// udpHeaderRoom bytes into the next TX frame of a batch of a worker, else a new slot. It returns
+// false when no TX frame is left or the frame is too small.
+func (b *TxBatch) room(n int) (int, bool) {
+	if b.mems == nil {
+		return b.slot(n), true
+	}
+	if len(b.to) == len(b.frames) {
+		return 0, false
+	}
+	f := b.frames[len(b.to)]
+	if udpHeaderRoom+n > len(b.txq.q.Region().Writable(f)) {
+		return 0, false
+	}
+	return int(f.Addr) + udpHeaderRoom, true
+}
+
+// add adds n bytes at off in the memory of the TX packets as the next packet, to the outer address
+// to.
+func (b *TxBatch) add(to netip.AddrPort, off, n int) {
 	b.to = append(b.to, to)
-	b.ends = append(b.ends, len(b.buf))
+	b.starts = append(b.starts, off)
+	b.ends = append(b.ends, off+n)
 }
 
+// reset empties the batch. It also clears the parse results and the ops, which hold keys, so an
+// idle batch keeps no key. The TX frames stay: Send and the worker give them back.
 func (b *TxBatch) reset() {
-	b.to, b.ends, b.buf = b.to[:0], b.ends[:0], b.buf[:0]
+	clear(b.rx)
+	clear(b.opens)
+	clear(b.seals)
+	b.one[0] = nil
+	b.to, b.starts, b.ends, b.buf = b.to[:0], b.starts[:0], b.ends[:0], b.buf[:0]
+	b.rx, b.opens, b.seals = b.rx[:0], b.opens[:0], b.seals[:0]
 }
 
 // Sender sends the UDP payloads of port 1000 of a batch. Send never waits: it drops and counts
@@ -102,11 +177,12 @@ func (c *counter) add(n int) {
 	c.bytes.Add(uint64(n))
 }
 
-// Pipeline is the Go pipeline of relay.p4. Write takes the lock; a batch of packets takes the read
-// lock one time. The frame writers and OnPacketIn run with the read lock held and must not call the
-// Pipeline. The Sender runs after the batch releases the read lock.
+// Pipeline is the Go pipeline of relay.p4. Write takes the lock; each part of a batch of packets
+// takes the read lock one time. The frame writers and OnPacketIn run with the read lock held and
+// must not call the Pipeline. The Sender runs after the part releases the read lock.
 type Pipeline struct {
 	send     Sender
+	aead     AEAD
 	defaults map[uint32]Action
 	packetIn atomic.Pointer[func(*p4.PacketIn) bool]
 	bufs     sync.Pool
@@ -119,14 +195,22 @@ type Pipeline struct {
 	mu      sync.RWMutex
 	st      state
 	writers map[uint64]func([]byte) error
+
+	// The steering of the device (steer.go): the workers and the worker of each port session, under
+	// mu, and the map that the RX goroutines read with no lock.
+	workers  int
+	workerOf map[portSession]int
+	steering atomic.Pointer[steerMap]
 }
 
 var _ Target = (*Pipeline)(nil)
 
-// New returns an empty pipeline with the built-in schema. send gets the sealed PSP and RAW packets.
-func New(send Sender) *Pipeline {
+// New returns an empty pipeline with the built-in schema. send gets the sealed PSP and RAW packets,
+// and aead opens and seals the PSP packets.
+func New(send Sender, aead AEAD) *Pipeline {
 	p := &Pipeline{
 		send:      send,
+		aead:      aead,
 		defaults:  map[uint32]Action{},
 		cells:     make([]counter, counterSizes[CounterCells]),
 		drops:     make([]counter, counterSizes[CounterDrops]),
@@ -177,6 +261,7 @@ func (p *Pipeline) Write(ctx context.Context, req *p4.WriteRequest) error {
 		}
 		return s.Err()
 	}
+	p.steer()
 	return nil
 }
 
@@ -185,7 +270,7 @@ func (p *Pipeline) update(t *txn, u *p4.Update) error {
 	case *p4.Entity_TableEntry:
 		return p.st.writeTable(t, u.GetType(), e.TableEntry)
 	case *p4.Entity_ExternEntry:
-		return p.st.writeKeys(t, u.GetType(), e.ExternEntry)
+		return p.st.writeKeys(t, u.GetType(), e.ExternEntry, p.aead)
 	case *p4.Entity_CounterEntry:
 		return p.writeCounter(t, u.GetType(), e.CounterEntry)
 	case *p4.Entity_MeterEntry:

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/bits"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -37,15 +38,20 @@ type fakeTx struct {
 	budget  func(kick int) int
 	kickErr func(kick int) error
 	hold    bool
+	busy    int // Ring slots that look used after the kernel completed their frames.
 	scratch []packetio.Desc
+	size    int // The frame size.
 }
 
 const fakeFrameSize = 64
 
-func newFakeTx(frames, ring int) *fakeTx {
-	f := &fakeTx{mem: make([]byte, frames*fakeFrameSize), ring: ring, budget: func(int) int { return 32 }}
+func newFakeTx(frames, ring int) *fakeTx { return newFakeTxSize(frames, ring, fakeFrameSize) }
+
+// newFakeTxSize returns a fakeTx with frames of size bytes.
+func newFakeTxSize(frames, ring, size int) *fakeTx {
+	f := &fakeTx{mem: make([]byte, frames*size), ring: ring, budget: func(int) int { return 32 }, size: size}
 	for i := range frames {
-		f.free = append(f.free, packetio.Desc{Addr: uint64(i * fakeFrameSize)})
+		f.free = append(f.free, packetio.Desc{Addr: uint64(i * size)})
 	}
 	return f
 }
@@ -65,7 +71,7 @@ func (f *fakeTx) publish(descs []packetio.Desc) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sends++
-	k := min(len(descs), f.ring-len(f.txr))
+	k := min(len(descs), f.ring-len(f.txr)-f.busy)
 	f.txr = append(f.txr, descs[:k]...)
 	return k
 }
@@ -119,12 +125,26 @@ func (f *fakeTx) frames() int {
 	return len(f.free) + len(f.txr) + len(f.held) + len(f.cq)
 }
 
+// distinct returns the number of different frames of the queue, wherever they are. It is less than
+// frames when a frame is in two places, for example in the pool and on the ring.
+func (f *fakeTx) distinct() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen := map[uint64]bool{}
+	for _, l := range [][]packetio.Desc{f.free, f.txr, f.held, f.cq} {
+		for _, d := range l {
+			seen[d.Addr-d.Addr%uint64(f.size)] = true
+		}
+	}
+	return len(seen)
+}
+
 func (f *fakeTx) Region() packetio.Region { return fakeRegion{f} }
 
 func (f *fakeTx) Alloc(n int) []packetio.Desc {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	n = min(n, len(f.free), f.ring-len(f.txr))
+	n = min(n, len(f.free), f.ring-len(f.txr)-f.busy)
 	f.scratch = append(f.scratch[:0], f.free[len(f.free)-n:]...)
 	f.free = f.free[:len(f.free)-n]
 	return f.scratch
@@ -137,7 +157,10 @@ func (f *fakeTx) Complete(max int) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := min(max, len(f.cq))
-	f.free = append(f.free, f.cq[:n]...)
+	// As go-afxdp, the pool gets the start of each frame: a descriptor can start in its frame.
+	for _, d := range f.cq[:n] {
+		f.free = append(f.free, packetio.Desc{Addr: d.Addr - d.Addr%uint64(f.size)})
+	}
 	f.cq = append(f.cq[:0], f.cq[n:]...)
 	return n
 }
@@ -151,7 +174,7 @@ func (f *fakeTx) Free(descs []packetio.Desc) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, d := range descs {
-		f.free = append(f.free, packetio.Desc{Addr: d.Addr - d.Addr%fakeFrameSize})
+		f.free = append(f.free, packetio.Desc{Addr: d.Addr - d.Addr%uint64(f.size)})
 	}
 }
 
@@ -190,10 +213,11 @@ type fakeRegion struct{ f *fakeTx }
 
 func (r fakeRegion) Bytes() []byte                { return r.f.mem }
 func (r fakeRegion) Frame(d packetio.Desc) []byte { return r.f.mem[d.Addr : d.Addr+uint64(d.Len)] }
-func (r fakeRegion) FrameSize() int               { return fakeFrameSize }
-func (r fakeRegion) NumFrames() int               { return len(r.f.mem) / fakeFrameSize }
+func (r fakeRegion) FrameSize() int               { return r.f.size }
+func (r fakeRegion) NumFrames() int               { return len(r.f.mem) / r.f.size }
 func (r fakeRegion) Writable(d packetio.Desc) []byte {
-	return r.f.mem[d.Addr : d.Addr-d.Addr%fakeFrameSize+fakeFrameSize]
+	size := uint64(r.f.size)
+	return r.f.mem[d.Addr : d.Addr-d.Addr%size+size]
 }
 
 // numbered returns a build that writes first+i into the frame of packet i.
@@ -362,4 +386,89 @@ func TestTxQueueWriters(t *testing.T) {
 	assert.Equal(t, frames, f.frames(), "no frame is lost")
 	assert.Equal(t, frames, f.NumFreeFrames()+f.NumCompleted(), "the kernel gave back all frames")
 	t.Logf("sent %d, full %d", sent.Load(), full.Load())
+}
+
+// TestTxQueueTakePut runs workers that take frames, write them and put them, and QUIC writers that
+// send one packet at a time, on one queue. The kernel sends each published packet one time, and
+// no frame is lost or in two places.
+func TestTxQueueTakePut(t *testing.T) {
+	const frames, ring, workers, quic, turns = 256, 128, 4, 2, 400
+	f := newFakeTx(frames, ring)
+	f.hold = true
+	q := newTxQueue(f, f.port())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	kicked := make(chan error, 1)
+	go func() { kicked <- q.kicker(ctx) }()
+	// The kernel completes the frames that it sent a short time after the kick.
+	kernel := make(chan struct{})
+	go func() {
+		defer close(kernel)
+		for ctx.Err() == nil {
+			f.finish()
+			time.Sleep(50 * time.Microsecond)
+		}
+	}()
+
+	// Each packet has its own ID. published is the IDs of the packets that a call published.
+	var id atomic.Uint64
+	var mu sync.Mutex
+	var published []uint64
+	publish := func(ids []uint64) {
+		mu.Lock()
+		published = append(published, ids...)
+		mu.Unlock()
+	}
+	send := func() {
+		first := id.Add(1)
+		s, full := q.send(1, numbered(first))
+		assert.Equal(t, 1, s+bits.OnesCount64(full), "the packet is sent or full")
+		if s == 1 {
+			publish([]uint64{first})
+		}
+	}
+	part := func() {
+		descs := q.take(rxBatch, nil)
+		ids := make([]uint64, len(descs))
+		for i := range descs {
+			ids[i] = id.Add(1)
+			binary.BigEndian.PutUint64(f.Region().Writable(descs[i]), ids[i])
+			descs[i].Len = 8
+		}
+		// Each worker sends some of its frames and gives the others back.
+		n := len(descs) / 2
+		publish(ids[:q.put(descs, n)])
+	}
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for range turns {
+				part()
+			}
+		})
+	}
+	for range quic {
+		wg.Go(func() {
+			for range 4 * turns {
+				send()
+			}
+		})
+	}
+	wg.Wait()
+	require.Eventually(t, func() bool { return f.pending() == 0 }, 2*time.Second, time.Millisecond)
+	cancel()
+	<-kernel
+	require.NoError(t, <-kicked)
+	f.finish()
+
+	var wire []uint64
+	for _, b := range f.sent() {
+		wire = append(wire, binary.BigEndian.Uint64(b))
+	}
+	slices.Sort(published)
+	slices.Sort(wire)
+	assert.Equal(t, published, wire, "the kernel sent each published packet one time")
+	assert.Equal(t, frames, f.frames(), "no frame is lost")
+	assert.Equal(t, frames, f.distinct(), "no frame is in two places")
+	t.Logf("published %d of %d", len(published), id.Load())
 }

@@ -3,7 +3,6 @@
 package dp
 
 import (
-	"crypto/cipher"
 	"errors"
 	"math"
 	"sync"
@@ -33,7 +32,7 @@ type rxSA struct {
 	port, session uint64
 	lane          uint8
 	version       psp.Version
-	aead          cipher.AEAD
+	key           AEADKey
 
 	mu      sync.Mutex
 	window  replay.Window
@@ -46,7 +45,7 @@ type txSA struct {
 	spi     uint32
 	lane    uint8
 	version psp.Version
-	aead    cipher.AEAD
+	key     AEADKey
 	next    atomic.Uint64 // The next sequence number. The IV has the same value.
 }
 
@@ -82,28 +81,36 @@ func (l *txLanes) pick(hash uint32) *txSA {
 
 func (l *txLanes) empty() bool { return *l == txLanes{} }
 
-func newAEAD(key []byte) (cipher.AEAD, psp.Version, error) {
+// newKey returns the key of a for an SA key of 16 or 32 bytes, and its PSP version.
+func newKey(a AEAD, key []byte) (AEADKey, psp.Version, error) {
 	v := psp.AESGCM128
 	if len(key) == psp.AESGCM256.KeyLen() {
 		v = psp.AESGCM256
 	}
-	aead, err := psp.NewAEAD(key)
-	return aead, v, err
+	k, err := a.NewKey(key)
+	return k, v, err
 }
 
-// open opens the PSP packet b with header h in place and moves seq. It returns the payload, or
-// false when the packet does not authenticate, has no sequence number or is a replay. It does not
-// count the packet: check_in counts it after the meters.
-func (sa *rxSA) open(h psp.Header, b []byte) ([]byte, bool) {
-	if h.Version != sa.version || h.Flags&psp.FlagSeq == 0 {
+// accepts reports whether a PSP packet with header h can open with sa: the checks of open_psp
+// before the AEAD.
+func (sa *rxSA) accepts(h psp.Header) bool {
+	return h.Version == sa.version && h.Flags&psp.FlagSeq != 0
+}
+
+// opened is open_psp after the AEAD opened the PSP packet pkt with header h in place: ok tells that
+// pkt authenticates. It checks Next Header and the replay window, and moves seq. It returns the
+// payload, or false. It does not count the packet: check_in counts it after the meters.
+func (sa *rxSA) opened(h psp.Header, pkt []byte, ok bool) ([]byte, bool) {
+	if !ok {
 		return nil, false
 	}
-	payload, err := psp.OpenTrunkInPlace(sa.aead, b)
-	if err != nil {
+	end := len(pkt) - psp.ICVLen
+	payload := pkt[psp.PrefixLen:end:end]
+	if psp.CheckTrunk(pkt, payload) != nil {
 		return nil, false
 	}
 	sa.mu.Lock()
-	ok := sa.window.Check(h.Seq)
+	ok = sa.window.Check(h.Seq)
 	last := sa.window.Last()
 	sa.mu.Unlock()
 	if !ok {
@@ -122,23 +129,20 @@ func (s *state) count(spi uint32) {
 
 var errSeqLimit = errors.New("dp: the TX entry has used all sequence numbers")
 
-// seal seals payload into dst with the VNI field vni. An IPv4 or IPv6 payload gets its own Next
-// Header; any other payload, such as a trunk message, gets the PSP Next Header.
-func (sa *txSA) seal(dst []byte, vni uint32, payload []byte) (int, error) {
+// put writes the 24-byte prefix of the next packet of sa into dst, with the Next Header nh and the
+// VNI field vni: it takes the next sequence number. The AEAD seals the payload later.
+func (sa *txSA) put(dst []byte, nh uint8, vni uint32) error {
 	seq := sa.next.Add(1) - 1
 	if seq > math.MaxUint32 {
-		return 0, errSeqLimit
+		return errSeqLimit
 	}
-	h := psp.Header{Version: sa.version, SPI: sa.spi, IV: seq, VNI: vni, Flags: psp.FlagSeq, Seq: uint32(seq)}
-	if len(payload) > 0 && (payload[0]>>4 == 4 || payload[0]>>4 == 6) {
-		return psp.Seal(sa.aead, h, dst, payload)
-	}
-	return psp.SealPSP(sa.aead, h, dst, payload)
+	h := psp.Header{NextHdr: nh, Version: sa.version, SPI: sa.spi, IV: seq, VNI: vni, Flags: psp.FlagSeq, Seq: uint32(seq)}
+	return psp.PutHeader(h, dst)
 }
 
-// writeKeys applies one update of the keys extern. A key is never changed in place, so MODIFY is
-// not valid.
-func (s *state) writeKeys(t *txn, typ p4.Update_Type, ee *p4.ExternEntry) error {
+// writeKeys applies one update of the keys extern, with the keys of a. A key is never changed in
+// place, so MODIFY is not valid.
+func (s *state) writeKeys(t *txn, typ p4.Update_Type, ee *p4.ExternEntry, a AEAD) error {
 	if ee.GetExternTypeId() != ExternPspSa || ee.GetExternId() != ExternKeys {
 		return status.Errorf(codes.NotFound, "unknown extern %#x instance %#x", ee.GetExternTypeId(), ee.GetExternId())
 	}
@@ -159,11 +163,11 @@ func (s *state) writeKeys(t *txn, typ p4.Update_Type, ee *p4.ExternEntry) error 
 	case typ == p4.Update_INSERT && e.GetLane() >= lanes:
 		return status.Errorf(codes.InvalidArgument, "lane %d is not 0 to %d", e.GetLane(), lanes-1)
 	}
-	var aead cipher.AEAD
+	var key AEADKey
 	var version psp.Version
 	if typ == p4.Update_INSERT {
 		var err error
-		if aead, version, err = newAEAD(e.GetKey()); err != nil {
+		if key, version, err = newKey(a, e.GetKey()); err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
 	}
@@ -182,7 +186,7 @@ func (s *state) writeKeys(t *txn, typ p4.Update_Type, ee *p4.ExternEntry) error 
 		}
 		set(t, s.rx, e.GetSpi(), &rxSA{
 			spi: e.GetSpi(), port: e.GetPort(), session: e.GetSession(), lane: uint8(e.GetLane()),
-			version: version, aead: aead,
+			version: version, key: key,
 		})
 		return nil
 	case dpv1.PspSaDirection_PSP_SA_DIRECTION_TX:
@@ -213,7 +217,7 @@ func (s *state) writeKeys(t *txn, typ p4.Update_Type, ee *p4.ExternEntry) error 
 			l = &txLanes{}
 			set(t, s.tx, k, l)
 		}
-		setLane(t, l, int(e.GetLane()), &txSA{spi: e.GetSpi(), lane: uint8(e.GetLane()), version: version, aead: aead})
+		setLane(t, l, int(e.GetLane()), &txSA{spi: e.GetSpi(), lane: uint8(e.GetLane()), version: version, key: key})
 		return nil
 	}
 	return status.Errorf(codes.InvalidArgument, "unknown direction %d", e.GetDirection())

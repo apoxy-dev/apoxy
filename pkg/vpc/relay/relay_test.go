@@ -21,6 +21,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp/aead"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -34,7 +35,7 @@ type noSend struct{}
 func (noSend) Send(*dp.TxBatch) {}
 
 func TestNewRouter(t *testing.T) {
-	target := dp.New(noSend{})
+	target := dp.New(noSend{}, aead.GCM{})
 	ref := &dpv1.RelayRef{Id: relayID}
 	cases := []struct {
 		name    string
@@ -50,6 +51,45 @@ func TestNewRouter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := relay.NewRouter(tc.cfg)
 			assert.Equal(t, tc.wantErr, err != nil, "error: %v", err)
+		})
+	}
+}
+
+// TestDataPlaneMetrics checks the busy metric of the threads of the data plane, in seconds, and the
+// drop series of the two handoff reasons.
+func TestDataPlaneMetrics(t *testing.T) {
+	busy := func() []dp.ThreadBusy {
+		return []dp.ThreadBusy{
+			{Kind: "rx", Index: 0, Busy: 1500 * time.Millisecond},
+			{Kind: "worker", Index: 1, Busy: 2 * time.Second},
+			{Kind: "kick", Index: 0},
+		}
+	}
+	cases := []struct {
+		name string
+		busy func() []dp.ThreadBusy
+		kv   []string
+		want float64
+		ok   bool
+	}{
+		{name: "an RX goroutine", busy: busy, kv: []string{"kind", "rx", "index", "0"}, want: 1.5, ok: true},
+		{name: "a worker", busy: busy, kv: []string{"kind", "worker", "index", "1"}, want: 2, ok: true},
+		{name: "an idle kicker", busy: busy, kv: []string{"kind", "kick", "index", "0"}, want: 0, ok: true},
+		{name: "a thread that the data plane does not have", busy: busy, kv: []string{"kind", "worker", "index", "0"}},
+		{name: "no busy times", kv: []string{"kind", "rx", "index", "0"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := relay.NewRouter(relay.Config{Relay: &dpv1.RelayRef{Id: relayID}, Target: dp.New(noSend{}, aead.GCM{}),
+				Addresses: &vpctest.Addresses{}, Busy: tc.busy})
+			require.NoError(t, err)
+			got, ok := metric(t, r, "apoxy_vpc_relay_busy_seconds_total", tc.kv...)
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.want, got)
+			for _, reason := range []string{"worker_full", "worker_allowance"} {
+				_, ok := metric(t, r, "apoxy_vpc_relay_dropped_packets_total", "reason", reason)
+				assert.True(t, ok, "the drop series of %s", reason)
+			}
 		})
 	}
 }

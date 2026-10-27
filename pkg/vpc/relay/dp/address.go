@@ -35,19 +35,29 @@ type Interface struct {
 	Gateways []netip.Addr
 	// ZeroCopy is the zero-copy setting of the config: true demands zero-copy, false uses copy.
 	ZeroCopy bool
+	// CPUs is the CPU set of the relay threads and the queue interrupts (relay.cpus of the config,
+	// see ParseCPUList). Empty: the CPU set of the process at OpenDevice.
+	CPUs []int
 }
 
-// FindInterface gives the dedicated interface of cfg and its addresses. With IMDS it reads
-// IMDSv2 of the instance; opts change the IMDS client.
-func FindInterface(ctx context.Context, cfg *configv1alpha1.RelayInterface, opts ...func(*imds.Options)) (Interface, error) {
-	if cfg == nil {
+// FindInterface gives the dedicated interface of the relay config cfg, its addresses and the relay
+// CPUs. With IMDS it reads IMDSv2 of the instance; opts change the IMDS client.
+func FindInterface(ctx context.Context, cfg *configv1alpha1.RelayConfig, opts ...func(*imds.Options)) (Interface, error) {
+	if cfg == nil || cfg.Interface == nil {
 		return Interface{}, errors.New("no relay interface in the config")
 	}
-	ifc, err := findInterface(ctx, cfg, opts...)
+	var cpus []int
+	if strings.TrimSpace(cfg.CPUs) != "" {
+		var err error
+		if cpus, err = ParseCPUList(cfg.CPUs); err != nil {
+			return Interface{}, fmt.Errorf("relay cpus: %w", err)
+		}
+	}
+	ifc, err := findInterface(ctx, cfg.Interface, opts...)
 	if err != nil {
 		return Interface{}, err
 	}
-	ifc.ZeroCopy = cfg.ZeroCopy
+	ifc.ZeroCopy, ifc.CPUs = cfg.Interface.ZeroCopy, cpus
 	return ifc, nil
 }
 

@@ -93,6 +93,9 @@ type Config struct {
 	TunnelBurst int
 	// LaneSources limits the lane ports of a connection, 0 to MaxLaneSources.
 	LaneSources int
+	// Busy gives the busy time of each thread of the data plane for the busy metric, as
+	// dp.Device.Busy. nil: no busy metric.
+	Busy func() []dp.ThreadBusy
 }
 
 // Attachment is one attachment of an agent connection.

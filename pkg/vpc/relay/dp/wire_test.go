@@ -182,15 +182,23 @@ func BenchmarkEncodeUDP(b *testing.B) {
 // TestSendAllocs checks that the device sends a full batch of the pipeline with no heap
 // allocation once the next-hop MAC is known.
 func TestSendAllocs(t *testing.T) {
-	f := newFakeTx(4*rxBatch, 4*rxBatch)
+	f := newFakeTxSize(4*rxBatch, 4*rxBatch, 256)
 	d := newFakeDevice(t, f)
-	b := &TxBatch{txq: d.tx[0], hops: hopCache{}}
+	b := &TxBatch{mems: [][]byte{f.mem}, txq: d.tx[0], hops: hopCache{}}
 	payload := []byte("sixteen bytes...")
-	for range rxBatch {
-		copy(b.room(len(payload)), payload)
-		b.add(fakePeer, len(payload))
+	send := func() {
+		b.frames = b.txq.take(rxBatch, b.frames[:0])
+		for range rxBatch {
+			off, ok := b.room(len(payload))
+			if !ok {
+				panic("no room")
+			}
+			b.add(fakePeer, off, copy(f.mem[off:], payload))
+		}
+		deviceSender{d}.Send(b)
+		b.reset()
 	}
-	deviceSender{d}.Send(b)
+	send()
 	require.Len(t, f.onRing(), rxBatch, "frames of one batch")
 	f.completeRing()
 	// The first send put the MAC from gVisor in the hop cache. It stays new for the whole test, so
@@ -199,14 +207,11 @@ func TestSendAllocs(t *testing.T) {
 	require.True(t, ok, "the hop cache has the MAC of the peer")
 	hop.at = time.Now().Add(time.Hour)
 	b.hops[fakePeer.Addr()] = hop
-	send := func() {
-		deviceSender{d}.Send(b)
-		f.completeRing()
-	}
 	// One run of 100 batches: AllocsPerRun rounds the mean of its runs down.
 	allocs := testing.AllocsPerRun(1, func() {
 		for range 100 {
 			send()
+			f.completeRing()
 		}
 	})
 	assert.Zero(t, allocs, "heap allocations of 100 batches of %d packets", rxBatch)

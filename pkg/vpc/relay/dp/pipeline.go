@@ -31,22 +31,70 @@ type meta struct {
 	from    netip.AddrPort
 	psp     bool // A PSP packet, not a FRAME in.
 	size    int  // The bytes that the meters and the drops count.
+	mem     int  // The memory of the packet in the batch.
 }
 
-// Receive runs the pipeline on all packets of rx, and changes their payloads. Then it gives the
-// sealed PSP and RAW packets to one Send(tx), and resets tx. Probes and keepalives go to the root.
+// rxState is the parse result of one RX packet of a part of Receive.
+type rxState struct {
+	drop uint8 // A drop reason, or 0.
+	sa   *rxSA // The RX entry. nil with drop 0: a probe or a keepalive, for the root.
+	h    psp.Header
+	op   int // The open op of the packet in the opens of the batch.
+}
+
+// Receive runs the pipeline on all packets of rx. It gives the sealed PSP and RAW packets of each
+// part of rxBatch packets to one Send(tx), and resets tx. Probes and keepalives go to the root. A
+// part has five steps: under one read lock, parse each packet, open the PSP packets with one AEAD
+// call, apply each packet in RX order, and seal the packets out with one AEAD call; then Send.
 func (p *Pipeline) Receive(rx []RxPacket, tx *TxBatch) {
 	// Each packet sends at most one packet, so a part of rxBatch packets keeps tx to rxBatch.
 	for len(rx) > 0 {
 		n := min(len(rx), rxBatch)
 		p.mu.RLock()
 		for _, pkt := range rx[:n] {
-			p.receive(pkt.From, pkt.Payload, tx)
+			p.parse(pkt, tx)
+		}
+		if len(tx.opens) > 0 {
+			p.aead.Open(tx.memories(), tx.opens)
+		}
+		for i, pkt := range rx[:n] {
+			p.receive(pkt, &tx.rx[i], tx)
+		}
+		if len(tx.seals) > 0 {
+			p.aead.Seal(tx.memories(), tx.seals)
 		}
 		p.mu.RUnlock()
 		p.flush(tx)
 		rx = rx[n:]
 	}
+}
+
+// parse is the parser and open_psp up to the AEAD, for one UDP payload of port 1000. It adds the
+// result to tx.rx: a punt, a drop reason, or an open op of the PSP packet in the memory of tx. It
+// counts nothing, so that receive counts in RX order.
+func (p *Pipeline) parse(pkt RxPacket, tx *TxBatch) {
+	st := rxState{op: -1}
+	b := pkt.Payload
+	if _, ok := p2p.ProbeSID(b); !ok && !(len(b) == 1 && b[0] == p2p.TypeKeepalive) {
+		h, err := psp.ParseTrunkHeader(b)
+		var sa *rxSA
+		if err == nil {
+			sa = p.st.rx[h.SPI]
+		}
+		switch {
+		case err != nil:
+			st.drop = ReasonMalformed
+		case sa == nil:
+			st.drop = ReasonUnknownSPI
+		case !sa.accepts(h):
+			st.drop = ReasonOpen
+		default:
+			mem, off := tx.in(pkt.mem, b)
+			st.sa, st.h, st.op = sa, h, len(tx.opens)
+			tx.opens = append(tx.opens, AEADOp{Key: sa.key, Mem: mem, Off: off, Len: len(b)})
+		}
+	}
+	tx.rx = append(tx.rx, st)
 }
 
 // flush gives tx to the Sender when it has packets, and resets it.
@@ -57,29 +105,26 @@ func (p *Pipeline) flush(tx *TxBatch) {
 	tx.reset()
 }
 
-// receive runs the pipeline on one UDP payload b of port 1000 from the outer address from.
-func (p *Pipeline) receive(from netip.AddrPort, b []byte, tx *TxBatch) {
-	if _, ok := p2p.ProbeSID(b); ok || (len(b) == 1 && b[0] == p2p.TypeKeepalive) {
-		p.toRoot(PacketInMeta{Kind: KindPunt, From: from}, 0, len(b), b)
+// receive runs the rest of the pipeline on one UDP payload of port 1000 with its parse result st,
+// after the open call.
+func (p *Pipeline) receive(pkt RxPacket, st *rxState, tx *TxBatch) {
+	b := pkt.Payload
+	switch {
+	case st.drop != 0:
+		p.drop(st.drop, len(b))
+		return
+	case st.sa == nil:
+		p.toRoot(PacketInMeta{Kind: KindPunt, From: pkt.From}, 0, len(b), b)
 		return
 	}
-	h, err := psp.ParseTrunkHeader(b)
-	if err != nil {
-		p.drop(ReasonMalformed, len(b))
-		return
-	}
-	// open_psp: the RX entry of the SPI.
-	sa := p.st.rx[h.SPI]
-	if sa == nil {
-		p.drop(ReasonUnknownSPI, len(b))
-		return
-	}
-	payload, ok := sa.open(h, b)
+	// open_psp: the result of the open call, Next Header and the replay window.
+	sa, op := st.sa, &tx.opens[st.op]
+	payload, ok := sa.opened(st.h, tx.memories()[op.Mem][op.Off:op.Off+op.Len], op.OK)
 	if !ok {
 		p.drop(ReasonOpen, len(b))
 		return
 	}
-	p.apply(&meta{port: sa.port, session: sa.session, spi: sa.spi, lane: sa.lane, vni: h.VNI, from: from, psp: true, size: len(b)}, payload, tx)
+	p.apply(&meta{port: sa.port, session: sa.session, spi: sa.spi, lane: sa.lane, vni: st.h.VNI, from: pkt.From, psp: true, size: len(b), mem: op.Mem}, payload, tx)
 }
 
 // PacketOut takes FRAME in, SEAL and RAW, and sends its packet in a batch of one. An error is only
@@ -93,6 +138,9 @@ func (p *Pipeline) PacketOut(po *p4.PacketOut) error {
 	defer p.batches.Put(tx)
 	p.mu.RLock()
 	err = p.packetOut(md, po.GetPayload(), tx)
+	if len(tx.seals) > 0 {
+		p.aead.Seal(tx.memories(), tx.seals)
+	}
 	p.mu.RUnlock()
 	p.flush(tx)
 	return err
@@ -106,9 +154,11 @@ func (p *Pipeline) packetOut(md PacketOutMeta, b []byte, tx *TxBatch) error {
 			p.drop(ReasonMalformed, len(b))
 			return nil
 		}
-		p.apply(&meta{port: md.Port, session: md.Session, vni: vni, size: len(b)}, inner, tx)
+		// The AEAD reads only the memories of the batch, so the inner packet goes there first.
+		_, off := tx.in(0, inner)
+		p.apply(&meta{port: md.Port, session: md.Session, vni: vni, size: len(b)}, tx.buf[off:off+len(inner)], tx)
 	case KindSeal:
-		// SEAL skips apply: M's trunk messages and probes, with tag 0.
+		// SEAL skips apply: M's trunk messages and probes, with tag 0. A message is never IP.
 		o, ok := p.port(md.Port)
 		if !ok || !o.Addr.IsValid() {
 			p.drop(ReasonNoTarget, len(b))
@@ -118,12 +168,14 @@ func (p *Pipeline) packetOut(md PacketOutMeta, b []byte, tx *TxBatch) error {
 			p.drop(ReasonOldSession, len(b))
 			return nil
 		}
-		p.seal(md.Port, o, 0, 0, b, 0, tx)
+		_, off := tx.in(0, b)
+		p.seal(md.Port, o, psp.NextHdrMessage, 0, 0, tx.buf[off:off+len(b)], 0, 0, tx)
 	case KindRaw:
 		if !md.To.IsValid() {
 			return status.Error(codes.InvalidArgument, "RAW has no outer address")
 		}
-		tx.add(md.To, copy(tx.room(len(b)), b))
+		off := tx.slot(len(b))
+		tx.add(md.To, off, copy(tx.buf[off:], b))
 	default:
 		return status.Errorf(codes.InvalidArgument, "packet_out kind %d is not FRAME, SEAL or RAW", md.Kind)
 	}
@@ -184,7 +236,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 			return
 		}
 	}
-	src, dst, ok := innerAddrs(pkt)
+	src, dst, nh, ok := innerAddrs(pkt)
 	if !ok {
 		p.dropIn(pa.MeterIndex, ReasonMalformed, m.size)
 		return
@@ -280,7 +332,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 		if o.Trunk {
 			vni = pa.Tag
 		}
-		if !p.seal(out, o, vni, hash, pkt, mo, tx) {
+		if !p.seal(out, o, nh, vni, hash, pkt, m.mem, mo, tx) {
 			return
 		}
 	} else {
@@ -300,26 +352,38 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 	p.cells[2*cell+1].add(len(pkt))
 }
 
-// seal seals payload with a TX entry of the port session of o on a lane by hash, and sends it to
-// the address of that lane. Lane i of 1 to 3 goes to the port address until bit i-1 of seen is set
-// (a keepalive from the lane port). It counts the drop when it fails, also in port_drops at the
-// meter index mi (0: none).
-func (p *Pipeline) seal(port uint64, o PortAction, vni, hash uint32, payload []byte, mi uint32, tx *TxBatch) bool {
+// seal seals payload with the Next Header nh and a TX entry of the port session of o on a lane by
+// hash, and sends it to the address of that lane. Lane i of 1 to 3 goes to the port address until bit i-1 of seen is set
+// (a keepalive from the lane port). payload is in memory mem of tx. seal writes the PSP header into
+// the room of the next packet (the next TX frame of a batch of a worker) and adds a seal op; the
+// seal call encrypts later. It counts no_keys when it fails, also in port_drops at the meter index
+// mi (0: none). With no room, the packet counts tx_full, and seal reports true, as for a full TX
+// ring.
+func (p *Pipeline) seal(port uint64, o PortAction, nh uint8, vni, hash uint32, payload []byte, mem int, mi uint32, tx *TxBatch) bool {
 	sa := p.st.tx[portSession{port, o.Session}].pick(hash)
-	if sa == nil || len(payload)+psp.Overhead > maxPacket {
+	n := len(payload) + psp.Overhead
+	if sa == nil || n > maxPacket {
 		p.dropIn(mi, ReasonNoKeys, len(payload))
 		return false
 	}
-	n, err := sa.seal(tx.room(len(payload)+psp.Overhead), vni, payload)
-	if err != nil {
+	// The offset first: room can move the buf of a batch with no mems.
+	src := tx.offset(mem, payload)
+	off, ok := tx.room(n)
+	if !ok {
+		p.drop(ReasonTXFull, n)
+		return true
+	}
+	ms := tx.memories()
+	if err := sa.put(ms[tx.txMem][off:off+psp.PrefixLen], nh, vni); err != nil {
 		p.dropIn(mi, ReasonNoKeys, len(payload))
 		return false
 	}
+	tx.seals = append(tx.seals, AEADOp{Key: sa.key, Mem: tx.txMem, Off: off, Len: n, SrcMem: mem, Src: src})
 	to := o.Addr
 	if sa.lane > 0 && o.Seen&(1<<(sa.lane-1)) != 0 {
 		to = laneAddr(o, sa.lane)
 	}
-	tx.add(to, n)
+	tx.add(to, off, n)
 	return true
 }
 
@@ -402,16 +466,17 @@ func laneAddr(pa PortAction, lane uint8) netip.AddrPort {
 	return netip.AddrPortFrom(pa.Addr.Addr(), port)
 }
 
-// innerAddrs returns the source and destination of an IPv4 or IPv6 packet as 128-bit addresses.
-func innerAddrs(pkt []byte) (src, dst netip.Addr, ok bool) {
+// innerAddrs returns the source and destination of an IPv4 or IPv6 packet as 128-bit addresses,
+// and its PSP Next Header: NextHdrV4 or NextHdrV6.
+func innerAddrs(pkt []byte) (src, dst netip.Addr, nh uint8, ok bool) {
 	switch {
 	case len(pkt) >= 20 && pkt[0]>>4 == 4:
 		s, d := netip.AddrFrom4([4]byte(pkt[12:16])), netip.AddrFrom4([4]byte(pkt[16:20]))
-		return netip.AddrFrom16(s.As16()), netip.AddrFrom16(d.As16()), true
+		return netip.AddrFrom16(s.As16()), netip.AddrFrom16(d.As16()), psp.NextHdrV4, true
 	case len(pkt) >= 40 && pkt[0]>>4 == 6:
-		return netip.AddrFrom16([16]byte(pkt[8:24])), netip.AddrFrom16([16]byte(pkt[24:40])), true
+		return netip.AddrFrom16([16]byte(pkt[8:24])), netip.AddrFrom16([16]byte(pkt[24:40])), psp.NextHdrV6, true
 	}
-	return netip.Addr{}, netip.Addr{}, false
+	return netip.Addr{}, netip.Addr{}, 0, false
 }
 
 // flowHash hashes the addresses, the protocol and the first 4 bytes of a TCP, UDP or SCTP header

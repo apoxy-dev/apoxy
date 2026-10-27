@@ -267,6 +267,11 @@ type RelayConfig struct {
 	// Interface is the network interface that the relay owns. The kernel has
 	// no address on it.
 	Interface *RelayInterface `json:"interface,omitempty"`
+	// CPUs is the CPU list (for example "2-15,18-31") where the relay places
+	// the queue interrupts of the interface and its packet threads. Empty (the
+	// default) uses the CPU set of the relay process at start.
+	// +optional
+	CPUs string `json:"cpus,omitempty"`
 }
 
 // RelayInterfaceSource tells where the relay finds its interface and the
