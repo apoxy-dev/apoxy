@@ -71,10 +71,10 @@ func (v *vpcProc) reconcile(a *aChild, id string, fresh bool, now time.Time) {
 			continue
 		}
 		e := newAnnouncer(target{port: a.port, cell: at.cell, origin: ra.origin, far: ra.relay}, c, p)
-		set := v.sets[p]
+		set, _ := v.sets.Get(p)
 		if set == nil {
 			set = &routeSet{}
-			v.sets[p] = set
+			v.sets.Insert(p, set)
 		}
 		set.entries = append(set.entries, e)
 		at.fallback[p] = e
@@ -119,17 +119,32 @@ func (v *vpcProc) checkRemote(a *aChild, at *vAtt, ra remoteAddr) error {
 	case p != p.Masked() || !slices.ContainsFunc(at.addrs, func(o netip.Prefix) bool { return o.Bits() == p.Bits() }):
 		return errors.New("address does not have the length of an address of this relay")
 	}
-	for q, set := range v.sets {
-		if !q.Overlaps(p) {
-			continue
+	// The prefixes that have p, then the prefixes in p. Both walks give p itself.
+	for q, set := range v.sets.Supernets(p) {
+		if err := overlapErr(a, q, set); err != nil {
+			return err
 		}
-		for _, o := range set.entries {
-			switch {
-			case o.own:
-				return fmt.Errorf("address overlaps %s of an attachment of this relay", q)
-			case o.agent != a.s.agent:
-				return fmt.Errorf("address overlaps %s of another agent", q)
-			}
+	}
+	for q, set := range v.sets.Subnets(p) {
+		if q == p {
+			continue // Supernets gave it.
+		}
+		if err := overlapErr(a, q, set); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// overlapErr returns an error when set, of a prefix q that overlaps a remote address of a, has a
+// candidate of an attachment of this relay or of another agent.
+func overlapErr(a *aChild, q netip.Prefix, set *routeSet) error {
+	for _, o := range set.entries {
+		switch {
+		case o.own:
+			return fmt.Errorf("address overlaps %s of an attachment of this relay", q)
+		case o.agent != a.s.agent:
+			return fmt.Errorf("address overlaps %s of another agent", q)
 		}
 	}
 	return nil
@@ -137,7 +152,7 @@ func (v *vpcProc) checkRemote(a *aChild, at *vAtt, ra remoteAddr) error {
 
 // removeOne removes the candidate e of p.
 func (v *vpcProc) removeOne(p netip.Prefix, e *announcer) {
-	if set := v.sets[p]; set != nil {
+	if set, _ := v.sets.Get(p); set != nil {
 		set.entries = slices.DeleteFunc(set.entries, func(o *announcer) bool { return o == e })
 	}
 }
@@ -157,53 +172,18 @@ func (v *vpcProc) removeFallback(at *vAtt) []netip.Prefix {
 // changes. A new candidate can refuse an address, and a removed one can let it in.
 func (v *vpcProc) recheck(now time.Time) {
 	for range v.reports + 1 {
-		if len(v.touched) == 0 {
+		if v.touched == nil {
 			return
 		}
-		touched := indexOf(v.touched)
+		touched := v.touched
 		v.touched = nil
 		for _, a := range v.as {
 			for id, at := range a.atts {
-				if slices.ContainsFunc(at.report, func(ra remoteAddr) bool { return touched.overlaps(ra.prefix) }) {
+				if slices.ContainsFunc(at.report, func(ra remoteAddr) bool { return touched.OverlapsPrefix(ra.prefix) }) {
 					v.reconcile(a, id, false, now)
 				}
 			}
 		}
 	}
 	v.touched = nil
-}
-
-// prefixIndex has a set of prefixes by length, to find the ones that overlap a prefix.
-type prefixIndex map[int]map[netip.Prefix]struct{}
-
-func indexOf(ps map[netip.Prefix]struct{}) prefixIndex {
-	idx := prefixIndex{}
-	for p := range ps {
-		p = p.Masked()
-		if idx[p.Bits()] == nil {
-			idx[p.Bits()] = map[netip.Prefix]struct{}{}
-		}
-		idx[p.Bits()][p] = struct{}{}
-	}
-	return idx
-}
-
-// overlaps reports whether a prefix of idx overlaps p: one that has p, or one in p.
-func (idx prefixIndex) overlaps(p netip.Prefix) bool {
-	for n, set := range idx {
-		if n <= p.Bits() {
-			if q, err := p.Addr().Prefix(n); err == nil {
-				if _, ok := set[q]; ok {
-					return true
-				}
-			}
-			continue
-		}
-		for q := range set {
-			if p.Overlaps(q) {
-				return true
-			}
-		}
-	}
-	return false
 }

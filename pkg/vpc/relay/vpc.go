@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gaissmai/bart"
+
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -28,7 +30,8 @@ type vpcProc struct {
 	name   string // The VPC name in the data plane.
 	trust  *trustGen
 
-	sets    map[netip.Prefix]*routeSet
+	// sets has the candidates of each prefix. Only V reads and changes it, so it changes in place.
+	sets    bart.Table[*routeSet]
 	entries map[netip.Prefix]dp.ForwardAction // The route entries in the data plane.
 	holds   map[netip.Prefix]time.Time        // The next end of a hold time of each prefix.
 	timer   *time.Timer
@@ -46,9 +49,9 @@ type vpcProc struct {
 	// members has the candidates of the records of each member, by the key of the member.
 	members map[string]*vMember
 
-	// touched has the prefixes whose candidates changed in this step. The reports of remote
-	// addresses that overlap them are checked again.
-	touched map[netip.Prefix]struct{}
+	// touched has the prefixes whose candidates changed in this step, or is nil when none did. The
+	// reports of remote addresses that overlap them are checked again.
+	touched *bart.Lite
 	// reports is the number of attachments with a report of remote addresses.
 	reports int
 
@@ -116,7 +119,6 @@ func startVPC(r *Router, c *vChild) {
 		cancel:   cancel,
 		net:      c.net,
 		name:     vpcName(c.key, c.net.ID),
-		sets:     map[netip.Prefix]*routeSet{},
 		entries:  map[netip.Prefix]dp.ForwardAction{},
 		holds:    map[netip.Prefix]time.Time{},
 		as:       map[uint64]*aChild{},
@@ -318,7 +320,7 @@ func (v *vpcProc) attach(e aAttach) {
 		return
 	}
 	for _, p := range e.att.Addresses {
-		if set := v.sets[p.Masked()]; set != nil && slices.ContainsFunc(set.entries, func(o *announcer) bool { return o.own && o.port != e.port }) {
+		if set, _ := v.sets.Get(p.Masked()); set != nil && slices.ContainsFunc(set.entries, func(o *announcer) bool { return o.own && o.port != e.port }) {
 			v.answerCall(func() {
 				reply(rpc.Errorf(rpc.AlreadyExists, "address %s has another attachment on this relay", p.Masked()))
 			})
@@ -339,10 +341,10 @@ func (v *vpcProc) attach(e aAttach) {
 		}
 	}
 	for _, p := range ps {
-		set := v.sets[p]
+		set, _ := v.sets.Get(p)
 		if set == nil {
 			set = &routeSet{}
-			v.sets[p] = set
+			v.sets.Insert(p, set)
 		}
 		if !slices.ContainsFunc(set.entries, func(o *announcer) bool { return o.port == e.port && o.origin == e.att.ID }) {
 			set.entries = append(set.entries, newAnnouncer(t, c, p))
@@ -407,7 +409,7 @@ func (v *vpcProc) drop(a *aChild, id string, now time.Time) {
 // remove removes the candidates of the attachment id on port for ps, as today's removeAnnouncer.
 func (v *vpcProc) remove(port uint64, id string, ps []netip.Prefix) {
 	for _, p := range ps {
-		if set := v.sets[p]; set != nil {
+		if set, _ := v.sets.Get(p); set != nil {
 			set.entries = slices.DeleteFunc(set.entries, func(o *announcer) bool { return o.port == port && o.origin == id })
 		}
 	}
@@ -424,14 +426,14 @@ func (v *vpcProc) sync(ps []netip.Prefix, now time.Time) {
 		seen[p] = struct{}{}
 		if v.reports > 0 {
 			if v.touched == nil {
-				v.touched = map[netip.Prefix]struct{}{}
+				v.touched = &bart.Lite{}
 			}
-			v.touched[p] = struct{}{}
+			v.touched.Insert(p)
 		}
 		v.unsynced[p] = struct{}{}
-		set := v.sets[p]
+		set, _ := v.sets.Get(p)
 		if set == nil || len(set.entries) == 0 {
-			delete(v.sets, p)
+			v.sets.Delete(p)
 			delete(v.holds, p)
 			continue
 		}
@@ -464,7 +466,7 @@ func (v *vpcProc) sendTables() {
 	md := "v/" + v.name
 	for p := range v.unsynced {
 		have, ok := v.entries[p]
-		set := v.sets[p]
+		set, _ := v.sets.Get(p)
 		if set == nil || len(set.entries) == 0 {
 			if ok {
 				b.remove(dp.RouteKey{VPC: v.name, Dst: p}.Entry(nil))
@@ -713,12 +715,12 @@ func (v *vpcProc) table() *routeTable {
 		vpc:     &dpv1.VPCRef{ProjectId: v.c.key.Project, VpcUid: v.c.key.UID, NetworkId: v.net.ID},
 		network: networkOf(v.net.ID),
 		self:    v.r.cfg.Relay,
-		orders:  make(map[netip.Prefix][]viewEntry, len(v.sets)),
+		orders:  make(map[netip.Prefix][]viewEntry, v.sets.Size()),
 	}
 	// A fallback candidate names the relay that the agent reports, with the reference of the
 	// member of that ID when there is one.
 	var refs map[string]*dpv1.RelayRef
-	for p, set := range v.sets {
+	for p, set := range v.sets.All() {
 		order := make([]viewEntry, len(set.order))
 		for i, e := range set.order {
 			order[i] = viewEntry{agent: e.agent, origin: e.origin, relay: e.relay, own: e.own, ref: e.ref}
@@ -749,7 +751,7 @@ func (v *vpcProc) memberRefs() map[string]*dpv1.RelayRef {
 // new events from here, and ends after that write.
 func (v *vpcProc) end() {
 	v.final = true
-	clear(v.sets)
+	v.sets = bart.Table[*routeSet]{}
 	if v.r.mesh != nil {
 		clear(v.ann)
 		v.annDirty = true
@@ -828,10 +830,10 @@ func (v *vpcProc) memberChanged(k string, now time.Time) {
 		}
 		t := target{port: vals.port, cell: vals.cell, origin: id, ref: vals.ref}
 		for _, p := range rec.prefixes {
-			set := v.sets[p]
+			set, _ := v.sets.Get(p)
 			if set == nil {
 				set = &routeSet{}
-				v.sets[p] = set
+				v.sets.Insert(p, set)
 			}
 			set.entries = append(set.entries, newAnnouncer(t, c, p))
 		}

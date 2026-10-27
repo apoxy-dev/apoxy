@@ -92,6 +92,24 @@ func (a *agent) report(id, relayID, far string, addrs ...string) {
 	}}}))
 }
 
+// attachAnswer is the answer of an attach that a task sent.
+type attachAnswer struct {
+	res *dpv1.AttachResponse
+	err error
+}
+
+// attachTask sends an attach of the agent with routes in a new task. The channel gets the answer.
+func (a *agent) attachTask(routes []string) <-chan attachAnswer {
+	out := make(chan attachAnswer, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), wait)
+		defer cancel()
+		res, err := a.rc.Attach(ctx, &dpv1.AttachRequest{Vpc: vpcRef, Name: a.name, Routes: routes})
+		out <- attachAnswer{res: res, err: err}
+	}()
+	return out
+}
+
 // delivers sends one packet from src to dst on the connection of a, and reports whether to gets a
 // packet from src to dst in d.
 func (a *agent) delivers(to *agent, src, dst netip.Addr, d time.Duration) bool {
@@ -149,6 +167,13 @@ func TestFallbackChecks(t *testing.T) {
 		taken bool
 		// zLater makes z attach on relay-1 after the report, with the reported address.
 		zLater bool
+		// zRoutes are the advertised routes of z on relay-1.
+		zRoutes []string
+		// zDetach makes z on relay-1 detach after the report. Then relay-2 checks the report again.
+		zDetach bool
+		// wRoutes makes agent w on relay-2 attach with this number of advertised routes, half in
+		// each of two attachments, at the same time as the report.
+		wRoutes int
 	}{
 		{name: "address of x on relay-1", addr: func(x, _ string) string { return x }, taken: true},
 		{name: "address outside the VPC", addr: func(string, string) string { return "fd00:99::/96" }},
@@ -156,6 +181,13 @@ func TestFallbackChecks(t *testing.T) {
 		{name: "address of an attachment of relay-2", addr: func(_, y string) string { return y }},
 		{name: "address of another agent", addr: func(string, string) string { return "fd61:706f:7879:12:3400:2::/96" }},
 		{name: "address that another agent gets later", addr: func(string, string) string { return "fd61:706f:7879:12:3400:2::/96" }, taken: true, zLater: true},
+		{name: "address of another agent that detaches later", addr: func(string, string) string { return "fd61:706f:7879:12:3400:2::/96" }, zDetach: true},
+		// The last /96 of the VPC network is next to the /72 after the network.
+		{
+			name: "address next to an advertised route of another agent", addr: func(string, string) string { return "fd61:706f:7879:12:34ff:ffff::/96" }, taken: true,
+			zRoutes: []string{"2001:db8::/32", "fd61:706f:7879:12:3500::/72"},
+		},
+		{name: "address reported while another agent attaches with 100 routes", addr: func(string, string) string { return "fd61:706f:7879:12:3400:3::/96" }, taken: true, wRoutes: 100},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -171,12 +203,25 @@ func TestFallbackChecks(t *testing.T) {
 			resY := y.attach()
 			z := e1.dial(t, "agent-z")
 			z.open(dpv1.Mode_MODE_QUIC)
+			var w *agent
+			if tc.wRoutes > 0 {
+				w = e2.dial(t, "agent-w")
+				w.open(dpv1.Mode_MODE_QUIC)
+			}
 			pa, py := resX1.GetAddresses()[0], resY.GetAddresses()[0]
+			var resZ *dpv1.AttachResponse
 			if !tc.zLater {
-				resZ := z.attach()
+				resZ = z.attach(tc.zRoutes...)
 				require.Equal(t, "fd61:706f:7879:12:3400:2::/96", resZ.GetAddresses()[0])
 				// relay-2 has the record of z.
 				y.waitDelivers(z, overlay(py), addr(t, resZ))
+				if len(tc.zRoutes) > 0 {
+					// relay-2 has the advertised routes of z.
+					requireAccepted(t, resZ)
+					for _, r := range tc.zRoutes {
+						y.waitDelivers(z, overlay(py), overlay(r))
+					}
+				}
 			}
 			bad := tc.addr(pa, py)
 			src := overlay(bad)
@@ -186,9 +231,22 @@ func TestFallbackChecks(t *testing.T) {
 			assert.False(t, x2.delivers(y, overlay(pa), overlay(py), 300*time.Millisecond))
 			assert.Equal(t, before+1, e2.drops(t, "source"))
 
+			// The two attachments of w go to relay-2 with the report. V can take them in one step or
+			// in more, and in each order the address is taken.
+			var answers []<-chan attachAnswer
+			if tc.wRoutes > 0 {
+				routes := manyRoutes(tc.wRoutes)
+				answers = append(answers, w.attachTask(routes[:tc.wRoutes/2]), w.attachTask(routes[tc.wRoutes/2:]))
+			}
 			// The report has the address of x on relay-1 and the address of the case. A packet from
 			// the address of x on relay-1 tells that relay-2 took the report.
 			x2.report(resX2.GetAttachmentId(), "relay-1", resX1.GetAttachmentId(), pa, bad)
+			for _, ch := range answers {
+				// The answer comes after relay-2 wrote the routes of the attachment.
+				ans := <-ch
+				require.NoError(t, ans.err)
+				requireAccepted(t, ans.res)
+			}
 			x2.waitDelivers(y, overlay(pa), overlay(py))
 			if bad == pa {
 				return
@@ -200,6 +258,13 @@ func TestFallbackChecks(t *testing.T) {
 			if !tc.taken {
 				assert.Equal(t, before+1, e2.drops(t, "source"))
 			}
+			if tc.zDetach {
+				// relay-2 removes the record of z. Then it checks the report again and takes the
+				// address.
+				z.detach(resZ.GetAttachmentId())
+				x2.waitDelivers(y, src, overlay(py))
+				return
+			}
 			if !tc.zLater {
 				return
 			}
@@ -207,7 +272,7 @@ func TestFallbackChecks(t *testing.T) {
 			// The packets for the address go to x until z on relay-1 gets it. Then the record of z
 			// refuses the address of x.
 			y.waitDelivers(x2, overlay(py), src)
-			resZ := z.attach()
+			resZ = z.attach()
 			require.Equal(t, bad, resZ.GetAddresses()[0])
 			y.waitDelivers(z, overlay(py), src)
 			x2.drain()
