@@ -200,7 +200,7 @@ func newEnv(t *testing.T) *env {
 	return newEnvWith(t, envOpts{})
 }
 
-func newEnvWith(t *testing.T, o envOpts) *env {
+func newEnvWith(t testing.TB, o envOpts) *env {
 	t.Helper()
 	if o.id == "" {
 		o.id = relayID
@@ -307,7 +307,7 @@ func verifyRelay(ca *vpctest.CA) relay.MeshVerify {
 
 // agent is the agent end of one QUIC connection to the relay.
 type agent struct {
-	t    *testing.T
+	t    testing.TB
 	name string
 	qc   *quic.Conn
 	rc   dpv1.RelayClient
@@ -330,21 +330,21 @@ type agent struct {
 }
 
 // dial opens a connection with a new cert of agent name in the VPC of the env.
-func (e *env) dial(t *testing.T, name string) *agent {
+func (e *env) dial(t testing.TB, name string) *agent {
 	t.Helper()
 	a, err := e.dialVPC(t, vpcUID, name)
 	require.NoError(t, err)
 	return a
 }
 
-func (e *env) dialVPC(t *testing.T, vpc, name string) (*agent, error) {
+func (e *env) dialVPC(t testing.TB, vpc, name string) (*agent, error) {
 	t.Helper()
 	cred, err := e.ca.Credential(project, vpc, name, time.Hour)
 	require.NoError(t, err)
 	return e.dialCred(t, name, cred)
 }
 
-func (e *env) dialCred(t *testing.T, name string, cred *identity.Credential) (*agent, error) {
+func (e *env) dialCred(t testing.TB, name string, cred *identity.Credential) (*agent, error) {
 	t.Helper()
 	udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
@@ -446,8 +446,16 @@ func (a *agent) attach(routes ...string) *dpv1.AttachResponse {
 	return res
 }
 
+// detach detaches attachment id of the agent. The answer comes after the relay deleted its
+// entries.
+func (a *agent) detach(id string) {
+	a.t.Helper()
+	_, err := a.rc.Detach(context.Background(), &dpv1.DetachRequest{AttachmentId: id})
+	require.NoError(a.t, err)
+}
+
 // addr returns the overlay address of an attachment.
-func addr(t *testing.T, res *dpv1.AttachResponse) netip.Addr {
+func addr(t testing.TB, res *dpv1.AttachResponse) netip.Addr {
 	t.Helper()
 	require.NotEmpty(t, res.GetAddresses())
 	return relay.OverlayAddr(netip.MustParsePrefix(res.GetAddresses()[0]))
