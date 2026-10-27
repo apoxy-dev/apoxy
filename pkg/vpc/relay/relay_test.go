@@ -94,6 +94,46 @@ func TestDataPlaneMetrics(t *testing.T) {
 	}
 }
 
+// sampleTarget is a data plane that records the load samples of the key engine.
+type sampleTarget struct {
+	*dp.Pipeline
+	samples chan time.Time
+}
+
+func (s sampleTarget) SampleLoad(now time.Time) {
+	select {
+	case s.samples <- now:
+	default:
+	}
+	s.Pipeline.SampleLoad(now)
+}
+
+// TestLoadSamples checks that the key engine gives a LoadTarget a sample of the receive rates at
+// each tick, each second.
+func TestLoadSamples(t *testing.T) {
+	tg := sampleTarget{Pipeline: dp.New(noSend{}, aead.GCM{}), samples: make(chan time.Time, 8)}
+	r, err := relay.NewRouter(relay.Config{Relay: &dpv1.RelayRef{Id: relayID}, Target: tg, Addresses: &vpctest.Addresses{}})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	var got []time.Time
+	for len(got) < 2 {
+		select {
+		case now := <-tg.samples:
+			got = append(got, now)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%d load samples in 5 s", len(got))
+		}
+	}
+	cancel()
+	require.NoError(t, <-done)
+	// A busy router can miss a tick, so two samples are a whole number of seconds apart.
+	between := got[1].Sub(got[0])
+	assert.GreaterOrEqual(t, between.Round(time.Second), time.Second, "the time between two samples: %v", between)
+	assert.InDelta(t, between.Round(time.Second), between, float64(300*time.Millisecond), "the time between two samples")
+}
+
 func TestWelcome(t *testing.T) {
 	e := newEnv(t)
 	for _, mode := range []dpv1.Mode{dpv1.Mode_MODE_QUIC, dpv1.Mode_MODE_PSP} {

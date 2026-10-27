@@ -71,8 +71,9 @@ func meterIndex(me *p4.MeterEntry) (meterKey, error) {
 	return meterKey{me.GetMeterId(), uint32(me.GetIndex().GetIndex())}, nil
 }
 
-// writeMeter applies a MODIFY of a meter. No configuration means no limit.
-func (s *state) writeMeter(t *txn, typ p4.Update_Type, me *p4.MeterEntry) error {
+// writeMeter applies a MODIFY of a meter to the copy. No configuration means no limit. A new
+// configuration gets a new bucket; the copy shares the buckets of the other meters.
+func (c *change) writeMeter(typ p4.Update_Type, me *p4.MeterEntry) error {
 	if typ != p4.Update_MODIFY {
 		return status.Error(codes.InvalidArgument, "a meter takes only MODIFY")
 	}
@@ -81,14 +82,16 @@ func (s *state) writeMeter(t *txn, typ p4.Update_Type, me *p4.MeterEntry) error 
 		return err
 	}
 	if me.GetConfig() == nil {
-		del(t, s.meters, k)
+		if _, ok := c.st.meters[k]; ok {
+			delete(own(&c.st.meters, &c.meters), k)
+		}
 		return nil
 	}
 	b, err := newBucket(me.GetConfig())
 	if err != nil {
 		return err
 	}
-	set(t, s.meters, k, b)
+	own(&c.st.meters, &c.meters)[k] = b
 	return nil
 }
 

@@ -44,21 +44,23 @@ type rxState struct {
 
 // Receive runs the pipeline on all packets of rx. It gives the sealed PSP and RAW packets of each
 // part of rxBatch packets to one Send(tx), and resets tx. Probes and keepalives go to the root. A
-// part has five steps: under one read lock, parse each packet, open the PSP packets with one AEAD
-// call, apply each packet in RX order, and seal the packets out with one AEAD call; then Send.
+// part has five steps: under one read lock and one read of cur, parse each packet, open the PSP
+// packets with one AEAD call, apply each packet in RX order, and seal the packets out with one AEAD
+// call; then Send.
 func (p *Pipeline) Receive(rx []RxPacket, tx *TxBatch) {
 	// Each packet sends at most one packet, so a part of rxBatch packets keeps tx to rxBatch.
 	for len(rx) > 0 {
 		n := min(len(rx), rxBatch)
 		p.mu.RLock()
+		st := p.cur
 		for _, pkt := range rx[:n] {
-			p.parse(pkt, tx)
+			p.parse(st, pkt, tx)
 		}
 		if len(tx.opens) > 0 {
 			p.aead.Open(tx.memories(), tx.opens)
 		}
 		for i, pkt := range rx[:n] {
-			p.receive(pkt, &tx.rx[i], tx)
+			p.receive(st, pkt, &tx.rx[i], tx)
 		}
 		if len(tx.seals) > 0 {
 			p.aead.Seal(tx.memories(), tx.seals)
@@ -69,32 +71,32 @@ func (p *Pipeline) Receive(rx []RxPacket, tx *TxBatch) {
 	}
 }
 
-// parse is the parser and open_psp up to the AEAD, for one UDP payload of port 1000. It adds the
-// result to tx.rx: a punt, a drop reason, or an open op of the PSP packet in the memory of tx. It
-// counts nothing, so that receive counts in RX order.
-func (p *Pipeline) parse(pkt RxPacket, tx *TxBatch) {
-	st := rxState{op: -1}
+// parse is the parser and open_psp up to the AEAD, for one UDP payload of port 1000, with the tables
+// st. It adds the result to tx.rx: a punt, a drop reason, or an open op of the PSP packet in the
+// memory of tx. It counts nothing, so that receive counts in RX order.
+func (p *Pipeline) parse(st *state, pkt RxPacket, tx *TxBatch) {
+	rs := rxState{op: -1}
 	b := pkt.Payload
 	if _, ok := p2p.ProbeSID(b); !ok && !(len(b) == 1 && b[0] == p2p.TypeKeepalive) {
 		h, err := psp.ParseTrunkHeader(b)
 		var sa *rxSA
 		if err == nil {
-			sa = p.st.rx[h.SPI]
+			sa = st.rx[h.SPI]
 		}
 		switch {
 		case err != nil:
-			st.drop = ReasonMalformed
+			rs.drop = ReasonMalformed
 		case sa == nil:
-			st.drop = ReasonUnknownSPI
+			rs.drop = ReasonUnknownSPI
 		case !sa.accepts(h):
-			st.drop = ReasonOpen
+			rs.drop = ReasonOpen
 		default:
 			mem, off := tx.in(pkt.mem, b)
-			st.sa, st.h, st.op = sa, h, len(tx.opens)
+			rs.sa, rs.h, rs.op = sa, h, len(tx.opens)
 			tx.opens = append(tx.opens, AEADOp{Key: sa.key, Mem: mem, Off: off, Len: len(b)})
 		}
 	}
-	tx.rx = append(tx.rx, st)
+	tx.rx = append(tx.rx, rs)
 }
 
 // flush gives tx to the Sender when it has packets, and resets it.
@@ -105,26 +107,26 @@ func (p *Pipeline) flush(tx *TxBatch) {
 	tx.reset()
 }
 
-// receive runs the rest of the pipeline on one UDP payload of port 1000 with its parse result st,
+// receive runs the rest of the pipeline on one UDP payload of port 1000 with its parse result rs,
 // after the open call.
-func (p *Pipeline) receive(pkt RxPacket, st *rxState, tx *TxBatch) {
+func (p *Pipeline) receive(st *state, pkt RxPacket, rs *rxState, tx *TxBatch) {
 	b := pkt.Payload
 	switch {
-	case st.drop != 0:
-		p.drop(st.drop, len(b))
+	case rs.drop != 0:
+		p.drop(rs.drop, len(b))
 		return
-	case st.sa == nil:
-		p.toRoot(PacketInMeta{Kind: KindPunt, From: pkt.From}, 0, len(b), b)
+	case rs.sa == nil:
+		p.toRoot(st, PacketInMeta{Kind: KindPunt, From: pkt.From}, 0, len(b), b)
 		return
 	}
 	// open_psp: the result of the open call, Next Header and the replay window.
-	sa, op := st.sa, &tx.opens[st.op]
-	payload, ok := sa.opened(st.h, tx.memories()[op.Mem][op.Off:op.Off+op.Len], op.OK)
+	sa, op := rs.sa, &tx.opens[rs.op]
+	payload, ok := sa.opened(rs.h, tx.memories()[op.Mem][op.Off:op.Off+op.Len], op.OK)
 	if !ok {
 		p.drop(ReasonOpen, len(b))
 		return
 	}
-	p.apply(&meta{port: sa.port, session: sa.session, spi: sa.spi, lane: sa.lane, vni: st.h.VNI, from: pkt.From, psp: true, size: len(b), mem: op.Mem}, payload, tx)
+	p.apply(st, &meta{port: sa.port, session: sa.session, spi: sa.spi, lane: sa.lane, vni: rs.h.VNI, from: pkt.From, psp: true, size: len(b), mem: op.Mem}, payload, tx)
 }
 
 // PacketOut takes FRAME in, SEAL and RAW, and sends its packet in a batch of one. An error is only
@@ -137,7 +139,7 @@ func (p *Pipeline) PacketOut(po *p4.PacketOut) error {
 	tx := p.batches.Get().(*TxBatch)
 	defer p.batches.Put(tx)
 	p.mu.RLock()
-	err = p.packetOut(md, po.GetPayload(), tx)
+	err = p.packetOut(p.cur, md, po.GetPayload(), tx)
 	if len(tx.seals) > 0 {
 		p.aead.Seal(tx.memories(), tx.seals)
 	}
@@ -146,7 +148,7 @@ func (p *Pipeline) PacketOut(po *p4.PacketOut) error {
 	return err
 }
 
-func (p *Pipeline) packetOut(md PacketOutMeta, b []byte, tx *TxBatch) error {
+func (p *Pipeline) packetOut(st *state, md PacketOutMeta, b []byte, tx *TxBatch) error {
 	switch md.Kind {
 	case KindFrame:
 		vni, inner, err := peerconn.DecodeData(b)
@@ -156,10 +158,10 @@ func (p *Pipeline) packetOut(md PacketOutMeta, b []byte, tx *TxBatch) error {
 		}
 		// The AEAD reads only the memories of the batch, so the inner packet goes there first.
 		_, off := tx.in(0, inner)
-		p.apply(&meta{port: md.Port, session: md.Session, vni: vni, size: len(b)}, tx.buf[off:off+len(inner)], tx)
+		p.apply(st, &meta{port: md.Port, session: md.Session, vni: vni, size: len(b)}, tx.buf[off:off+len(inner)], tx)
 	case KindSeal:
 		// SEAL skips apply: M's trunk messages and probes, with tag 0. A message is never IP.
-		o, ok := p.port(md.Port)
+		o, ok := st.port(md.Port)
 		if !ok || !o.Addr.IsValid() {
 			p.drop(ReasonNoTarget, len(b))
 			return nil
@@ -169,7 +171,7 @@ func (p *Pipeline) packetOut(md PacketOutMeta, b []byte, tx *TxBatch) error {
 			return nil
 		}
 		_, off := tx.in(0, b)
-		p.seal(md.Port, o, psp.NextHdrMessage, 0, 0, tx.buf[off:off+len(b)], 0, 0, tx)
+		p.seal(st, md.Port, o, psp.NextHdrMessage, 0, 0, tx.buf[off:off+len(b)], 0, 0, tx)
 	case KindRaw:
 		if !md.To.IsValid() {
 			return status.Error(codes.InvalidArgument, "RAW has no outer address")
@@ -183,19 +185,19 @@ func (p *Pipeline) packetOut(md PacketOutMeta, b []byte, tx *TxBatch) error {
 }
 
 // port returns the port action of the ports entry of id.
-func (p *Pipeline) port(id uint64) (PortAction, bool) {
-	if e := p.st.ports[id]; e != nil {
+func (s *state) port(id uint64) (PortAction, bool) {
+	if e := s.ports[id]; e != nil {
 		a, ok := e.action.(PortAction)
 		return a, ok
 	}
 	return PortAction{}, false
 }
 
-// apply is the apply block of the Relay control, from ports to send_out.
-func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
+// apply is the apply block of the Relay control, from ports to send_out, with the tables st.
+func (p *Pipeline) apply(st *state, m *meta, pkt []byte, tx *TxBatch) {
 	// ports.
 	var act Action = p.defaults[TablePorts]
-	if e := p.st.ports[m.port]; e != nil {
+	if e := st.ports[m.port]; e != nil {
 		act = e.action
 	}
 	pa, ok := act.(PortAction)
@@ -214,17 +216,17 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 			p.dropIn(pa.MeterIndex, ReasonUnknownSource, m.size)
 			return
 		}
-		if !p.meter(MeterLane, 4*pa.MeterIndex+uint32(m.lane), m.size) {
+		if !st.meter(MeterLane, 4*pa.MeterIndex+uint32(m.lane), m.size) {
 			p.dropIn(pa.MeterIndex, ReasonMeter, m.size)
 			return
 		}
 	}
-	if !p.meter(MeterPort, pa.MeterIndex, m.size) {
+	if !st.meter(MeterPort, pa.MeterIndex, m.size) {
 		p.dropIn(pa.MeterIndex, ReasonMeter, m.size)
 		return
 	}
 	if m.psp {
-		p.st.count(m.spi)
+		st.count(m.spi)
 	}
 
 	// read_tag: a trunk packet carries the sender's session tag in the VNI field. Tag 0 is for M.
@@ -232,7 +234,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 	if pa.Trunk {
 		tag = m.vni
 		if tag == 0 {
-			p.toRoot(PacketInMeta{Kind: KindPunt, Port: m.port, Session: pa.Session, From: m.from}, pa.MeterIndex, m.size, pkt)
+			p.toRoot(st, PacketInMeta{Kind: KindPunt, Port: m.port, Session: pa.Session, From: m.from}, pa.MeterIndex, m.size, pkt)
 			return
 		}
 	}
@@ -245,7 +247,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 	// classify.
 	act = p.defaults[TableClassify]
 	var vpc uint32
-	if e := p.st.classify[ClassifyKey{Port: m.port, Session: pa.Session, Tag: tag}]; e != nil {
+	if e := st.classify[ClassifyKey{Port: m.port, Session: pa.Session, Tag: tag}]; e != nil {
 		act, vpc = e.action, e.vpc
 	}
 	c, ok := act.(ContextAction)
@@ -261,7 +263,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 
 	// source.
 	act = p.defaults[TableSource]
-	if l := p.st.source[setKey{m.port, pa.Session, tag}]; l != nil {
+	if l := st.source[setKey{m.port, pa.Session, tag}]; l != nil {
 		if e, ok := l.lookup(src); ok {
 			act = e.action
 		}
@@ -279,7 +281,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 	// route and route_end.
 	hash := flowHash(pkt)
 	act = p.defaults[TableRoute]
-	if l := p.st.route[vpc]; l != nil {
+	if l := st.route[vpc]; l != nil {
 		if e, ok := l.lookup(dst); ok {
 			act = e.action
 		}
@@ -301,7 +303,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 			p.dropIn(pa.MeterIndex, ReasonNoRoute, m.size)
 			return
 		}
-		p.toRoot(PacketInMeta{Kind: KindMiss, Port: m.port, Session: pa.Session, Hash: hash, From: m.from}, pa.MeterIndex, m.size, pkt)
+		p.toRoot(st, PacketInMeta{Kind: KindMiss, Port: m.port, Session: pa.Session, Hash: hash, From: m.from}, pa.MeterIndex, m.size, pkt)
 		return
 	default:
 		p.dropAction(a, m.size, pa.MeterIndex)
@@ -310,7 +312,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 
 	// send_out. After the ports entry of the out port, a drop counts at its meter index
 	// (out_meter_index).
-	o, ok := p.port(out)
+	o, ok := st.port(out)
 	if !ok {
 		p.dropIn(pa.MeterIndex, ReasonNoTarget, m.size)
 		return
@@ -332,7 +334,7 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 		if o.Trunk {
 			vni = pa.Tag
 		}
-		if !p.seal(out, o, nh, vni, hash, pkt, m.mem, mo, tx) {
+		if !p.seal(st, out, o, nh, vni, hash, pkt, m.mem, mo, tx) {
 			return
 		}
 	} else {
@@ -359,8 +361,8 @@ func (p *Pipeline) apply(m *meta, pkt []byte, tx *TxBatch) {
 // seal call encrypts later. It counts no_keys when it fails, also in port_drops at the meter index
 // mi (0: none). With no room, the packet counts tx_full, and seal reports true, as for a full TX
 // ring.
-func (p *Pipeline) seal(port uint64, o PortAction, nh uint8, vni, hash uint32, payload []byte, mem int, mi uint32, tx *TxBatch) bool {
-	sa := p.st.tx[portSession{port, o.Session}].pick(hash)
+func (p *Pipeline) seal(st *state, port uint64, o PortAction, nh uint8, vni, hash uint32, payload []byte, mem int, mi uint32, tx *TxBatch) bool {
+	sa := st.tx[portSession{port, o.Session}].pick(hash)
 	n := len(payload) + psp.Overhead
 	if sa == nil || n > maxPacket {
 		p.dropIn(mi, ReasonNoKeys, len(payload))
@@ -389,8 +391,8 @@ func (p *Pipeline) seal(port uint64, o PortAction, nh uint8, vni, hash uint32, p
 
 // toRoot gives a PacketIn to the root's callback, within punt meter i: the meter index of the port
 // of the packet, or 0 for a probe.
-func (p *Pipeline) toRoot(md PacketInMeta, i uint32, size int, payload []byte) {
-	if !p.meter(MeterPunt, i, size) {
+func (p *Pipeline) toRoot(st *state, md PacketInMeta, i uint32, size int, payload []byte) {
+	if !st.meter(MeterPunt, i, size) {
 		p.dropIn(i, ReasonMeter, size)
 		return
 	}
@@ -423,8 +425,8 @@ func (p *Pipeline) dropAction(a Action, size int, mi uint32) {
 
 // meter reports whether the packet is green in meter index i. An index with no configuration has
 // no limit.
-func (p *Pipeline) meter(id, i uint32, size int) bool {
-	b := p.st.meters[meterKey{id, i}]
+func (s *state) meter(id, i uint32, size int) bool {
+	b := s.meters[meterKey{id, i}]
 	if b == nil {
 		return true
 	}

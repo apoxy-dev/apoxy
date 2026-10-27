@@ -366,7 +366,11 @@ func readRx(ctx context.Context, t dp.Target) ([]*dpv1.PspSaEntry, error) {
 // tick runs the rekeys and the expiry of the engine, and makes the keys entries the same. It reads
 // the counts of each RX entry: a relay SA rekeys after 3/4 of its packet limit too. It returns the
 // rekey of each port, the receive counts of each port, and the ports whose TX SA of lane 0 ended.
+// A LoadTarget also gets a sample of the receive rates, for the placement of new sessions.
 func (k *keyEngine) tick(ctx context.Context, now time.Time) (map[uint64]keys.Request, map[uint64]*rxValue, []uint64) {
+	if lt, ok := k.t.(LoadTarget); ok {
+		lt.SampleLoad(now)
+	}
 	entries, err := readRx(ctx, k.t)
 	if err != nil {
 		slog.Warn("Failed to read keys entries", "error", err)

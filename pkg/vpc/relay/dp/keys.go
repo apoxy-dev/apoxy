@@ -140,9 +140,9 @@ func (sa *txSA) put(dst []byte, nh uint8, vni uint32) error {
 	return psp.PutHeader(h, dst)
 }
 
-// writeKeys applies one update of the keys extern, with the keys of a. A key is never changed in
-// place, so MODIFY is not valid.
-func (s *state) writeKeys(t *txn, typ p4.Update_Type, ee *p4.ExternEntry, a AEAD) error {
+// writeKeys applies one update of the keys extern to the copy, with the keys of a. A key is never
+// changed in place, so MODIFY is not valid.
+func (c *change) writeKeys(typ p4.Update_Type, ee *p4.ExternEntry, a AEAD) error {
 	if ee.GetExternTypeId() != ExternPspSa || ee.GetExternId() != ExternKeys {
 		return status.Errorf(codes.NotFound, "unknown extern %#x instance %#x", ee.GetExternTypeId(), ee.GetExternId())
 	}
@@ -171,27 +171,28 @@ func (s *state) writeKeys(t *txn, typ p4.Update_Type, ee *p4.ExternEntry, a AEAD
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
 	}
+	st := c.st
 	switch e.GetDirection() {
 	case dpv1.PspSaDirection_PSP_SA_DIRECTION_RX:
-		_, had := s.rx[e.GetSpi()]
+		_, had := st.rx[e.GetSpi()]
 		if typ == p4.Update_DELETE {
 			if !had {
 				return status.Errorf(codes.NotFound, "no RX entry for SPI %#x", e.GetSpi())
 			}
-			del(t, s.rx, e.GetSpi())
+			delete(own(&st.rx, &c.rx), e.GetSpi())
 			return nil
 		}
 		if had {
 			return status.Errorf(codes.AlreadyExists, "SPI %#x has an RX entry", e.GetSpi())
 		}
-		set(t, s.rx, e.GetSpi(), &rxSA{
+		own(&st.rx, &c.rx)[e.GetSpi()] = &rxSA{
 			spi: e.GetSpi(), port: e.GetPort(), session: e.GetSession(), lane: uint8(e.GetLane()),
 			version: version, key: key,
-		})
+		}
 		return nil
 	case dpv1.PspSaDirection_PSP_SA_DIRECTION_TX:
 		k := portSession{e.GetPort(), e.GetSession()}
-		l := s.tx[k]
+		l := st.tx[k]
 		lane := -1
 		if l != nil {
 			for i, sa := range l {
@@ -204,29 +205,39 @@ func (s *state) writeKeys(t *txn, typ p4.Update_Type, ee *p4.ExternEntry, a AEAD
 			if lane < 0 {
 				return status.Errorf(codes.NotFound, "no TX entry for SPI %#x of this port session", e.GetSpi())
 			}
-			setLane(t, l, lane, nil)
+			l = c.ownLanes(k)
+			l[lane] = nil
 			if l.empty() {
-				del(t, s.tx, k)
+				delete(st.tx, k)
 			}
 			return nil
 		}
 		if lane >= 0 || (l != nil && l[e.GetLane()] != nil) {
 			return status.Errorf(codes.AlreadyExists, "SPI %#x or lane %d of this port session has a TX entry", e.GetSpi(), e.GetLane())
 		}
-		if l == nil {
-			l = &txLanes{}
-			set(t, s.tx, k, l)
-		}
-		setLane(t, l, int(e.GetLane()), &txSA{spi: e.GetSpi(), lane: uint8(e.GetLane()), version: version, key: key})
+		c.ownLanes(k)[e.GetLane()] = &txSA{spi: e.GetSpi(), lane: uint8(e.GetLane()), version: version, key: key}
 		return nil
 	}
 	return status.Errorf(codes.InvalidArgument, "unknown direction %d", e.GetDirection())
 }
 
-func setLane(t *txn, l *txLanes, i int, sa *txSA) {
-	old := l[i]
-	l[i] = sa
-	t.onUndo(func() { l[i] = old })
+// ownLanes returns the TX lanes of k to change. At the first change it copies them, or makes new
+// lanes, and copies the map of them. The TX entries stay shared, with their sequence numbers.
+func (c *change) ownLanes(k portSession) *txLanes {
+	l := c.st.tx[k]
+	if l != nil && c.lanes[k] {
+		return l
+	}
+	n := &txLanes{}
+	if l != nil {
+		*n = *l
+	}
+	own(&c.st.tx, &c.tx)[k] = n
+	if c.lanes == nil {
+		c.lanes = map[portSession]bool{}
+	}
+	c.lanes[k] = true
+	return n
 }
 
 // readKeys gives the keys entries that match ee, with no key. An RX entry also has its packet

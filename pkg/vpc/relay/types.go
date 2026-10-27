@@ -67,6 +67,13 @@ type PortTarget interface {
 	DataPort() uint16
 }
 
+// LoadTarget is a data plane that places new sessions on its workers by their receive rates, as
+// dp.Pipeline. The key engine gives it a sample at each tick.
+type LoadTarget interface {
+	dp.Target
+	SampleLoad(now time.Time)
+}
+
 // Config is the configuration of a Router.
 type Config struct {
 	// Relay is the ID and the public addresses of this relay. Welcome and the slot Routes carry

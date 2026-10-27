@@ -177,9 +177,10 @@ func (c *counter) add(n int) {
 	c.bytes.Add(uint64(n))
 }
 
-// Pipeline is the Go pipeline of relay.p4. Write takes the lock; each part of a batch of packets
-// takes the read lock one time. The frame writers and OnPacketIn run with the read lock held and
-// must not call the Pipeline. The Sender runs after the part releases the read lock.
+// Pipeline is the Go pipeline of relay.p4. One Write at a time makes a copy of the tables that it
+// changes, with no lock, and sets cur to it with the lock held. Each part of a batch of packets
+// takes the read lock and reads cur one time. The frame writers and OnPacketIn run with the read
+// lock held and must not call the Pipeline. The Sender runs after the part releases the read lock.
 type Pipeline struct {
 	send     Sender
 	aead     AEAD
@@ -192,14 +193,21 @@ type Pipeline struct {
 	drops     []counter
 	portDrops []counter // Packets only.
 
+	// wmu keeps the Writes to one at a time (one writer for all tables). mu is the write lock of cur
+	// and the frame writers.
+	wmu     sync.Mutex
 	mu      sync.RWMutex
-	st      state
+	cur     *state
 	writers map[uint64]func([]byte) error
 
-	// The steering of the device (steer.go): the workers and the worker of each port session, under
-	// mu, and the map that the RX goroutines read with no lock.
+	// spare is the copy before cur, under wmu. After the swap no part reads it, so the next Write
+	// makes its copy in it.
+	spare *state
+
+	// The placement of the device (steer.go), under wmu: the workers and the port sessions with a
+	// worker. The RX goroutines read the steering map with no lock.
 	workers  int
-	workerOf map[portSession]int
+	placed   map[portSession]*placed
 	steering atomic.Pointer[steerMap]
 }
 
@@ -215,7 +223,8 @@ func New(send Sender, aead AEAD) *Pipeline {
 		cells:     make([]counter, counterSizes[CounterCells]),
 		drops:     make([]counter, counterSizes[CounterDrops]),
 		portDrops: make([]counter, counterSizes[CounterPortDrops]),
-		st:        newState(),
+		cur:       newState(),
+		spare:     &state{},
 		writers:   map[uint64]func([]byte) error{},
 	}
 	for id, a := range defaultActions {
@@ -230,9 +239,13 @@ func New(send Sender, aead AEAD) *Pipeline {
 	return p
 }
 
-// Write applies the updates of a DATAPLANE_ATOMIC request at one commit, or none of them. An error
-// of one update gives a status with one p4.Error for each update: the code of the failed update,
-// and ABORTED for the others.
+// Write applies the updates of a DATAPLANE_ATOMIC request at one commit, or none of them. It
+// applies the batch to a copy of the tables that it changes, with no lock. When all updates pass,
+// it places the new port sessions, and then, with the write lock held, sets cur to the copy,
+// publishes the steering map and sets the counters. The lock waits for the parts that read the old
+// copy, so no packet counts with an old entry after Write returns. An error of one update drops the
+// copy and gives a status with one p4.Error for each update: the code of the failed update, and
+// ABORTED for the others.
 func (p *Pipeline) Write(ctx context.Context, req *p4.WriteRequest) error {
 	if err := ctx.Err(); err != nil {
 		return status.FromContextError(err).Err()
@@ -240,15 +253,15 @@ func (p *Pipeline) Write(ctx context.Context, req *p4.WriteRequest) error {
 	if req.GetAtomicity() != p4.WriteRequest_DATAPLANE_ATOMIC {
 		return status.Error(codes.InvalidArgument, "the target takes only DATAPLANE_ATOMIC writes")
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	var t txn
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
+	c := newChange(p.cur, p.spare)
 	for i, u := range req.GetUpdates() {
-		err := p.update(&t, u)
+		err := p.update(c, u)
 		if err == nil {
 			continue
 		}
-		t.rollback()
+		*p.spare = state{} // Drop the copy.
 		details := make([]protoadapt.MessageV1, len(req.GetUpdates()))
 		for j := range details {
 			details[j] = &p4.Error{CanonicalCode: int32(codes.Aborted), Message: "the batch was not applied"}
@@ -261,20 +274,35 @@ func (p *Pipeline) Write(ctx context.Context, req *p4.WriteRequest) error {
 		}
 		return s.Err()
 	}
-	p.steer()
+	// The steering map changes only with the RX entries.
+	var sm *steerMap
+	if c.rx {
+		sm = p.place(c.st)
+	}
+	p.mu.Lock()
+	p.cur, p.spare = c.st, p.cur
+	*p.spare = state{} // It must not keep the old maps.
+	if c.rx {
+		p.steering.Store(sm)
+	}
+	for _, v := range c.counters {
+		v.c.packets.Store(v.packets)
+		v.c.bytes.Store(v.bytes)
+	}
+	p.mu.Unlock()
 	return nil
 }
 
-func (p *Pipeline) update(t *txn, u *p4.Update) error {
+func (p *Pipeline) update(c *change, u *p4.Update) error {
 	switch e := u.GetEntity().GetEntity().(type) {
 	case *p4.Entity_TableEntry:
-		return p.st.writeTable(t, u.GetType(), e.TableEntry)
+		return c.writeTable(u.GetType(), e.TableEntry)
 	case *p4.Entity_ExternEntry:
-		return p.st.writeKeys(t, u.GetType(), e.ExternEntry, p.aead)
+		return c.writeKeys(u.GetType(), e.ExternEntry, p.aead)
 	case *p4.Entity_CounterEntry:
-		return p.writeCounter(t, u.GetType(), e.CounterEntry)
+		return p.writeCounter(c, u.GetType(), e.CounterEntry)
 	case *p4.Entity_MeterEntry:
-		return p.st.writeMeter(t, u.GetType(), e.MeterEntry)
+		return c.writeMeter(u.GetType(), e.MeterEntry)
 	case nil:
 		return status.Error(codes.InvalidArgument, "the update has no entity")
 	}
@@ -289,7 +317,7 @@ func (p *Pipeline) Read(ctx context.Context, req *p4.ReadRequest, each func(*p4.
 	}
 	var out []*p4.Entity
 	p.mu.RLock()
-	err := p.read(req, &out)
+	err := p.read(p.cur, req, &out)
 	p.mu.RUnlock()
 	if err != nil {
 		return err
@@ -300,18 +328,18 @@ func (p *Pipeline) Read(ctx context.Context, req *p4.ReadRequest, each func(*p4.
 	return nil
 }
 
-func (p *Pipeline) read(req *p4.ReadRequest, out *[]*p4.Entity) error {
+func (p *Pipeline) read(st *state, req *p4.ReadRequest, out *[]*p4.Entity) error {
 	for _, e := range req.GetEntities() {
 		var err error
 		switch e := e.GetEntity().(type) {
 		case *p4.Entity_TableEntry:
-			err = p.st.readTables(e.TableEntry, out)
+			err = st.readTables(e.TableEntry, out)
 		case *p4.Entity_ExternEntry:
-			err = p.st.readKeys(e.ExternEntry, out)
+			err = st.readKeys(e.ExternEntry, out)
 		case *p4.Entity_CounterEntry:
 			err = p.readCounters(e.CounterEntry, out)
 		case *p4.Entity_MeterEntry:
-			err = p.st.readMeters(e.MeterEntry, out)
+			err = st.readMeters(e.MeterEntry, out)
 		default:
 			err = status.Error(codes.Unimplemented, "the target does not have this entity type")
 		}
@@ -363,12 +391,13 @@ func (p *Pipeline) counterAt(id uint32, index *p4.Index) (*counter, error) {
 	return &cs[index.GetIndex()], nil
 }
 
-// writeCounter applies a MODIFY of a counter index, for example to 0 after the final count.
-func (p *Pipeline) writeCounter(t *txn, typ p4.Update_Type, ce *p4.CounterEntry) error {
+// writeCounter checks a MODIFY of a counter index, for example to 0 after the final count. The
+// swap of the Write sets the value.
+func (p *Pipeline) writeCounter(c *change, typ p4.Update_Type, ce *p4.CounterEntry) error {
 	if typ != p4.Update_MODIFY {
 		return status.Error(codes.InvalidArgument, "a counter takes only MODIFY")
 	}
-	c, err := p.counterAt(ce.GetCounterId(), ce.GetIndex())
+	ctr, err := p.counterAt(ce.GetCounterId(), ce.GetIndex())
 	if err != nil {
 		return err
 	}
@@ -376,13 +405,7 @@ func (p *Pipeline) writeCounter(t *txn, typ p4.Update_Type, ce *p4.CounterEntry)
 	if d.GetPacketCount() < 0 || d.GetByteCount() < 0 {
 		return status.Error(codes.InvalidArgument, "a counter value must not be negative")
 	}
-	oldP, oldB := c.packets.Load(), c.bytes.Load()
-	c.packets.Store(uint64(d.GetPacketCount()))
-	c.bytes.Store(uint64(d.GetByteCount()))
-	t.onUndo(func() {
-		c.packets.Store(oldP)
-		c.bytes.Store(oldB)
-	})
+	c.counters = append(c.counters, counterValue{c: ctr, packets: uint64(d.GetPacketCount()), bytes: uint64(d.GetByteCount())})
 	return nil
 }
 

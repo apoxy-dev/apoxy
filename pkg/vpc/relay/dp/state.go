@@ -4,7 +4,9 @@ package dp
 
 import (
 	"bytes"
+	"maps"
 	"net/netip"
+	"slices"
 
 	p4 "github.com/p4lang/p4runtime/go/p4/v1"
 	"google.golang.org/grpc/codes"
@@ -38,14 +40,14 @@ type nameRef struct {
 	refs int
 }
 
-// state is the content of the tables and the keys. Write changes it with the lock held; the
-// packets read it with the read lock held.
+// state is one copy of the tables and the keys. The packets read cur, the copy of the last Write,
+// and never change its maps. A Write makes the next copy in a change.
 type state struct {
 	ports    map[uint64]*entry[PortsKey]
 	classify map[ClassifyKey]*entry[ClassifyKey]
 	source   map[setKey]*lpm[*entry[SourceKey]]
 	route    map[uint32]*lpm[*entry[RouteKey]]
-	names    map[string]*nameRef
+	names    map[string]nameRef
 	free     []uint32
 	nextName uint32
 	rx       map[uint32]*rxSA
@@ -53,52 +55,76 @@ type state struct {
 	meters   map[meterKey]*bucket
 }
 
-func newState() state {
-	return state{
+func newState() *state {
+	return &state{
 		ports:    map[uint64]*entry[PortsKey]{},
 		classify: map[ClassifyKey]*entry[ClassifyKey]{},
 		source:   map[setKey]*lpm[*entry[SourceKey]]{},
 		route:    map[uint32]*lpm[*entry[RouteKey]]{},
-		names:    map[string]*nameRef{},
+		names:    map[string]nameRef{},
 		rx:       map[uint32]*rxSA{},
 		tx:       map[portSession]*txLanes{},
 		meters:   map[meterKey]*bucket{},
 	}
 }
 
-// txn records how to undo each change of one Write.
-type txn struct {
-	undo []func()
+// change is one Write: the next copy of the tables and the keys, and the counter values to set at
+// the swap. The copy shares each map of cur until the batch changes it, and then has its own copy
+// of that map. For source, route and tx it copies only the changed LPM or lanes, and the map of
+// them. The objects that the packets change (replay windows, sequence numbers, meter buckets) stay
+// shared until the batch replaces them.
+type change struct {
+	st *state
+
+	// The maps of st that this change copied.
+	ports, classify, source, route, names, free, rx, tx, meters bool
+
+	sources map[setKey]bool      // The source LPMs that it copied.
+	routes  map[uint32]bool      // The route LPMs that it copied.
+	lanes   map[portSession]bool // The TX lanes that it copied.
+
+	counters []counterValue
 }
 
-func (t *txn) onUndo(f func()) { t.undo = append(t.undo, f) }
+// counterValue is a counter MODIFY. The swap sets it with the write lock held.
+type counterValue struct {
+	c              *counter
+	packets, bytes uint64
+}
 
-func (t *txn) rollback() {
-	for i := len(t.undo) - 1; i >= 0; i-- {
-		t.undo[i]()
+// newChange returns a change with its copy in st, which no part reads.
+func newChange(cur, st *state) *change {
+	*st = *cur
+	return &change{st: st}
+}
+
+// own returns *m to change. At the first change it copies *m.
+func own[K comparable, V any](m *map[K]V, copied *bool) map[K]V {
+	if !*copied {
+		*m = maps.Clone(*m)
+		*copied = true
 	}
-	t.undo = nil
+	return *m
 }
 
-func set[K comparable, V any](t *txn, m map[K]V, k K, v V) {
-	old, had := m[k]
-	m[k] = v
-	t.onUndo(func() {
-		if had {
-			m[k] = old
-		} else {
-			delete(m, k)
-		}
-	})
-}
-
-func del[K comparable, V any](t *txn, m map[K]V, k K) {
-	old, had := m[k]
-	if !had {
-		return
+// ownLPM returns the LPM of k in *m to change. At the first change it copies the LPM, or makes a
+// new one, and copies *m.
+func ownLPM[K comparable, V any](m *map[K]*lpm[V], copied *bool, lpms *map[K]bool, k K) *lpm[V] {
+	l := (*m)[k]
+	if l != nil && (*lpms)[k] {
+		return l
 	}
-	delete(m, k)
-	t.onUndo(func() { m[k] = old })
+	if l == nil {
+		l = newLPM[V]()
+	} else {
+		l = &lpm[V]{m: maps.Clone(l.m), lens: l.lens}
+	}
+	own(m, copied)[k] = l
+	if *lpms == nil {
+		*lpms = map[K]bool{}
+	}
+	(*lpms)[k] = true
+	return l
 }
 
 // lpm is a longest-prefix match on 128-bit addresses. IPv4 is IPv4-mapped.
@@ -123,59 +149,57 @@ func (l *lpm[V]) lookup(a netip.Addr) (V, bool) {
 	return zero, false
 }
 
-func (l *lpm[V]) put(t *txn, p netip.Prefix, v V) {
+func (l *lpm[V]) put(p netip.Prefix, v V) {
 	if _, had := l.m[p]; !had {
-		n := p.Bits()
-		l.lens[n]++
-		t.onUndo(func() { l.lens[n]-- })
+		l.lens[p.Bits()]++
 	}
-	set(t, l.m, p, v)
+	l.m[p] = v
 }
 
-func (l *lpm[V]) remove(t *txn, p netip.Prefix) {
-	if _, had := l.m[p]; !had {
-		return
+func (l *lpm[V]) remove(p netip.Prefix) {
+	if _, had := l.m[p]; had {
+		l.lens[p.Bits()]--
+		delete(l.m, p)
 	}
-	n := p.Bits()
-	l.lens[n]--
-	t.onUndo(func() { l.lens[n]++ })
-	del(t, l.m, p)
 }
 
 // ref gives the number of a VPC name and counts one more entry that uses it.
-func (s *state) ref(t *txn, name string) uint32 {
-	r := s.names[name]
-	if r == nil {
-		r = &nameRef{}
-		if n := len(s.free); n > 0 {
-			r.num = s.free[n-1]
-			s.free = s.free[:n-1]
-			t.onUndo(func() { s.free = append(s.free, r.num) })
+func (c *change) ref(name string) uint32 {
+	st := c.st
+	r, ok := st.names[name]
+	if !ok {
+		if n := len(st.free); n > 0 {
+			// A shorter slice does not write the array that cur shares.
+			r.num = st.free[n-1]
+			st.free = st.free[:n-1]
 		} else {
-			s.nextName++
-			r.num = s.nextName
-			t.onUndo(func() { s.nextName-- })
+			st.nextName++
+			r.num = st.nextName
 		}
-		set(t, s.names, name, r)
 	}
 	r.refs++
-	t.onUndo(func() { r.refs-- })
+	own(&st.names, &c.names)[name] = r
 	return r.num
 }
 
 // unref counts one less entry that uses a VPC name, and frees its number after the last one.
-func (s *state) unref(t *txn, name string) {
-	r := s.names[name]
-	if r == nil {
+func (c *change) unref(name string) {
+	st := c.st
+	r, ok := st.names[name]
+	if !ok {
 		return
 	}
 	r.refs--
-	t.onUndo(func() { r.refs++ })
-	if r.refs == 0 {
-		del(t, s.names, name)
-		s.free = append(s.free, r.num)
-		t.onUndo(func() { s.free = s.free[:len(s.free)-1] })
+	if r.refs > 0 {
+		own(&st.names, &c.names)[name] = r
+		return
 	}
+	delete(own(&st.names, &c.names), name)
+	if !c.free {
+		st.free = slices.Clone(st.free)
+		c.free = true
+	}
+	st.free = append(st.free, r.num)
 }
 
 // vpcName returns the VPC name of an action, or "".
@@ -209,8 +233,8 @@ func checkAction(a Action) error {
 	return nil
 }
 
-// writeTable applies one update of a table entry.
-func (s *state) writeTable(t *txn, typ p4.Update_Type, te *p4.TableEntry) error {
+// writeTable applies one update of a table entry to the copy.
+func (c *change) writeTable(typ p4.Update_Type, te *p4.TableEntry) error {
 	if te.GetIsDefaultAction() {
 		return status.Error(codes.PermissionDenied, "the default actions are const")
 	}
@@ -235,26 +259,32 @@ func (s *state) writeTable(t *txn, typ p4.Update_Type, te *p4.TableEntry) error 
 		}
 	}
 	md := bytes.Clone(te.GetMetadata())
+	st := c.st
 	switch te.GetTableId() {
 	case TablePorts:
 		k, err := decodePortsKey(te.GetMatch())
 		if err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
-		return writeMap(t, s.ports, k.Port, typ, &entry[PortsKey]{key: k, action: a, md: md}, nil)
+		return writeMap(&st.ports, &c.ports, k.Port, typ, &entry[PortsKey]{key: k, action: a, md: md}, nil)
 	case TableClassify:
 		k, err := decodeClassifyKey(te.GetMatch())
 		if err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
 		e := &entry[ClassifyKey]{key: k, action: a, md: md}
-		return writeMap(t, s.classify, k, typ, e, func(old *entry[ClassifyKey]) {
-			if n := vpcName(a); n != "" {
-				e.vpc = s.ref(t, n)
+		return writeMap(&st.classify, &c.classify, k, typ, e, func(old *entry[ClassifyKey]) {
+			n := vpcName(a)
+			if old != nil && vpcName(old.action) == n {
+				e.vpc = old.vpc // The same VPC: its count does not change.
+				return
+			}
+			if n != "" {
+				e.vpc = c.ref(n)
 			}
 			if old != nil {
 				if n := vpcName(old.action); n != "" {
-					s.unref(t, n)
+					c.unref(n)
 				}
 			}
 		})
@@ -264,22 +294,18 @@ func (s *state) writeTable(t *txn, typ p4.Update_Type, te *p4.TableEntry) error 
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
 		sk, p := setKey{k.Port, k.Session, k.Tag}, wide(k.Src)
-		l := s.source[sk]
-		if err := checkLPM(l, p, typ); err != nil {
+		if err := checkLPM(st.source[sk], p, typ); err != nil {
 			return err
 		}
-		if l == nil {
-			l = newLPM[*entry[SourceKey]]()
-			set(t, s.source, sk, l)
-		}
+		l := ownLPM(&st.source, &c.source, &c.sources, sk)
 		if typ == p4.Update_DELETE {
-			l.remove(t, p)
+			l.remove(p)
 			if len(l.m) == 0 {
-				del(t, s.source, sk)
+				delete(st.source, sk)
 			}
 			return nil
 		}
-		l.put(t, p, &entry[SourceKey]{key: k, action: a, md: md})
+		l.put(p, &entry[SourceKey]{key: k, action: a, md: md})
 		return nil
 	case TableRoute:
 		k, err := decodeRouteKey(te.GetMatch())
@@ -287,8 +313,8 @@ func (s *state) writeTable(t *txn, typ p4.Update_Type, te *p4.TableEntry) error 
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
 		var l *lpm[*entry[RouteKey]]
-		if r := s.names[k.VPC]; r != nil {
-			l = s.route[r.num]
+		if r, ok := st.names[k.VPC]; ok {
+			l = st.route[r.num]
 		}
 		p := wide(k.Dst)
 		if err := checkLPM(l, p, typ); err != nil {
@@ -296,21 +322,19 @@ func (s *state) writeTable(t *txn, typ p4.Update_Type, te *p4.TableEntry) error 
 		}
 		switch typ {
 		case p4.Update_INSERT:
-			num := s.ref(t, k.VPC)
-			if l == nil {
-				l = newLPM[*entry[RouteKey]]()
-				set(t, s.route, num, l)
-			}
-			l.put(t, p, &entry[RouteKey]{key: k, action: a, md: md, vpc: num})
+			num := c.ref(k.VPC)
+			ownLPM(&st.route, &c.route, &c.routes, num).put(p, &entry[RouteKey]{key: k, action: a, md: md, vpc: num})
 		case p4.Update_MODIFY:
-			l.put(t, p, &entry[RouteKey]{key: k, action: a, md: md, vpc: l.m[p].vpc})
+			num := l.m[p].vpc
+			ownLPM(&st.route, &c.route, &c.routes, num).put(p, &entry[RouteKey]{key: k, action: a, md: md, vpc: num})
 		case p4.Update_DELETE:
 			num := l.m[p].vpc
-			l.remove(t, p)
+			l = ownLPM(&st.route, &c.route, &c.routes, num)
+			l.remove(p)
 			if len(l.m) == 0 {
-				del(t, s.route, num)
+				delete(st.route, num)
 			}
-			s.unref(t, k.VPC)
+			c.unref(k.VPC)
 		}
 		return nil
 	}
@@ -331,37 +355,20 @@ func allows(table, action uint32) bool {
 	return false
 }
 
-// writeMap applies an INSERT, MODIFY or DELETE of e at k. Before the change, changed gets the old
-// entry (nil for INSERT).
-func writeMap[K comparable, E any](t *txn, m map[K]*E, k K, typ p4.Update_Type, e *E, changed func(old *E)) error {
-	old, had := m[k]
-	switch typ {
-	case p4.Update_INSERT:
-		if had {
-			return status.Error(codes.AlreadyExists, "an entry with this key exists")
-		}
-		if changed != nil {
-			changed(nil)
-		}
-		set(t, m, k, e)
-	case p4.Update_MODIFY:
-		if !had {
-			return status.Error(codes.NotFound, "no entry with this key")
-		}
-		if changed != nil {
-			changed(old)
-		}
-		set(t, m, k, e)
-	case p4.Update_DELETE:
-		if !had {
-			return status.Error(codes.NotFound, "no entry with this key")
-		}
-		if changed != nil {
-			changed(old)
-		}
-		del(t, m, k)
-	default:
-		return status.Error(codes.InvalidArgument, "the update has no type")
+// writeMap applies an INSERT, MODIFY or DELETE of e at k in *m, which it copies at the first change
+// (own). Before the change, changed gets the old entry (nil for INSERT).
+func writeMap[K comparable, E any](m *map[K]*E, copied *bool, k K, typ p4.Update_Type, e *E, changed func(old *E)) error {
+	old, had := (*m)[k]
+	if err := checkUpdate(had, typ); err != nil {
+		return err
+	}
+	if changed != nil {
+		changed(old)
+	}
+	if typ == p4.Update_DELETE {
+		delete(own(m, copied), k)
+	} else {
+		own(m, copied)[k] = e
 	}
 	return nil
 }
@@ -372,6 +379,11 @@ func checkLPM[V any](l *lpm[V], p netip.Prefix, typ p4.Update_Type) error {
 	if l != nil {
 		_, had = l.m[p]
 	}
+	return checkUpdate(had, typ)
+}
+
+// checkUpdate checks an update of type typ of a key that is in the table when had is true.
+func checkUpdate(had bool, typ p4.Update_Type) error {
 	switch {
 	case typ == p4.Update_INSERT && had:
 		return status.Error(codes.AlreadyExists, "an entry with this key exists")
