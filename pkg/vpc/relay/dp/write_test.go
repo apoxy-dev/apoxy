@@ -31,7 +31,8 @@ func withMetadata(e *p4.TableEntry, md string) *p4.TableEntry {
 	return e
 }
 
-// readTable returns the entries of a table with the metadata md.
+// readTable returns the entries of a table with the metadata md. Table 0 is all tables, and an
+// empty md is all metadata.
 func readTable(t *testing.T, tg dp.Target, table uint32, md string) []*p4.TableEntry {
 	t.Helper()
 	var got []*p4.TableEntry
@@ -41,10 +42,27 @@ func readTable(t *testing.T, tg dp.Target, table uint32, md string) []*p4.TableE
 }
 
 func TestWrite(t *testing.T) {
-	md := "p/50/1"
+	md, md2 := "p/50/1", "p/50/2" // A MODIFY gives the entry md2.
 	port50 := withMetadata(access(50, netip.MustParseAddrPort("192.0.2.50:4000"), 50, 0), md)
+	port50b := withMetadata(access(50, netip.MustParseAddrPort("192.0.2.51:4001"), 51, 0), md2)
 	ctx50 := withMetadata(context_(50, 1, 0, "uid-c/1", 300, 50), md)
-	route50 := withMetadata(route("uid-c/1", "2001:db8::/64", 50, 50, 50, 50), md)
+	ctx50b := withMetadata(context_(50, 1, 0, "uid-c/1", 301, 51), md2)
+	ctx50d := withMetadata(context_(50, 1, 0, "uid-d/1", 302, 52), md2) // Another VPC.
+	// The four fields of each forwarding action are different, so two fields in the wrong place show.
+	route50 := withMetadata(route("uid-c/1", "2001:db8::/64", 50, 51, 2, 52), md)
+	route50b := withMetadata(route("uid-c/1", "2001:db8::/64", 3, 33, 1, 31), md2)
+	route50v4 := withMetadata(route("uid-c/1", "10.50.0.0/16", 50, 53, 3, 54), md)
+	route50v4to1 := withMetadata(route("uid-c/1", "10.50.0.0/16", 1, 31, 2, 32), md2)
+	route50v4sub := withMetadata(route("uid-c/1", "10.50.1.0/24", 3, 57, 2, 58), md)
+	route51v4 := withMetadata(route("uid-c/1", "10.51.0.0/16", 2, 55, 1, 56), md)
+	routeE := withMetadata(route("uid-e/1", "10.60.0.0/16", 2, 61, 1, 62), md) // The only route of uid-e/1.
+	routeF := withMetadata(route("uid-f/1", "10.60.0.0/16", 3, 63, 2, 64), md)
+	src50v4 := withMetadata(source(50, 1, 0, "100.64.50.0/24", dp.NoAction{}), md)
+	src50v4b := withMetadata(source(50, 1, 0, "100.64.50.0/24", dp.LocalOnlyAction{}), md2)
+	src50v4host := withMetadata(source(50, 1, 0, "100.64.50.7/32", dp.LocalOnlyAction{}), md)
+	src51v4 := withMetadata(source(50, 1, 0, "100.64.51.0/24", dp.NoAction{}), md)
+	src50v6 := withMetadata(source(50, 1, 0, "2001:db8:50::/48", dp.LocalOnlyAction{}), md)
+	src50v6b := withMetadata(source(50, 1, 0, "2001:db8:50::/48", dp.NoAction{}), md2)
 	dropRoute := func(reason uint8) *p4.TableEntry {
 		return withMetadata(dp.RouteKey{VPC: "uid-c/1", Dst: pfx("2001:db8:1::/64")}.Entry(dp.DropAction{Reason: reason}), md)
 	}
@@ -55,15 +73,135 @@ func TestWrite(t *testing.T) {
 		name      string
 		ctx       context.Context
 		atomicity p4.WriteRequest_Atomicity
+		before    []*p4.Update // A Write before the test Write, which must pass.
 		updates   []*p4.Update
-		err       codes.Code   // The code of the call.
-		details   []codes.Code // The code of each update.
-		read      []*p4.TableEntry
+		err       codes.Code       // The code of the call.
+		details   []codes.Code     // The code of each update.
+		read      []*p4.TableEntry // The table entries after the Writes, other than those of base.
 	}{
 		{
 			name:    "a batch applies at one commit, and a Read gives back the VPC name",
 			updates: []*p4.Update{insert(port50), insert(ctx50), insert(route50)},
 			read:    []*p4.TableEntry{port50, ctx50, route50},
+		},
+		{
+			name:    "a Read gives back IPv4 and IPv6 routes and sources",
+			updates: []*p4.Update{insert(port50), insert(ctx50), insert(route50), insert(route50v4), insert(src50v4), insert(src50v6)},
+			read:    []*p4.TableEntry{port50, ctx50, route50, route50v4, src50v4, src50v6},
+		},
+		{
+			name:    "a Read gives back a route MODIFY",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50), insert(route50v4)},
+			updates: []*p4.Update{modify(route50v4to1)},
+			read:    []*p4.TableEntry{port50, ctx50, route50, route50v4to1},
+		},
+		{
+			name:    "a Read gives no route after its DELETE",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50), insert(route50v4)},
+			updates: []*p4.Update{remove(route50v4)},
+			read:    []*p4.TableEntry{port50, ctx50, route50},
+		},
+		{
+			name:    "a Read gives no route after a DELETE of the last route of the VPC",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50v4)},
+			updates: []*p4.Update{remove(route50v4)},
+			read:    []*p4.TableEntry{port50, ctx50},
+		},
+		{
+			name:    "a Read gives no source after its DELETE",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(src50v4), insert(src50v6)},
+			updates: []*p4.Update{remove(src50v4)},
+			read:    []*p4.TableEntry{port50, ctx50, src50v6},
+		},
+		{
+			name:    "a Read gives back a DELETE and an INSERT of a prefix in one Write",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50v4)},
+			updates: []*p4.Update{remove(route50v4), insert(route50v4to1)},
+			read:    []*p4.TableEntry{port50, ctx50, route50v4to1},
+		},
+		{
+			// uid-e/1 has no context, so the DELETE frees its VPC number, and the INSERT can take it.
+			name:    "a Write that frees a VPC number and takes a VPC number",
+			before:  []*p4.Update{insert(routeE)},
+			updates: []*p4.Update{remove(routeE), insert(routeF)},
+			read:    []*p4.TableEntry{routeF},
+		},
+		{
+			name:    "a Read gives back an IPv6 route MODIFY",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50), insert(route50v4)},
+			updates: []*p4.Update{modify(route50b)},
+			read:    []*p4.TableEntry{port50, ctx50, route50b, route50v4},
+		},
+		{
+			name:    "a Read gives back an IPv4 and an IPv6 source MODIFY",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(src50v4), insert(src50v6)},
+			updates: []*p4.Update{modify(src50v4b), modify(src50v6b)},
+			read:    []*p4.TableEntry{port50, ctx50, src50v4b, src50v6b},
+		},
+		{
+			name:    "a Read gives no source after a DELETE of the last source of the port session",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(src50v6)},
+			updates: []*p4.Update{remove(src50v6)},
+			read:    []*p4.TableEntry{port50, ctx50},
+		},
+		{
+			name:    "two INSERTs into a route table with entries",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50v4), insert(route50)},
+			updates: []*p4.Update{insert(route51v4), insert(route50v4sub)},
+			read:    []*p4.TableEntry{port50, ctx50, route50v4, route50, route51v4, route50v4sub},
+		},
+		{
+			name:    "two INSERTs into a source table with entries",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(src50v4), insert(src50v6)},
+			updates: []*p4.Update{insert(src51v4), insert(src50v4host)},
+			read:    []*p4.TableEntry{port50, ctx50, src50v4, src50v6, src51v4, src50v4host},
+		},
+		{
+			name:    "two MODIFYs in a route table with entries",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50v4), insert(route51v4), insert(route50)},
+			updates: []*p4.Update{modify(route50v4to1), modify(route50b)},
+			read:    []*p4.TableEntry{port50, ctx50, route50v4to1, route51v4, route50b},
+		},
+		{
+			name:    "an INSERT and a DELETE of a prefix in one Write",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50v4)},
+			updates: []*p4.Update{insert(route51v4), remove(route51v4)},
+			read:    []*p4.TableEntry{port50, ctx50, route50v4},
+		},
+		{
+			name:    "a MODIFY and a DELETE of a prefix in one Write",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(route50v4), insert(route51v4)},
+			updates: []*p4.Update{modify(route50v4to1), remove(route50v4to1)},
+			read:    []*p4.TableEntry{port50, ctx50, route51v4},
+		},
+		{
+			name:    "a source INSERT and DELETE in one Write",
+			before:  []*p4.Update{insert(port50), insert(ctx50), insert(src50v4)},
+			updates: []*p4.Update{insert(src51v4), remove(src51v4), modify(src50v4b)},
+			read:    []*p4.TableEntry{port50, ctx50, src50v4b},
+		},
+		{
+			name:    "a Read gives back a ports and a classify MODIFY",
+			before:  []*p4.Update{insert(port50), insert(ctx50)},
+			updates: []*p4.Update{modify(port50b), modify(ctx50b)},
+			read:    []*p4.TableEntry{port50b, ctx50b},
+		},
+		{
+			name:    "a Read gives back a classify MODIFY to another VPC",
+			before:  []*p4.Update{insert(port50), insert(ctx50)},
+			updates: []*p4.Update{modify(ctx50d)},
+			read:    []*p4.TableEntry{port50, ctx50d},
+		},
+		{
+			name:    "an error in the middle of a batch",
+			updates: []*p4.Update{insert(port50), insert(access(1, addrA1, 7, 0)), insert(ctx50)},
+			err:     codes.Unknown,
+			details: []codes.Code{codes.Aborted, codes.AlreadyExists, codes.Aborted},
+		},
+		{
+			name:    "a Read gives no ports and classify entries after their DELETE",
+			before:  []*p4.Update{insert(port50), insert(ctx50)},
+			updates: []*p4.Update{remove(ctx50), remove(port50)},
 		},
 		{
 			name:    "an error stops the whole batch",
@@ -88,7 +226,7 @@ func TestWrite(t *testing.T) {
 		},
 		{
 			name:    "a key is never changed in place",
-			updates: []*p4.Update{keys(p4.Update_MODIFY, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_RX, Spi: spiA1In, Key: key(spiA1In), Port: 1, Session: 1})},
+			updates: []*p4.Update{keys(p4.Update_MODIFY, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_RX, Spi: spiA1In, Key: key(spiA2In), Port: 7, Session: 9, Lane: 1})},
 			err:     codes.Unknown,
 			details: []codes.Code{codes.InvalidArgument},
 		},
@@ -143,6 +281,9 @@ func TestWrite(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRelay(t)
+			if tc.before != nil {
+				require.NoError(t, write(t.Context(), r, tc.before...))
+			}
 			ctx := tc.ctx
 			if ctx == nil {
 				ctx = t.Context()
@@ -164,16 +305,11 @@ func TestWrite(t *testing.T) {
 				}
 				assert.Equal(t, tc.details, got)
 			}
-			got := readTable(t, r, 0, md)
-			if assert.Len(t, got, len(tc.read)) {
-				for _, want := range tc.read {
-					found := false
-					for _, e := range got {
-						found = found || proto.Equal(want, e)
-					}
-					assert.True(t, found, "entry %v", want)
-				}
-			}
+			// All tables, with no filter: the entries of base stay as they are. No case changes the
+			// keys or the meters.
+			assertEntries(t, append(baseTables(), tc.read...), readTable(t, r, 0, ""))
+			assert.ElementsMatch(t, baseKeys(t), readKeys(t, r), "the keys entries")
+			assert.Empty(t, readMeters(t, r), "the meter configs")
 		})
 	}
 }

@@ -263,8 +263,8 @@ func (p *Pipeline) apply(st *state, m *meta, pkt []byte, tx *TxBatch) {
 
 	// source.
 	act = p.defaults[TableSource]
-	if l := st.source[setKey{m.port, pa.Session, tag}]; l != nil {
-		if e, ok := l.lookup(src); ok {
+	if t := st.source[setKey{m.port, pa.Session, tag}]; t != nil {
+		if e, ok := lookup(t, src); ok {
 			act = e.action
 		}
 	}
@@ -281,8 +281,8 @@ func (p *Pipeline) apply(st *state, m *meta, pkt []byte, tx *TxBatch) {
 	// route and route_end.
 	hash := flowHash(pkt)
 	act = p.defaults[TableRoute]
-	if l := st.route[vpc]; l != nil {
-		if e, ok := l.lookup(dst); ok {
+	if t := st.route[vpc]; t != nil {
+		if e, ok := lookup(t, dst); ok {
 			act = e.action
 		}
 	}

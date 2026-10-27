@@ -274,6 +274,7 @@ func (p *Pipeline) Write(ctx context.Context, req *p4.WriteRequest) error {
 		}
 		return s.Err()
 	}
+	c.commit()
 	// The steering map changes only with the RX entries.
 	var sm *steerMap
 	if c.rx {
@@ -493,15 +494,15 @@ func (s *state) readTables(te *p4.TableEntry, out *[]*p4.Entity) error {
 		}
 	}
 	if id == 0 || id == TableSource {
-		for _, l := range s.source {
-			for _, e := range l.m {
+		for _, t := range s.source {
+			for _, e := range t.All() {
 				add(e.key, e.action, e.md)
 			}
 		}
 	}
 	if id == 0 || id == TableRoute {
-		for _, l := range s.route {
-			for _, e := range l.m {
+		for _, t := range s.route {
+			for _, e := range t.All() {
 				add(e.key, e.action, e.md)
 			}
 		}

@@ -4,6 +4,7 @@ package dp_test
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"sync"
 	"testing"
@@ -126,6 +127,66 @@ func BenchmarkReceive(b *testing.B) {
 				func(e *p4.Entity) { drops += e.GetCounterEntry().GetData().GetPacketCount() })
 			if err != nil || drops != 0 {
 				b.Fatalf("drops %d: %v", drops, err)
+			}
+		})
+	}
+}
+
+// BenchmarkRoute runs the pipeline alone with one worker on packets of 64 inner bytes, with 100k /32
+// routes in the VPC. Each packet goes to a route (hit), or to the address next to one (miss: a punt
+// to the root, which the benchmark drops). One op is one packet.
+func BenchmarkRoute(b *testing.B) {
+	const routes = 100_000
+	at := func(i int, odd byte) string {
+		return netip.AddrFrom4([4]byte{10, byte(i >> 15), byte(i >> 7), byte(i)<<1 | odd}).String()
+	}
+	for _, tc := range []struct {
+		name  string
+		odd   byte
+		drops map[int64]bool // The drop reasons of the packets.
+	}{
+		{name: "hit", drops: map[int64]bool{}},
+		{name: "miss", odd: 1, drops: map[int64]bool{int64(dp.ReasonPuntFull): true}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			p := benchPipeline(b, 1)
+			var us []*p4.Update
+			for i := range routes {
+				us = append(us, insert(route(vpcA, at(i, 0)+"/32", 100, 300, 100, 300)))
+			}
+			mustWrite(b, p, us...)
+			var pkts []dp.RxPacket
+			for seq := range benchPass {
+				dst := at(seq*7919%routes, tc.odd) // Spread over the routes.
+				pkts = append(pkts, dp.RxPacket{From: benchAddr(1), Payload: seal(benchSPI(1), vniA, uint32(seq+1), ipv4("100.64.1.5", dst, 64))})
+			}
+			renew := []*p4.Update{
+				keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_RX, Spi: benchSPI(1)}),
+				rx(benchSPI(1), 1, 1, 0),
+			}
+			tx := &dp.TxBatch{}
+			p.Receive(pkts, tx) // The batch grows to its size.
+			mustWrite(b, p, renew...)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for left := b.N; left > 0; {
+				n := min(left, benchPass)
+				p.Receive(pkts[:n], tx)
+				left -= n
+				b.StopTimer()
+				mustWrite(b, p, renew...)
+				b.StartTimer()
+			}
+			b.StopTimer()
+			got := map[int64]bool{}
+			err := p.Read(b.Context(), &p4.ReadRequest{Entities: []*p4.Entity{{Entity: &p4.Entity_CounterEntry{CounterEntry: &p4.CounterEntry{CounterId: dp.CounterDrops}}}}},
+				func(e *p4.Entity) {
+					if c := e.GetCounterEntry(); c.GetData().GetPacketCount() > 0 {
+						got[c.GetIndex().GetIndex()] = true
+					}
+				})
+			if err != nil || !maps.Equal(got, tc.drops) {
+				b.Fatalf("drop reasons %v: %v", got, err)
 			}
 		})
 	}

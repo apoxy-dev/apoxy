@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"github.com/gaissmai/bart"
 	p4 "github.com/p4lang/p4runtime/go/p4/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -20,7 +21,7 @@ const (
 	maxMeter = 1 << 16
 )
 
-// entry is one table entry. vpc is the number of the VPC name of a classify action or a route key.
+// entry is one table entry. vpc is the number of the VPC name of a classify action.
 type entry[K comparable] struct {
 	key    K
 	action Action
@@ -41,12 +42,13 @@ type nameRef struct {
 }
 
 // state is one copy of the tables and the keys. The packets read cur, the copy of the last Write,
-// and never change its maps. A Write makes the next copy in a change.
+// and never change its maps. A Write makes the next copy in a change. source and route are bart
+// multibit tries, with the IPv4 prefixes in the IPv4 trie.
 type state struct {
 	ports    map[uint64]*entry[PortsKey]
 	classify map[ClassifyKey]*entry[ClassifyKey]
-	source   map[setKey]*lpm[*entry[SourceKey]]
-	route    map[uint32]*lpm[*entry[RouteKey]]
+	source   map[setKey]*bart.Table[*entry[SourceKey]]
+	route    map[uint32]*bart.Table[*entry[RouteKey]]
 	names    map[string]nameRef
 	free     []uint32
 	nextName uint32
@@ -59,8 +61,8 @@ func newState() *state {
 	return &state{
 		ports:    map[uint64]*entry[PortsKey]{},
 		classify: map[ClassifyKey]*entry[ClassifyKey]{},
-		source:   map[setKey]*lpm[*entry[SourceKey]]{},
-		route:    map[uint32]*lpm[*entry[RouteKey]]{},
+		source:   map[setKey]*bart.Table[*entry[SourceKey]]{},
+		route:    map[uint32]*bart.Table[*entry[RouteKey]]{},
 		names:    map[string]nameRef{},
 		rx:       map[uint32]*rxSA{},
 		tx:       map[portSession]*txLanes{},
@@ -70,18 +72,18 @@ func newState() *state {
 
 // change is one Write: the next copy of the tables and the keys, and the counter values to set at
 // the swap. The copy shares each map of cur until the batch changes it, and then has its own copy
-// of that map. For source, route and tx it copies only the changed LPM or lanes, and the map of
-// them. The objects that the packets change (replay windows, sequence numbers, meter buckets) stay
-// shared until the batch replaces them.
+// of that map. A source or route trie changes with the path-copy calls (trieChange), and for tx it
+// copies only the changed lanes. The objects that the packets change (replay windows, sequence
+// numbers, meter buckets) stay shared until the batch replaces them.
 type change struct {
 	st *state
 
 	// The maps of st that this change copied.
 	ports, classify, source, route, names, free, rx, tx, meters bool
 
-	sources map[setKey]bool      // The source LPMs that it copied.
-	routes  map[uint32]bool      // The route LPMs that it copied.
-	lanes   map[portSession]bool // The TX lanes that it copied.
+	sources map[setKey]*trieChange[*entry[SourceKey]] // The source tries that it changes.
+	routes  map[uint32]*trieChange[*entry[RouteKey]]  // The route tries that it changes.
+	lanes   map[portSession]bool                      // The TX lanes that it copied.
 
 	counters []counterValue
 }
@@ -107,60 +109,87 @@ func own[K comparable, V any](m *map[K]V, copied *bool) map[K]V {
 	return *m
 }
 
-// ownLPM returns the LPM of k in *m to change. At the first change it copies the LPM, or makes a
-// new one, and copies *m.
-func ownLPM[K comparable, V any](m *map[K]*lpm[V], copied *bool, lpms *map[K]bool, k K) *lpm[V] {
-	l := (*m)[k]
-	if l != nil && (*lpms)[k] {
-		return l
-	}
-	if l == nil {
-		l = newLPM[V]()
-	} else {
-		l = &lpm[V]{m: maps.Clone(l.m), lens: l.lens}
-	}
-	own(m, copied)[k] = l
-	if *lpms == nil {
-		*lpms = map[K]bool{}
-	}
-	(*lpms)[k] = true
-	return l
-}
-
-// lpm is a longest-prefix match on 128-bit addresses. IPv4 is IPv4-mapped.
-type lpm[V any] struct {
-	m    map[netip.Prefix]V
-	lens [129]int
-}
-
-func newLPM[V any]() *lpm[V] { return &lpm[V]{m: map[netip.Prefix]V{}} }
-
-func (l *lpm[V]) lookup(a netip.Addr) (V, bool) {
-	for n := 128; n >= 0; n-- {
-		if l.lens[n] == 0 {
-			continue
-		}
-		p, _ := a.Prefix(n)
-		if v, ok := l.m[p]; ok {
+// lookup returns the value of the longest prefix of a in t. An IPv4-mapped address tries the IPv4
+// prefixes first, and then the IPv6 prefixes that hold all IPv4-mapped addresses, such as ::/0.
+func lookup[V any](t *bart.Table[V], a netip.Addr) (V, bool) {
+	if a.Is4In6() {
+		if v, ok := t.Lookup(a.Unmap()); ok {
 			return v, true
 		}
 	}
-	var zero V
-	return zero, false
+	return t.Lookup(a)
 }
 
-func (l *lpm[V]) put(p netip.Prefix, v V) {
-	if _, had := l.m[p]; !had {
-		l.lens[p.Bits()]++
-	}
-	l.m[p] = v
+// trieChange is the change of one source or route trie in a Write. A DELETE removes its prefix
+// from old with the path-copy call. The INSERTs and MODIFYs go into add, a new trie that no part
+// reads, and at the end of the Write one path-copy call adds them to old, so they copy each changed
+// node once. The readers keep the old trie.
+type trieChange[V any] struct {
+	old *bart.Table[V] // The trie of cur without the deleted prefixes, or nil.
+	add *bart.Table[V]
 }
 
-func (l *lpm[V]) remove(p netip.Prefix) {
-	if _, had := l.m[p]; had {
-		l.lens[p.Bits()]--
-		delete(l.m, p)
+// changeTrie returns the change of the trie of k in m. It makes it at the first update.
+func changeTrie[K comparable, V any](tcs *map[K]*trieChange[V], m map[K]*bart.Table[V], k K) *trieChange[V] {
+	tc := (*tcs)[k]
+	if tc == nil {
+		if *tcs == nil {
+			*tcs = map[K]*trieChange[V]{}
+		}
+		tc = &trieChange[V]{old: m[k], add: new(bart.Table[V])}
+		(*tcs)[k] = tc
 	}
+	return tc
+}
+
+// has tells if the prefix p is in the trie after the updates so far.
+func (tc *trieChange[V]) has(p netip.Prefix) bool {
+	if _, ok := tc.add.Get(p); ok || tc.old == nil {
+		return ok
+	}
+	_, ok := tc.old.Get(p)
+	return ok
+}
+
+// delete removes the prefix p from add, and from old with the path-copy call.
+func (tc *trieChange[V]) delete(p netip.Prefix) {
+	tc.add.Delete(p)
+	if tc.old != nil {
+		tc.old = tc.old.DeletePersist(p)
+	}
+}
+
+// commitTries puts the changed tries in *m (own), and removes the empty ones.
+func commitTries[K comparable, V any](m *map[K]*bart.Table[V], copied *bool, tcs map[K]*trieChange[V]) {
+	for k, tc := range tcs {
+		t := tc.old
+		switch {
+		case t == nil || t.Size() == 0:
+			t = tc.add // No part reads add, so it becomes the trie.
+		case tc.add.Size() == 1: // For one prefix, InsertPersist is faster than UnionPersist.
+			for p, v := range tc.add.All() {
+				t = t.InsertPersist(p, v)
+			}
+		case tc.add.Size() > 0:
+			t = t.UnionPersist(tc.add)
+		}
+		cur, ok := (*m)[k]
+		switch {
+		case t.Size() == 0:
+			if ok {
+				delete(own(m, copied), k)
+			}
+		case t != cur:
+			own(m, copied)[k] = t
+		}
+	}
+}
+
+// commit puts the changed source and route tries in the copy. A Write calls it after its last
+// update.
+func (c *change) commit() {
+	commitTries(&c.st.source, &c.source, c.sources)
+	commitTries(&c.st.route, &c.route, c.routes)
 }
 
 // ref gives the number of a VPC name and counts one more entry that uses it.
@@ -293,47 +322,38 @@ func (c *change) writeTable(typ p4.Update_Type, te *p4.TableEntry) error {
 		if err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
-		sk, p := setKey{k.Port, k.Session, k.Tag}, wide(k.Src)
-		if err := checkLPM(st.source[sk], p, typ); err != nil {
+		tc := changeTrie(&c.sources, st.source, setKey{k.Port, k.Session, k.Tag})
+		if err := checkUpdate(tc.has(k.Src), typ); err != nil {
 			return err
 		}
-		l := ownLPM(&st.source, &c.source, &c.sources, sk)
 		if typ == p4.Update_DELETE {
-			l.remove(p)
-			if len(l.m) == 0 {
-				delete(st.source, sk)
-			}
-			return nil
+			tc.delete(k.Src)
+		} else {
+			tc.add.Insert(k.Src, &entry[SourceKey]{key: k, action: a, md: md})
 		}
-		l.put(p, &entry[SourceKey]{key: k, action: a, md: md})
 		return nil
 	case TableRoute:
 		k, err := decodeRouteKey(te.GetMatch())
 		if err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
-		var l *lpm[*entry[RouteKey]]
+		var tc *trieChange[*entry[RouteKey]]
+		had := false
 		if r, ok := st.names[k.VPC]; ok {
-			l = st.route[r.num]
+			tc = changeTrie(&c.routes, st.route, r.num)
+			had = tc.has(k.Dst)
 		}
-		p := wide(k.Dst)
-		if err := checkLPM(l, p, typ); err != nil {
+		if err := checkUpdate(had, typ); err != nil {
 			return err
 		}
 		switch typ {
 		case p4.Update_INSERT:
-			num := c.ref(k.VPC)
-			ownLPM(&st.route, &c.route, &c.routes, num).put(p, &entry[RouteKey]{key: k, action: a, md: md, vpc: num})
+			tc = changeTrie(&c.routes, st.route, c.ref(k.VPC))
+			fallthrough
 		case p4.Update_MODIFY:
-			num := l.m[p].vpc
-			ownLPM(&st.route, &c.route, &c.routes, num).put(p, &entry[RouteKey]{key: k, action: a, md: md, vpc: num})
+			tc.add.Insert(k.Dst, &entry[RouteKey]{key: k, action: a, md: md})
 		case p4.Update_DELETE:
-			num := l.m[p].vpc
-			l = ownLPM(&st.route, &c.route, &c.routes, num)
-			l.remove(p)
-			if len(l.m) == 0 {
-				delete(st.route, num)
-			}
+			tc.delete(k.Dst)
 			c.unref(k.VPC)
 		}
 		return nil
@@ -371,15 +391,6 @@ func writeMap[K comparable, E any](m *map[K]*E, copied *bool, k K, typ p4.Update
 		own(m, copied)[k] = e
 	}
 	return nil
-}
-
-// checkLPM checks an update of the prefix p in l, which can be nil.
-func checkLPM[V any](l *lpm[V], p netip.Prefix, typ p4.Update_Type) error {
-	had := false
-	if l != nil {
-		_, had = l.m[p]
-	}
-	return checkUpdate(had, typ)
 }
 
 // checkUpdate checks an update of type typ of a key that is in the table when had is true.
