@@ -658,7 +658,7 @@ func (m *mProc) sendTables() {
 	md := trunkKey(m.c.port)
 	del := m.portDel && m.ported
 	if del {
-		b.remove(dp.PortsKey{Port: m.c.port}.Entry(nil))
+		b.port(p4.Update_DELETE, m.c.port, nil, "")
 	}
 	put, meter := m.portDirty && m.ms != nil && !m.ending, false
 	if put {
@@ -671,9 +671,9 @@ func (m *mProc) sendTables() {
 			}
 		}
 		if m.ported && !del {
-			b.modify(dp.PortsKey{Port: m.c.port}.Entry(pa), md)
+			b.port(p4.Update_MODIFY, m.c.port, &pa, md)
 		} else {
-			b.insert(dp.PortsKey{Port: m.c.port}.Entry(pa), md)
+			b.port(p4.Update_INSERT, m.c.port, &pa, md)
 		}
 	}
 	m.portDel, m.portDirty = false, false
@@ -689,13 +689,13 @@ func (m *mProc) sendTables() {
 		}
 		if del {
 			if err != nil {
-				slog.Error("Failed to delete the ports entry of a trunk", "relay", m.c.name, "error", err)
+				slog.Error("Failed to delete the port entries of a trunk", "relay", m.c.name, "error", err)
 			}
 			m.ported = false
 		}
 		if put {
 			if err != nil {
-				slog.Error("Failed to write the ports entry of a trunk", "relay", m.c.name, "error", err)
+				slog.Error("Failed to write the port entries of a trunk", "relay", m.c.name, "error", err)
 			} else {
 				m.ported, m.metered = true, true
 			}

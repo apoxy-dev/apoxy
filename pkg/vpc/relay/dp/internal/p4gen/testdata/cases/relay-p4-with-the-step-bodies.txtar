@@ -1,5 +1,4 @@
 name: relay.p4 with the step bodies
-info: ../../relay.p4info.txtpb
 local: r
 ids: Relay.keys=0x81621bac Relay.ports=48524748
 typecheck: false

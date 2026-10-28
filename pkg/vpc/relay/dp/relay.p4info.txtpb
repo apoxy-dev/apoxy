@@ -157,6 +157,34 @@ tables {
   }
   size: 1024
 }
+tables {
+  preamble {
+    id: 39859099
+    name: "RelayEgress.out_ports"
+    alias: "out_ports"
+  }
+  match_fields {
+    id: 1
+    name: "m.fwd.port"
+    bitwidth: 64
+    match_type: EXACT
+  }
+  action_refs {
+    id: 32296454
+  }
+  action_refs {
+    id: 21608195
+  }
+  const_default_action_id: 21608195
+  initial_default_action {
+    action_id: 21608195
+    arguments {
+      param_id: 1
+      value: "\t"
+    }
+  }
+  size: 1024
+}
 actions {
   preamble {
     id: 21257015
@@ -287,10 +315,64 @@ actions {
     alias: "local_only"
   }
 }
+actions {
+  preamble {
+    id: 21608195
+    name: "RelayEgress.drop_out"
+    alias: "drop_out"
+  }
+  params {
+    id: 1
+    name: "reason"
+    bitwidth: 8
+  }
+}
+actions {
+  preamble {
+    id: 32296454
+    name: "RelayEgress.out_port"
+    alias: "out_port"
+  }
+  params {
+    id: 1
+    name: "trunk"
+    bitwidth: 1
+  }
+  params {
+    id: 2
+    name: "session"
+    bitwidth: 64
+  }
+  params {
+    id: 3
+    name: "addr"
+    bitwidth: 144
+  }
+  params {
+    id: 4
+    name: "lanes"
+    bitwidth: 48
+  }
+  params {
+    id: 5
+    name: "seen"
+    bitwidth: 3
+  }
+  params {
+    id: 6
+    name: "mtu"
+    bitwidth: 16
+  }
+  params {
+    id: 7
+    name: "meter_index"
+    bitwidth: 32
+  }
+}
 counters {
   preamble {
-    id: 317147353
-    name: "Relay.cells"
+    id: 306161202
+    name: "cells"
     alias: "cells"
   }
   spec {
@@ -300,8 +382,8 @@ counters {
 }
 counters {
   preamble {
-    id: 309103603
-    name: "Relay.drops"
+    id: 302468923
+    name: "drops"
     alias: "drops"
   }
   spec {
@@ -311,8 +393,8 @@ counters {
 }
 counters {
   preamble {
-    id: 306017222
-    name: "Relay.port_drops"
+    id: 310371544
+    name: "port_drops"
     alias: "port_drops"
   }
   spec {
@@ -322,8 +404,8 @@ counters {
 }
 meters {
   preamble {
-    id: 345235978
-    name: "Relay.port_meter"
+    id: 341723503
+    name: "port_meter"
     alias: "port_meter"
   }
   spec {
@@ -333,8 +415,8 @@ meters {
 }
 meters {
   preamble {
-    id: 339716295
-    name: "Relay.lane_meter"
+    id: 340534297
+    name: "lane_meter"
     alias: "lane_meter"
   }
   spec {
@@ -344,8 +426,8 @@ meters {
 }
 meters {
   preamble {
-    id: 338249407
-    name: "Relay.punt_meter"
+    id: 349658765
+    name: "punt_meter"
     alias: "punt_meter"
   }
   spec {

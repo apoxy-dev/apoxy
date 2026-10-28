@@ -129,6 +129,9 @@ func (p *parser) program() *program {
 		case p.is("parser"):
 			p.only(anns)
 			prog.parsers = append(prog.parsers, p.parserDecl())
+		case t.kind == tIdent && (t.text == "counter" || t.text == "meter" || prog.extern(t.text) != nil) && p.peekAt(1).text == "(":
+			p.only(anns)
+			prog.instances = append(prog.instances, p.instance())
 		case t.kind == tIdent && !keywords[t.text] && p.peekAt(1).text == "(":
 			p.only(anns)
 			if prog.main != nil {

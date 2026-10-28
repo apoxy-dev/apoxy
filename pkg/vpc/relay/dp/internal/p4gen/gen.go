@@ -118,6 +118,9 @@ func (g *gen) assign(f field, dst, b, what, zero string) {
 
 func (g *gen) render(pkg string) ([]byte, error) {
 	info := g.info
+	if err := g.goNames(); err != nil {
+		return nil, err
+	}
 	pipe, imports, err := pipeline(g.srcName, g.prog)
 	if err != nil {
 		return nil, err
@@ -236,6 +239,59 @@ func (g *gen) render(pkg string) ([]byte, error) {
 	g.p("")
 	g.b.Write(body)
 	return g.b.Bytes(), nil
+}
+
+// goNames checks that each Go name that render writes for a table, an action, a counter or a
+// meter comes from one P4 name. Two controls can have a table t, but only one TableT.
+func (g *gen) goNames() error {
+	type goName struct{ name, p4Name string }
+	var ns []goName
+	for _, t := range g.info.GetTables() {
+		n := t.GetPreamble().GetName()
+		ns = append(ns, goName{"Table" + camel(n), n}, goName{camel(n) + "Key", n})
+	}
+	for _, a := range g.info.GetActions() {
+		n := a.GetPreamble().GetName()
+		ns = append(ns, goName{"Action" + camel(n), n}, goName{actionType(n), n})
+	}
+	for _, c := range g.info.GetCounters() {
+		n := c.GetPreamble().GetName()
+		ns = append(ns, goName{"Counter" + strings.TrimSuffix(camel(n), "Counter"), n})
+	}
+	for _, m := range g.info.GetMeters() {
+		n := m.GetPreamble().GetName()
+		ns = append(ns, goName{"Meter" + strings.TrimSuffix(camel(n), "Meter"), n})
+	}
+	from := map[string]string{}
+	for _, n := range ns {
+		if prev, ok := from[n.name]; ok && prev != n.p4Name {
+			return errAt(g.srcName, g.decl(n.p4Name), "the Go name %s of %s is also the Go name of %s: rename one in the P4", n.name, n.p4Name, prev)
+		}
+		from[n.name] = n.p4Name
+	}
+	return nil
+}
+
+// decl returns the declaration of a P4Info name: a table, an action or an instance of a control,
+// or a top-level instance. For a name with no declaration, such as NoAction, it returns main.
+func (g *gen) decl(name string) node {
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		if c := g.prog.control(name[:i]); c != nil {
+			n := name[i+1:]
+			if t := c.table(n); t != nil {
+				return t
+			}
+			if a := c.action(n); a != nil {
+				return a
+			}
+			if in := c.instance(n); in != nil {
+				return in
+			}
+		}
+	} else if in := g.prog.instance(name); in != nil {
+		return in
+	}
+	return g.prog.main
 }
 
 // actionType returns the Go type name of an action.

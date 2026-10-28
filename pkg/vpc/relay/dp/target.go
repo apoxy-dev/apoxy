@@ -24,22 +24,22 @@ type Target interface {
 	Write(ctx context.Context, req *p4.WriteRequest) error
 	// Read calls each for each entity that matches, from one snapshot.
 	Read(ctx context.Context, req *p4.ReadRequest, each func(*p4.Entity)) error
-	// PacketOut takes FRAME in (it starts at ports), SEAL and RAW. It never waits.
+	// PacketOut takes DATAGRAM in (it starts at ports), SEAL and RAW. It never waits.
 	PacketOut(p *p4.PacketOut) error
 	// OnPacketIn sets the root's callback for PUNT and MISS. False: full, drop.
 	OnPacketIn(fn func(p *p4.PacketIn) bool)
-	// SetFrameWriter sets the QUIC datagram writer of a port for FRAME out; nil clears it. w never
-	// waits: on a full datagram queue it drops the frame (datagram_full).
-	SetFrameWriter(port uint64, w func(b []byte) error)
+	// SetDatagramWriter sets the QUIC datagram writer of a port for DATAGRAM out; nil clears it. w
+	// never waits: on a full datagram queue it drops the datagram (datagram_full).
+	SetDatagramWriter(port uint64, w func(b []byte) error)
 }
 
 // The kind field of packet_in and packet_out.
 const (
-	KindPunt  uint8 = 1
-	KindMiss  uint8 = 2
-	KindFrame uint8 = 4
-	KindSeal  uint8 = 5
-	KindRaw   uint8 = 6
+	KindPunt     uint8 = 1
+	KindMiss     uint8 = 2
+	KindDatagram uint8 = 4
+	KindSeal     uint8 = 5
+	KindRaw      uint8 = 6
 )
 
 // RxPacket is one UDP payload of port 1000 and its outer source address. In a batch of a worker of
@@ -69,7 +69,7 @@ type TxBatch struct {
 	txq    *txQueue        // The TX queue of the worker, or nil.
 	hops   hopCache        // The next-hop MACs of the worker, or nil.
 
-	pkts  []packet // The packets of the part of Receive, or the FRAME in of a PacketOut.
+	pkts  []packet // The packets of the part of Receive, or the DATAGRAM in of a PacketOut.
 	opens []AEADOp // The open ops of the part.
 	seals []AEADOp // The seal ops of the part.
 }
@@ -180,7 +180,7 @@ func (c *counter) add(n int) {
 
 // Pipeline is the Go pipeline of relay.p4. One Write at a time makes a copy of the tables that it
 // changes, with no lock, and sets cur to it with the lock held. Each part of a batch of packets
-// takes the read lock and reads cur one time. The frame writers and OnPacketIn run with the read
+// takes the read lock and reads cur one time. The datagram writers and OnPacketIn run with the read
 // lock held and must not call the Pipeline. The Sender runs after the part releases the read lock.
 type Pipeline struct {
 	send     Sender
@@ -194,7 +194,7 @@ type Pipeline struct {
 	portDrops []counter // Packets only.
 
 	// wmu keeps the Writes to one at a time (one writer for all tables). mu is the write lock of cur
-	// and the frame writers.
+	// and the datagram writers.
 	wmu     sync.Mutex
 	mu      sync.RWMutex
 	cur     *state
@@ -352,8 +352,9 @@ func (p *Pipeline) OnPacketIn(fn func(p *p4.PacketIn) bool) {
 	p.packetIn.Store(&fn)
 }
 
-// SetFrameWriter sets the frame writer of a port. w gets a frame that is valid only during the call.
-func (p *Pipeline) SetFrameWriter(port uint64, w func(b []byte) error) {
+// SetDatagramWriter sets the datagram writer of a port. w gets a datagram that is valid only during
+// the call.
+func (p *Pipeline) SetDatagramWriter(port uint64, w func(b []byte) error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if w == nil {
@@ -444,7 +445,7 @@ func (p *Pipeline) readCounters(ce *p4.CounterEntry, out *[]*p4.Entity) error {
 // readTables gives the table entries that match te.
 func (s *state) readTables(te *p4.TableEntry, out *[]*p4.Entity) error {
 	id := te.GetTableId()
-	if id != 0 && id != TablePorts && id != TableClassify && id != TableSource && id != TableRoute {
+	if id != 0 && id != TablePorts && id != TableOutPorts && id != TableClassify && id != TableSource && id != TableRoute {
 		return status.Errorf(codes.NotFound, "unknown table %d", id)
 	}
 	md := te.GetMetadata()
@@ -454,6 +455,8 @@ func (s *state) readTables(te *p4.TableEntry, out *[]*p4.Entity) error {
 		switch id {
 		case TablePorts:
 			key, err = decodePortsKey(te.GetMatch())
+		case TableOutPorts:
+			key, err = decodeOutPortsKey(te.GetMatch())
 		case TableClassify:
 			key, err = decodeClassifyKey(te.GetMatch())
 		case TableSource:
@@ -477,6 +480,11 @@ func (s *state) readTables(te *p4.TableEntry, out *[]*p4.Entity) error {
 	}
 	if id == 0 || id == TablePorts {
 		for _, e := range s.ports {
+			add(e.key, e.action, e.md)
+		}
+	}
+	if id == 0 || id == TableOutPorts {
+		for _, e := range s.outPorts {
 			add(e.key, e.action, e.md)
 		}
 	}

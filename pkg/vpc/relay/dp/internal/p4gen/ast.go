@@ -19,9 +19,11 @@ type program struct {
 	structs  []*structType // Headers and structs, in source order.
 	externs  []*externType
 	funcs    []*method // The extern functions.
-	parsers  []*parserDecl
-	controls []*controlDecl
-	main     *packageInst
+	// The top-level counters, meters and PspSa instance, which all controls can use.
+	instances []*instance
+	parsers   []*parserDecl
+	controls  []*controlDecl
+	main      *packageInst
 }
 
 // typeRef is bit<width>, bool or a declared type.

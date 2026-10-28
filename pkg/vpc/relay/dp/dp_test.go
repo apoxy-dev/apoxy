@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -93,17 +94,36 @@ func write(ctx context.Context, tg dp.Target, us ...*p4.Update) error {
 
 func pfx(s string) netip.Prefix { return netip.MustParsePrefix(s) }
 
-func access(port uint64, addr netip.AddrPort, tag uint32, lanes uint64) *p4.TableEntry {
-	return dp.PortsKey{Port: port}.Entry(dp.PortAction{Session: 1, Tag: tag, Addr: addr, Lanes: lanes, MTU: 1400, MeterIndex: uint32(port)})
+// accessPort is the port record of an access port.
+func accessPort(port uint64, addr netip.AddrPort, tag uint32, lanes uint64) dp.PortAction {
+	return dp.PortAction{Session: 1, Tag: tag, Addr: addr, Lanes: lanes, MTU: 1400, MeterIndex: uint32(port)}
 }
 
-// lane2 gives A1 only a TX entry of lane 2 (lane port 4002), and the seen bits of its ports entry.
-func lane2(seen uint8) []*p4.Update {
+// access is the ports entry of an access port.
+func access(port uint64, addr netip.AddrPort, tag uint32, lanes uint64) *p4.TableEntry {
+	return dp.PortsKey{Port: port}.Entry(accessPort(port, addr, tag, lanes))
+}
+
+// outPort is the out_ports action of the port record pa, as the control plane makes it.
+func outPort(pa dp.PortAction) dp.OutPortAction {
+	return dp.OutPortAction{Trunk: pa.Trunk, Session: pa.Session, Addr: pa.Addr, Lanes: pa.Lanes, Seen: pa.Seen, MTU: pa.MTU, MeterIndex: pa.MeterIndex}
+}
+
+// ports gives the updates typ of the ports and the out_ports entry of port with the port record pa,
+// as the control plane writes them.
+func ports(typ p4.Update_Type, port uint64, pa dp.PortAction) []*p4.Update {
 	return []*p4.Update{
+		{Type: typ, Entity: &p4.Entity{Entity: &p4.Entity_TableEntry{TableEntry: dp.PortsKey{Port: port}.Entry(pa)}}},
+		{Type: typ, Entity: &p4.Entity{Entity: &p4.Entity_TableEntry{TableEntry: dp.OutPortsKey{Port: port}.Entry(outPort(pa))}}},
+	}
+}
+
+// lane2 gives A1 only a TX entry of lane 2 (lane port 4002), and the seen bits of its port entries.
+func lane2(seen uint8) []*p4.Update {
+	return append([]*p4.Update{
 		keys(p4.Update_DELETE, &dpv1.PspSaEntry{Direction: dpv1.PspSaDirection_PSP_SA_DIRECTION_TX, Spi: spiA1Out, Port: 1, Session: 1}),
 		tx(0x113, 1, 1, 2),
-		modify(dp.PortsKey{Port: 1}.Entry(dp.PortAction{Session: 1, Tag: 7, Addr: addrA1, Lanes: 4001<<32 | 4002<<16, Seen: seen, MTU: 1400, MeterIndex: 1})),
-	}
+	}, ports(p4.Update_MODIFY, 1, dp.PortAction{Session: 1, Tag: 7, Addr: addrA1, Lanes: 4001<<32 | 4002<<16, Seen: seen, MTU: 1400, MeterIndex: 1})...)
 }
 
 func context_(port, session uint64, tag uint32, vpc string, vni, cell uint32) *p4.TableEntry {
@@ -122,13 +142,15 @@ func route(vpc, p string, port uint64, cell uint32, local uint64, localCell uint
 // (port 3, QUIC mode), and the peer relays T (port 10, MS 5) and T2 (port 11). In VPC B: A4 (port 4),
 // with the prefix of A1.
 func base() []*p4.Update {
-	return []*p4.Update{
-		insert(access(1, addrA1, 7, 4001<<32|4002<<16)),
-		insert(access(2, addrA2, 8, 0)),
-		insert(access(3, netip.AddrPort{}, 9, 0)),
-		insert(access(4, addrA4, 10, 0)),
-		insert(dp.PortsKey{Port: 10}.Entry(dp.PortAction{Trunk: true, Session: 5, Addr: addrT, MTU: 9000, MeterIndex: 10})),
-		insert(dp.PortsKey{Port: 11}.Entry(dp.PortAction{Trunk: true, Session: 1, Addr: addrT2, MTU: 9000, MeterIndex: 11})),
+	us := slices.Concat(
+		ports(p4.Update_INSERT, 1, accessPort(1, addrA1, 7, 4001<<32|4002<<16)),
+		ports(p4.Update_INSERT, 2, accessPort(2, addrA2, 8, 0)),
+		ports(p4.Update_INSERT, 3, accessPort(3, netip.AddrPort{}, 9, 0)),
+		ports(p4.Update_INSERT, 4, accessPort(4, addrA4, 10, 0)),
+		ports(p4.Update_INSERT, 10, dp.PortAction{Trunk: true, Session: 5, Addr: addrT, MTU: 9000, MeterIndex: 10}),
+		ports(p4.Update_INSERT, 11, dp.PortAction{Trunk: true, Session: 1, Addr: addrT2, MTU: 9000, MeterIndex: 11}),
+	)
+	return append(us,
 		insert(context_(1, 1, 0, vpcA, vniA, 1)),
 		insert(context_(2, 1, 0, vpcA, vniA, 2)),
 		insert(context_(3, 1, 0, vpcA, vniA, 3)),
@@ -155,7 +177,7 @@ func base() []*p4.Update {
 		rx(spiTIn, 10, 5, 0), tx(spiTOut, 10, 5, 0),
 		tx(spiT2Out, 11, 1, 0),
 		rx(spiNoPort, 5, 1, 0),
-	}
+	)
 }
 
 // ipv4 returns a UDP packet from src to dst of n bytes.
@@ -250,7 +272,7 @@ type relay struct {
 	sent    []sent
 	batches []int // The length of each batch that the pipeline sent.
 	in      []*p4.PacketIn
-	frames  map[uint64][][]byte
+	dgrams  map[uint64][][]byte // The DATAGRAM out of each port.
 	full    bool
 	dgramEr error
 	onSend  func() // Runs at the end of each Send, or nil.
@@ -275,7 +297,7 @@ func (r *relay) receive(from netip.AddrPort, b []byte) {
 
 func newRelay(t *testing.T, extra ...*p4.Update) *relay {
 	t.Helper()
-	r := &relay{frames: map[uint64][][]byte{}}
+	r := &relay{dgrams: map[uint64][][]byte{}}
 	r.Pipeline = dp.New(r, aead.GCM{})
 	r.OnPacketIn(func(p *p4.PacketIn) bool {
 		if r.full {
@@ -284,11 +306,11 @@ func newRelay(t *testing.T, extra ...*p4.Update) *relay {
 		r.in = append(r.in, p)
 		return true
 	})
-	r.SetFrameWriter(3, func(b []byte) error {
+	r.SetDatagramWriter(3, func(b []byte) error {
 		if r.dgramEr != nil {
 			return r.dgramEr
 		}
-		r.frames[3] = append(r.frames[3], bytes.Clone(b))
+		r.dgrams[3] = append(r.dgrams[3], bytes.Clone(b))
 		return nil
 	})
 	require.NoError(t, write(t.Context(), r, base()...))
@@ -314,8 +336,9 @@ func counts(t *testing.T, tg dp.Target, id uint32) map[int64]int64 {
 // pd returns the port_drops index of a drop at meter index i.
 func pd(i int64, reason uint8) int64 { return i<<5 | int64(reason) }
 
-func frameOut(port, session uint64, b []byte) *p4.PacketOut {
-	return &p4.PacketOut{Payload: b, Metadata: dp.PacketOutMeta{Kind: dp.KindFrame, Port: port, Session: session}.Metadata()}
+// datagramIn is the PacketOut DATAGRAM of b from port and session: a DATAGRAM in.
+func datagramIn(port, session uint64, b []byte) *p4.PacketOut {
+	return &p4.PacketOut{Payload: b, Metadata: dp.PacketOutMeta{Kind: dp.KindDatagram, Port: port, Session: session}.Metadata()}
 }
 
 func TestPipeline(t *testing.T) {
@@ -334,6 +357,10 @@ func TestPipeline(t *testing.T) {
 		meta    dp.PacketInMeta
 		payload []byte
 	}
+	type dgramOut struct {
+		vni   uint32
+		inner []byte
+	}
 	cases := []struct {
 		name     string
 		extra    []*p4.Update
@@ -343,10 +370,10 @@ func TestPipeline(t *testing.T) {
 		full     bool
 		dgramErr bool
 		drop     uint8 // The drops index.
-		portDrop int64 // The port_drops index of the drop: the out port after send_out finds it, else the in port (0: none).
+		portDrop int64 // The port_drops index of the drop: the out port after egress reads its out_ports entry, else the in port (0: none).
 		out      *out
 		in       *pin
-		frame    []byte // A FRAME out to port 3.
+		dgram    *dgramOut // A DATAGRAM out to port 3.
 		cells    map[int64]int64
 	}{
 		{
@@ -377,31 +404,31 @@ func TestPipeline(t *testing.T) {
 			out: &out{to: addrA2, spi: spiA2Out, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.77.7", "100.64.8.5", 100)},
 		},
 		{
-			name: "FRAME out",
+			name: "DATAGRAM out",
 			from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.3.5", 100)),
-			frame: peerconn.EncodeData(nil, vniA, ipv4("100.64.1.5", "100.64.3.5", 100)),
+			dgram: &dgramOut{vni: vniA, inner: ipv4("100.64.1.5", "100.64.3.5", 100)},
 		},
 		{
-			name: "FRAME in",
-			po:   frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
+			name: "DATAGRAM in",
+			po:   datagramIn(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
 			out:  &out{to: addrA1, spi: spiA1Out, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
 			name:  "a TX entry of a lane sends to the port address before a keepalive of the lane",
 			extra: lane2(0),
-			po:    frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
+			po:    datagramIn(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
 			out:   &out{to: addrA1, spi: 0x113, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
 			name:  "a keepalive of another lane does not move the lane",
 			extra: lane2(0b101),
-			po:    frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
+			po:    datagramIn(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
 			out:   &out{to: addrA1, spi: 0x113, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
 			name:  "a TX entry of a lane sends to the lane port after its keepalive",
 			extra: lane2(0b010),
-			po:    frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
+			po:    datagramIn(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
 			out:   &out{to: netip.AddrPortFrom(addrA1.Addr(), 4002), spi: 0x113, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
 		},
 		{
@@ -428,6 +455,12 @@ func TestPipeline(t *testing.T) {
 			name: "SEAL",
 			po:   &p4.PacketOut{Payload: []byte("mesh probe"), Metadata: dp.PacketOutMeta{Kind: dp.KindSeal, Port: 10, Session: 5}.Metadata()},
 			out:  &out{to: addrT, spi: spiTOut, vni: 0, nh: psp.NextHdrMessage, inner: []byte("mesh probe")},
+		},
+		{
+			name:  "SEAL to a port without an out_ports entry",
+			extra: []*p4.Update{remove(dp.OutPortsKey{Port: 10}.Entry(nil))},
+			po:    &p4.PacketOut{Payload: []byte("mesh probe"), Metadata: dp.PacketOutMeta{Kind: dp.KindSeal, Port: 10, Session: 5}.Metadata()},
+			drop:  dp.ReasonNoTarget,
 		},
 		{
 			name: "RAW",
@@ -471,11 +504,11 @@ func TestPipeline(t *testing.T) {
 		{name: "old_session: no ports entry", from: addrA1, wire: seal(spiNoPort, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)), drop: dp.ReasonOldSession},
 		{
 			name:  "old_session after a new MS",
-			extra: []*p4.Update{modify(dp.PortsKey{Port: 10}.Entry(dp.PortAction{Trunk: true, Session: 6, Addr: addrT, MTU: 9000, MeterIndex: 10}))},
+			extra: ports(p4.Update_MODIFY, 10, dp.PortAction{Trunk: true, Session: 6, Addr: addrT, MTU: 9000, MeterIndex: 10}),
 			from:  addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.8.5", 100)),
 			drop: dp.ReasonOldSession, portDrop: pd(10, dp.ReasonOldSession),
 		},
-		{name: "old_session of a FRAME in", po: frameOut(3, 2, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))), drop: dp.ReasonOldSession, portDrop: pd(3, dp.ReasonOldSession)},
+		{name: "old_session of a DATAGRAM in", po: datagramIn(3, 2, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))), drop: dp.ReasonOldSession, portDrop: pd(3, dp.ReasonOldSession)},
 		{name: "unknown_source", from: netip.MustParseAddrPort("192.0.2.99:4000"), wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)), drop: dp.ReasonUnknownSource, portDrop: pd(1, dp.ReasonUnknownSource)},
 		{
 			name:  "meter",
@@ -489,6 +522,28 @@ func TestPipeline(t *testing.T) {
 		{name: "no_route: no entry on a trunk", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.200.1", 100)), drop: dp.ReasonNoRoute, portDrop: pd(10, dp.ReasonNoRoute)},
 		{name: "no_route: no local target", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.9.7", 100)), drop: dp.ReasonNoRoute, portDrop: pd(10, dp.ReasonNoRoute)},
 		{name: "no_target", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.4.5", 100)), drop: dp.ReasonNoTarget, portDrop: pd(1, dp.ReasonNoTarget)},
+		{
+			name:  "no_target: a ports entry without an out_ports entry",
+			extra: []*p4.Update{insert(access(99, netip.MustParseAddrPort("192.0.2.98:4000"), 11, 0))},
+			from:  addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.4.5", 100)),
+			drop: dp.ReasonNoTarget, portDrop: pd(1, dp.ReasonNoTarget),
+		},
+		{
+			name: "the MTU of out_ports counts",
+			extra: func() []*p4.Update {
+				o := outPort(accessPort(2, addrA2, 8, 0))
+				o.MTU = 100
+				return []*p4.Update{modify(dp.OutPortsKey{Port: 2}.Entry(o))}
+			}(),
+			from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 101)),
+			drop: dp.ReasonMTU, portDrop: pd(2, dp.ReasonMTU),
+		},
+		{
+			name:  "drop_out entry of out_ports",
+			extra: []*p4.Update{modify(dp.OutPortsKey{Port: 2}.Entry(dp.DropOutAction{Reason: 31}))},
+			from:  addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 100)),
+			drop: 31, portDrop: pd(1, 31),
+		},
 		{name: "trunk_to_trunk", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.6.5", 100)), drop: dp.ReasonTrunkToTrunk, portDrop: pd(11, dp.ReasonTrunkToTrunk)},
 		{name: "local_only", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.77.7", "100.64.5.5", 100)), drop: dp.ReasonLocalOnly, portDrop: pd(11, dp.ReasonLocalOnly)},
 		{name: "mtu", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 1401)), drop: dp.ReasonMTU, portDrop: pd(2, dp.ReasonMTU)},
@@ -555,10 +610,13 @@ func TestPipeline(t *testing.T) {
 				assert.Equal(t, tc.in.meta, md)
 				assert.Equal(t, tc.in.payload, r.in[0].GetPayload())
 			}
-			if tc.frame == nil {
-				assert.Empty(t, r.frames[3])
-			} else {
-				assert.Equal(t, [][]byte{tc.frame}, r.frames[3])
+			if tc.dgram == nil {
+				assert.Empty(t, r.dgrams[3])
+			} else if assert.Len(t, r.dgrams[3], 1) {
+				vni, inner, err := peerconn.DecodeData(r.dgrams[3][0])
+				require.NoError(t, err)
+				assert.Equal(t, tc.dgram.vni, vni)
+				assert.Equal(t, tc.dgram.inner, inner)
 			}
 			if tc.cells != nil {
 				assert.Equal(t, tc.cells, counts(t, r, dp.CounterCells))
@@ -603,14 +661,14 @@ func TestSealNextHdr(t *testing.T) {
 			to: addrA2, spi: spiA2Out, nextHdr: psp.NextHdrV4, inner: ipv4("100.64.1.5", "100.64.2.5", 100)},
 		{name: "IPv6 from an agent", extra: v6, from: addrA1, wire: seal(spiA1In, vniA, 1, ipv6("fd00:1::5", "fd00:2::5", 100)),
 			to: addrA2, spi: spiA2Out, nextHdr: psp.NextHdrV6, inner: ipv6("fd00:1::5", "fd00:2::5", 100)},
-		{name: "IPv4 in a FRAME", po: frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
+		{name: "IPv4 in a DATAGRAM", po: datagramIn(3, 1, peerconn.EncodeData(nil, vniA, ipv4("100.64.3.5", "100.64.1.5", 100))),
 			to: addrA1, spi: spiA1Out, nextHdr: psp.NextHdrV4, inner: ipv4("100.64.3.5", "100.64.1.5", 100)},
-		{name: "IPv6 in a FRAME", extra: v6, po: frameOut(3, 1, peerconn.EncodeData(nil, vniA, ipv6("fd00:3::5", "fd00:1::5", 100))),
+		{name: "IPv6 in a DATAGRAM", extra: v6, po: datagramIn(3, 1, peerconn.EncodeData(nil, vniA, ipv6("fd00:3::5", "fd00:1::5", 100))),
 			to: addrA1, spi: spiA1Out, nextHdr: psp.NextHdrV6, inner: ipv6("fd00:3::5", "fd00:1::5", 100)},
 		// The sender labels these as a message (NextHdrMessage) or as IPv4.
 		{name: "not IP from an agent", from: addrA1, wire: seal(spiA1In, vniA, 1, notIP), portDrop: pd(1, dp.ReasonMalformed)},
 		{name: "short IPv4 from an agent", from: addrA1, wire: seal(spiA1In, vniA, 1, shortV4), portDrop: pd(1, dp.ReasonMalformed)},
-		{name: "not IP in a FRAME", po: frameOut(3, 1, peerconn.EncodeData(nil, vniA, notIP)), portDrop: pd(3, dp.ReasonMalformed)},
+		{name: "not IP in a DATAGRAM", po: datagramIn(3, 1, peerconn.EncodeData(nil, vniA, notIP)), portDrop: pd(3, dp.ReasonMalformed)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

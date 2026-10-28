@@ -46,6 +46,7 @@ type nameRef struct {
 // multibit tries, with the IPv4 prefixes in the IPv4 trie.
 type state struct {
 	ports    map[uint64]*entry[PortsKey]
+	outPorts map[uint64]*entry[OutPortsKey]
 	classify map[ClassifyKey]*entry[ClassifyKey]
 	source   map[setKey]*bart.Table[*entry[SourceKey]]
 	route    map[uint32]*bart.Table[*entry[RouteKey]]
@@ -60,6 +61,7 @@ type state struct {
 func newState() *state {
 	return &state{
 		ports:    map[uint64]*entry[PortsKey]{},
+		outPorts: map[uint64]*entry[OutPortsKey]{},
 		classify: map[ClassifyKey]*entry[ClassifyKey]{},
 		source:   map[setKey]*bart.Table[*entry[SourceKey]]{},
 		route:    map[uint32]*bart.Table[*entry[RouteKey]]{},
@@ -79,7 +81,7 @@ type change struct {
 	st *state
 
 	// The maps of st that this change copied.
-	ports, classify, source, route, names, free, rx, tx, meters bool
+	ports, outPorts, classify, source, route, names, free, rx, tx, meters bool
 
 	sources map[setKey]*trieChange[*entry[SourceKey]] // The source tries that it changes.
 	routes  map[uint32]*trieChange[*entry[RouteKey]]  // The route tries that it changes.
@@ -123,6 +125,26 @@ func lookup[V any](t *bart.Table[V], a netip.Addr) (V, bool) {
 // The table lookups of the generated apply: the entry of the keys, or nil.
 
 func (s *state) lookupPorts(port uint64) *entry[PortsKey] { return s.ports[port] }
+
+func (s *state) lookupOutPorts(port uint64) *entry[OutPortsKey] { return s.outPorts[port] }
+
+// port returns the port action of the ports entry of id.
+func (s *state) port(id uint64) (PortAction, bool) {
+	if e := s.ports[id]; e != nil {
+		a, ok := e.action.(PortAction)
+		return a, ok
+	}
+	return PortAction{}, false
+}
+
+// outPort returns the out port action of the out_ports entry of id.
+func (s *state) outPort(id uint64) (OutPortAction, bool) {
+	if e := s.outPorts[id]; e != nil {
+		a, ok := e.action.(OutPortAction)
+		return a, ok
+	}
+	return OutPortAction{}, false
+}
 
 func (s *state) lookupClassify(port, session uint64, tag uint32) *entry[ClassifyKey] {
 	return s.classify[ClassifyKey{Port: port, Session: session, Tag: tag}]
@@ -286,6 +308,10 @@ func checkAction(a Action) error {
 		if a.MeterIndex >= maxMeter {
 			return status.Errorf(codes.OutOfRange, "port: meter index %d is out of range", a.MeterIndex)
 		}
+	case OutPortAction:
+		if a.MeterIndex >= maxMeter {
+			return status.Errorf(codes.OutOfRange, "out_port: meter index %d is out of range", a.MeterIndex)
+		}
 	case ContextAction:
 		if a.Cell >= maxCell {
 			return status.Errorf(codes.OutOfRange, "context: cell %d is out of range", a.Cell)
@@ -297,6 +323,10 @@ func checkAction(a Action) error {
 	case DropAction:
 		if int64(a.Reason) >= counterSizes[CounterDrops] {
 			return status.Errorf(codes.OutOfRange, "drop: reason %d is out of range", a.Reason)
+		}
+	case DropOutAction:
+		if int64(a.Reason) >= counterSizes[CounterDrops] {
+			return status.Errorf(codes.OutOfRange, "drop_out: reason %d is out of range", a.Reason)
 		}
 	}
 	return nil
@@ -336,6 +366,12 @@ func (c *change) writeTable(typ p4.Update_Type, te *p4.TableEntry) error {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
 		return writeMap(&st.ports, &c.ports, k.Port, typ, &entry[PortsKey]{key: k, action: a, md: md}, nil)
+	case TableOutPorts:
+		k, err := decodeOutPortsKey(te.GetMatch())
+		if err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
+		return writeMap(&st.outPorts, &c.outPorts, k.Port, typ, &entry[OutPortsKey]{key: k, action: a, md: md}, nil)
 	case TableClassify:
 		k, err := decodeClassifyKey(te.GetMatch())
 		if err != nil {
@@ -405,6 +441,8 @@ func allows(table, action uint32) bool {
 	switch table {
 	case TablePorts:
 		return portsAllows(action)
+	case TableOutPorts:
+		return outPortsAllows(action)
 	case TableClassify:
 		return classifyAllows(action)
 	case TableSource:

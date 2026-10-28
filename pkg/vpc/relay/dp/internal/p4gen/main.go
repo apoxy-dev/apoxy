@@ -2,7 +2,8 @@
 
 // Command p4gen reads relay.p4, a P4 program of the subset of the relay engine design, and
 // writes its P4Info in the text layout of p4test and the Go code of the pipeline: the IDs, entry
-// types, drop reasons and PspSa instance, and the parse and apply code (pipe.go). It has its own
+// types, drop reasons and PspSa instance, and the code of parse (the parser and the ingress
+// control up to keys.open) and apply (the rest of ingress, then egress) (pipe.go). It has its own
 // parser and does not use p4c; CI runs p4test as the type check and compares the two P4Info files
 // with diff.
 package main

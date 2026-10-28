@@ -363,7 +363,7 @@ func TestDevice(t *testing.T) {
 		}
 	})
 
-	t.Run("FRAME in and FRAME out on QUIC", func(t *testing.T) {
+	t.Run("DATAGRAM in and DATAGRAM out on QUIC", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 		defer cancel()
 		conf := &quic.Config{EnableDatagrams: true, MaxIdleTimeout: 10 * time.Second}
@@ -374,10 +374,9 @@ func TestDevice(t *testing.T) {
 		defer ln.Close()
 
 		// Two agents in VPC A, on ports 3 and 5 in QUIC mode.
-		ports := []uint64{3, 5}
 		agents := map[uint64]*quic.Conn{}
 		var updates []*p4.Update
-		for _, port := range ports {
+		for _, port := range []uint64{3, 5} {
 			c := e.listen(t, netip.AddrPortFrom(peer4.Addr(), uint16(8000+port)))
 			ctr := &quic.Transport{Conn: c}
 			defer ctr.Close()
@@ -386,11 +385,11 @@ func TestDevice(t *testing.T) {
 			agents[port] = agent
 			conn, err := ln.Accept(ctx)
 			require.NoError(t, err)
-			e.d.Target().SetFrameWriter(port, conn.TrySendDatagram)
-			go func() { _ = dp.ReadFrames(ctx, e.d.Target(), conn, port, 1) }()
+			e.d.Target().SetDatagramWriter(port, conn.TrySendDatagram)
+			go func() { _ = dp.ReadDatagrams(ctx, e.d.Target(), conn, port, 1) }()
 			p := fmt.Sprintf("100.64.%d.0/24", port)
+			updates = append(updates, ports(p4.Update_INSERT, port, dp.PortAction{Session: 1, MTU: 1400, MeterIndex: uint32(port)})...)
 			updates = append(updates,
-				insert(dp.PortsKey{Port: port}.Entry(dp.PortAction{Session: 1, MTU: 1400, MeterIndex: uint32(port)})),
 				insert(context_(port, 1, 0, vpcA, vniA, uint32(port))),
 				insert(source(port, 1, 0, p, dp.NoAction{})),
 				insert(route(vpcA, p, port, uint32(30+port), port, uint32(30+port))),
@@ -407,11 +406,13 @@ func TestDevice(t *testing.T) {
 			{name: "port 5 to port 3", from: 5, to: 3, inner: ipv4("100.64.5.5", "100.64.3.5", 300)},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				frame := peerconn.EncodeData(nil, vniA, tc.inner)
-				require.NoError(t, agents[tc.from].SendDatagram(frame))
+				require.NoError(t, agents[tc.from].SendDatagram(peerconn.EncodeData(nil, vniA, tc.inner)))
 				got, err := agents[tc.to].ReceiveDatagram(ctx)
 				require.NoError(t, err)
-				assert.True(t, bytes.Equal(frame, got), "the frame out is the frame in")
+				vni, inner, err := peerconn.DecodeData(got)
+				require.NoError(t, err)
+				assert.Equal(t, uint32(vniA), vni, "the VNI of the DATAGRAM out")
+				assert.Equal(t, tc.inner, inner, "the inner packet of the DATAGRAM out")
 			})
 		}
 	})
@@ -543,15 +544,13 @@ func (e *env) forward(t *testing.T, lanes int, a2 netip.AddrPort) *fwd {
 	for lane := 1; lane < lanes; lane++ {
 		lanePorts |= uint64(9010+lane) << (16 * (3 - lane))
 	}
-	updates := []*p4.Update{
-		insert(access(1, a1, 7, lanePorts)),
-		insert(access(2, a2, 8, 0)),
+	updates := slices.Concat(ports(p4.Update_INSERT, 1, accessPort(1, a1, 7, lanePorts)), ports(p4.Update_INSERT, 2, accessPort(2, a2, 8, 0)), []*p4.Update{
 		insert(context_(1, 1, 0, vpcA, vniA, 1)),
 		insert(context_(2, 1, 0, vpcA, vniA, 2)),
 		insert(source(1, 1, 0, "100.64.1.0/24", dp.NoAction{})),
 		insert(route(vpcA, "100.64.2.0/24", 2, 32, 2, 32)),
 		tx(spiA2Out, 2, 1, 0),
-	}
+	})
 	f := &fwd{buf: make([]byte, 1500)}
 	for lane := range lanes {
 		updates = append(updates, rx(spiA1In+uint32(lane), 1, 1, uint32(lane)))

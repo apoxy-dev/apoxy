@@ -63,4 +63,4 @@ control D(packet_out pkt, in headers_t h) {
 }
 V1Switch(P(), V(), C(), E(), V(), D()) main;
 -- stub.go --
-func f(pkt *packet, x uint32, y *uint64) uint8 { return 0 }
+func (*part) f(pkt *packet, x uint32, y *uint64) uint8 { return 0 }

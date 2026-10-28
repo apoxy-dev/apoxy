@@ -125,7 +125,7 @@ func (x *part) Opened(pkt *packet, m *meta) uint8 {
 }
 
 // Count is keys.count: it adds a packet to the RX entry of spi.
-func (x *part) Count(spi uint32) { x.st.count(spi) }
+func (x *part) Count(_ *packet, spi uint32) { x.st.count(spi) }
 
 // opened is keys.open after the AEAD opened the PSP packet pkt with the sequence number seq in
 // place: ok tells that pkt authenticates. It checks Next Header and the replay window, and moves

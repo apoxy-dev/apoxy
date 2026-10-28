@@ -4,9 +4,9 @@ info: ../../relay.p4info.txtpb
 gen: ../../relay.gen.go
 local: r
 # The IDs of today's relay.p4, as p4test gives them, and the PspSa instance.
-ids: NoAction=21257015 Relay.cells=317147353 Relay.classify=37194576 Relay.context=25404084
-ids: Relay.drop=16983990 Relay.drops=309103603 Relay.forward=22957411 Relay.keys=0x81621bac
-ids: Relay.lane_meter=339716295 Relay.local_only=24976605 Relay.port=24992955
-ids: Relay.port_drops=306017222 Relay.port_meter=345235978 Relay.ports=48524748
-ids: Relay.punt_meter=338249407 Relay.route=42238873 Relay.source=37945331 packet_in=80671331
-ids: packet_out=75327753
+ids: NoAction=21257015 Relay.classify=37194576 Relay.context=25404084 Relay.drop=16983990
+ids: Relay.forward=22957411 Relay.local_only=24976605 Relay.port=24992955 Relay.ports=48524748
+ids: Relay.route=42238873 Relay.source=37945331 RelayEgress.drop_out=21608195
+ids: RelayEgress.out_port=32296454 RelayEgress.out_ports=39859099 cells=306161202
+ids: drops=302468923 keys=0x8199b768 lane_meter=340534297 packet_in=80671331
+ids: packet_out=75327753 port_drops=310371544 port_meter=341723503 punt_meter=349658765

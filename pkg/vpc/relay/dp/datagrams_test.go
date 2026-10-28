@@ -55,11 +55,11 @@ func (o *outTarget) PacketOut(p *p4.PacketOut) error {
 	return nil
 }
 
-// TestReadFrames gives the reads of a connection of A to the frame reader. Each datagram goes to
-// PacketOut as FRAME in, in order, until the connection ends or PacketOut fails.
-func TestReadFrames(t *testing.T) {
+// TestReadDatagrams gives the reads of a connection of A to the datagram reader. Each datagram
+// goes to PacketOut as DATAGRAM in, in order, until the connection ends or PacketOut fails.
+func TestReadDatagrams(t *testing.T) {
 	const port, session = 7, 9
-	frames := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
+	datagrams := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	cases := []struct {
 		name    string
 		reads   [][][]byte
@@ -69,11 +69,11 @@ func TestReadFrames(t *testing.T) {
 		want    int // The PacketOut calls.
 		wantErr error
 	}{
-		{name: "batch of 3", reads: [][][]byte{frames}, connErr: io.EOF, want: 3, wantErr: io.EOF},
-		{name: "two reads", reads: [][][]byte{frames[:1], frames[1:]}, connErr: io.EOF, want: 3, wantErr: io.EOF},
-		{name: "PacketOut fails on the 2nd", reads: [][][]byte{frames}, connErr: io.EOF, fail: 2, want: 2, wantErr: errOut},
+		{name: "batch of 3", reads: [][][]byte{datagrams}, connErr: io.EOF, want: 3, wantErr: io.EOF},
+		{name: "two reads", reads: [][][]byte{datagrams[:1], datagrams[1:]}, connErr: io.EOF, want: 3, wantErr: io.EOF},
+		{name: "PacketOut fails on the 2nd", reads: [][][]byte{datagrams}, connErr: io.EOF, fail: 2, want: 2, wantErr: errOut},
 		{name: "conn error", connErr: io.EOF, wantErr: io.EOF},
-		{name: "ctx done", reads: [][][]byte{frames}, cancel: true, want: 3, wantErr: context.Canceled},
+		{name: "ctx done", reads: [][][]byte{datagrams}, cancel: true, want: 3, wantErr: context.Canceled},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,14 +83,14 @@ func TestReadFrames(t *testing.T) {
 				cancel()
 			}
 			tgt := &outTarget{fail: tc.fail}
-			err := dp.ReadFrames(ctx, tgt, &readsConn{reads: tc.reads, err: tc.connErr}, port, session)
+			err := dp.ReadDatagrams(ctx, tgt, &readsConn{reads: tc.reads, err: tc.connErr}, port, session)
 			require.ErrorIs(t, err, tc.wantErr)
 			require.Len(t, tgt.got, tc.want)
 			for i, po := range tgt.got {
-				assert.Equal(t, frames[i], po.Payload, "PacketOut %d", i)
+				assert.Equal(t, datagrams[i], po.Payload, "PacketOut %d", i)
 				md, err := dp.DecodePacketOutMeta(po.Metadata)
 				require.NoError(t, err)
-				assert.Equal(t, dp.PacketOutMeta{Kind: dp.KindFrame, Port: port, Session: session}, md)
+				assert.Equal(t, dp.PacketOutMeta{Kind: dp.KindDatagram, Port: port, Session: session}, md)
 			}
 		})
 	}

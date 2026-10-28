@@ -28,6 +28,21 @@ func (b *batch) insert(e *p4.TableEntry, md string) { b.table(p4.Update_INSERT, 
 func (b *batch) modify(e *p4.TableEntry, md string) { b.table(p4.Update_MODIFY, e, md) }
 func (b *batch) remove(e *p4.TableEntry)            { b.table(p4.Update_DELETE, e, "") }
 
+// port adds the update typ of the port record pa of port to both port tables: ports, the in port,
+// and out_ports, the out port. A DELETE has a nil pa. Both updates are in one batch, so one Write
+// changes both tables: a packet never reads one table with the new record and the other with the
+// old one.
+func (b *batch) port(typ p4.Update_Type, port uint64, pa *dp.PortAction, md string) {
+	var in, out dp.Action
+	if pa != nil {
+		in = *pa
+		out = dp.OutPortAction{Trunk: pa.Trunk, Session: pa.Session, Addr: pa.Addr, Lanes: pa.Lanes,
+			Seen: pa.Seen, MTU: pa.MTU, MeterIndex: pa.MeterIndex}
+	}
+	b.table(typ, dp.PortsKey{Port: port}.Entry(in), md)
+	b.table(typ, dp.OutPortsKey{Port: port}.Entry(out), md)
+}
+
 // keys adds an update of a keys entry.
 func (b *batch) keys(typ p4.Update_Type, e *dpv1.PspSaEntry) error {
 	x, err := dp.KeysEntry(e)

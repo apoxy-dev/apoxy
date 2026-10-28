@@ -4,7 +4,6 @@ package dp
 
 import (
 	"bytes"
-	"cmp"
 	"slices"
 
 	p4 "github.com/p4lang/p4runtime/go/p4/v1"
@@ -17,8 +16,8 @@ import (
 // maxPacket is the size of a send buffer: the largest UDP payload.
 const maxPacket = 65535
 
-// part is one part of a batch in the generated pipeline (parse and apply of relay.gen.go): the
-// tables of one read of cur, and the batch of the ops and of the packets out.
+// part is one part of a batch in the generated pipeline (parse, ingress and egress of relay.gen.go):
+// the tables of one read of cur, and the batch of the ops and of the packets out.
 type part struct {
 	p  *Pipeline
 	st *state
@@ -87,7 +86,7 @@ func (x *part) run(pkt *packet) {
 	}
 }
 
-// PacketOut takes FRAME in, SEAL and RAW, and sends its packet in a batch of one. An error is only
+// PacketOut takes DATAGRAM in, SEAL and RAW, and sends its packet in a batch of one. An error is only
 // for a bad request; a packet that the pipeline drops is counted in drops.
 func (p *Pipeline) PacketOut(po *p4.PacketOut) error {
 	md, err := DecodePacketOutMeta(po.GetMetadata())
@@ -109,11 +108,12 @@ func (p *Pipeline) PacketOut(po *p4.PacketOut) error {
 func (p *Pipeline) packetOut(st *state, md PacketOutMeta, b []byte, tx *TxBatch) error {
 	x := part{p: p, st: st, tx: tx}
 	switch md.Kind {
-	case KindFrame:
-		// A FRAME in starts at the parser on the CPU port. The AEAD reads only the memories of the
-		// batch, so the frame goes there first.
+	case KindDatagram:
+		// A DATAGRAM in starts at the parser on the CPU port. The AEAD reads only the memories of the
+		// batch, so the datagram goes there first.
 		_, off := tx.in(0, b)
-		tx.pkts = append(tx.pkts[:0], packet{})
+		// reset leaves the packets zero: no header is valid.
+		tx.pkts = slices.Grow(tx.pkts[:0], 1)[:1]
 		pkt := &tx.pkts[0]
 		pkt.in, pkt.ctl = tx.buf[off:off+len(b)], md
 		pkt.sm.ingressPort, pkt.sm.packetLength = cpuPort, uint32(len(b))
@@ -121,7 +121,7 @@ func (p *Pipeline) packetOut(st *state, md PacketOutMeta, b []byte, tx *TxBatch)
 		x.run(pkt)
 	case KindSeal:
 		// SEAL skips apply: M's trunk messages and probes, with tag 0. A message is never IP.
-		o, ok := st.port(md.Port)
+		o, ok := st.outPort(md.Port)
 		if !ok || !o.Addr.IsValid() {
 			p.drop(ReasonNoTarget, len(b))
 			return nil
@@ -131,7 +131,8 @@ func (p *Pipeline) packetOut(st *state, md PacketOutMeta, b []byte, tx *TxBatch)
 			return nil
 		}
 		_, off := tx.in(0, b)
-		x.seal(md.Port, o, psp.NextHdrMessage, 0, 0, tx.buf[off:off+len(b)], 0, 0)
+		op := outPortT{session: o.Session, addr: o.Addr, lanes: o.Lanes, seen: o.Seen}
+		x.seal(md.Port, &op, psp.NextHdrMessage, 0, 0, tx.buf[off:off+len(b)], 0, 0)
 	case KindRaw:
 		if !md.To.IsValid() {
 			return status.Error(codes.InvalidArgument, "RAW has no outer address")
@@ -139,7 +140,7 @@ func (p *Pipeline) packetOut(st *state, md PacketOutMeta, b []byte, tx *TxBatch)
 		off := tx.slot(len(b))
 		tx.add(md.To, off, copy(tx.buf[off:], b))
 	default:
-		return status.Errorf(codes.InvalidArgument, "packet_out kind %d is not FRAME, SEAL or RAW", md.Kind)
+		return status.Errorf(codes.InvalidArgument, "packet_out kind %d is not DATAGRAM, SEAL or RAW", md.Kind)
 	}
 	return nil
 }
@@ -171,10 +172,10 @@ func (x *part) executeMeter(id, i uint32, pkt *packet) uint8 {
 	return meterRed
 }
 
-// drop counts pkt as count_drop of relay.p4 does: in drops, and in port_drops at the out meter index,
-// or else at the meter index of the in port.
+// drop counts pkt as count_drop of the control Relay does: in drops, and in port_drops at the meter
+// index of the in port.
 func (x *part) drop(pkt *packet, reason uint8) {
-	x.p.dropIn(cmp.Or(pkt.m.outMeterIndex, pkt.m.p.meterIndex), reason, int(pkt.sm.packetLength))
+	x.p.dropIn(pkt.m.p.meterIndex, reason, int(pkt.sm.packetLength))
 }
 
 func (p *Pipeline) drop(reason uint8, size int) {
@@ -182,7 +183,7 @@ func (p *Pipeline) drop(reason uint8, size int) {
 }
 
 // dropIn counts a drop, also in port_drops at (mi << 5) | reason when the meter index mi is not 0:
-// the out port in send_out (tx), else the in port (rx).
+// the out port in egress (tx), else the in port (rx).
 func (p *Pipeline) dropIn(mi uint32, reason uint8, size int) {
 	p.drop(reason, size)
 	if mi != 0 {

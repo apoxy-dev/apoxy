@@ -1,5 +1,5 @@
 name: two controls, defaults and a hash collision
-generr: control SmallEgress must have an empty apply: the Go writer runs only the ingress control SmallIngress
+generr: the Go name TableT of SmallEgress.t is also the Go name of SmallIngress.t
 # The hashes of c2002 and c3002 are the same in the low 24 bits; the first name in sorted
 # order gets it.
 ids: NoAction=21257015 SmallEgress.t=37562719 SmallIngress.c2002=0x02b3e7ee
@@ -135,13 +135,13 @@ control SmallEgress(inout headers_t h, inout meta_t m, inout standard_metadata_t
     action set(bit<16> port) {
         h.to_cp.port = port;
     }
-    table t {
+    table t { // here: its Go name TableT is also the Go name of SmallIngress.t.
         key = { m.port: exact; }
         actions = { set; NoAction; }
         size = SIZE;
     }
     apply {
-        if (h.from_cp.isValid()) { // here: the Go writer runs only the ingress control.
+        if (h.from_cp.isValid()) {
             t.apply();
         }
     }

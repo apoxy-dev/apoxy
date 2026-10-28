@@ -227,7 +227,8 @@ func (a *connProc) finished() bool {
 func (a *connProc) start() {
 	var b batch
 	md := portKey(a.port)
-	b.insert(dp.PortsKey{Port: a.port}.Entry(a.portAction()), md)
+	pa := a.portAction()
+	b.port(p4.Update_INSERT, a.port, &pa, md)
 	b.insert(dp.ClassifyKey{Port: a.port, Session: accessSession}.Entry(dp.ContextAction{
 		VPC: vpcName(a.l.vpc, a.net.ID), VNI: a.net.ID, Cell: a.cell,
 	}), md)
@@ -236,7 +237,7 @@ func (a *connProc) start() {
 	for lane := range uint32(dpLanes) {
 		b.meter(dp.MeterLane, dpLanes*a.meter+lane, cfg.LaneRate, cfg.LaneBurst)
 	}
-	a.t.SetFrameWriter(a.port, a.writeFrame)
+	a.t.SetDatagramWriter(a.port, a.writeDatagram)
 	a.next = b
 	a.w.chainThen(a.started)
 }
@@ -245,7 +246,7 @@ func (a *connProc) start() {
 func (a *connProc) started(err error) {
 	if err != nil {
 		slog.Error("Failed to write the entries of an agent connection", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
-		a.t.SetFrameWriter(a.port, nil)
+		a.t.SetDatagramWriter(a.port, nil)
 		a.l.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "relay failed to add the connection")
 		a.closing, a.keysClosed = true, true
 		a.refuseCalls()
@@ -265,7 +266,7 @@ func (a *connProc) started(err error) {
 func (a *connProc) open() {
 	cfg := &a.r.cfg
 	a.setState(a.stateNow(), "connection started")
-	go func() { _ = dp.ReadFrames(a.ctx, a.t, a.l.qc, a.port, accessSession) }()
+	go func() { _ = dp.ReadDatagrams(a.ctx, a.t, a.l.qc, a.port, accessSession) }()
 	head := []*dpv1.SessionResponse{
 		{Msg: &dpv1.SessionResponse_Welcome{Welcome: &dpv1.Welcome{
 			ReflexiveAddress: a.l.remote().String(),
@@ -307,9 +308,9 @@ func (a *connProc) refuseCalls() {
 	a.calls = nil
 }
 
-// writeFrame is the frame writer of the port: it sends on the session connection. It runs under
-// the read lock of the data plane.
-func (a *connProc) writeFrame(b []byte) error {
+// writeDatagram is the datagram writer of the port: it sends on the session connection. It runs
+// under the read lock of the data plane.
+func (a *connProc) writeDatagram(b []byte) error {
 	return a.l.qc.TrySendDatagram(b)
 }
 
@@ -746,7 +747,7 @@ func (a *connProc) sendTables() {
 	if a.portDirty && !a.closing {
 		p := a.portAction()
 		pa = &p
-		b.modify(dp.PortsKey{Port: a.port}.Entry(p), portKey(a.port))
+		b.port(p4.Update_MODIFY, a.port, pa, portKey(a.port))
 	}
 	var want map[netip.Prefix]bool
 	if a.srcDirty && !a.closing {
@@ -758,7 +759,7 @@ func (a *connProc) sendTables() {
 	a.w.send(b, func(err error) {
 		if pa != nil {
 			if err != nil {
-				slog.Error("Failed to write the ports entry of an agent connection", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
+				slog.Error("Failed to write the port entries of an agent connection", "vpc", a.l.vpc.UID, "agent", a.l.subject, "error", err)
 			} else {
 				a.written = pa.Addr
 				a.tellLanes(*pa)
@@ -1229,7 +1230,7 @@ func (a *connProc) close(code dpv1.RelayCloseCode, msg string) {
 	}
 	a.closing = true
 	a.code, a.msg = code, msg
-	a.t.SetFrameWriter(a.port, nil)
+	a.t.SetDatagramWriter(a.port, nil)
 	a.refuseCalls()
 	if a.opened {
 		a.closePort()
@@ -1239,10 +1240,10 @@ func (a *connProc) close(code dpv1.RelayCloseCode, msg string) {
 // closePort deletes the ports entry, so that the cells of A count no more packets.
 func (a *connProc) closePort() {
 	a.portDirty, a.srcDirty = false, false
-	a.next.remove(dp.PortsKey{Port: a.port}.Entry(nil))
+	a.next.port(p4.Update_DELETE, a.port, nil, "")
 	a.w.then(func(err error) {
 		if err != nil {
-			slog.Error("Failed to delete the ports entry of an agent connection", "vpc", a.l.vpc.UID, "error", err)
+			slog.Error("Failed to delete the port entries of an agent connection", "vpc", a.l.vpc.UID, "error", err)
 		}
 		a.closeRest()
 	})

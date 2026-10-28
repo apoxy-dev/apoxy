@@ -66,6 +66,8 @@ func TestWrite(t *testing.T) {
 	dropRoute := func(reason uint8) *p4.TableEntry {
 		return withMetadata(dp.RouteKey{VPC: "uid-c/1", Dst: pfx("2001:db8:1::/64")}.Entry(dp.DropAction{Reason: reason}), md)
 	}
+	pa50 := accessPort(50, netip.MustParseAddrPort("192.0.2.50:4000"), 50, 0)
+	out50 := withMetadata(dp.OutPortsKey{Port: 50}.Entry(outPort(pa50)), md)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -205,6 +207,29 @@ func TestWrite(t *testing.T) {
 			read:    []*p4.TableEntry{port50b, ctx50b},
 		},
 		{
+			name:    "a Read gives back the ports and the out_ports entry of a port",
+			updates: []*p4.Update{insert(port50), insert(out50)},
+			read:    []*p4.TableEntry{port50, out50},
+		},
+		{
+			name:    "an out_port meter index out of range applies nothing, also not the ports entry",
+			updates: []*p4.Update{insert(port50), insert(dp.OutPortsKey{Port: 50}.Entry(dp.OutPortAction{Session: 1, MeterIndex: 1 << 16}))},
+			err:     codes.Unknown,
+			details: []codes.Code{codes.Aborted, codes.OutOfRange},
+		},
+		{
+			name:    "a drop_out action with reason 32 is out of range",
+			updates: []*p4.Update{insert(port50), insert(dp.OutPortsKey{Port: 50}.Entry(dp.DropOutAction{Reason: 32}))},
+			err:     codes.Unknown,
+			details: []codes.Code{codes.Aborted, codes.OutOfRange},
+		},
+		{
+			name:    "the out_ports table refuses port",
+			updates: []*p4.Update{insert(dp.OutPortsKey{Port: 50}.Entry(pa50))},
+			err:     codes.Unknown,
+			details: []codes.Code{codes.InvalidArgument},
+		},
+		{
 			name:    "a Read gives back a classify MODIFY to another VPC",
 			before:  []*p4.Update{insert(port50), insert(ctx50)},
 			updates: []*p4.Update{modify(ctx50d)},
@@ -338,7 +363,7 @@ func TestFinalCount(t *testing.T) {
 	for seq := uint32(1); seq <= 2; seq++ {
 		r.receive(addrA1, seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "100.64.2.5", 100)))
 	}
-	require.NoError(t, write(t.Context(), r, remove(dp.PortsKey{Port: 1}.Entry(nil)), remove(dp.ClassifyKey{Port: 1, Session: 1}.Entry(nil))))
+	require.NoError(t, write(t.Context(), r, remove(dp.PortsKey{Port: 1}.Entry(nil)), remove(dp.OutPortsKey{Port: 1}.Entry(nil)), remove(dp.ClassifyKey{Port: 1, Session: 1}.Entry(nil))))
 	r.receive(addrA1, seal(spiA1In, vniA, 3, ipv4("100.64.1.5", "100.64.2.5", 100)))
 
 	cell := &p4.CounterEntry{CounterId: dp.CounterCells, Index: &p4.Index{Index: 2}}
@@ -494,11 +519,12 @@ func TestFailedWrite(t *testing.T) {
 		{
 			name: "removed entries come back",
 			batch: []*p4.Update{
-				remove(dp.PortsKey{Port: 1}.Entry(nil)), remove(dp.ClassifyKey{Port: 1, Session: 1}.Entry(nil)),
+				remove(dp.PortsKey{Port: 1}.Entry(nil)), remove(dp.OutPortsKey{Port: 1}.Entry(nil)), remove(dp.ClassifyKey{Port: 1, Session: 1}.Entry(nil)),
 				remove(source(1, 1, 0, "100.64.1.0/24", nil)), remove(route(vpcA, "100.64.2.0/24", 2, 32, 2, 32)),
 			},
 			want: []*p4.Entity{
-				table(access(1, addrA1, 7, 4001<<32|4002<<16)), table(context_(1, 1, 0, vpcA, vniA, 1)),
+				table(access(1, addrA1, 7, 4001<<32|4002<<16)), table(dp.OutPortsKey{Port: 1}.Entry(outPort(accessPort(1, addrA1, 7, 4001<<32|4002<<16)))),
+				table(context_(1, 1, 0, vpcA, vniA, 1)),
 				table(source(1, 1, 0, "100.64.1.0/24", dp.NoAction{})), table(route(vpcA, "100.64.2.0/24", 2, 32, 2, 32)),
 			},
 			sent: []uint32{0, 1}, drops: pass,
@@ -914,15 +940,19 @@ func TestMeterWriteKeepsState(t *testing.T) {
 	}
 }
 
-// churn inserts the ports entry of port 100 and deletes it again, one Write at a time, until stop
-// or the end of the test. After each Write it reads port 100 back: the full entry after an INSERT,
-// and no entry after a DELETE. ran reports whether n Writes passed this check, or one failed. stop
+// churn inserts the port entries of port 100 and deletes them again, one Write at a time, until
+// stop or the end of the test. After each Write it reads port 100 back: the full entries after an
+// INSERT, and no entry after a DELETE. ran reports whether n Writes passed this check, or one failed. stop
 // ends the churn and returns the first error, or an error when fewer than n Writes ran.
 func churn(t *testing.T, tg dp.Target, n int) (ran func() bool, stop func() error) {
 	quit, reached, errc := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
-		e := access(100, netip.MustParseAddrPort("192.0.2.100:4000"), 100, 0)
-		port100 := &p4.ReadRequest{Entities: []*p4.Entity{insert(dp.PortsKey{Port: 100}.Entry(nil)).GetEntity()}}
+		pa := accessPort(100, netip.MustParseAddrPort("192.0.2.100:4000"), 100, 0)
+		add, del := ports(p4.Update_INSERT, 100, pa), ports(p4.Update_DELETE, 100, pa)
+		all := []*p4.TableEntry{add[0].GetEntity().GetTableEntry(), add[1].GetEntity().GetTableEntry()}
+		port100 := &p4.ReadRequest{Entities: []*p4.Entity{
+			insert(dp.PortsKey{Port: 100}.Entry(nil)).GetEntity(), insert(dp.OutPortsKey{Port: 100}.Entry(nil)).GetEntity(),
+		}}
 		fail := func(i int, err error) {
 			if i < n {
 				close(reached) // The caller stops its wait.
@@ -939,11 +969,11 @@ func churn(t *testing.T, tg dp.Target, n int) (ran func() bool, stop func() erro
 				return
 			default:
 			}
-			u, want := insert(e), []*p4.TableEntry{e}
+			u, want := add, all
 			if i%2 == 1 {
-				u, want = remove(e), nil
+				u, want = del, nil
 			}
-			if err := write(context.Background(), tg, u); err != nil {
+			if err := write(context.Background(), tg, u...); err != nil {
 				fail(i, err)
 				return
 			}
@@ -1015,8 +1045,8 @@ func TestFinalCountWrites(t *testing.T) {
 	t.Cleanup(func() { <-done })
 	require.Eventually(t, func() bool { return n.Load() >= 500 }, 10*time.Second, time.Millisecond)
 	ran, stop := churn(t, r, 20)
-	require.NoError(t, write(t.Context(), r, remove(dp.PortsKey{Port: 1}.Entry(nil)), remove(dp.ClassifyKey{Port: 1, Session: 1}.Entry(nil))))
-	for _, gone := range []*p4.TableEntry{dp.PortsKey{Port: 1}.Entry(nil), dp.ClassifyKey{Port: 1, Session: 1}.Entry(nil)} {
+	require.NoError(t, write(t.Context(), r, remove(dp.PortsKey{Port: 1}.Entry(nil)), remove(dp.OutPortsKey{Port: 1}.Entry(nil)), remove(dp.ClassifyKey{Port: 1, Session: 1}.Entry(nil))))
+	for _, gone := range []*p4.TableEntry{dp.PortsKey{Port: 1}.Entry(nil), dp.OutPortsKey{Port: 1}.Entry(nil), dp.ClassifyKey{Port: 1, Session: 1}.Entry(nil)} {
 		assert.Empty(t, readBack(t, r, insert(gone).GetEntity()), "%v after its DELETE", gone)
 	}
 	final := cellData(t, r, 2)
@@ -1036,10 +1066,10 @@ func TestFinalCountWrites(t *testing.T) {
 	assert.Len(t, r.sent, int(final[0]))
 }
 
-// TestFrameWriterWrites changes the frame writer of port 3 while other Writes run. Each FRAME out
-// goes to the frame writer that was set last: no change is lost. The packets go until 20 Writes of
-// churn passed.
-func TestFrameWriterWrites(t *testing.T) {
+// TestDatagramWriterWrites changes the datagram writer of port 3 while other Writes run. Each
+// DATAGRAM out goes to the datagram writer that was set last: no change is lost. The packets go
+// until 20 Writes of churn passed.
+func TestDatagramWriterWrites(t *testing.T) {
 	r := newRelay(t)
 	ran, stop := churn(t, r, 20)
 	var got [2]int
@@ -1049,16 +1079,16 @@ func TestFrameWriterWrites(t *testing.T) {
 			return nil
 		}
 	}
-	steps := []int{0, 1, -1, 1, 0, -1} // The frame writer of each packet: 0, 1, or none.
+	steps := []int{0, 1, -1, 1, 0, -1} // The datagram writer of each packet: 0, 1, or none.
 	noTarget := int64(0)
 	for i := 0; i < 50*len(steps) || !ran(); i++ {
 		w := steps[i%len(steps)]
 		want := got
 		if w < 0 {
-			r.SetFrameWriter(3, nil)
+			r.SetDatagramWriter(3, nil)
 			noTarget++
 		} else {
-			r.SetFrameWriter(3, writer(w))
+			r.SetDatagramWriter(3, writer(w))
 			want[w]++
 		}
 		r.receive(addrA1, seal(spiA1In, vniA, uint32(i+1), ipv4("100.64.1.5", "100.64.3.5", 100)))
@@ -1252,46 +1282,100 @@ func TestSchema(t *testing.T) {
 			reads = append(reads, &p4.Entity{Entity: &p4.Entity_ExternEntry{ExternEntry: &p4.ExternEntry{ExternTypeId: x.GetExternTypeId(), ExternId: i.GetPreamble().GetId()}}})
 		}
 	}
-	require.Len(t, reads, 4+3+3+1)
+	require.Len(t, reads, 5+3+3+1)
 	r := newRelay(t)
 	for _, e := range reads {
 		assert.NoError(t, r.Read(t.Context(), &p4.ReadRequest{Entities: []*p4.Entity{e}}, func(*p4.Entity) {}), "%v", e)
 	}
 }
 
-// TestParallelWriters runs writers in parallel with packets. Each writer ends with its own entry.
+// TestParallelWriters runs writers in parallel with packets. Each writer ends with its own entries.
+// One more writer changes the ports entry of port 1 and the out_ports entry of the trunk port 10 in
+// one Write, and packets from port 1 to port 10 run until it stops: each packet reads both entries
+// of one Write.
 func TestParallelWriters(t *testing.T) {
 	r := newRelay(t)
 	const writers, rounds, packets = 8, 50, 200
+	entries := func(w int) (string, *p4.TableEntry, *p4.TableEntry) {
+		port := uint64(100 + w)
+		md := "p/" + strconv.Itoa(int(port))
+		pa := accessPort(port, netip.AddrPortFrom(netip.MustParseAddr("192.0.2.100"), uint16(port)), uint32(port), 0)
+		return md, withMetadata(dp.PortsKey{Port: port}.Entry(pa), md), withMetadata(dp.OutPortsKey{Port: port}.Entry(outPort(pa)), md)
+	}
+	// Write A gives the records of base: tag 7 for port 1 and the address addrT for port 10. Write B
+	// gives tag 70 and addrB. A packet to the trunk has the tag of port 1 as its VNI, so the tag of
+	// a packet to addrT is 7, and to addrB 70.
+	addrB := netip.MustParseAddrPort("198.51.100.9:1000")
+	tags := map[netip.AddrPort]uint32{addrT: 7, addrB: 70}
+	pair := func(addr netip.AddrPort) []*p4.Update {
+		in := accessPort(1, addrA1, tags[addr], 4001<<32|4002<<16)
+		out := outPort(dp.PortAction{Trunk: true, Session: 5, Addr: addr, MTU: 9000, MeterIndex: 10})
+		return []*p4.Update{modify(dp.PortsKey{Port: 1}.Entry(in)), modify(dp.OutPortsKey{Port: 10}.Entry(out))}
+	}
 	var wg sync.WaitGroup
-	errs := make(chan error, writers)
+	errs := make(chan error, writers+1)
 	for w := range writers {
 		wg.Go(func() {
-			port := uint64(100 + w)
-			e := withMetadata(access(port, netip.AddrPortFrom(netip.MustParseAddr("192.0.2.100"), uint16(port)), uint32(port), 0), "p/"+strconv.Itoa(int(port)))
+			_, in, out := entries(w)
 			for range rounds {
-				if err := write(t.Context(), r, insert(e)); err != nil {
+				if err := write(t.Context(), r, insert(in), insert(out)); err != nil {
 					errs <- err
 					return
 				}
-				if err := write(t.Context(), r, remove(e)); err != nil {
+				if err := write(t.Context(), r, remove(in), remove(out)); err != nil {
 					errs <- err
 					return
 				}
 			}
-			errs <- write(t.Context(), r, insert(e))
+			errs <- write(t.Context(), r, insert(in), insert(out))
 		})
 	}
-	for seq := uint32(1); seq <= packets; seq++ {
-		r.receive(addrA1, seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "100.64.2.5", 100)))
+	toggled := make(chan struct{})
+	wg.Go(func() {
+		defer close(toggled)
+		for i := range 2 * rounds {
+			// The last Write is B.
+			addr := addrT
+			if i%2 == 1 {
+				addr = addrB
+			}
+			if err := write(t.Context(), r, pair(addr)...); err != nil {
+				errs <- err
+				return
+			}
+		}
+	})
+	inner := ipv4("100.64.1.5", "100.64.9.5", 100)
+	n := 0
+	for running := true; running || n < packets; {
+		select {
+		case <-toggled:
+			running = false
+		default:
+		}
+		n++
+		r.receive(addrA1, seal(spiA1In, vniA, uint32(n), inner))
 	}
 	wg.Wait()
 	close(errs)
 	for err := range errs {
 		require.NoError(t, err)
 	}
-	assert.Len(t, r.sent, packets)
+	// One more packet after the last Write uses the records of B.
+	r.receive(addrA1, seal(spiA1In, vniA, uint32(n+1), inner))
+	require.Len(t, r.sent, n+1)
+	for i, s := range r.sent {
+		tag, ok := tags[s.to]
+		require.True(t, ok, "packet %d goes to %v", i, s.to)
+		h, err := psp.ParseTrunkHeader(s.b)
+		require.NoError(t, err)
+		// opened checks that the VNI is the tag of the address: both entries of one Write.
+		assert.Equal(t, inner, opened(t, s.b, sealedHeader(psp.NextHdrV4, spiTOut, tag, h.Seq)), "packet %d", i)
+	}
+	assert.Equal(t, addrB, r.sent[n].to, "the packet after the last Write")
 	for w := range writers {
-		assert.Len(t, readTable(t, r, dp.TablePorts, "p/"+strconv.Itoa(100+w)), 1)
+		md, in, out := entries(w)
+		assertEntries(t, []*p4.TableEntry{in}, readTable(t, r, dp.TablePorts, md))
+		assertEntries(t, []*p4.TableEntry{out}, readTable(t, r, dp.TableOutPorts, md))
 	}
 }

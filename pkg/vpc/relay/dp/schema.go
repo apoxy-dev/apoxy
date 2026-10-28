@@ -24,7 +24,8 @@ func P4Info() (*p4config.P4Info, error) {
 	if err := prototext.Unmarshal(p4infoText, info); err != nil {
 		return nil, err
 	}
-	_, alias, _ := strings.Cut(externKeysName, ".")
+	// The alias is the name after the last dot, or all of it: a top-level instance has no dot.
+	alias := externKeysName[strings.LastIndexByte(externKeysName, '.')+1:]
 	info.Externs = append(info.Externs, &p4config.Extern{
 		ExternTypeId:   ExternPspSa,
 		ExternTypeName: "PspSa",

@@ -68,6 +68,11 @@ func check(file string, prog *program) error {
 			return err
 		}
 	}
+	for _, in := range prog.instances {
+		if err := checkInstance(file, prog, in); err != nil {
+			return err
+		}
+	}
 	for _, c := range prog.controls {
 		if err := checkControl(file, prog, c); err != nil {
 			return err
@@ -127,27 +132,35 @@ func checkParser(file string, prog *program, d *parserDecl) error {
 	return nil
 }
 
+// checkInstance checks a counter, a meter or a PspSa instance of a control or of the top level.
+func checkInstance(file string, prog *program, in *instance) error {
+	units := map[string]map[string]bool{"counter": counterUnits, "meter": meterUnits}[in.typ]
+	switch {
+	case units != nil:
+		if len(in.args) != 2 {
+			return errAt(file, in, "%s %s needs a size and a type", in.typ, in.name)
+		}
+		p, _ := path(in.args[1])
+		kind := map[string]string{"counter": "CounterType.", "meter": "MeterType."}[in.typ]
+		if len(p) <= len(kind) || p[:len(kind)] != kind || !units[p[len(kind):]] {
+			return errAt(file, in, "%s type %s is not in the subset", in.typ, p)
+		}
+	case in.typ == pspSa && prog.extern(pspSa) != nil:
+		if len(in.args) != 1 {
+			return errAt(file, in, "%s %s needs a size", in.typ, in.name)
+		}
+	default:
+		return errAt(file, in, "an instance of %s is not in the subset", in.typ)
+	}
+	return checkSize(file, prog, in.args[0], in.name)
+}
+
 func checkControl(file string, prog *program, c *controlDecl) error {
 	for _, in := range c.instances {
-		units := map[string]map[string]bool{"counter": counterUnits, "meter": meterUnits}[in.typ]
-		switch {
-		case units != nil:
-			if len(in.args) != 2 {
-				return errAt(file, in, "%s %s needs a size and a type", in.typ, in.name)
-			}
-			p, _ := path(in.args[1])
-			kind := map[string]string{"counter": "CounterType.", "meter": "MeterType."}[in.typ]
-			if len(p) <= len(kind) || p[:len(kind)] != kind || !units[p[len(kind):]] {
-				return errAt(file, in, "%s type %s is not in the subset", in.typ, p)
-			}
-		case in.typ == pspSa && prog.extern(pspSa) != nil:
-			if len(in.args) != 1 {
-				return errAt(file, in, "%s %s needs a size", in.typ, in.name)
-			}
-		default:
-			return errAt(file, in, "an instance of %s is not in the subset", in.typ)
+		if prog.instance(in.name) != nil {
+			return errAt(file, in, "instance %s of control %s hides the top-level instance", in.name, c.name)
 		}
-		if err := checkSize(file, prog, in.args[0], in.name); err != nil {
+		if err := checkInstance(file, prog, in); err != nil {
 			return err
 		}
 	}
@@ -240,8 +253,8 @@ func (s *scope) call(c *call) error {
 		allowed = headerOps
 	case s.ctl != nil && s.ctl.table(recv) != nil:
 		allowed = []string{"apply"}
-	case s.ctl != nil && s.ctl.instance(recv) != nil:
-		in := s.ctl.instance(recv)
+	case s.ctl != nil && s.prog.instanceIn(s.ctl, recv) != nil:
+		in := s.prog.instanceIn(s.ctl, recv)
 		switch in.typ {
 		case "counter":
 			allowed = []string{"count"}
@@ -388,6 +401,24 @@ func (c *controlDecl) instance(name string) *instance {
 		}
 	}
 	return nil
+}
+
+// instance returns the top-level instance name, or nil.
+func (prog *program) instance(name string) *instance {
+	for _, in := range prog.instances {
+		if in.name == name {
+			return in
+		}
+	}
+	return nil
+}
+
+// instanceIn returns the instance name that the control c can use: its own, or a top-level one.
+func (prog *program) instanceIn(c *controlDecl, name string) *instance {
+	if in := c.instance(name); in != nil {
+		return in
+	}
+	return prog.instance(name)
 }
 
 // mainControls returns the controls of the package in V1Switch order.

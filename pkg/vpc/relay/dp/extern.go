@@ -2,12 +2,16 @@
 
 package dp
 
-import "net/netip"
+import (
+	"net/netip"
+
+	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
+)
 
 // innerAddrs is the extern function inner_addrs of relay.p4. It gives the source and destination
 // of the inner IPv4 or IPv6 packet as 128-bit addresses (IPv4 mapped), and its PSP Next Header:
 // nextV4 or nextV6. It gives 0 for another packet.
-func innerAddrs(pkt *packet, src, dst *netip.Addr) uint8 {
+func (*part) innerAddrs(pkt *packet, src, dst *netip.Addr) uint8 {
 	b := pkt.data
 	switch {
 	case len(b) >= 20 && b[0]>>4 == 4:
@@ -24,7 +28,7 @@ func innerAddrs(pkt *packet, src, dst *netip.Addr) uint8 {
 // flowHash is the extern function flow_hash of relay.p4. It hashes the addresses, the protocol and
 // the first 4 bytes of a TCP, UDP or SCTP header (the ports) of the inner IP packet, with FNV-1a.
 // It gives 0 for another packet.
-func flowHash(pkt *packet) uint32 {
+func (*part) flowHash(pkt *packet) uint32 {
 	b := pkt.data
 	var addrs []byte
 	var proto byte
@@ -50,4 +54,25 @@ func flowHash(pkt *packet) uint32 {
 		mix(b[l4 : l4+4])
 	}
 	return h
+}
+
+// innerLength is the extern function inner_length of relay.p4: the length of the packet after its
+// parsed headers.
+func (*part) innerLength(pkt *packet) uint32 { return uint32(len(pkt.data)) }
+
+// datagramOut is the extern function datagram_out of relay.p4. It gives the datagram writer of port
+// a data frame with vni and the inner packet, and gives 0, ReasonNoTarget (no datagram writer) or
+// ReasonDatagramFull. It counts nothing: the caller counts a drop.
+func (x *part) datagramOut(pkt *packet, port uint64, vni uint32) uint8 {
+	w := x.p.writers[port]
+	if w == nil {
+		return ReasonNoTarget
+	}
+	bp := x.p.bufs.Get().(*[]byte)
+	err := w(peerconn.EncodeData((*bp)[:0], vni, pkt.data))
+	x.p.bufs.Put(bp)
+	if err != nil {
+		return ReasonDatagramFull
+	}
+	return 0
 }

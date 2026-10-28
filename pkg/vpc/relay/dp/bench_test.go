@@ -36,15 +36,14 @@ func benchSPI(k int) uint32 { return uint32(0x1000 + k) }
 func benchPipeline(b *testing.B, n int) *dp.Pipeline {
 	b.Helper()
 	p := dp.New(nopSender{}, aead.GCM{})
-	us := []*p4.Update{
-		insert(dp.PortsKey{Port: 100}.Entry(dp.PortAction{Session: 1, Addr: addrA2, MTU: 9000, MeterIndex: 100})),
+	us := append(ports(p4.Update_INSERT, 100, dp.PortAction{Session: 1, Addr: addrA2, MTU: 9000, MeterIndex: 100}),
 		insert(route(vpcA, "100.64.200.0/24", 100, 300, 100, 300)),
 		tx(0x200, 100, 1, 0),
-	}
+	)
 	for k := 1; k <= n; k++ {
 		port := uint64(k)
+		us = append(us, ports(p4.Update_INSERT, port, dp.PortAction{Session: 1, Addr: benchAddr(k), MTU: 9000, MeterIndex: uint32(k)})...)
 		us = append(us,
-			insert(dp.PortsKey{Port: port}.Entry(dp.PortAction{Session: 1, Addr: benchAddr(k), MTU: 9000, MeterIndex: uint32(k)})),
 			insert(context_(port, 1, 0, vpcA, vniA, uint32(k))),
 			insert(source(port, 1, 0, fmt.Sprintf("100.64.%d.0/24", k), dp.NoAction{})),
 			rx(benchSPI(k), port, 1, 0),
@@ -193,8 +192,8 @@ func BenchmarkRoute(b *testing.B) {
 }
 
 // BenchmarkWrite measures Writes with 100k routes of one VPC: one Write of 100k route INSERTs, one
-// Write of 100k route DELETEs, one Write of one route MODIFY, and one Write of one ports entry
-// MODIFY. One op is one Write.
+// Write of 100k route DELETEs, one Write of one route MODIFY, and one Write of the MODIFYs of the
+// ports and the out_ports entry of a port. One op is one Write.
 func BenchmarkWrite(b *testing.B) {
 	const routes = 100_000
 	routeAt := func(i int, port uint64) *p4.TableEntry {
@@ -205,15 +204,15 @@ func BenchmarkWrite(b *testing.B) {
 	for i := range routes {
 		ins, del = append(ins, insert(routeAt(i, 100))), append(del, remove(routeAt(i, 100)))
 	}
-	portAt := func(mtu uint16) *p4.Update {
-		return modify(dp.PortsKey{Port: 100}.Entry(dp.PortAction{Session: 1, Addr: addrA2, MTU: mtu, MeterIndex: 100}))
+	portAt := func(mtu uint16) []*p4.Update {
+		return ports(p4.Update_MODIFY, 100, dp.PortAction{Session: 1, Addr: addrA2, MTU: mtu, MeterIndex: 100})
 	}
 	cases := []struct {
 		name string
 		ops  [2][]*p4.Update // Op i writes ops[i%2].
 	}{
 		{name: "route_of_100k", ops: [2][]*p4.Update{{modify(routeAt(routes/2, 1))}, {modify(routeAt(routes/2, 100))}}},
-		{name: "port_with_100k", ops: [2][]*p4.Update{{portAt(8000)}, {portAt(9000)}}},
+		{name: "port_with_100k", ops: [2][]*p4.Update{portAt(8000), portAt(9000)}},
 	}
 	b.Run("insert_100k", func(b *testing.B) {
 		p := benchPipeline(b, 1)

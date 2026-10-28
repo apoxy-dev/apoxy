@@ -172,7 +172,7 @@ var (
 )
 
 // trunkDrops are the drop reasons that can count at a trunk port, with their direction: tx at the
-// out port in send_out, rx at the in port. Each has a series from the start.
+// out port in egress, rx at the in port. Each has a series from the start.
 var trunkDrops = []struct {
 	reason uint8
 	dir    string

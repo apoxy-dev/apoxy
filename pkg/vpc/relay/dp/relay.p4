@@ -20,9 +20,9 @@ const bit<8> R_NO_TARGET = 9;
 const bit<8> R_TRUNK_TO_TRUNK = 10;
 const bit<8> R_LOCAL_ONLY = 11;
 const bit<8> R_MTU = 12;
-// send_out: no TX keys entry of the out port session.
+// Egress: no TX keys entry of the out port session.
 const bit<8> R_NO_KEYS = 13;
-// FRAME out: the datagram queue of the frame writer is full.
+// DATAGRAM out: the datagram queue of the datagram writer is full.
 const bit<8> R_DATAGRAM_FULL = 14;
 // The packet I/O of the interface: no next-hop MAC.
 const bit<8> R_NO_NEIGHBOR = 15;
@@ -41,7 +41,8 @@ const bit<8> R_WORKER_FULL = 21;
 // The handoff of the interface: the RX queue of the packet has its frame allowance at the workers.
 const bit<8> R_WORKER_ALLOWANCE = 22;
 
-// The v1model port of the packets of the control plane: a FRAME in comes from it.
+// CPU_PORT is the v1model port that connects the control plane (the Go code above the pipeline)
+// to the pipeline. A DATAGRAM in comes from it.
 const bit<9> CPU_PORT = 255;
 // The kind of packet_in for the root.
 const bit<8> KIND_PUNT = 1;
@@ -64,7 +65,7 @@ const bit<8> FRAME_DATA = 0x03;
 // A VPC name: "<VPC UID>/<network ID>". The CP sends a string; the DP maps it to a number.
 @p4runtime_translation("apoxy.dev/relay/name", string)
 type bit<32> name_t;
-// kind: 1 PUNT, 2 MISS (to the root), 4 FRAME (to the port's frame writer). hash: the
+// kind: 1 PUNT, 2 MISS (to the root), 4 DATAGRAM (to the port's datagram writer). hash: the
 // QUIC connection. from: the outer address and port of a probe or a keepalive (port 0: the root
 // uses the SID).
 @controller_header("packet_in")
@@ -75,7 +76,8 @@ header packet_in_t {
     bit<32> hash;
     bit<144> from;
 }
-// kind: 4 FRAME, 5 SEAL, 6 RAW (SEAL and RAW skip apply; SEAL gets tag 0). to: RAW's outer address.
+// kind: 4 DATAGRAM, 5 SEAL, 6 RAW (SEAL and RAW skip apply; SEAL gets tag 0). to: RAW's outer
+// address.
 @controller_header("packet_out")
 header packet_out_t {
     bit<8> kind;
@@ -129,6 +131,16 @@ struct port_t {
     bit<16> mtu;
     bit<32> meter_index;
 }
+// The out_ports entry of the out port: what egress needs of its port record.
+struct out_port_t {
+    bit<1> trunk;
+    bit<64> session;
+    bit<144> addr;
+    bit<48> lanes;
+    bit<3> seen;
+    bit<16> mtu;
+    bit<32> meter_index;
+}
 struct context_t {
     name_t vpc;
     bit<24> vni;
@@ -146,14 +158,13 @@ struct meta_t {
     bit<64> port;
     bit<64> sa_session;
     bit<32> spi;
-    bit<32> out_meter_index;
     bit<2> lane;
     bit<24> vni;
     bit<24> tag;
     bool local_only;
     bit<128> src;
     bit<128> dst;
-    // The target sets from: the outer address and port of a UDP 1000 packet, 0 for a FRAME in.
+    // The target sets from: the outer address and port of a UDP 1000 packet, 0 for a DATAGRAM in.
     bit<144> from;
     // The parser sets punt for a probe or a keepalive.
     bool punt;
@@ -163,6 +174,7 @@ struct meta_t {
     // The forward action sets routed.
     bool routed;
     port_t p;
+    out_port_t o;
     context_t c;
     fwd_t fwd;
     local_t local;
@@ -175,6 +187,11 @@ extern bit<8> inner_addrs(out bit<128> src, out bit<128> dst);
 // The flow hash of the inner packet: FNV-1a of the addresses, the protocol and, for TCP, UDP and
 // SCTP, the ports. 0 when the packet is not IPv4 or IPv6.
 extern bit<32> flow_hash();
+// The length of the inner packet: the packet after its parsed headers, which keys.open gave.
+extern bit<32> inner_length();
+// DATAGRAM out: gives the datagram writer of the port a data frame with vni and the inner packet.
+// It gives 0, R_NO_TARGET (the port has no datagram writer) or R_DATAGRAM_FULL.
+extern bit<8> datagram_out(in bit<64> port, in bit<24> vni);
 
 // The keys table. Writer: the root, with the agent or trunk key engine. A Read gives an empty key;
 // for an RX entry it also gives the packet count and the highest accepted sequence number.
@@ -192,32 +209,33 @@ extern PspSa {
     bool seal(in bit<64> port, in bit<24> vni);
 }
 
+// The counters, the meters and the keys are shared by the ingress and egress controls.
+// Cell c: receive at 2c, transmit at 2c+1. The root gives c and the meter indices (pools).
+counter(1 << 21, CounterType.packets_and_bytes) cells;
+// Drops by reason. The size is 32, so a reason fits the 5 low bits of a port_drops index.
+counter(32, CounterType.packets_and_bytes) drops;
+// Drops of each port by reason, at (meter index << 5) | reason. An egress drop counts at the out
+// port (tx) once its out_ports entry is read, any other drop at the in port (rx). Meter index 0:
+// not counted.
+counter(1 << 21, CounterType.packets) port_drops;
+// Port meter i has lane meters 4i to 4i+3 and punt meter i. Punt meter 0: probes.
+meter(1 << 16, MeterType.bytes) port_meter;
+meter(1 << 18, MeterType.bytes) lane_meter;
+meter(1 << 16, MeterType.packets) punt_meter;
+PspSa(1 << 18) keys;
 
-// m.port is a relay port (an access or trunk peer), not a v1model port.
+// Ingress. m.port is a relay port (an access or trunk peer), not a v1model port.
 control Relay(inout headers_t h,
               inout meta_t m,
               inout standard_metadata_t sm) {
-    // Cell c: receive at 2c, transmit at 2c+1. The root gives c and the meter indices (pools).
-    counter(1 << 21, CounterType.packets_and_bytes) cells;
-    // Drops by reason. The size is 32, so a reason fits the 5 low bits of a port_drops index.
-    counter(32, CounterType.packets_and_bytes) drops;
-    // Drops of each port by reason, at (meter index << 5) | reason. A send_out drop counts at the
-    // out port (tx), any other drop at the in port (rx). Meter index 0: not counted.
-    counter(1 << 21, CounterType.packets) port_drops;
-    // Port meter i has lane meters 4i to 4i+3 and punt meter i. Punt meter 0: probes.
-    meter(1 << 16, MeterType.bytes) port_meter;
-    meter(1 << 18, MeterType.bytes) lane_meter;
-    meter(1 << 16, MeterType.packets) punt_meter;
-    PspSa(1 << 18) keys;
     // hide:begin
-    // The drop of a packet: count_drop counts it and marks it to drop, then the caller exits. An
-    // action calls count_drop and exits itself, because p4test 1.2.5.18 stops with a compiler bug
-    // when one action calls an action with exit two times.
+    // The drop of a packet: count_drop counts it, in port_drops at the in port, and marks it to
+    // drop, then the caller exits. An action calls count_drop and exits itself, because p4test
+    // 1.2.5.18 stops with a compiler bug when one action calls an action with exit two times.
     @hidden action count_drop(bit<8> reason) {
         drops.count((bit<32>)reason);
-        bit<32> i = m.out_meter_index != 0 ? m.out_meter_index : m.p.meter_index;
-        if (i != 0) {
-            port_drops.count((i << 5) | (bit<32>)reason);
+        if (m.p.meter_index != 0) {
+            port_drops.count((m.p.meter_index << 5) | (bit<32>)reason);
         }
         mark_to_drop(sm);
     }
@@ -243,7 +261,7 @@ control Relay(inout headers_t h,
         h.packet_in.from = m.from;
         exit;
     }
-    // The session of the RX entry or the FRAME in must be the port session. A PSP packet must be
+    // The session of the RX entry or the DATAGRAM in must be the port session. A PSP packet must be
     // from addr, prev or a lane port at the IP of addr, and in its lane meter. Then the port meter,
     // and keys.count for PSP.
     @hidden action check_in() {
@@ -311,10 +329,6 @@ control Relay(inout headers_t h,
             exit;
         }
     }
-    // The ports entry of m.fwd.port, the checks, and keys.seal or the FRAME out. A Go step of the
-    // target: an empty @hidden action.
-    @hidden action send_out() {
-    }
     // Writer: A (access) or M (trunk). addr 0: data on QUIC. lanes: 3 ports at addr's IP. seen:
     // bit i is set after a keepalive from lane i; seal sends lane i to addr until then. prev
     // (access): cleared 5 s after the agent moves. tag: the session tag of an access port.
@@ -340,7 +354,7 @@ control Relay(inout headers_t h,
         m.local = {local_port, local_cell};
         m.routed = true;
     }
-    // A source entry of a remote address that V accepted. send_out drops it to a trunk port.
+    // A source entry of a remote address that V accepted. Egress drops it to a trunk port.
     action local_only() {
         m.local_only = true;
     }
@@ -392,7 +406,7 @@ control Relay(inout headers_t h,
         if (r != 0) {
             drop(r);
         }
-        // 2. A FRAME in starts at ports, with the port and session of its PacketOut.
+        // 2. A DATAGRAM in starts at ports, with the port and session of its PacketOut.
         ports.apply();
         check_in();
         // 3. The tag and the inner addresses.
@@ -410,9 +424,7 @@ control Relay(inout headers_t h,
         m.hash = flow_hash();
         route.apply();
         route_end();
-        // 7. ports entry of m.fwd.port (no_target; it sets m.out_meter_index), no trunk to trunk,
-        // no local_only to a trunk, mtu. Then seal on a lane with the outgoing VNI (no_keys), or FRAME out with m.c.vni.
-        send_out();
+        // 7. and 8. are in RelayEgress: the out port and the packet out.
     }
 }
 
@@ -423,12 +435,13 @@ parser RelayParser(packet_in pkt,
                    inout standard_metadata_t sm) {
     state start {
         transition select(sm.ingress_port) {
-            CPU_PORT: frame_in;
+            CPU_PORT: datagram_in;
             default: udp;
         }
     }
-    // A FRAME in: a PacketOut FRAME from the frame reader of a port. SEAL and RAW do not come here.
-    state frame_in {
+    // A DATAGRAM in: a PacketOut DATAGRAM from the datagram reader of a port. SEAL and RAW do not
+    // come here.
+    state datagram_in {
         pkt.extract(h.packet_out);
         pkt.extract(h.frame);
         m.port = h.packet_out.port;
@@ -516,10 +529,76 @@ control RelayVerify(inout headers_t h,
     }
 }
 
+// Egress: the out_ports entry of m.fwd.port, the checks of the out port, and the packet out: PSP
+// on a lane (keys.seal) or a DATAGRAM to the datagram writer of the port.
 control RelayEgress(inout headers_t h,
                     inout meta_t m,
                     inout standard_metadata_t sm) {
+    // hide:begin
+    // As count_drop of Relay, but a drop counts at the out port once its out_ports entry is read,
+    // else at the in port.
+    @hidden action count_drop(bit<8> reason) {
+        drops.count((bit<32>)reason);
+        bit<32> i = m.o.meter_index != 0 ? m.o.meter_index : m.p.meter_index;
+        if (i != 0) {
+            port_drops.count((i << 5) | (bit<32>)reason);
+        }
+        mark_to_drop(sm);
+    }
+    action drop_out(bit<8> reason) {
+        count_drop(reason);
+        exit;
+    }
+    // hide:end
+    // The port record of the out port: the same writer and the same record as its ports entry.
+    action out_port(bit<1> trunk,
+                    bit<64> session,
+                    bit<144> addr,
+                    bit<48> lanes,
+                    bit<3> seen,
+                    bit<16> mtu,
+                    bit<32> meter_index) {
+        m.o = {trunk, session, addr, lanes, seen, mtu, meter_index};
+    }
+    // One entry for each port, written with its ports entry in the same batch.
+    table out_ports {
+        key = { m.fwd.port: exact; }
+        actions = { out_port; drop_out; }
+        const default_action = drop_out(R_NO_TARGET);
+    }
     apply {
+        // A PUNT or a MISS: the target gives the packet to the root after the deparser.
+        if (h.packet_in.isValid()) {
+            exit;
+        }
+        // 7. The out_ports entry of m.fwd.port (no_target), no trunk to trunk, no local_only to a
+        // trunk, mtu.
+        out_ports.apply();
+        if (m.p.trunk == 1 && m.o.trunk == 1) {
+            drop_out(R_TRUNK_TO_TRUNK);
+        }
+        if (m.local_only && m.o.trunk == 1) {
+            drop_out(R_LOCAL_ONLY);
+        }
+        if (m.o.mtu != 0 && inner_length() > (bit<32>)m.o.mtu) {
+            drop_out(R_MTU);
+        }
+        // 8. addr set: seal on a lane with the outgoing VNI (a trunk port: the sender's tag); seal
+        // counts no_keys itself, with the inner length. addr 0: DATAGRAM out with m.c.vni. Then the
+        // transmit cell.
+        if (m.o.addr != 0) {
+            bit<24> vni = m.o.trunk == 1 ? m.p.tag : m.c.vni;
+            if (!keys.seal(m.fwd.port, vni)) {
+                mark_to_drop(sm);
+                exit;
+            }
+        } else {
+            bit<8> r = datagram_out(m.fwd.port, m.c.vni);
+            if (r != 0) {
+                drop_out(r);
+            }
+        }
+        cells.count((m.fwd.cell << 1) | 1);
     }
 }
 

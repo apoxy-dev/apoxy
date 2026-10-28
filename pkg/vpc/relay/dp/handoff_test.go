@@ -206,12 +206,15 @@ func writeAll(t *testing.T, p *Pipeline, us ...*p4.Update) error {
 	return p.Write(t.Context(), &p4.WriteRequest{Atomicity: p4.WriteRequest_DATAPLANE_ATOMIC, Updates: us})
 }
 
-// engTables are the tables of A1, A2 and A3.
+// engTables are the tables of A1, A2 and A3. Each port has its ports and out_ports entry.
 func engTables() []*p4.Update {
 	return []*p4.Update{
 		tableUpdate(PortsKey{Port: 1}.Entry(PortAction{Session: 1, Addr: engA1, MTU: 1400, MeterIndex: 1})),
 		tableUpdate(PortsKey{Port: 2}.Entry(PortAction{Session: 1, Addr: engA2, MTU: 1400, MeterIndex: 2})),
 		tableUpdate(PortsKey{Port: 3}.Entry(PortAction{Session: 1, Addr: engA3, MTU: 1400, MeterIndex: 3})),
+		tableUpdate(OutPortsKey{Port: 1}.Entry(OutPortAction{Session: 1, Addr: engA1, MTU: 1400, MeterIndex: 1})),
+		tableUpdate(OutPortsKey{Port: 2}.Entry(OutPortAction{Session: 1, Addr: engA2, MTU: 1400, MeterIndex: 2})),
+		tableUpdate(OutPortsKey{Port: 3}.Entry(OutPortAction{Session: 1, Addr: engA3, MTU: 1400, MeterIndex: 3})),
 		tableUpdate(ClassifyKey{Port: 1, Session: 1}.Entry(ContextAction{VPC: "uid-a/1", VNI: 100, Cell: 1})),
 		tableUpdate(ClassifyKey{Port: 3, Session: 1}.Entry(ContextAction{VPC: "uid-a/1", VNI: 100, Cell: 3})),
 		tableUpdate(SourceKey{Port: 1, Session: 1, Src: netip.MustParsePrefix("100.64.1.0/24")}.Entry(NoAction{})),

@@ -211,7 +211,7 @@ func (x *part) countIndex(id, i uint32, pkt *packet)          {}
 func (x *part) executeMeter(id, i uint32, pkt *packet) uint8 { return 0 }
 func (x *part) Open(pkt *packet, spi uint32, m *meta) uint8   { return 0 }
 func (x *part) Opened(pkt *packet, m *meta) uint8             { return 0 }
-func (x *part) Count(spi uint32)                              {}
+func (x *part) Count(pkt *packet, spi uint32)                 {}
 
 var _ PspSa = (*part)(nil)
 

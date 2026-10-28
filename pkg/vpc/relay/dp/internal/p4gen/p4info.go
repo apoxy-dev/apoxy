@@ -66,6 +66,11 @@ func objects(c *controlDecl) controlObjects {
 
 func qualified(c *controlDecl, name string) string { return c.name + "." + name }
 
+func topLevel(name string) string { return name }
+
+// prefix returns the P4Info name of name in the control of o.
+func (o controlObjects) prefix(name string) string { return qualified(o.ctl, name) }
+
 // compile makes the P4Info of prog as `p4test --arch v1model --p4runtime-files` writes it.
 func compile(file string, prog *program) (*compiled, error) {
 	var objs []controlObjects
@@ -76,6 +81,21 @@ func compile(file string, prog *program) (*compiled, error) {
 	add := func(prefix p4config.P4Ids_Prefix, n string) { names[uint32(prefix)] = append(names[uint32(prefix)], n) }
 	var keys []string
 	var keyInst []*instance
+	addInstances := func(prefix func(string) string, ins []*instance) {
+		for _, in := range ins {
+			switch in.typ {
+			case "counter":
+				add(p4config.P4Ids_COUNTER, prefix(in.name))
+			case "meter":
+				add(p4config.P4Ids_METER, prefix(in.name))
+			case pspSa:
+				keys = append(keys, prefix(in.name))
+				keyInst = append(keyInst, in)
+			}
+		}
+	}
+	// A top-level name has no prefix.
+	addInstances(topLevel, prog.instances)
 	for _, o := range objs {
 		if o.noAction {
 			add(p4config.P4Ids_ACTION, noAction)
@@ -86,17 +106,7 @@ func compile(file string, prog *program) (*compiled, error) {
 		for _, t := range o.tables {
 			add(p4config.P4Ids_TABLE, qualified(o.ctl, t.name))
 		}
-		for _, in := range o.instances {
-			switch in.typ {
-			case "counter":
-				add(p4config.P4Ids_COUNTER, qualified(o.ctl, in.name))
-			case "meter":
-				add(p4config.P4Ids_METER, qualified(o.ctl, in.name))
-			case pspSa:
-				keys = append(keys, qualified(o.ctl, in.name))
-				keyInst = append(keyInst, in)
-			}
-		}
+		addInstances(o.prefix, o.instances)
 	}
 	for _, s := range prog.structs {
 		if s.controller != "" {
@@ -122,6 +132,7 @@ func compile(file string, prog *program) (*compiled, error) {
 	b := &infoBuilder{file: file, prog: prog, ids: ids, alias: alias, info: &p4config.P4Info{
 		PkgInfo: &p4config.PkgInfo{Arch: "v1model"},
 	}}
+	b.instances(topLevel, prog.instances)
 	for _, o := range objs {
 		if err := b.control(o); err != nil {
 			return nil, err
@@ -191,14 +202,20 @@ func (b *infoBuilder) control(o controlObjects) error {
 			return err
 		}
 	}
-	for _, in := range o.instances {
+	b.instances(o.prefix, o.instances)
+	return nil
+}
+
+// instances adds the counters and meters of ins; prefix gives the P4Info name of each.
+func (b *infoBuilder) instances(prefix func(string) string, ins []*instance) {
+	for _, in := range ins {
 		size, _ := b.prog.constUint(in.args[0])
 		switch in.typ {
 		case "counter":
 			unit, _ := path(in.args[1])
 			u := map[string]p4config.CounterSpec_Unit{"CounterType.packets": p4config.CounterSpec_PACKETS, "CounterType.bytes": p4config.CounterSpec_BYTES, "CounterType.packets_and_bytes": p4config.CounterSpec_BOTH}[unit]
 			b.info.Counters = append(b.info.Counters, &p4config.Counter{
-				Preamble: b.preamble(p4config.P4Ids_COUNTER, qualified(c, in.name)),
+				Preamble: b.preamble(p4config.P4Ids_COUNTER, prefix(in.name)),
 				Spec:     &p4config.CounterSpec{Unit: u},
 				Size:     int64(size),
 			})
@@ -206,13 +223,12 @@ func (b *infoBuilder) control(o controlObjects) error {
 			unit, _ := path(in.args[1])
 			u := map[string]p4config.MeterSpec_Unit{"MeterType.packets": p4config.MeterSpec_PACKETS, "MeterType.bytes": p4config.MeterSpec_BYTES}[unit]
 			b.info.Meters = append(b.info.Meters, &p4config.Meter{
-				Preamble: b.preamble(p4config.P4Ids_METER, qualified(c, in.name)),
+				Preamble: b.preamble(p4config.P4Ids_METER, prefix(in.name)),
 				Spec:     &p4config.MeterSpec{Unit: u},
 				Size:     int64(size),
 			})
 		}
 	}
-	return nil
 }
 
 func (b *infoBuilder) table(c *controlDecl, t *tableDecl) error {

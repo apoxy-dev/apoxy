@@ -12,24 +12,33 @@ type splitPoint struct {
 }
 
 // split finds the split point of prog, or nil if no control calls the open method of its
-// PspSa instance. The call must set a local in the first if of apply, before any table apply,
-// meter, counter or other PspSa call; else it is an error.
+// PspSa instance. The instance is in a control or at the top level; only one control can call
+// open. The call must set a local in the first if of apply, before any table apply, meter,
+// counter or other PspSa call; else it is an error.
 func split(file string, prog *program) (*splitPoint, error) {
+	var found *splitPoint
 	for _, c := range prog.mainControls() {
-		for _, in := range c.instances {
+		for _, in := range append(append([]*instance(nil), c.instances...), prog.instances...) {
 			if in.typ != pspSa {
 				continue
 			}
-			sp, err := splitControl(file, c, in.name)
-			if sp != nil || err != nil {
-				return sp, err
+			sp, err := splitControl(file, prog, c, in.name)
+			if err != nil {
+				return nil, err
 			}
+			if sp == nil {
+				continue
+			}
+			if found != nil {
+				return nil, errAt(file, sp.stmt, "%s.open is called in two controls", in.name)
+			}
+			found = sp
 		}
 	}
-	return nil, nil
+	return found, nil
 }
 
-func splitControl(file string, c *controlDecl, keys string) (*splitPoint, error) {
+func splitControl(file string, prog *program, c *controlDecl, keys string) (*splitPoint, error) {
 	isOpen := func(cl *call) bool {
 		recv, name, ok := cl.method()
 		return ok && recv == keys && name == "open"
@@ -76,7 +85,7 @@ func splitControl(file string, c *controlDecl, keys string) (*splitPoint, error)
 	}
 	// The arguments of the call run before it too.
 	for _, n := range append(w.before, open.args...) {
-		if bad := firstWork(c, keys, n, map[string]bool{}); bad != nil {
+		if bad := firstWork(prog, c, keys, n, map[string]bool{}); bad != nil {
 			return nil, errAt(file, bad, "parse runs this before %s.open; a table apply, a meter, a counter or a %s call must come after it", keys, pspSa)
 		}
 	}
@@ -153,20 +162,20 @@ func (w *splitWalk) stmt(s node) bool {
 
 // firstWork returns the first call in n that applies a table, uses a meter or a counter, or
 // calls a method of keys, also in the actions that n calls.
-func firstWork(c *controlDecl, keys string, n node, seen map[string]bool) node {
+func firstWork(prog *program, c *controlDecl, keys string, n node, seen map[string]bool) node {
 	for _, cl := range calls(n) {
 		if recv, _, ok := cl.method(); ok {
 			if c.table(recv) != nil || recv == keys {
 				return cl
 			}
-			if in := c.instance(recv); in != nil && (in.typ == "counter" || in.typ == "meter") {
+			if in := prog.instanceIn(c, recv); in != nil && (in.typ == "counter" || in.typ == "meter") {
 				return cl
 			}
 			continue
 		}
 		if id, ok := cl.fun.(*ident); ok && !seen[id.name] {
 			seen[id.name] = true
-			if a := c.action(id.name); a != nil && firstWork(c, keys, a.body, seen) != nil {
+			if a := c.action(id.name); a != nil && firstWork(prog, c, keys, a.body, seen) != nil {
 				return cl
 			}
 		}

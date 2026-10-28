@@ -13,25 +13,28 @@ import (
 	"strings"
 )
 
-// The Go writer of the pipeline. It writes the Go types of the headers and the metadata, and two
-// methods of the type part of the runtime: parse (the parser and the control up to keys.open) and
-// apply (the rest of the control). The code uses these names of the hand-written runtime:
+// The Go writer of the pipeline. It writes the Go types of the headers and the metadata, and the
+// methods parse (the parser and the ingress control up to keys.open), ingress (the rest of it),
+// egress and apply (ingress, then egress) of the type part of the runtime. The code uses these
+// names of the hand-written runtime:
 //
 //   - type part, with st *state, and type packet, which has the generated pass in it.
 //   - x.st.lookup<Table>(keys...) gives the entry of the keys or nil. e.<param> is the number of a
 //     translated action parameter.
 //   - x.countIndex(id, i, pkt) and x.executeMeter(id, i, pkt) uint8 for the counters and meters.
 //   - x.step<Action>(pkt) bool for an empty @hidden action (a Go step). True is an exit.
-//   - <function>(pkt, args...) for an extern function. An out argument is a pointer.
-//   - The PspSa methods on *part.
+//   - x.<function>(pkt, args...) for an extern function. An out argument is a pointer.
+//   - The PspSa methods on *part. Each takes pkt *packet first.
 
 // pipe writes the pipeline code of one program.
 type pipe struct {
 	file   string
 	prog   *program
 	ctl    *controlDecl // The ingress control.
+	egr    *controlDecl // The egress control.
+	cur    *controlDecl // The control that the writer is in.
 	parser *parserDecl
-	keys   *instance // The PspSa instance of ctl, or nil.
+	keys   *instance // The PspSa instance of ctl or of the top level, or nil.
 	sp     *splitPoint
 	open   *call // The keys.open call of sp.
 	hdrs   string
@@ -39,7 +42,7 @@ type pipe struct {
 	pktIn  string // The packet_in parameter of the parser.
 
 	b         *bytes.Buffer
-	root      *env // The parameters of ctl.
+	root      *env // The parameters of cur.
 	inParse   bool
 	parseExit bool // parse has an exit.
 	endUsed   bool
@@ -144,10 +147,10 @@ func pipeline(file string, prog *program) (code []byte, imports map[string]bool,
 
 func (w *pipe) write() []byte {
 	cs := w.prog.mainControls() // Verify, ingress, egress, compute, deparser.
-	w.ctl = cs[1]
-	for _, c := range []*controlDecl{cs[0], cs[2], cs[3]} {
+	w.ctl, w.egr = cs[1], cs[2]
+	for _, c := range []*controlDecl{cs[0], cs[3]} {
 		if len(c.apply.stmts) > 0 {
-			w.fail(c.apply.stmts[0], "control %s must have an empty apply: the Go writer runs only the ingress control %s", c.name, w.ctl.name)
+			w.fail(c.apply.stmts[0], "control %s must have an empty apply: the Go writer runs only the ingress control %s and the egress control %s", c.name, w.ctl.name, w.egr.name)
 		}
 	}
 	ps := w.ctl.params
@@ -155,13 +158,16 @@ func (w *pipe) write() []byte {
 		w.fail(w.ctl, "the ingress control must have the parameters (headers, metadata, standard_metadata_t)")
 	}
 	w.hdrs, w.meta = ps[0].typ.name, ps[1].typ.name
+	if ep := w.egr.params; len(ep) != 3 || ep[0].typ.name != w.hdrs || ep[1].typ.name != w.meta || ep[2].typ.name != "standard_metadata_t" {
+		w.fail(w.egr, "the egress control must have the parameters of the ingress control")
+	}
 	w.parser = w.prog.parser(w.prog.main.args[0])
 	pp := w.parser.params
 	if len(pp) != 4 || pp[0].typ.name != "packet_in" || pp[1].typ.name != w.hdrs || pp[2].typ.name != w.meta || pp[3].typ.name != "standard_metadata_t" {
 		w.fail(w.parser, "the parser must have the parameters (packet_in, headers, metadata, standard_metadata_t) of the ingress control")
 	}
 	w.pktIn = pp[0].name
-	for _, in := range w.ctl.instances {
+	for _, in := range slices.Concat(w.ctl.instances, w.prog.instances) {
 		if in.typ == pspSa {
 			w.keys = in
 		}
@@ -183,10 +189,7 @@ func (w *pipe) write() []byte {
 		}
 	}
 	w.reserve()
-	w.root = newEnv(nil)
-	for i, s := range []string{"pkt.h", "pkt.m", "pkt.sm"} {
-		w.root.syms[ps[i].name] = sym{s, ps[i].typ}
-	}
+	w.enter(w.ctl)
 
 	// The methods first: the types after them need their locals and calls.
 	var fns bytes.Buffer
@@ -203,6 +206,18 @@ func (w *pipe) write() []byte {
 	return out.Bytes()
 }
 
+// enter sets the control that the writer is in, and the scope of its parameters.
+func (w *pipe) enter(c *controlDecl) {
+	w.cur = c
+	w.root = newEnv(nil)
+	for i, s := range []string{"pkt.h", "pkt.m", "pkt.sm"} {
+		w.root.syms[c.params[i].name] = sym{s, c.params[i].typ}
+	}
+}
+
+// instance returns the instance name that the control cur can use, or nil.
+func (w *pipe) instance(name string) *instance { return w.prog.instanceIn(w.cur, name) }
+
 // reserve sets the Go names that a local must not have.
 func (w *pipe) reserve() {
 	// v and b of the parser code are in their own blocks, with no locals of P4 there.
@@ -213,6 +228,10 @@ func (w *pipe) reserve() {
 		w.reserved[w.constName(c)] = true
 	}
 	for _, f := range w.prog.funcs {
+		// An extern function is a method of part: its name must not be in partNames or a Go step.
+		if g := lowerCamel(strings.ToLower(f.name)); partNames[g] || len(g) > 4 && strings.HasPrefix(g, "step") && g[4] >= 'A' && g[4] <= 'Z' {
+			w.fail(f, "the extern function %s has the Go name %s, which the Go writer or the runtime uses for part", f.name, g)
+		}
 		w.reserved[lowerCamel(f.name)] = true
 	}
 	for _, s := range w.prog.structs {
@@ -511,7 +530,7 @@ func (w *pipe) pspSa() {
 			w.p("// Opened is the second half of %s.open, in apply in RX order, after the AEAD.", w.keys.name)
 			w.p("Opened(pkt *packet, m *meta) %s", w.goType(m, m.ret))
 		case w.pspCalls[m.name]:
-			w.p("%s%s", camel(m.name), w.signature(m, "", ""))
+			w.p("%s%s", camel(m.name), w.signature(m, "pkt *packet", ""))
 		}
 	}
 	w.p("}")
@@ -541,6 +560,11 @@ func (w *pipe) helpers() {
 	}
 }
 
+// partNames are the methods of part that the Go writer writes, and the other methods and the fields
+// of part in the runtime (run.go and seal.go).
+var partNames = map[string]bool{"parse": true, "ingress": true, "egress": true, "apply": true,
+	"run": true, "drop": true, "countIndex": true, "executeMeter": true, "seal": true, "p": true, "st": true, "tx": true}
+
 func (w *pipe) functions() {
 	keys := "the split"
 	if w.keys != nil {
@@ -557,8 +581,8 @@ func (w *pipe) functions() {
 	}
 	w.p("}")
 	w.p("")
-	w.p("// apply runs the control %s from %s on.", w.ctl.name, keys)
-	w.p("func (x *part) apply(pkt *packet) {")
+	w.p("// ingress runs the control %s from %s on.", w.ctl.name, keys)
+	w.p("func (x *part) ingress(pkt *packet) {")
 	if w.parseExit {
 		w.p("if pkt.at == atExit {")
 		w.p("return")
@@ -569,6 +593,22 @@ func (w *pipe) functions() {
 	} else {
 		w.stmts(w.ctl.apply.stmts, newEnv(w.root))
 	}
+	w.p("}")
+	w.p("")
+	w.enter(w.egr)
+	w.p("// egress runs the control %s.", w.egr.name)
+	w.p("func (x *part) egress(pkt *packet) {")
+	w.stmts(w.egr.apply.stmts, newEnv(w.root))
+	w.p("}")
+	w.p("")
+	w.p("// apply runs the control %s from %s on, and then the control %s for a", w.ctl.name, keys, w.egr.name)
+	w.p("// packet that %s did not mark to drop, as v1model does.", w.ctl.name)
+	w.p("func (x *part) apply(pkt *packet) {")
+	w.p("x.ingress(pkt)")
+	w.p("if pkt.sm.egressSpec == p4DropPort {")
+	w.p("return")
+	w.p("}")
+	w.p("x.egress(pkt)")
 	w.p("}")
 	w.p("")
 }
@@ -1167,9 +1207,9 @@ func (w *pipe) callStmt(c *call, sc *env) bool {
 			w.p("%s", w.callExpr(c, sc).code)
 			return false
 		}
-		a := w.ctl.action(id.name)
+		a := w.cur.action(id.name)
 		if a == nil {
-			w.fail(c, "%s is not an action of %s", id.name, w.ctl.name)
+			w.fail(c, "%s is not an action of %s", id.name, w.cur.name)
 		}
 		if a.hidden && len(a.params) == 0 && len(a.body.stmts) == 0 {
 			// A Go step of the runtime.
@@ -1193,11 +1233,11 @@ func (w *pipe) callStmt(c *call, sc *env) bool {
 		}
 		w.fail(c, "%s as a statement is not in the subset of the Go writer", name)
 	}
-	if t := w.ctl.table(recv); t != nil {
+	if t := w.cur.table(recv); t != nil {
 		w.table(t)
 		return false
 	}
-	in := w.ctl.instance(recv)
+	in := w.instance(recv)
 	if in == nil {
 		w.fail(c, "%s.%s is not in the subset of the Go writer", recv, name)
 	}
@@ -1290,7 +1330,7 @@ func (w *pipe) table(t *tableDecl) {
 	if dflt == nil {
 		w.p("if e := %s; e != nil {", look)
 	} else {
-		a := w.ctl.action(dflt.fun.(*ident).name)
+		a := w.cur.action(dflt.fun.(*ident).name)
 		for _, prm := range a.params {
 			if w.prog.newType(prm.typ.name) != nil {
 				w.fail(dflt, "a default action with a translated parameter is not in the subset of the Go writer")
@@ -1302,7 +1342,7 @@ func (w *pipe) table(t *tableDecl) {
 	}
 	usesA := false
 	for _, ai := range t.actions {
-		if a := w.ctl.action(ai.name); a != nil {
+		if a := w.cur.action(ai.name); a != nil {
 			for _, prm := range a.params {
 				usesA = usesA || w.prog.newType(prm.typ.name) == nil && reads(a.body.stmts, prm.name)
 			}
@@ -1318,7 +1358,7 @@ func (w *pipe) table(t *tableDecl) {
 			w.p("case NoAction:")
 			continue
 		}
-		a := w.ctl.action(ai.name)
+		a := w.cur.action(ai.name)
 		w.p("case %s:", actionType(a.name))
 		sc := newEnv(w.root)
 		for _, prm := range a.params {
@@ -1567,7 +1607,7 @@ func (w *pipe) callExpr(c *call, sc *env) ex {
 		if ret == nil {
 			ret = voidT
 		}
-		return ex{fmt.Sprintf("%s(%s)", w.goName(f, f.name, false), strings.Join(args, ", ")), ret, true}
+		return ex{fmt.Sprintf("x.%s(%s)", w.goName(f, f.name, false), strings.Join(args, ", ")), ret, true}
 	}
 	if code, ok := w.lookahead[c]; ok {
 		return ex{code, c.typeArgs[0], true}
@@ -1579,13 +1619,13 @@ func (w *pipe) callExpr(c *call, sc *env) ex {
 		}
 		w.fail(c, "%s in an expression is not in the subset of the Go writer", name)
 	}
-	if w.keys != nil && recv == w.keys.name && name != "open" {
+	if in := w.instance(recv); in != nil && in == w.keys && name != "open" {
 		m := w.methodOf(name)
 		if m == nil || len(c.args) != len(m.params) {
 			w.fail(c, "%s.%s is not a method of %s", recv, name, pspSa)
 		}
 		w.pspCalls[name] = true
-		var args []string
+		args := []string{"pkt"}
 		for i, prm := range m.params {
 			args = append(args, w.value(c.args[i], prm.typ, sc))
 		}

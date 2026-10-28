@@ -18,6 +18,7 @@ const (
 	TableClassify uint32 = 37194576 // Relay.classify
 	TableSource   uint32 = 37945331 // Relay.source
 	TableRoute    uint32 = 42238873 // Relay.route
+	TableOutPorts uint32 = 39859099 // RelayEgress.out_ports
 )
 
 // Action IDs.
@@ -28,20 +29,22 @@ const (
 	ActionContext   uint32 = 25404084 // Relay.context
 	ActionForward   uint32 = 22957411 // Relay.forward
 	ActionLocalOnly uint32 = 24976605 // Relay.local_only
+	ActionDropOut   uint32 = 21608195 // RelayEgress.drop_out
+	ActionOutPort   uint32 = 32296454 // RelayEgress.out_port
 )
 
 // Counter IDs.
 const (
-	CounterCells     uint32 = 317147353 // Relay.cells
-	CounterDrops     uint32 = 309103603 // Relay.drops
-	CounterPortDrops uint32 = 306017222 // Relay.port_drops
+	CounterCells     uint32 = 306161202 // cells
+	CounterDrops     uint32 = 302468923 // drops
+	CounterPortDrops uint32 = 310371544 // port_drops
 )
 
 // Meter IDs.
 const (
-	MeterPort uint32 = 345235978 // Relay.port_meter
-	MeterLane uint32 = 339716295 // Relay.lane_meter
-	MeterPunt uint32 = 338249407 // Relay.punt_meter
+	MeterPort uint32 = 341723503 // port_meter
+	MeterLane uint32 = 340534297 // lane_meter
+	MeterPunt uint32 = 349658765 // punt_meter
 )
 
 // Controller packet metadata IDs.
@@ -53,8 +56,8 @@ const (
 // The PspSa extern: its P4Runtime type ID, and the ID and name of its one instance.
 const (
 	ExternPspSa    uint32 = 0x81
-	ExternKeys     uint32 = 0x81621bac
-	externKeysName        = "Relay.keys"
+	ExternKeys     uint32 = 0x8199b768
+	externKeysName        = "keys"
 )
 
 // Drop reasons of relay.p4: the index in the drops counter.
@@ -85,21 +88,21 @@ const (
 
 // counterSizes has the size of each counter.
 var counterSizes = map[uint32]int64{
-	317147353: 2097152,
-	309103603: 32,
-	306017222: 2097152,
+	306161202: 2097152,
+	302468923: 32,
+	310371544: 2097152,
 }
 
 // meterSizes has the size of each meter, and meterPackets the meters that count packets.
 var meterSizes = map[uint32]int64{
-	345235978: 65536,
-	339716295: 262144,
-	338249407: 65536,
+	341723503: 65536,
+	340534297: 262144,
+	349658765: 65536,
 }
 var meterPackets = map[uint32]bool{
-	345235978: false,
-	339716295: false,
-	338249407: true,
+	341723503: false,
+	340534297: false,
+	349658765: true,
 }
 
 // Action is the action of a table entry: one of the action types of this file.
@@ -428,6 +431,134 @@ func decodeLocalOnlyAction(ps []*p4.Action_Param) (LocalOnlyAction, error) {
 	return a, nil
 }
 
+// DropOutAction is the RelayEgress.drop_out action.
+type DropOutAction struct {
+	Reason uint8 // reason, 8 bits
+}
+
+// ActionID returns the ID of the RelayEgress.drop_out action.
+func (DropOutAction) ActionID() uint32 { return ActionDropOut }
+
+func (a DropOutAction) params() []*p4.Action_Param {
+	return []*p4.Action_Param{
+		{ParamId: 1, Value: encodeUint(uint64(a.Reason), 8)},
+	}
+}
+
+func decodeDropOutAction(ps []*p4.Action_Param) (DropOutAction, error) {
+	var a DropOutAction
+	var seen uint64
+	for _, prm := range ps {
+		id := prm.GetParamId()
+		if id == 0 || id > 63 || seen&(1<<id) != 0 {
+			return a, fmt.Errorf("drop_out: parameter %d is not valid or repeated", id)
+		}
+		seen |= 1 << id
+		switch id {
+		case 1:
+			v, err := decodeUint(prm.GetValue(), 8)
+			if err != nil {
+				return a, fmt.Errorf("drop_out reason: %w", err)
+			}
+			a.Reason = uint8(v)
+		default:
+			return a, fmt.Errorf("drop_out: unknown parameter %d", id)
+		}
+	}
+	if seen != 0x2 {
+		return a, fmt.Errorf("drop_out: a parameter is missing")
+	}
+	return a, nil
+}
+
+// OutPortAction is the RelayEgress.out_port action.
+type OutPortAction struct {
+	Trunk      bool           // trunk, 1 bits
+	Session    uint64         // session, 64 bits
+	Addr       netip.AddrPort // addr, 144 bits
+	Lanes      uint64         // lanes, 48 bits
+	Seen       uint8          // seen, 3 bits
+	MTU        uint16         // mtu, 16 bits
+	MeterIndex uint32         // meter_index, 32 bits
+}
+
+// ActionID returns the ID of the RelayEgress.out_port action.
+func (OutPortAction) ActionID() uint32 { return ActionOutPort }
+
+func (a OutPortAction) params() []*p4.Action_Param {
+	return []*p4.Action_Param{
+		{ParamId: 1, Value: encodeBool(a.Trunk)},
+		{ParamId: 2, Value: encodeUint(uint64(a.Session), 64)},
+		{ParamId: 3, Value: encodeAddrPort(a.Addr)},
+		{ParamId: 4, Value: encodeUint(uint64(a.Lanes), 48)},
+		{ParamId: 5, Value: encodeUint(uint64(a.Seen), 3)},
+		{ParamId: 6, Value: encodeUint(uint64(a.MTU), 16)},
+		{ParamId: 7, Value: encodeUint(uint64(a.MeterIndex), 32)},
+	}
+}
+
+func decodeOutPortAction(ps []*p4.Action_Param) (OutPortAction, error) {
+	var a OutPortAction
+	var seen uint64
+	for _, prm := range ps {
+		id := prm.GetParamId()
+		if id == 0 || id > 63 || seen&(1<<id) != 0 {
+			return a, fmt.Errorf("out_port: parameter %d is not valid or repeated", id)
+		}
+		seen |= 1 << id
+		switch id {
+		case 1:
+			v, err := decodeBool(prm.GetValue())
+			if err != nil {
+				return a, fmt.Errorf("out_port trunk: %w", err)
+			}
+			a.Trunk = v
+		case 2:
+			v, err := decodeUint(prm.GetValue(), 64)
+			if err != nil {
+				return a, fmt.Errorf("out_port session: %w", err)
+			}
+			a.Session = uint64(v)
+		case 3:
+			v, err := decodeAddrPort(prm.GetValue())
+			if err != nil {
+				return a, fmt.Errorf("out_port addr: %w", err)
+			}
+			a.Addr = v
+		case 4:
+			v, err := decodeUint(prm.GetValue(), 48)
+			if err != nil {
+				return a, fmt.Errorf("out_port lanes: %w", err)
+			}
+			a.Lanes = uint64(v)
+		case 5:
+			v, err := decodeUint(prm.GetValue(), 3)
+			if err != nil {
+				return a, fmt.Errorf("out_port seen: %w", err)
+			}
+			a.Seen = uint8(v)
+		case 6:
+			v, err := decodeUint(prm.GetValue(), 16)
+			if err != nil {
+				return a, fmt.Errorf("out_port mtu: %w", err)
+			}
+			a.MTU = uint16(v)
+		case 7:
+			v, err := decodeUint(prm.GetValue(), 32)
+			if err != nil {
+				return a, fmt.Errorf("out_port meter_index: %w", err)
+			}
+			a.MeterIndex = uint32(v)
+		default:
+			return a, fmt.Errorf("out_port: unknown parameter %d", id)
+		}
+	}
+	if seen != 0xfe {
+		return a, fmt.Errorf("out_port: a parameter is missing")
+	}
+	return a, nil
+}
+
 // decodeAction returns the action of a.
 func decodeAction(a *p4.Action) (Action, error) {
 	switch a.GetActionId() {
@@ -443,6 +574,10 @@ func decodeAction(a *p4.Action) (Action, error) {
 		return decodeForwardAction(a.GetParams())
 	case ActionLocalOnly:
 		return decodeLocalOnlyAction(a.GetParams())
+	case ActionDropOut:
+		return decodeDropOutAction(a.GetParams())
+	case ActionOutPort:
+		return decodeOutPortAction(a.GetParams())
 	}
 	return nil, fmt.Errorf("unknown action %d", a.GetActionId())
 }
@@ -461,6 +596,7 @@ var defaultActions = map[uint32]*p4.Action{
 	TableClassify: {ActionId: 16983990, Params: []*p4.Action_Param{{ParamId: 1, Value: []byte{0x2}}}},
 	TableSource:   {ActionId: 16983990, Params: []*p4.Action_Param{{ParamId: 1, Value: []byte{0x3}}}},
 	TableRoute:    {ActionId: 21257015, Params: []*p4.Action_Param{}},
+	TableOutPorts: {ActionId: 21608195, Params: []*p4.Action_Param{{ParamId: 1, Value: []byte{0x9}}}},
 }
 
 // PortsKey is the match key of the Relay.ports table.
@@ -761,6 +897,61 @@ func routeAllows(id uint32) bool {
 	return false
 }
 
+// OutPortsKey is the match key of the RelayEgress.out_ports table.
+type OutPortsKey struct {
+	Port uint64 // m.fwd.port
+}
+
+// Entry returns the RelayEgress.out_ports entry of k with action a.
+func (k OutPortsKey) Entry(a Action) *p4.TableEntry {
+	return &p4.TableEntry{TableId: TableOutPorts, Match: k.match(), Action: tableAction(a)}
+}
+
+func (k OutPortsKey) match() []*p4.FieldMatch {
+	ms := make([]*p4.FieldMatch, 0, 1)
+	ms = append(ms, &p4.FieldMatch{FieldId: 1, FieldMatchType: &p4.FieldMatch_Exact_{Exact: &p4.FieldMatch_Exact{Value: encodeUint(uint64(k.Port), 64)}}})
+	return ms
+}
+
+func decodeOutPortsKey(ms []*p4.FieldMatch) (OutPortsKey, error) {
+	var k OutPortsKey
+	var seen uint64
+	for _, m := range ms {
+		id := m.GetFieldId()
+		if id == 0 || id > 63 || seen&(1<<id) != 0 {
+			return k, fmt.Errorf("out_ports: match field %d is not valid or repeated", id)
+		}
+		seen |= 1 << id
+		switch id {
+		case 1:
+			e := m.GetExact()
+			if e == nil {
+				return k, fmt.Errorf("out_ports m.fwd.port: not an exact match")
+			}
+			v, err := decodeUint(e.GetValue(), 64)
+			if err != nil {
+				return k, fmt.Errorf("out_ports m.fwd.port: %w", err)
+			}
+			k.Port = uint64(v)
+		default:
+			return k, fmt.Errorf("out_ports: unknown match field %d", id)
+		}
+	}
+	if seen&0x2 != 0x2 {
+		return k, fmt.Errorf("out_ports: an exact match field is missing")
+	}
+	return k, nil
+}
+
+// outPortsAllows reports whether an entry of RelayEgress.out_ports can have the action id.
+func outPortsAllows(id uint32) bool {
+	switch id {
+	case ActionDropOut, ActionOutPort:
+		return true
+	}
+	return false
+}
+
 // PacketInMeta is the packet_in controller header.
 type PacketInMeta struct {
 	Kind    uint8          // kind, 8 bits
@@ -987,6 +1178,17 @@ type portT struct {
 	meterIndex uint32         // bit<32>
 }
 
+// outPortT is the struct out_port_t.
+type outPortT struct {
+	trunk      uint8          // bit<1>
+	session    uint64         // bit<64>
+	addr       netip.AddrPort // bit<144>
+	lanes      uint64         // bit<48>
+	seen       uint8          // bit<3>
+	mtu        uint16         // bit<16>
+	meterIndex uint32         // bit<32>
+}
+
 // contextT is the struct context_t.
 type contextT struct {
 	vpc  uint32 // name_t
@@ -1008,25 +1210,25 @@ type localT struct {
 
 // meta is the struct meta_t.
 type meta struct {
-	port          uint64         // bit<64>
-	saSession     uint64         // bit<64>
-	spi           uint32         // bit<32>
-	outMeterIndex uint32         // bit<32>
-	lane          uint8          // bit<2>
-	vni           uint32         // bit<24>
-	tag           uint32         // bit<24>
-	localOnly     bool           // bool
-	src           netip.Addr     // bit<128>
-	dst           netip.Addr     // bit<128>
-	from          netip.AddrPort // bit<144>
-	punt          bool           // bool
-	next          uint8          // bit<8>
-	hash          uint32         // bit<32>
-	routed        bool           // bool
-	p             portT          // port_t
-	c             contextT       // context_t
-	fwd           fwdT           // fwd_t
-	local         localT         // local_t
+	port      uint64         // bit<64>
+	saSession uint64         // bit<64>
+	spi       uint32         // bit<32>
+	lane      uint8          // bit<2>
+	vni       uint32         // bit<24>
+	tag       uint32         // bit<24>
+	localOnly bool           // bool
+	src       netip.Addr     // bit<128>
+	dst       netip.Addr     // bit<128>
+	from      netip.AddrPort // bit<144>
+	punt      bool           // bool
+	next      uint8          // bit<8>
+	hash      uint32         // bit<32>
+	routed    bool           // bool
+	p         portT          // port_t
+	o         outPortT       // out_port_t
+	c         contextT       // context_t
+	fwd       fwdT           // fwd_t
+	local     localT         // local_t
 }
 
 // standardMetadata has the fields of standard_metadata_t that the Go writer has.
@@ -1064,7 +1266,8 @@ type PspSa interface {
 	Open(pkt *packet, spi uint32, m *meta) uint8
 	// Opened is the second half of keys.open, in apply in RX order, after the AEAD.
 	Opened(pkt *packet, m *meta) uint8
-	Count(spi uint32)
+	Count(pkt *packet, spi uint32)
+	Seal(pkt *packet, port uint64, vni uint32) bool
 }
 
 // parse runs the parser and the control Relay up to keys.open. It counts nothing: a branch
@@ -1073,11 +1276,11 @@ func (x *part) parse(pkt *packet) {
 	// The parser RelayParser.
 	switch v := pkt.sm.ingressPort; {
 	case v == cpuPort:
-		goto pStateFrameIn
+		goto pStateDatagramIn
 	default:
 		goto pStateUdp
 	}
-pStateFrameIn:
+pStateDatagramIn:
 	pkt.h.packetOut = packetOutT{valid: true, kind: pkt.ctl.Kind, port: pkt.ctl.Port, session: pkt.ctl.Session, to: pkt.ctl.To}
 	if len(pkt.in)-pkt.off < 5 {
 		pkt.sm.parserError = p4ErrPacketTooShort
@@ -1230,21 +1433,18 @@ pEnd:
 	pkt.at = 5
 }
 
-// apply runs the control Relay from keys.open on.
-func (x *part) apply(pkt *packet) {
+// ingress runs the control Relay from keys.open on.
+func (x *part) ingress(pkt *packet) {
 	var r uint8 = pkt.lR
 	switch pkt.at {
 	case 3:
 		// drop
 		// count_drop
-		{
-			x.countIndex(CounterDrops, uint32(ReasonMalformed), pkt)
-			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-			if i != 0 {
-				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMalformed), pkt)
-			}
-			pkt.sm.egressSpec = p4DropPort
+		x.countIndex(CounterDrops, uint32(ReasonMalformed), pkt)
+		if pkt.m.p.meterIndex != 0 {
+			x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonMalformed), pkt)
 		}
+		pkt.sm.egressSpec = p4DropPort
 		return
 	case 4:
 		// to_root
@@ -1253,14 +1453,11 @@ func (x *part) apply(pkt *packet) {
 			color = x.executeMeter(MeterPunt, pkt.m.p.meterIndex, pkt)
 			if color == meterRed {
 				// count_drop
-				{
-					x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
-					var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-					if i != 0 {
-						x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
-					}
-					pkt.sm.egressSpec = p4DropPort
+				x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+				if pkt.m.p.meterIndex != 0 {
+					x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonMeter), pkt)
 				}
+				pkt.sm.egressSpec = p4DropPort
 				return
 			}
 			pkt.h.packetIn.valid = true
@@ -1281,27 +1478,21 @@ func (x *part) apply(pkt *packet) {
 	if r != 0 {
 		// drop
 		// count_drop
-		{
-			x.countIndex(CounterDrops, uint32(r), pkt)
-			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-			if i != 0 {
-				x.countIndex(CounterPortDrops, (i<<5)|uint32(r), pkt)
-			}
-			pkt.sm.egressSpec = p4DropPort
+		x.countIndex(CounterDrops, uint32(r), pkt)
+		if pkt.m.p.meterIndex != 0 {
+			x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(r), pkt)
 		}
+		pkt.sm.egressSpec = p4DropPort
 		return
 	}
 	if e := x.st.lookupPorts(pkt.m.port); e == nil {
 		// drop
 		// count_drop
-		{
-			x.countIndex(CounterDrops, uint32(ReasonOldSession), pkt)
-			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-			if i != 0 {
-				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonOldSession), pkt)
-			}
-			pkt.sm.egressSpec = p4DropPort
+		x.countIndex(CounterDrops, uint32(ReasonOldSession), pkt)
+		if pkt.m.p.meterIndex != 0 {
+			x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonOldSession), pkt)
 		}
+		pkt.sm.egressSpec = p4DropPort
 		return
 	} else {
 		switch a := e.action.(type) {
@@ -1311,14 +1502,11 @@ func (x *part) apply(pkt *packet) {
 		case DropAction:
 			// drop
 			// count_drop
-			{
-				x.countIndex(CounterDrops, uint32(a.Reason), pkt)
-				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-				if i != 0 {
-					x.countIndex(CounterPortDrops, (i<<5)|uint32(a.Reason), pkt)
-				}
-				pkt.sm.egressSpec = p4DropPort
+			x.countIndex(CounterDrops, uint32(a.Reason), pkt)
+			if pkt.m.p.meterIndex != 0 {
+				x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(a.Reason), pkt)
 			}
+			pkt.sm.egressSpec = p4DropPort
 			return
 		}
 	}
@@ -1326,14 +1514,11 @@ func (x *part) apply(pkt *packet) {
 	{
 		if pkt.m.saSession != pkt.m.p.session {
 			// count_drop
-			{
-				x.countIndex(CounterDrops, uint32(ReasonOldSession), pkt)
-				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-				if i != 0 {
-					x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonOldSession), pkt)
-				}
-				pkt.sm.egressSpec = p4DropPort
+			x.countIndex(CounterDrops, uint32(ReasonOldSession), pkt)
+			if pkt.m.p.meterIndex != 0 {
+				x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonOldSession), pkt)
 			}
+			pkt.sm.egressSpec = p4DropPort
 			return
 		}
 		var color uint8
@@ -1342,45 +1527,36 @@ func (x *part) apply(pkt *packet) {
 			var lane bool = ((pkt.m.p.addr.IsValid() && (pkt.m.from.Addr() == pkt.m.p.addr.Addr())) && (fromPort != 0)) && (((fromPort == uint16(pkt.m.p.lanes>>32)) || (fromPort == uint16(pkt.m.p.lanes>>16))) || (fromPort == uint16(pkt.m.p.lanes)))
 			if !pkt.m.from.IsValid() || (((pkt.m.from != pkt.m.p.addr) && (pkt.m.from != pkt.m.p.prev)) && !lane) {
 				// count_drop
-				{
-					x.countIndex(CounterDrops, uint32(ReasonUnknownSource), pkt)
-					var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-					if i != 0 {
-						x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonUnknownSource), pkt)
-					}
-					pkt.sm.egressSpec = p4DropPort
+				x.countIndex(CounterDrops, uint32(ReasonUnknownSource), pkt)
+				if pkt.m.p.meterIndex != 0 {
+					x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonUnknownSource), pkt)
 				}
+				pkt.sm.egressSpec = p4DropPort
 				return
 			}
 			color = x.executeMeter(MeterLane, (pkt.m.p.meterIndex<<2)|uint32(pkt.m.lane), pkt)
 			if color == meterRed {
 				// count_drop
-				{
-					x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
-					var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-					if i != 0 {
-						x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
-					}
-					pkt.sm.egressSpec = p4DropPort
+				x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+				if pkt.m.p.meterIndex != 0 {
+					x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonMeter), pkt)
 				}
+				pkt.sm.egressSpec = p4DropPort
 				return
 			}
 		}
 		color = x.executeMeter(MeterPort, pkt.m.p.meterIndex, pkt)
 		if color == meterRed {
 			// count_drop
-			{
-				x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
-				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-				if i != 0 {
-					x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
-				}
-				pkt.sm.egressSpec = p4DropPort
+			x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+			if pkt.m.p.meterIndex != 0 {
+				x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonMeter), pkt)
 			}
+			pkt.sm.egressSpec = p4DropPort
 			return
 		}
 		if pkt.h.psp.valid {
-			x.Count(pkt.m.spi)
+			x.Count(pkt, pkt.m.spi)
 		}
 	}
 	// read_tag
@@ -1393,14 +1569,11 @@ func (x *part) apply(pkt *packet) {
 				color = x.executeMeter(MeterPunt, pkt.m.p.meterIndex, pkt)
 				if color == meterRed {
 					// count_drop
-					{
-						x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
-						var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-						if i != 0 {
-							x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
-						}
-						pkt.sm.egressSpec = p4DropPort
+					x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+					if pkt.m.p.meterIndex != 0 {
+						x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonMeter), pkt)
 					}
+					pkt.sm.egressSpec = p4DropPort
 					return
 				}
 				pkt.h.packetIn.valid = true
@@ -1413,30 +1586,24 @@ func (x *part) apply(pkt *packet) {
 			}
 		}
 	}
-	pkt.m.next = innerAddrs(pkt, &pkt.m.src, &pkt.m.dst)
+	pkt.m.next = x.innerAddrs(pkt, &pkt.m.src, &pkt.m.dst)
 	if pkt.m.next == 0 {
 		// count_drop
-		{
-			x.countIndex(CounterDrops, uint32(ReasonMalformed), pkt)
-			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-			if i != 0 {
-				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMalformed), pkt)
-			}
-			pkt.sm.egressSpec = p4DropPort
+		x.countIndex(CounterDrops, uint32(ReasonMalformed), pkt)
+		if pkt.m.p.meterIndex != 0 {
+			x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonMalformed), pkt)
 		}
+		pkt.sm.egressSpec = p4DropPort
 		return
 	}
 	if e := x.st.lookupClassify(pkt.m.port, pkt.m.p.session, pkt.m.tag); e == nil {
 		// drop
 		// count_drop
-		{
-			x.countIndex(CounterDrops, uint32(ReasonNoContext), pkt)
-			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-			if i != 0 {
-				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonNoContext), pkt)
-			}
-			pkt.sm.egressSpec = p4DropPort
+		x.countIndex(CounterDrops, uint32(ReasonNoContext), pkt)
+		if pkt.m.p.meterIndex != 0 {
+			x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonNoContext), pkt)
 		}
+		pkt.sm.egressSpec = p4DropPort
 		return
 	} else {
 		switch a := e.action.(type) {
@@ -1446,42 +1613,33 @@ func (x *part) apply(pkt *packet) {
 		case DropAction:
 			// drop
 			// count_drop
-			{
-				x.countIndex(CounterDrops, uint32(a.Reason), pkt)
-				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-				if i != 0 {
-					x.countIndex(CounterPortDrops, (i<<5)|uint32(a.Reason), pkt)
-				}
-				pkt.sm.egressSpec = p4DropPort
+			x.countIndex(CounterDrops, uint32(a.Reason), pkt)
+			if pkt.m.p.meterIndex != 0 {
+				x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(a.Reason), pkt)
 			}
+			pkt.sm.egressSpec = p4DropPort
 			return
 		}
 	}
 	if (pkt.m.p.trunk == 0) && (pkt.m.vni != pkt.m.c.vni) {
 		// drop
 		// count_drop
-		{
-			x.countIndex(CounterDrops, uint32(ReasonNoContext), pkt)
-			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-			if i != 0 {
-				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonNoContext), pkt)
-			}
-			pkt.sm.egressSpec = p4DropPort
+		x.countIndex(CounterDrops, uint32(ReasonNoContext), pkt)
+		if pkt.m.p.meterIndex != 0 {
+			x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonNoContext), pkt)
 		}
+		pkt.sm.egressSpec = p4DropPort
 		return
 	}
 	x.countIndex(CounterCells, pkt.m.c.cell<<1, pkt)
 	if e := x.st.lookupSource(pkt.m.port, pkt.m.p.session, pkt.m.tag, pkt.m.src); e == nil {
 		// drop
 		// count_drop
-		{
-			x.countIndex(CounterDrops, uint32(ReasonSource), pkt)
-			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-			if i != 0 {
-				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonSource), pkt)
-			}
-			pkt.sm.egressSpec = p4DropPort
+		x.countIndex(CounterDrops, uint32(ReasonSource), pkt)
+		if pkt.m.p.meterIndex != 0 {
+			x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonSource), pkt)
 		}
+		pkt.sm.egressSpec = p4DropPort
 		return
 	} else {
 		switch a := e.action.(type) {
@@ -1492,18 +1650,15 @@ func (x *part) apply(pkt *packet) {
 		case DropAction:
 			// drop
 			// count_drop
-			{
-				x.countIndex(CounterDrops, uint32(a.Reason), pkt)
-				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-				if i != 0 {
-					x.countIndex(CounterPortDrops, (i<<5)|uint32(a.Reason), pkt)
-				}
-				pkt.sm.egressSpec = p4DropPort
+			x.countIndex(CounterDrops, uint32(a.Reason), pkt)
+			if pkt.m.p.meterIndex != 0 {
+				x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(a.Reason), pkt)
 			}
+			pkt.sm.egressSpec = p4DropPort
 			return
 		}
 	}
-	pkt.m.hash = flowHash(pkt)
+	pkt.m.hash = x.flowHash(pkt)
 	if e := x.st.lookupRoute(pkt.m.c.vpc, pkt.m.dst); e != nil {
 		switch a := e.action.(type) {
 		case ForwardAction:
@@ -1514,14 +1669,11 @@ func (x *part) apply(pkt *packet) {
 		case DropAction:
 			// drop
 			// count_drop
-			{
-				x.countIndex(CounterDrops, uint32(a.Reason), pkt)
-				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-				if i != 0 {
-					x.countIndex(CounterPortDrops, (i<<5)|uint32(a.Reason), pkt)
-				}
-				pkt.sm.egressSpec = p4DropPort
+			x.countIndex(CounterDrops, uint32(a.Reason), pkt)
+			if pkt.m.p.meterIndex != 0 {
+				x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(a.Reason), pkt)
 			}
+			pkt.sm.egressSpec = p4DropPort
 			return
 		}
 	}
@@ -1529,14 +1681,11 @@ func (x *part) apply(pkt *packet) {
 	if !pkt.m.routed {
 		if pkt.m.p.trunk == 1 {
 			// count_drop
-			{
-				x.countIndex(CounterDrops, uint32(ReasonNoRoute), pkt)
-				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-				if i != 0 {
-					x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonNoRoute), pkt)
-				}
-				pkt.sm.egressSpec = p4DropPort
+			x.countIndex(CounterDrops, uint32(ReasonNoRoute), pkt)
+			if pkt.m.p.meterIndex != 0 {
+				x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonNoRoute), pkt)
 			}
+			pkt.sm.egressSpec = p4DropPort
 			return
 		}
 		// to_root
@@ -1545,14 +1694,11 @@ func (x *part) apply(pkt *packet) {
 			color = x.executeMeter(MeterPunt, pkt.m.p.meterIndex, pkt)
 			if color == meterRed {
 				// count_drop
-				{
-					x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
-					var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
-					if i != 0 {
-						x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
-					}
-					pkt.sm.egressSpec = p4DropPort
+				x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+				if pkt.m.p.meterIndex != 0 {
+					x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonMeter), pkt)
 				}
+				pkt.sm.egressSpec = p4DropPort
 				return
 			}
 			pkt.h.packetIn.valid = true
@@ -1570,19 +1716,123 @@ func (x *part) apply(pkt *packet) {
 	}
 	if pkt.m.fwd.port == 0 {
 		// count_drop
+		x.countIndex(CounterDrops, uint32(ReasonNoRoute), pkt)
+		if pkt.m.p.meterIndex != 0 {
+			x.countIndex(CounterPortDrops, (pkt.m.p.meterIndex<<5)|uint32(ReasonNoRoute), pkt)
+		}
+		pkt.sm.egressSpec = p4DropPort
+		return
+	}
+}
+
+// egress runs the control RelayEgress.
+func (x *part) egress(pkt *packet) {
+	if pkt.h.packetIn.valid {
+		return
+	}
+	if e := x.st.lookupOutPorts(pkt.m.fwd.port); e == nil {
+		// drop_out
+		// count_drop
 		{
-			x.countIndex(CounterDrops, uint32(ReasonNoRoute), pkt)
-			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+			x.countIndex(CounterDrops, uint32(ReasonNoTarget), pkt)
+			var i uint32 = p4cond(pkt.m.o.meterIndex != 0, pkt.m.o.meterIndex, pkt.m.p.meterIndex)
 			if i != 0 {
-				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonNoRoute), pkt)
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonNoTarget), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	} else {
+		switch a := e.action.(type) {
+		case OutPortAction:
+			// out_port
+			pkt.m.o = outPortT{trunk: p4bit(a.Trunk), session: a.Session, addr: a.Addr, lanes: a.Lanes, seen: a.Seen, mtu: a.MTU, meterIndex: a.MeterIndex}
+		case DropOutAction:
+			// drop_out
+			// count_drop
+			{
+				x.countIndex(CounterDrops, uint32(a.Reason), pkt)
+				var i uint32 = p4cond(pkt.m.o.meterIndex != 0, pkt.m.o.meterIndex, pkt.m.p.meterIndex)
+				if i != 0 {
+					x.countIndex(CounterPortDrops, (i<<5)|uint32(a.Reason), pkt)
+				}
+				pkt.sm.egressSpec = p4DropPort
+			}
+			return
+		}
+	}
+	if (pkt.m.p.trunk == 1) && (pkt.m.o.trunk == 1) {
+		// drop_out
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonTrunkToTrunk), pkt)
+			var i uint32 = p4cond(pkt.m.o.meterIndex != 0, pkt.m.o.meterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonTrunkToTrunk), pkt)
 			}
 			pkt.sm.egressSpec = p4DropPort
 		}
 		return
 	}
-	if x.stepSendOut(pkt) {
+	if pkt.m.localOnly && (pkt.m.o.trunk == 1) {
+		// drop_out
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonLocalOnly), pkt)
+			var i uint32 = p4cond(pkt.m.o.meterIndex != 0, pkt.m.o.meterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonLocalOnly), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
 		return
 	}
+	if (pkt.m.o.mtu != 0) && (x.innerLength(pkt) > uint32(pkt.m.o.mtu)) {
+		// drop_out
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonMTU), pkt)
+			var i uint32 = p4cond(pkt.m.o.meterIndex != 0, pkt.m.o.meterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMTU), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	}
+	if pkt.m.o.addr.IsValid() {
+		var vni uint32 = p4cond(pkt.m.o.trunk == 1, pkt.m.p.tag, pkt.m.c.vni)
+		if !x.Seal(pkt, pkt.m.fwd.port, vni) {
+			pkt.sm.egressSpec = p4DropPort
+			return
+		}
+	} else {
+		var r uint8 = x.datagramOut(pkt, pkt.m.fwd.port, pkt.m.c.vni)
+		if r != 0 {
+			// drop_out
+			// count_drop
+			{
+				x.countIndex(CounterDrops, uint32(r), pkt)
+				var i uint32 = p4cond(pkt.m.o.meterIndex != 0, pkt.m.o.meterIndex, pkt.m.p.meterIndex)
+				if i != 0 {
+					x.countIndex(CounterPortDrops, (i<<5)|uint32(r), pkt)
+				}
+				pkt.sm.egressSpec = p4DropPort
+			}
+			return
+		}
+	}
+	x.countIndex(CounterCells, (pkt.m.fwd.cell<<1)|1, pkt)
+}
+
+// apply runs the control Relay from keys.open on, and then the control RelayEgress for a
+// packet that Relay did not mark to drop, as v1model does.
+func (x *part) apply(pkt *packet) {
+	x.ingress(pkt)
+	if pkt.sm.egressSpec == p4DropPort {
+		return
+	}
+	x.egress(pkt)
 }
 
 // p4cond is the ?: operator of P4.
