@@ -11,7 +11,7 @@ require (
 	github.com/alphadose/haxmap v1.4.1
 	github.com/anatol/vmtest v0.0.0-20250318022921-2f32244e2f0f
 	github.com/apoxy-dev/icx v0.19.1-0.20261006074019-0b857f6d1fb8
-	github.com/apoxy-dev/softpsp v0.0.0-20261013000621-34c37d5a9e41
+	github.com/apoxy-dev/softpsp v0.0.0-20261027232852-c19abc2dfa36
 	github.com/atoonk/go-afxdp v0.12.1-0.20261023084436-bef860e97e8f
 	github.com/atoonk/packetio v0.1.11
 	github.com/avast/retry-go/v4 v4.6.1
@@ -541,5 +541,3 @@ replace go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelg
 replace github.com/buraksezer/olric => github.com/apoxy-dev/olric v0.5.7-0.20261021235425-d0050ba08461
 
 replace github.com/gaissmai/bart => github.com/apoxy-dev/bart v0.30.1-0.20261027204316-0b58927f3bcb
-
-replace github.com/apoxy-dev/softpsp => ../softpsp

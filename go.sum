@@ -261,6 +261,8 @@ github.com/apoxy-dev/softpsp v0.0.0-20261009090059-658b3a1f1c27 h1:Kp/leSNAk929a
 github.com/apoxy-dev/softpsp v0.0.0-20261009090059-658b3a1f1c27/go.mod h1:ahrCSgeuIkm0XgY5WmM+QLTg3ZEdTz8hDah6JgeJNbY=
 github.com/apoxy-dev/softpsp v0.0.0-20261013000621-34c37d5a9e41 h1:+Kd0+W51ClaxFxtIzubeAd0t8V6cQ+XzneqH9kpvBpk=
 github.com/apoxy-dev/softpsp v0.0.0-20261013000621-34c37d5a9e41/go.mod h1:ahrCSgeuIkm0XgY5WmM+QLTg3ZEdTz8hDah6JgeJNbY=
+github.com/apoxy-dev/softpsp v0.0.0-20261027232852-c19abc2dfa36 h1:Bqim2M5IggEDDzvR9UBkOnoouJI6sglFV+S8tRg3/BI=
+github.com/apoxy-dev/softpsp v0.0.0-20261027232852-c19abc2dfa36/go.mod h1:ahrCSgeuIkm0XgY5WmM+QLTg3ZEdTz8hDah6JgeJNbY=
 github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e h1:FBNxMQD93z2ththupB/BYKLEaMWaEr+G+sJWJqU2wC4=
 github.com/apoxy-dev/upgrade-cli v0.0.0-20240213232412-a56c3a52fa0e/go.mod h1:Ert9guX/QneZS/noA8Ud0ggjXPLr1OOXmtxeX66xCwo=
 github.com/apparentlymart/go-cidr v1.1.0 h1:2mAhrMoF+nhXqxTzSZMUzDHkLjmIHC+Zzn4tdgBZjnU=
