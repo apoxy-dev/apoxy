@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"net/netip"
+	"runtime/debug"
 	"testing"
 	"time"
 
@@ -207,6 +208,10 @@ func TestSendAllocs(t *testing.T) {
 	require.True(t, ok, "the hop cache has the MAC of the peer")
 	hop.at = time.Now().Add(time.Hour)
 	b.hops[fakePeer.Addr()] = hop
+	// The free of the device of an earlier run gives work to the background scavenger of the Go
+	// runtime. It can add the first timer to the timer heap of a P in the measured run (16 bytes).
+	// Return the free pages now, so that the scavenger has no work in that run.
+	debug.FreeOSMemory()
 	// One run of 100 batches: AllocsPerRun rounds the mean of its runs down.
 	allocs := testing.AllocsPerRun(1, func() {
 		for range 100 {
