@@ -617,6 +617,12 @@ func TestTableWriteFailedFallback(t *testing.T) {
 // write of its changes.
 func TestTableWriteChain(t *testing.T) {
 	var attID string // The attachment that Detach ends.
+	// In the PSP path case, peer at srcB sends to the agent at srcA, which has its PSP address at sock.
+	var (
+		peer       *agent
+		srcA, srcB netip.Addr
+		sock       *net.UDPConn
+	)
 	cases := []struct {
 		name string
 		// setup runs before the call. Its last step writes, so the interval is not over at the call.
@@ -704,6 +710,44 @@ func TestTableWriteChain(t *testing.T) {
 				a.probes++
 				require.Equal(t, sock.LocalAddr().(*net.UDPAddr).AddrPort(), a.probe(e, sock, a.probes))
 				return []time.Time{time.Now()}
+			},
+			need: []func(*p4.Update) bool{isTable(p4.Update_MODIFY, dp.TablePorts)},
+		},
+		{
+			// The agent is in QUIC mode after the Down packet, so a packet to it is in a data frame.
+			name: "PSP path lost",
+			setup: func(t *testing.T, e *env, a *agent) {
+				a.open(dpv1.Mode_MODE_QUIC)
+				srcA = addr(t, a.attach())
+				peer = e.dial(t, "agent-b")
+				peer.open(dpv1.Mode_MODE_QUIC)
+				srcB = addr(t, peer.attach())
+				sock = pspSocket(t)
+				a.toPSP(e, sock, 1)
+				a.upCheck(e, sock)
+				// The answer comes after a write, so the interval is not over at the call. The lane port
+				// is not the port of sock.
+				lane := uint32(40000)
+				if sock.LocalAddr().(*net.UDPAddr).Port == int(lane) {
+					lane++
+				}
+				_, err := a.rc.RegisterLanes(t.Context(), &dpv1.RegisterLanesRequest{Ports: []uint32{lane}})
+				require.NoError(t, err)
+			},
+			call: func(t *testing.T, e *env, a *agent) []time.Time {
+				a.loseCheck(e, sock)
+				// The relay sends Down before the change, so a packet just after it can go in PSP.
+				p := packet(srcB, srcA, 100)
+				for start := time.Now(); time.Since(start) < 300*time.Millisecond; {
+					peer.sendFrame(p)
+					// The frame can come before the end of the Write call, so it is not an answer.
+					if got := a.recvFrame(20 * time.Millisecond); got != nil {
+						require.Equal(t, p, got)
+						return nil
+					}
+				}
+				require.Fail(t, "no data frame in 300ms after the Down packet")
+				return nil
 			},
 			need: []func(*p4.Update) bool{isTable(p4.Update_MODIFY, dp.TablePorts)},
 		},

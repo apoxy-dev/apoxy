@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
@@ -620,6 +621,57 @@ func (a *agent) keepPath(e *env, sock *net.UDPConn) {
 			}
 		}
 	}()
+}
+
+// sendCheck sends the next BFD packet of the agent end c from sock. It does not move the PSP
+// address.
+func (a *agent) sendCheck(e *env, sock *net.UDPConn, c *p2p.Check) {
+	a.t.Helper()
+	_, err := sock.WriteToUDP(c.Append(nil, p2p.Probe{SID: a.keys.SID, Counter: a.probes}, &a.keys.Dialer), e.data)
+	require.NoError(a.t, err)
+}
+
+// waitCheck gives each BFD packet of the relay on sock to c, until a packet has the state want.
+func (a *agent) waitCheck(sock *net.UDPConn, c *p2p.Check, want bfdl.State) {
+	a.t.Helper()
+	buf := make([]byte, 2048)
+	deadline := time.Now().Add(wait)
+	for {
+		require.NoError(a.t, sock.SetReadDeadline(deadline))
+		n, err := sock.Read(buf)
+		require.NoError(a.t, err, "no BFD packet of the relay in the state %v", want)
+		pr, err := p2p.OpenProbe(buf[:n], &a.keys.Listener)
+		if err != nil || !pr.Reply || pr.BFD == nil {
+			continue
+		}
+		c.Receive(pr)
+		var pkt bfdl.Packet
+		if bfdl.UnmarshalInto(&pkt, pr.BFD) == nil && pkt.State == want {
+			return
+		}
+	}
+}
+
+// upCheck brings the PSP path check of the relay to Up from sock: Down to the relay gives Init,
+// Init to the agent gives Up, and Up to the relay gives Up.
+func (a *agent) upCheck(e *env, sock *net.UDPConn) {
+	a.t.Helper()
+	c := p2p.NewCheck(p2p.RoleAgent, time.Second)
+	a.t.Cleanup(c.Close)
+	a.sendCheck(e, sock, c)
+	a.waitCheck(sock, c, bfdl.StateInit)
+	a.sendCheck(e, sock, c)
+	a.waitCheck(sock, c, bfdl.StateUp)
+}
+
+// loseCheck sends Down from a new agent end to the check of the relay, which is Up, and waits for
+// the Down packet of the relay end.
+func (a *agent) loseCheck(e *env, sock *net.UDPConn) {
+	a.t.Helper()
+	c := p2p.NewCheck(p2p.RoleAgent, time.Second)
+	a.t.Cleanup(c.Close)
+	a.sendCheck(e, sock, c)
+	a.waitCheck(sock, c, bfdl.StateDown)
 }
 
 // toPSP probes from sock and changes the connection to PSP mode with one agent SA. It returns the

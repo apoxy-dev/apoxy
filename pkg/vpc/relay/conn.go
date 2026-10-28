@@ -1053,6 +1053,8 @@ func (a *connProc) pathLost(c *checkProc) {
 	a.check = nil
 	a.mode = dpv1.Mode_MODE_QUIC
 	a.writePort()
+	// The agent is in QUIC mode after the Down packet, so the root writes the ports entry at once.
+	a.w.chainThen(func(error) {})
 	a.jobs = append(a.jobs, keyJob{op: opRevoke})
 	a.runJobs()
 	slog.Info("PSP path to an agent stopped; changed its connection from PSP mode to QUIC mode", "vpc", a.l.vpc.UID, "agent", a.s.agent.name)
