@@ -3,8 +3,8 @@
 // Command vpcbench measures TCP flows between two VPC agents, through a v2
 // relay or directly. The relay makes a CA and serves relay sessions with test
 // fakes, with no apiserver. Its data plane and QUIC run on the relay device of
-// a link (-iface, or -imds on EC2), which takes all packets of the link, so its
-// control port is on another link. The server and the client get the CA and the QUIC address
+// a link (-iface, or -imds on EC2), which takes all packets of the link with
+// -mode Dedicated (the default), so its control port is on another link. The server and the client get the CA and the QUIC address
 // of the relay on the control port. The client prints one JSON line that
 // "perfrig run -workload exec" reads. The relay is the sidecar of the server.
 // perfrig stops it after the server exits:
@@ -41,6 +41,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
 
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	"github.com/apoxy-dev/apoxy/cmd/internal/bench"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/agent"
@@ -132,6 +133,8 @@ type options struct {
 	StopRelay bool
 	// IMDS makes the relay find its interface in IMDSv2, as the product relay does.
 	IMDS bool
+	// Mode is the mode of the relay interface: Dedicated or Shared.
+	Mode string
 	// ZeroCopy makes the relay interface demand zero-copy. False: copy mode.
 	ZeroCopy bool
 	Profiles bench.Profiles
@@ -158,8 +161,9 @@ func parseFlags(cmd string, args []string, out io.Writer) (options, error) {
 		fs.StringVar(&o.Listen, "listen", "", "TCP control address; server: also UDP with -via direct")
 	}
 	if cmd == "relay" {
-		fs.StringVar(&o.Iface, "iface", "", "link of the relay device, which takes all packets of the link (AF_XDP, Linux only); the relay uses the addresses that the kernel has on it")
-		fs.BoolVar(&o.IMDS, "imds", false, "find the relay link and its address in IMDSv2 of the EC2 instance (the ENI with device number 1), as the product relay does; the kernel has no address on it")
+		fs.StringVar(&o.Iface, "iface", "", "link of the relay device (AF_XDP, Linux only); the relay uses the addresses that the kernel has on it")
+		fs.BoolVar(&o.IMDS, "imds", false, "find the relay link and its address in IMDSv2 of the EC2 instance, as the product relay does: the ENI with device number 1 with -mode Dedicated, the primary ENI with -mode Shared")
+		fs.StringVar(&o.Mode, "mode", string(configv1alpha1.RelayInterfaceModeDedicated), "mode of the relay link: Dedicated, where the relay takes all packets, or Shared, where it takes only UDP 443 and 1000 to its addresses and the kernel gets the others")
 		fs.BoolVar(&o.ZeroCopy, "zero-copy", false, "the relay link must open AF_XDP in zero-copy (default: copy mode)")
 		fs.IntVar(&o.Lanes, "lanes", relay.MaxLaneSources, "most lane ports that the relay takes from a session; 0 makes agents send on one port")
 	}
@@ -204,6 +208,8 @@ func (o options) check(cmd string) error {
 		return errors.New("-listen is required")
 	case cmd == "relay" && (o.Iface == "") == !o.IMDS:
 		return errors.New("set one of -iface and -imds")
+	case cmd == "relay" && o.Mode != string(configv1alpha1.RelayInterfaceModeDedicated) && o.Mode != string(configv1alpha1.RelayInterfaceModeShared):
+		return errors.New("-mode must be Shared or Dedicated")
 	case cmd == "client" && o.Server == "":
 		return errors.New("-server is required")
 	case o.Via == "relay" && o.Relay == "":

@@ -143,12 +143,13 @@ func runRelay(ctx context.Context, o options, ready func(netip.AddrPort)) error 
 	return err
 }
 
-// relayConfig returns the relay interface config of the flags. With -imds the relay finds its link
-// in IMDSv2. With -iface the config has the MAC of the link and its addresses that are not
-// link-local, as the kernel has them.
+// relayConfig returns the relay interface config of the flags, in the mode of -mode. With -imds the
+// relay finds its link in IMDSv2. With -iface the config has the MAC of the link and its addresses
+// that are not link-local, as the kernel has them.
 func relayConfig(o options) (*configv1alpha1.RelayInterface, error) {
+	mode := configv1alpha1.RelayInterfaceMode(o.Mode)
 	if o.IMDS {
-		return &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, ZeroCopy: o.ZeroCopy}, nil
+		return &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, ZeroCopy: o.ZeroCopy, Mode: mode}, nil
 	}
 	link, err := net.InterfaceByName(o.Iface)
 	if err != nil {
@@ -158,7 +159,7 @@ func relayConfig(o options) (*configv1alpha1.RelayInterface, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the addresses of %s: %w", o.Iface, err)
 	}
-	cfg := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceStatic, MAC: link.HardwareAddr.String(), ZeroCopy: o.ZeroCopy}
+	cfg := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceStatic, MAC: link.HardwareAddr.String(), ZeroCopy: o.ZeroCopy, Mode: mode}
 	for _, a := range addrs {
 		ipn, ok := a.(*net.IPNet)
 		if !ok {

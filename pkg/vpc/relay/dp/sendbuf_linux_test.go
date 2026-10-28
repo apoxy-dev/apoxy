@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 )
 
 // TestSendBuffer gives a copy-mode TX socket room for each TX frame, and a zero-copy socket none:
@@ -57,7 +59,7 @@ func TestDeviceSendBuffer(t *testing.T) {
 	require.NoError(t, err)
 
 	own := []netip.Prefix{netip.MustParsePrefix("10.98.0.1/24")}
-	d, err := OpenDevice(Interface{Name: "rsb0", MAC: l.Attrs().HardwareAddr, Own: own}, goAEAD{})
+	d, err := OpenDevice(Interface{Name: "rsb0", MAC: l.Attrs().HardwareAddr, Own: own, Mode: configv1alpha1.RelayInterfaceModeDedicated}, goAEAD{})
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

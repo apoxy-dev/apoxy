@@ -35,9 +35,19 @@ func TestParseFlags(t *testing.T) {
 		{
 			name: "relay", cmd: "relay", args: []string{"-iface", "perf-r", "-listen", ":4443"},
 			want: func(o options) bool {
-				return o.Iface == "perf-r" && o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources
+				return o.Iface == "perf-r" && o.Listen == ":4443" && o.WorkDir == "/work" && o.MTU == 0 && o.Lanes == relay.MaxLaneSources && o.Mode == "Dedicated"
 			},
 		},
+		{
+			name: "relay in Shared mode", cmd: "relay", args: []string{"-imds", "-mode", "Shared", "-listen", ":4443"},
+			want: func(o options) bool { return o.IMDS && o.Mode == "Shared" },
+		},
+		{
+			name: "relay in Dedicated mode", cmd: "relay", args: []string{"-iface", "r", "-mode", "Dedicated", "-listen", ":4443"},
+			want: func(o options) bool { return o.Mode == "Dedicated" },
+		},
+		{name: "relay with a bad mode", cmd: "relay", args: []string{"-iface", "r", "-mode", "shared", "-listen", ":4443"}, wantErr: "-mode must be Shared or Dedicated"},
+		{name: "server has no mode", cmd: "server", args: []string{"-listen", ":4433", "-relay", "r:1", "-mode", "Shared"}, wantErr: "flag provided but not defined: -mode"},
 		{name: "relay has no XDP", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-xdp", "ens5"}, wantErr: "flag provided but not defined: -xdp"},
 		{name: "relay has no PSP socket", cmd: "relay", args: []string{"-iface", "r", "-listen", ":4443", "-psp-listen", ":1000"}, wantErr: "flag provided but not defined: -psp-listen"},
 		{

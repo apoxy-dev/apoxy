@@ -35,6 +35,7 @@ import (
 
 	"github.com/apoxy-dev/softpsp/psp"
 
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp/aead"
@@ -71,12 +72,31 @@ func inNS(t *testing.T, ns netns.NsHandle, fn func()) {
 	<-done
 }
 
-// newEnv opens a device on a veth pair with the given number of queues on each end.
+// The addresses of the Shared env: other host addresses of the relay link, the gateways (the
+// peer has their addresses), and the off-link targets behind them (also on the peer).
+var (
+	host4, host6 = netip.MustParsePrefix("10.99.0.3/24"), netip.MustParsePrefix("fd00:99::3/64")
+	gw4, gw6     = netip.MustParsePrefix("10.99.0.254/24"), netip.MustParsePrefix("fd00:99::fe/64")
+	off4, off6   = netip.MustParsePrefix("192.0.2.2/32"), netip.MustParsePrefix("2001:db8::2/128")
+)
+
+// newEnv opens a device in Dedicated mode on a veth pair with the given number of queues on each
+// end.
 func newEnv(t *testing.T, queues int) *env {
+	t.Helper()
+	e := newLink(t, queues, configv1alpha1.RelayInterfaceModeDedicated)
+	e.open(t)
+	return e
+}
+
+// newLink makes the veth pair rl0 (down, for Dedicated) and pe0 in the netns e.peer, and e.ifc in
+// mode, with no device. In Shared mode rl0 is up with kernel addresses, and pe0 has the gateways.
+func newLink(t *testing.T, queues int, mode configv1alpha1.RelayInterfaceMode) *env {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("needs root for netns, veth and AF_XDP")
 	}
+	shared := mode == configv1alpha1.RelayInterfaceModeShared
 	e := &env{packets: make(chan *p4.PacketIn, 64)}
 	var err error
 	done := make(chan struct{})
@@ -98,7 +118,6 @@ func newEnv(t *testing.T, queues int) *env {
 	pe, err := netlink.LinkByName("pe0")
 	require.NoError(t, err)
 	require.NoError(t, netlink.LinkSetNsFd(pe, int(e.peer)))
-	// The relay end stays down, as the dedicated interface on a host: OpenDevice sets it up.
 	rl, err := netlink.LinkByName("rl0")
 	require.NoError(t, err)
 
@@ -112,12 +131,39 @@ func newEnv(t *testing.T, queues int) *env {
 	}
 	pe, err = h.LinkByName("pe0")
 	require.NoError(t, err)
-	for _, p := range []netip.Prefix{peer4, peer6} {
-		a := &netlink.Addr{IPNet: &net.IPNet{IP: p.Addr().AsSlice(), Mask: net.CIDRMask(p.Bits(), p.Addr().BitLen())}, Flags: unix.IFA_F_NODAD}
-		require.NoError(t, h.AddrAdd(pe, a))
+	peerAddrs := []netip.Prefix{peer4, peer6}
+	if shared {
+		peerAddrs = append(peerAddrs, gw4, gw6, off4, off6)
+	}
+	for _, p := range peerAddrs {
+		require.NoError(t, h.AddrAdd(pe, kernelAddr(p)))
 	}
 
-	e.ifc = dp.Interface{Name: "rl0", MAC: rl.Attrs().HardwareAddr, Own: []netip.Prefix{relay4, relay6}}
+	e.ifc = dp.Interface{Name: "rl0", MAC: rl.Attrs().HardwareAddr, Own: []netip.Prefix{relay4, relay6}, Mode: mode}
+	if shared {
+		// The container netns can have IPv6 off, so the test turns it on for rl0 only. With no DAD
+		// the kernel has its link-local address for NDP at once.
+		for _, conf := range []string{"disable_ipv6", "accept_dad"} {
+			require.NoError(t, os.WriteFile("/proc/sys/net/ipv6/conf/rl0/"+conf, []byte("0"), 0o644))
+		}
+		for _, p := range []netip.Prefix{relay4, relay6, host4, host6} {
+			require.NoError(t, netlink.AddrAdd(rl, kernelAddr(p)))
+		}
+		require.NoError(t, netlink.LinkSetUp(rl))
+		e.ifc.Gateways = []netip.Addr{gw4.Addr(), gw6.Addr()}
+	}
+	return e
+}
+
+// kernelAddr is p as a kernel address with no DAD.
+func kernelAddr(p netip.Prefix) *netlink.Addr {
+	return &netlink.Addr{IPNet: &net.IPNet{IP: p.Addr().AsSlice(), Mask: net.CIDRMask(p.Bits(), p.Addr().BitLen())}, Flags: unix.IFA_F_NODAD}
+}
+
+// open opens the device on e.ifc and runs it until the test ends or e.stop.
+func (e *env) open(t *testing.T) {
+	t.Helper()
+	var err error
 	e.d, err = dp.OpenDevice(e.ifc, aead.GCM{})
 	require.NoError(t, err)
 	e.d.Target().OnPacketIn(func(p *p4.PacketIn) bool {
@@ -136,7 +182,6 @@ func newEnv(t *testing.T, queues int) *env {
 		assert.NoError(t, <-ran)
 	})
 	t.Cleanup(e.stop)
-	return e
 }
 
 // listen opens a UDP socket of the peer.
@@ -171,14 +216,24 @@ func (e *env) drops(t *testing.T, reason uint8) int64 {
 // ping sends ICMP echo requests from the peer to dst until a reply comes.
 func (e *env) ping(t *testing.T, dst netip.Addr) {
 	t.Helper()
+	e.pingFrom(t, netip.Addr{}, dst)
+}
+
+// pingFrom is ping from the peer address src. With no src the peer kernel selects the address.
+func (e *env) pingFrom(t *testing.T, src, dst netip.Addr) {
+	t.Helper()
 	network, typ := "ip4:icmp", icmp.Type(xipv4.ICMPTypeEcho)
 	proto := 1
 	if dst.Is6() {
 		network, typ, proto = "ip6:ipv6-icmp", xipv6.ICMPTypeEchoRequest, 58
 	}
+	laddr := ""
+	if src.IsValid() {
+		laddr = src.String()
+	}
 	var c *icmp.PacketConn
 	var err error
-	inNS(t, e.peer, func() { c, err = icmp.ListenPacket(network, "") })
+	inNS(t, e.peer, func() { c, err = icmp.ListenPacket(network, laddr) })
 	require.NoError(t, err)
 	defer c.Close()
 	req, err := (&icmp.Message{Type: typ, Body: &icmp.Echo{ID: 7, Seq: 1, Data: []byte("relay")}}).Marshal(nil)
@@ -430,18 +485,30 @@ func TestDeviceReopen(t *testing.T) {
 	require.NoError(t, d.Run(ctx))
 }
 
-// TestDeviceSetsLinkUp opens a link that is down and a link that is up. The host does not set the
-// dedicated interface up, so the link is up after OpenDevice and stays up after the device stops.
+// TestDeviceSetsLinkUp opens a link that is down and a link that is up, in each mode. The host does
+// not set the dedicated interface up, so in Dedicated mode the link is up after OpenDevice and stays
+// up after the device stops. In Shared mode (also with no mode) the device does not change the link.
 func TestDeviceSetsLinkUp(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root for veth and AF_XDP")
 	}
+	const (
+		shared    = configv1alpha1.RelayInterfaceModeShared
+		dedicated = configv1alpha1.RelayInterfaceModeDedicated
+	)
 	cases := []struct {
-		name string
-		up   bool
+		name   string
+		mode   configv1alpha1.RelayInterfaceMode
+		up     bool   // The link is up before OpenDevice.
+		wantUp bool   // The link is up after OpenDevice and after the stop.
+		err    string // The error of OpenDevice.
 	}{
-		{name: "link down"},
-		{name: "link already up", up: true},
+		{name: "Dedicated, link down", mode: dedicated, wantUp: true},
+		{name: "Dedicated, link already up", mode: dedicated, up: true, wantUp: true},
+		{name: "Shared, link down", mode: shared},
+		{name: "Shared, link up", mode: shared, up: true, wantUp: true},
+		{name: "no mode is Shared, link down"},
+		{name: "a mode that is not Shared or Dedicated", mode: "dedicated", err: `relay interface mode "dedicated" is not Shared or Dedicated`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -466,13 +533,23 @@ func TestDeviceSetsLinkUp(t *testing.T) {
 			}
 			require.Equal(t, tc.up, isUp())
 
-			d, err := dp.OpenDevice(dp.Interface{Name: "rup0", MAC: l.Attrs().HardwareAddr, Own: []netip.Prefix{relay4}}, aead.GCM{})
+			d, err := dp.OpenDevice(dp.Interface{Name: "rup0", MAC: l.Attrs().HardwareAddr, Own: []netip.Prefix{relay4}, Mode: tc.mode}, aead.GCM{})
+			if tc.err != "" {
+				require.ErrorContains(t, err, tc.err)
+				assert.Equal(t, tc.up, isUp(), "the link does not change")
+				return
+			}
+			assert.Equal(t, tc.wantUp, isUp(), "the link after OpenDevice")
+			// AF_XDP can refuse a link that is down. Shared mode leaves it down with or without an error.
+			if !tc.up && !tc.wantUp && err != nil {
+				t.Logf("OpenDevice on a link that is down: %v", err)
+				return
+			}
 			require.NoError(t, err)
-			assert.True(t, isUp(), "the link is up after OpenDevice")
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			require.NoError(t, d.Run(ctx))
-			assert.True(t, isUp(), "the link is up after the device stops")
+			assert.Equal(t, tc.wantUp, isUp(), "the link after the device stops")
 		})
 	}
 }

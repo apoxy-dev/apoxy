@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-/* relay_xdp is the XDP program of the relay interface. It drops the packets
- * that the impair map tells it to drop. It gives all other packets to the
- * AF_XDP socket of their queue, as the go-afxdp redirect program does. */
+/* relay_xdp gives the packets for the relay to the AF_XDP socket of the queue:
+ * all packets in Dedicated mode, UDP 443 and 1000 to the own addresses in Shared
+ * mode. The kernel gets the other packets. The impair map drops packets. */
 
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
@@ -101,12 +101,83 @@ static __always_inline int impaired(struct xdp_md *ctx)
 	return 1;
 }
 
+/* 1 in Shared mode. The relay sets it before the load, so the verifier removes
+ * the code that the mode does not use. */
+volatile const __u32 relay_shared = 0;
+
+/* An own address of the relay. IPv4 is ::ffff:a.b.c.d, as in impair_key. */
+struct relay_addr {
+	__u8 addr[16];
+};
+
+/* The own addresses of the relay. The relay writes them before the attach and
+ * sets max_entries to their number. */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1);
+	__type(key, struct relay_addr);
+	__type(value, __u8);
+} relay_addrs SEC(".maps");
+
+/* to_relay tells if a packet is UDP to port 443 or 1000 at an own address: IPv4
+ * with no options and not a fragment, or IPv6 with UDP as the next header. The
+ * IP length must hold the UDP header. */
+static __always_inline int to_relay(struct xdp_md *ctx)
+{
+	void *data = (void *)(long)ctx->data;
+	void *data_end = (void *)(long)ctx->data_end;
+	struct ethhdr *eth = data;
+	struct relay_addr key = {};
+	struct udphdr *udp;
+
+	if ((void *)(eth + 1) > data_end)
+		return 0;
+	if (eth->h_proto == bpf_htons(ETH_P_IP)) {
+		struct iphdr *iph = (void *)(eth + 1);
+
+		/* 0x3fff is the MF bit and the fragment offset. */
+		if ((void *)(iph + 1) > data_end || iph->version != 4 ||
+		    iph->ihl != 5 || iph->protocol != IPPROTO_UDP ||
+		    (iph->frag_off & bpf_htons(0x3fff)) ||
+		    bpf_ntohs(iph->tot_len) < sizeof(*iph) + sizeof(*udp))
+			return 0;
+		key.addr[10] = 0xff;
+		key.addr[11] = 0xff;
+		__builtin_memcpy(&key.addr[12], &iph->daddr, 4);
+		udp = (void *)(iph + 1);
+	} else if (eth->h_proto == bpf_htons(ETH_P_IPV6)) {
+		struct ipv6hdr *ip6h = (void *)(eth + 1);
+
+		if ((void *)(ip6h + 1) > data_end || ip6h->version != 6 ||
+		    ip6h->nexthdr != IPPROTO_UDP ||
+		    bpf_ntohs(ip6h->payload_len) < sizeof(*udp))
+			return 0;
+		/* An IPv4-mapped address is the key of an IPv4 address. */
+		if (ip6h->daddr.in6_u.u6_addr32[0] == 0 &&
+		    ip6h->daddr.in6_u.u6_addr32[1] == 0 &&
+		    ip6h->daddr.in6_u.u6_addr32[2] == bpf_htonl(0xffff))
+			return 0;
+		__builtin_memcpy(key.addr, &ip6h->daddr, 16);
+		udp = (void *)(ip6h + 1);
+	} else {
+		return 0;
+	}
+	if ((void *)(udp + 1) > data_end)
+		return 0;
+	if (udp->dest != bpf_htons(443) && udp->dest != bpf_htons(1000))
+		return 0;
+	return bpf_map_lookup_elem(&relay_addrs, &key) != NULL;
+}
+
 SEC("xdp")
 int relay_xdp(struct xdp_md *ctx)
 {
 	__u32 queue = ctx->rx_queue_index;
 	__u32 *on;
 
+	/* Shared: the kernel gets all packets that are not for the relay. */
+	if (relay_shared && !to_relay(ctx))
+		return XDP_PASS;
 	if (impaired(ctx))
 		return XDP_DROP;
 	on = bpf_map_lookup_elem(&qidconf_map, &queue);

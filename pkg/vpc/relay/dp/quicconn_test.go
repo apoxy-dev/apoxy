@@ -20,6 +20,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 )
 
 // fakeDev is a packetio.Device on fake TX queues. Its one RX queue is never read.
@@ -44,8 +46,8 @@ var (
 // no ARP.
 func newFakeDevice(t *testing.T, f *fakeTx) *Device {
 	t.Helper()
-	ifc := Interface{Name: "fake0", MAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, Own: []netip.Prefix{fakeOwn}}
-	d, err := newDevice(ifc, fakeDev{tx: []*fakeTx{f}}, []txPort{f.port()}, 1500, emptyImpair{}, goAEAD{})
+	ifc := Interface{Name: "fake0", MAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, Own: []netip.Prefix{fakeOwn}, Mode: configv1alpha1.RelayInterfaceModeDedicated}
+	d, err := newDevice(ifc, fakeDev{tx: []*fakeTx{f}}, []txPort{f.port()}, 1500, emptyImpair{}, goAEAD{}, nil)
 	require.NoError(t, err)
 	t.Cleanup(d.ns.close)
 	addr := tcpip.AddrFromSlice(fakePeer.Addr().AsSlice())

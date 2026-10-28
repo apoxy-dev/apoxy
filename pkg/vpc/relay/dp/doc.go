@@ -7,9 +7,10 @@
 // relay.p4info.txtpb. The P4Info file has the text layout of `p4test --arch v1model
 // --p4runtime-files`, and CI compares the two files.
 //
-// Device is the dedicated interface of the relay (AF_XDP, Linux): a fixed demux gives its packets
-// to the pipeline, to quic-go and to a netstack. FindInterface gives the interface and its
-// addresses. The relay XDP program (ebpf/xdp.c; bpf2go makes xdp_bpf*.go and .o with clang) and
+// Device is the interface of the relay (AF_XDP, Linux): a fixed demux gives its packets to the
+// pipeline, to quic-go and, in Dedicated mode, to a netstack. In Shared mode the kernel gets all
+// packets but UDP 443 and 1000 to the relay. FindInterface gives the interface, its addresses and
+// its mode. The relay XDP program (ebpf/xdp.c; bpf2go makes xdp_bpf*.go and .o with clang) and
 // the send path drop and delay packets as the impair map tells them. Only tests write that map.
 package dp
 

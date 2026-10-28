@@ -20,8 +20,8 @@ import (
 // (see frameOptions).
 const quicQueue = 4096
 
-// quicConn is the UDP 443 socket of the relay on the dedicated interface. It reads and writes the ECN
-// bits of each packet, with DF, and WriteToGSO sends a batch of datagrams in one TX send.
+// quicConn is the UDP 443 socket of the relay on its interface. It reads and writes the ECN bits
+// of each packet, with DF, and WriteToGSO sends a batch of datagrams in one TX send.
 type quicConn struct {
 	d      *Device
 	local  netip.AddrPort

@@ -32,7 +32,10 @@ func relayENI(ctx context.Context, wait time.Duration) (string, error) {
 	var ifc relaydp.Interface
 	for {
 		var err error
-		ifc, err = relaydp.FindInterface(ctx, &configv1alpha1.RelayConfig{Interface: &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS}})
+		// Dedicated: the ENI with device index 1. A config with no mode takes the primary ENI.
+		ifc, err = relaydp.FindInterface(ctx, &configv1alpha1.RelayConfig{Interface: &configv1alpha1.RelayInterface{
+			Source: configv1alpha1.RelayInterfaceSourceIMDS, Mode: configv1alpha1.RelayInterfaceModeDedicated,
+		}})
 		if err == nil {
 			break
 		}

@@ -18,13 +18,11 @@ import (
 
 const nicID tcpip.NICID = 1
 
-// netstack answers ARP, ICMP, ICMPv6 and NDP on the dedicated interface, and its neighbor table
-// gives the next-hop MACs. It has no transport protocols.
+// netstack answers ARP, ICMP, ICMPv6 and NDP on the interface in Dedicated mode, and its neighbor
+// table gives the next-hop MACs. It has no transport protocols.
 type netstack struct {
-	s        *stack.Stack
-	link     *link
-	own      []netip.Prefix
-	gw4, gw6 netip.Addr
+	s    *stack.Stack
+	link *link
 }
 
 func newNetstack(ifc Interface, mtu uint32, out func(*stack.PacketBuffer) bool) (*netstack, error) {
@@ -33,7 +31,6 @@ func newNetstack(ifc Interface, mtu uint32, out func(*stack.PacketBuffer) bool) 
 			NetworkProtocols: []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol, arp.NewProtocol},
 		}),
 		link: &link{mac: tcpip.LinkAddress(ifc.MAC), mtu: mtu, out: out},
-		own:  ifc.Own,
 	}
 	if err := n.s.CreateNIC(nicID, n.link); err != nil {
 		return nil, fmt.Errorf("failed to create the netstack NIC: %s", err)
@@ -50,13 +47,14 @@ func newNetstack(ifc Interface, mtu uint32, out func(*stack.PacketBuffer) bool) 
 		}
 		routes = append(routes, tcpip.Route{Destination: a.AddressWithPrefix.Subnet(), NIC: nicID})
 	}
+	var gw4, gw6 bool // The first gateway of each family is the default route.
 	for _, g := range ifc.Gateways {
 		gw := tcpip.Route{Gateway: tcpipAddr(g), NIC: nicID}
 		switch {
-		case g.Is4() && !n.gw4.IsValid():
-			n.gw4, gw.Destination = g, header.IPv4EmptySubnet
-		case g.Is6() && !n.gw6.IsValid():
-			n.gw6, gw.Destination = g, header.IPv6EmptySubnet
+		case g.Is4() && !gw4:
+			gw4, gw.Destination = true, header.IPv4EmptySubnet
+		case g.Is6() && !gw6:
+			gw6, gw.Destination = true, header.IPv6EmptySubnet
 		default:
 			continue
 		}
@@ -85,20 +83,6 @@ func tcpipAddr(a netip.Addr) tcpip.Address {
 	return tcpip.Address{}
 }
 
-// nextHop returns the next hop to dst: dst in an own subnet, else the gateway. It is not valid
-// when there is no gateway.
-func (n *netstack) nextHop(dst netip.Addr) netip.Addr {
-	for _, p := range n.own {
-		if p.Masked().Contains(dst) {
-			return dst
-		}
-	}
-	if dst.Is6() {
-		return n.gw6
-	}
-	return n.gw4
-}
-
 // neighbor returns the MAC of hop. A miss starts ARP or NDP and returns false.
 func (n *netstack) neighbor(hop netip.Addr) (tcpip.LinkAddress, bool) {
 	if !hop.IsValid() {
@@ -125,7 +109,7 @@ func (n *netstack) close() {
 }
 
 // link is the link endpoint of the netstack. It adds and parses the Ethernet header, and out
-// sends a packet on the dedicated interface.
+// sends a packet on the relay interface.
 type link struct {
 	mac tcpip.LinkAddress
 	mtu uint32

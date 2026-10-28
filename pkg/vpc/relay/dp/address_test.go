@@ -65,11 +65,12 @@ func TestFindInterface(t *testing.T) {
 	link := someLink(t)
 	mac := link.HardwareAddr.String()
 	const macs = "network/interfaces/macs/"
-	eni := func(public bool, dev1 string) map[string]string {
+	// eni gives the link of the test the device number dev, and the other ENI the device number other.
+	eni := func(public bool, dev, other string) map[string]string {
 		m := map[string]string{
 			macs:                                              "0a:00:00:00:00:01/\n" + mac + "/\n",
-			macs + "0a:00:00:00:00:01/device-number":          "0",
-			macs + mac + "/device-number":                     dev1,
+			macs + "0a:00:00:00:00:01/device-number":          other,
+			macs + mac + "/device-number":                     dev,
 			macs + mac + "/local-ipv4s":                       "10.0.1.25\n10.0.1.26",
 			macs + mac + "/subnet-ipv4-cidr-block":            "10.0.1.0/24",
 			macs + "0a:00:00:00:00:01/local-ipv4s":            "10.0.0.5",
@@ -80,13 +81,30 @@ func TestFindInterface(t *testing.T) {
 		}
 		return m
 	}
+	const (
+		shared    = configv1alpha1.RelayInterfaceModeShared
+		dedicated = configv1alpha1.RelayInterfaceModeDedicated
+	)
 	imdsCfg := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS}
+	imdsShared := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, Mode: shared}
+	imdsDedicated := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, Mode: dedicated}
 	static := func(mac string, addrs ...string) *configv1alpha1.RelayInterface {
 		return &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceStatic, MAC: mac, Addresses: addrs, Gateways: []string{"192.0.2.1", "2001:db8::1"}}
 	}
-	imdsZeroCopy := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, ZeroCopy: true}
+	imdsZeroCopy := &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, ZeroCopy: true, Mode: dedicated}
 	staticZeroCopy := static(mac, "192.0.2.10/24")
 	staticZeroCopy.ZeroCopy = true
+	staticDedicated := static(mac, "192.0.2.10/24")
+	staticDedicated.Mode = dedicated
+	staticBadMode := static(mac, "192.0.2.10/24")
+	staticBadMode.Mode = "shared"
+	primaryENI := dp.Interface{
+		Name: link.Name, MAC: link.HardwareAddr,
+		Own:      []netip.Prefix{netip.MustParsePrefix("10.0.1.25/24")},
+		Public:   []netip.Addr{netip.MustParseAddr("54.1.2.3")},
+		Gateways: []netip.Addr{netip.MustParseAddr("10.0.1.1")},
+		Mode:     shared,
+	}
 	for _, tc := range []struct {
 		name  string
 		cfg   *configv1alpha1.RelayInterface
@@ -97,37 +115,45 @@ func TestFindInterface(t *testing.T) {
 		err   string
 		errIs error
 	}{
+		{name: "IMDS, no mode: Shared, the primary ENI", cfg: imdsCfg, v2: true, data: eni(true, "0", "1"), want: primaryENI},
+		{name: "IMDS, Shared: the primary ENI", cfg: imdsShared, v2: true, data: eni(true, "0", "1"), want: primaryENI},
+		{name: "IMDS, Shared: no ENI with device number 0", cfg: imdsShared, v2: true, data: eni(true, "2", "1"), err: "device number 0"},
 		{
-			name: "IMDS: the ENI with device number 1",
-			cfg:  imdsCfg, v2: true, data: eni(true, "1"),
+			name: "IMDS, Dedicated: the ENI with device number 1",
+			cfg:  imdsDedicated, v2: true, data: eni(true, "1", "0"),
 			want: dp.Interface{
 				Name: link.Name, MAC: link.HardwareAddr,
 				Own:      []netip.Prefix{netip.MustParsePrefix("10.0.1.25/24")},
 				Public:   []netip.Addr{netip.MustParseAddr("54.1.2.3")},
 				Gateways: []netip.Addr{netip.MustParseAddr("10.0.1.1")},
+				Mode:     dedicated,
 			},
 		},
 		{
-			name: "IMDS: no public IPv4",
-			cfg:  imdsCfg, v2: true, data: eni(false, "1"),
+			name: "IMDS, Dedicated: no public IPv4",
+			cfg:  imdsDedicated, v2: true, data: eni(false, "1", "0"),
 			want: dp.Interface{
 				Name: link.Name, MAC: link.HardwareAddr,
 				Own:      []netip.Prefix{netip.MustParsePrefix("10.0.1.25/24")},
 				Gateways: []netip.Addr{netip.MustParseAddr("10.0.1.1")},
+				Mode:     dedicated,
 			},
 		},
 		{
-			name: "IMDS: zero-copy on",
-			cfg:  imdsZeroCopy, v2: true, data: eni(false, "1"),
+			name: "IMDS, Dedicated: zero-copy on",
+			cfg:  imdsZeroCopy, v2: true, data: eni(false, "1", "0"),
 			want: dp.Interface{
 				Name: link.Name, MAC: link.HardwareAddr,
 				Own:      []netip.Prefix{netip.MustParsePrefix("10.0.1.25/24")},
 				Gateways: []netip.Addr{netip.MustParseAddr("10.0.1.1")},
 				ZeroCopy: true,
+				Mode:     dedicated,
 			},
 		},
-		{name: "IMDS: no ENI with device number 1", cfg: imdsCfg, v2: true, data: eni(true, "2"), err: "device number 1"},
-		{name: "IMDS: no session token", cfg: imdsCfg, v2: false, data: eni(true, "1"), err: "IMDS"},
+		{name: "IMDS, Dedicated: no ENI with device number 1", cfg: imdsDedicated, v2: true, data: eni(true, "2", "0"), err: "device number 1"},
+		// The ENI with device number 1 is the other ENI, which has no link on this host.
+		{name: "IMDS, Dedicated: not the primary ENI", cfg: imdsDedicated, v2: true, data: eni(true, "0", "1"), err: "no link has MAC 0a:00:00:00:00:01"},
+		{name: "IMDS: no session token", cfg: imdsDedicated, v2: false, data: eni(true, "1", "0"), err: "IMDS"},
 		{
 			name: "IMDS: mac is only for Static",
 			cfg:  &configv1alpha1.RelayInterface{Source: configv1alpha1.RelayInterfaceSourceIMDS, MAC: mac},
@@ -141,8 +167,21 @@ func TestFindInterface(t *testing.T) {
 				Own:      []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24"), netip.MustParsePrefix("2001:db8::10/64")},
 				Public:   []netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("2001:db8::10")},
 				Gateways: []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")},
+				Mode:     shared,
 			},
 		},
+		{
+			name: "Static, Dedicated",
+			cfg:  staticDedicated,
+			want: dp.Interface{
+				Name: link.Name, MAC: link.HardwareAddr,
+				Own:      []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+				Public:   []netip.Addr{netip.MustParseAddr("192.0.2.10")},
+				Gateways: []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")},
+				Mode:     dedicated,
+			},
+		},
+		{name: "a mode that is not Shared or Dedicated", cfg: staticBadMode, err: `relay interface mode "shared" is not Shared or Dedicated`},
 		{
 			name: "Static: zero-copy on",
 			cfg:  staticZeroCopy,
@@ -152,6 +191,7 @@ func TestFindInterface(t *testing.T) {
 				Public:   []netip.Addr{netip.MustParseAddr("192.0.2.10")},
 				Gateways: []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")},
 				ZeroCopy: true,
+				Mode:     shared,
 			},
 		},
 		{
@@ -163,6 +203,7 @@ func TestFindInterface(t *testing.T) {
 				Public:   []netip.Addr{netip.MustParseAddr("192.0.2.10")},
 				Gateways: []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")},
 				CPUs:     []int{2, 3},
+				Mode:     shared,
 			},
 		},
 		{name: "a bad CPU list", cfg: static(mac, "192.0.2.10/24"), cpus: "3-2", errIs: dp.ErrCPUList},

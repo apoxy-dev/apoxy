@@ -20,7 +20,7 @@ import (
 	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 )
 
-// Interface is the dedicated interface of the relay and its two addresses.
+// Interface is the interface of the relay and its two addresses.
 type Interface struct {
 	// Name is the name of the link.
 	Name string
@@ -38,10 +38,24 @@ type Interface struct {
 	// CPUs is the CPU set of the relay threads and the queue interrupts (relay.cpus of the config,
 	// see ParseCPUList). Empty: the CPU set of the process at OpenDevice.
 	CPUs []int
+	// Mode is Shared (also when empty) or Dedicated; see OpenDevice.
+	Mode configv1alpha1.RelayInterfaceMode
 }
 
-// FindInterface gives the dedicated interface of the relay config cfg, its addresses and the relay
-// CPUs. With IMDS it reads IMDSv2 of the instance; opts change the IMDS client.
+// interfaceMode gives the mode m, with Shared for an empty m.
+func interfaceMode(m configv1alpha1.RelayInterfaceMode) (configv1alpha1.RelayInterfaceMode, error) {
+	switch m {
+	case "", configv1alpha1.RelayInterfaceModeShared:
+		return configv1alpha1.RelayInterfaceModeShared, nil
+	case configv1alpha1.RelayInterfaceModeDedicated:
+		return m, nil
+	}
+	return "", fmt.Errorf("relay interface mode %q is not Shared or Dedicated", m)
+}
+
+// FindInterface gives the interface of the relay config cfg, its addresses, its mode and the relay
+// CPUs. A config with no mode is Shared. With IMDS it reads IMDSv2 of the instance; opts change
+// the IMDS client.
 func FindInterface(ctx context.Context, cfg *configv1alpha1.RelayConfig, opts ...func(*imds.Options)) (Interface, error) {
 	if cfg == nil || cfg.Interface == nil {
 		return Interface{}, errors.New("no relay interface in the config")
@@ -53,16 +67,20 @@ func FindInterface(ctx context.Context, cfg *configv1alpha1.RelayConfig, opts ..
 			return Interface{}, fmt.Errorf("relay cpus: %w", err)
 		}
 	}
-	ifc, err := findInterface(ctx, cfg.Interface, opts...)
+	mode, err := interfaceMode(cfg.Interface.Mode)
 	if err != nil {
 		return Interface{}, err
 	}
-	ifc.ZeroCopy, ifc.CPUs = cfg.Interface.ZeroCopy, cpus
+	ifc, err := findInterface(ctx, cfg.Interface, mode, opts...)
+	if err != nil {
+		return Interface{}, err
+	}
+	ifc.ZeroCopy, ifc.CPUs, ifc.Mode = cfg.Interface.ZeroCopy, cpus, mode
 	return ifc, nil
 }
 
-// findInterface gives the interface of the source of cfg and its addresses.
-func findInterface(ctx context.Context, cfg *configv1alpha1.RelayInterface, opts ...func(*imds.Options)) (Interface, error) {
+// findInterface gives the interface of the source of cfg in mode and its addresses.
+func findInterface(ctx context.Context, cfg *configv1alpha1.RelayInterface, mode configv1alpha1.RelayInterfaceMode, opts ...func(*imds.Options)) (Interface, error) {
 	switch cfg.Source {
 	case configv1alpha1.RelayInterfaceSourceIMDS:
 		if cfg.MAC != "" || len(cfg.Addresses) > 0 || len(cfg.Gateways) > 0 {
@@ -70,7 +88,12 @@ func findInterface(ctx context.Context, cfg *configv1alpha1.RelayInterface, opts
 		}
 		// IMDSv2 only: no fallback to requests without a session token.
 		opts = append([]func(*imds.Options){func(o *imds.Options) { o.EnableFallback = aws.FalseTernary }}, opts...)
-		return fromIMDS(ctx, imds.New(imds.Options{}, opts...))
+		// The primary ENI has device number 0.
+		device := "0"
+		if mode == configv1alpha1.RelayInterfaceModeDedicated {
+			device = "1"
+		}
+		return fromIMDS(ctx, imds.New(imds.Options{}, opts...), device)
 	case configv1alpha1.RelayInterfaceSourceStatic:
 		return fromStatic(cfg)
 	default:
@@ -78,8 +101,8 @@ func findInterface(ctx context.Context, cfg *configv1alpha1.RelayInterface, opts
 	}
 }
 
-// fromIMDS reads the ENI with device number 1 and its addresses.
-func fromIMDS(ctx context.Context, c *imds.Client) (Interface, error) {
+// fromIMDS reads the ENI with the device number device and its addresses.
+func fromIMDS(ctx context.Context, c *imds.Client, device string) (Interface, error) {
 	const macs = "network/interfaces/macs/"
 	list, err := metadata(ctx, c, macs)
 	if err != nil {
@@ -92,13 +115,13 @@ func fromIMDS(ctx context.Context, c *imds.Client) (Interface, error) {
 		if err != nil {
 			return Interface{}, err
 		}
-		if len(dev) == 1 && dev[0] == "1" {
+		if len(dev) == 1 && dev[0] == device {
 			mac = m
 			break
 		}
 	}
 	if mac == "" {
-		return Interface{}, errors.New("IMDS has no network interface with device number 1")
+		return Interface{}, fmt.Errorf("IMDS has no network interface with device number %s", device)
 	}
 	hw, err := net.ParseMAC(mac)
 	if err != nil {

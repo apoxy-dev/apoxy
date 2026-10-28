@@ -16,7 +16,7 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -type impair_key -type impair_value xdp ebpf/xdp.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -type impair_key -type impair_value -type relay_addr xdp ebpf/xdp.c
 
 // impairPin is where the relay pins the impair map. Its directory must be on bpffs.
 const impairPin = "/sys/fs/bpf/apoxy-relay/impair"

@@ -23,20 +23,22 @@ import (
 	"golang.org/x/sync/errgroup"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 )
 
 // rxBatch is the most frames that a receive loop takes in one turn, and the most packets of a
 // TxBatch.
 const rxBatch = 64
 
-// Device is the dedicated interface of the relay. Its demux gives UDP 1000 to the workers of the
-// pipeline, UDP 443 to the QUIC conn, ARP, ICMP, ICMPv6 and NDP to the netstack, and drops all
-// else.
+// Device is the relay interface. Its demux gives UDP 1000 to the workers of the pipeline, UDP 443
+// to the QUIC conn, ARP, ICMP, ICMPv6 and NDP to the netstack in Dedicated mode, and drops all else.
 type Device struct {
 	ifc  Interface
 	dev  packetio.Device
 	p    *Pipeline
-	ns   *netstack
+	ns   *netstack // Dedicated mode only.
+	nbrs neighbors // The next-hop MACs: the netstack, or the kernel table in Shared mode.
 	conn *quicConn
 	tx   []*txQueue
 
@@ -48,6 +50,7 @@ type Device struct {
 	rxBusy  []atomic.Int64 // The busy time of each RX goroutine in nanoseconds.
 
 	src4, src6 netip.Addr
+	gw4, gw6   netip.Addr // The first IPv4 and IPv6 gateway of the interface.
 
 	// impair reads the impair map, and delays is the copy of it that the send path reads. delays is
 	// nil when no entry delays a packet.
@@ -110,10 +113,28 @@ type impairReader interface {
 	Close() error
 }
 
-// newDevice builds the pipeline, the workers, the netstack and the QUIC conn on dev. ports has the
-// port of each TX queue of dev. mtu is the IP MTU of the link, impair the impair map, and aead the
-// AEAD of the pipeline.
-func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, impair impairReader, aead AEAD) (*Device, error) {
+// neighbors gives the MAC of a next hop on the relay interface. A miss starts a resolution and
+// returns false at once.
+type neighbors interface {
+	neighbor(hop netip.Addr) (tcpip.LinkAddress, bool)
+	close()
+}
+
+// newDevice builds the pipeline, the workers, the netstack (Dedicated mode) and the QUIC conn on
+// dev. ports has the port of each TX queue, mtu is the IP MTU of the link, and kernel is the kernel
+// neighbor table in Shared mode (nil in Dedicated mode).
+func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, impair impairReader, aead AEAD, kernel neighbors) (*Device, error) {
+	mode, err := interfaceMode(ifc.Mode)
+	if err != nil {
+		return nil, err
+	}
+	shared := mode == configv1alpha1.RelayInterfaceModeShared
+	switch {
+	case shared && kernel == nil:
+		return nil, errors.New("a shared relay interface needs the kernel neighbor table")
+	case !shared && kernel != nil:
+		return nil, errors.New("a dedicated relay interface uses the netstack, not the kernel neighbor table")
+	}
 	d := &Device{ifc: ifc, dev: dev, impair: impair}
 	for _, p := range ifc.Own {
 		switch a := p.Addr(); {
@@ -121,6 +142,14 @@ func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, i
 			d.src4 = a
 		case a.Is6() && !d.src6.IsValid():
 			d.src6 = a
+		}
+	}
+	for _, g := range ifc.Gateways {
+		switch {
+		case g.Is4() && !d.gw4.IsValid():
+			d.gw4 = g
+		case g.Is6() && !d.gw6.IsValid():
+			d.gw6 = g
 		}
 	}
 	if !d.src4.IsValid() && !d.src6.IsValid() {
@@ -135,11 +164,15 @@ func newDevice(ifc Interface, dev packetio.Device, ports []txPort, mtu uint32, i
 	if len(d.tx) == 0 || dev.NumRxQueues() == 0 {
 		return nil, errors.New("the relay interface has no queues")
 	}
-	ns, err := newNetstack(ifc, mtu, d.sendPacket)
-	if err != nil {
-		return nil, err
+	if kernel != nil {
+		d.nbrs = kernel
+	} else {
+		ns, err := newNetstack(ifc, mtu, d.sendPacket)
+		if err != nil {
+			return nil, err
+		}
+		d.ns, d.nbrs = ns, ns
 	}
-	d.ns = ns
 	d.p = New(deviceSender{d}, aead)
 	for i, t := range d.tx {
 		d.workers = append(d.workers, newWorker(i, t))
@@ -206,9 +239,9 @@ func (d *Device) Busy() []ThreadBusy {
 
 // Run receives on all queues, runs the workers, kicks each TX queue on its own OS thread, and
 // reads the impair map each second, until ctx is done, a TX queue fails or a thread cannot get its
-// CPU of the plan. Then it closes the QUIC conn, the netstack, the interface and the impair map,
-// and puts back the interrupt affinities of the CPU plan. The close frees all frames, also the RX
-// frames of the items that no worker did.
+// CPU of the plan. Then it closes the QUIC conn, the neighbor table, the interface and the impair
+// map, and puts back the interrupt affinities of the CPU plan. The close frees all frames, also the
+// RX frames of the items that no worker did.
 func (d *Device) Run(ctx context.Context) error {
 	rxMem := d.setMemories()
 	// A worker that cannot start stops the RX goroutines and the kickers with its error.
@@ -255,7 +288,7 @@ func (d *Device) Run(ctx context.Context) error {
 		t.closed = true
 		t.mu.Unlock()
 	}
-	d.ns.close()
+	d.nbrs.close()
 	if cerr := d.dev.Close(); cerr != nil && err == nil {
 		err = cerr
 	}
@@ -344,7 +377,12 @@ func (d *Device) receive(ctx context.Context, qi int, q packetio.RxQueue, mem in
 				turn.dgs, turn.descs = append(turn.dgs, dg), append(turn.descs, desc)
 				continue // The frame stays with the datagram until quic-go reads it.
 			case toNetstack:
-				d.ns.link.deliver(frame)
+				if d.ns != nil {
+					d.ns.link.deliver(frame)
+				} else {
+					// Shared: relay_xdp gives the kernel all such frames.
+					d.p.drop(ReasonDemux, len(frame))
+				}
 			default:
 				// The drops counter is atomic. The drops of the packet I/O do not take the pipeline
 				// lock, because a send runs with or without it.
@@ -402,26 +440,42 @@ type udpFrame struct {
 }
 
 // route returns the frame header of a UDP datagram from the own address and port, or false with no
-// next-hop MAC in hops or gVisor. Call it before a TX queue lock: a miss sends ARP or NDP.
+// next-hop MAC in hops or the neighbor table. Call it before a TX queue lock: a miss starts a
+// resolution.
 func (d *Device) route(port uint16, to netip.AddrPort, ecn uint8, hops hopCache, now time.Time) (udpFrame, bool) {
 	to = netip.AddrPortFrom(to.Addr().Unmap(), to.Port())
 	src := d.src4
 	if to.Addr().Is6() {
 		src = d.src6
 	}
-	mac, ok := hops.mac(d.ns, to.Addr(), now)
+	mac, ok := hops.mac(d.nbrs, d.nextHop(to.Addr()), now)
 	if !src.IsValid() || !ok {
 		return udpFrame{}, false
 	}
 	return udpFrame{from: netip.AddrPortFrom(src, port), to: to, mac: mac, ecn: ecn}, true
 }
 
-// hopTTL is the time that an RX goroutine uses a MAC from gVisor. Each new ask keeps the neighbor
-// checks of gVisor going, so a new MAC of a next hop applies within about hopTTL.
+// nextHop returns the next hop to dst: dst in an own subnet, else the gateway. It is not valid
+// when there is no gateway.
+func (d *Device) nextHop(dst netip.Addr) netip.Addr {
+	for _, p := range d.ifc.Own {
+		if p.Masked().Contains(dst) {
+			return dst
+		}
+	}
+	if dst.Is6() {
+		return d.gw6
+	}
+	return d.gw4
+}
+
+// hopTTL is the time that a sending goroutine uses a MAC from the neighbor table. In Dedicated mode
+// each new ask keeps the neighbor checks of gVisor going, so a new MAC of a next hop applies within
+// about hopTTL.
 const hopTTL = time.Second
 
-// hopCache is the next-hop MACs of one sending goroutine, with the time it asked gVisor for each.
-// Only that goroutine uses it, so it has no lock.
+// hopCache is the next-hop MACs of one sending goroutine, with the time it asked the neighbor table
+// for each. Only that goroutine uses it, so it has no lock.
 type hopCache map[netip.Addr]hopEntry
 
 type hopEntry struct {
@@ -429,14 +483,12 @@ type hopEntry struct {
 	at  time.Time
 }
 
-// mac returns the MAC of the next hop to dst. A miss, or an entry older than hopTTL, asks gVisor
-// one time.
-func (c hopCache) mac(ns *netstack, dst netip.Addr, now time.Time) (tcpip.LinkAddress, bool) {
-	hop := ns.nextHop(dst)
+// mac returns the MAC of hop. A miss, or an entry older than hopTTL, asks n one time.
+func (c hopCache) mac(n neighbors, hop netip.Addr, now time.Time) (tcpip.LinkAddress, bool) {
 	if e, ok := c[hop]; ok && now.Sub(e.at) < hopTTL {
 		return e.mac, true
 	}
-	mac, ok := ns.neighbor(hop)
+	mac, ok := n.neighbor(hop)
 	if ok {
 		// There are few next hops, so a full cache is cleared. An LRU would write on each hit.
 		if len(c) >= stack.NeighborCacheSize {

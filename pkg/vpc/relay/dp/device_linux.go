@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"syscall"
 	"time"
 	"unsafe"
@@ -17,15 +18,18 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
+
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 )
 
-// OpenDevice opens the dedicated interface ifc with AF_XDP on all its queues, with aead for the PSP
-// packets. It takes all packets: the kernel gets no packet of the interface. The relay XDP program
-// drops the packets that the impair map tells it to drop. A send only publishes with
-// TransmitNoKick; the kicker of each TX queue kicks. OpenDevice sets the link up if it is down; Run
-// does not set it down. OpenDevice places the queue interrupts and the relay threads on the CPUs of
-// ifc.CPUs, or of the CPU set of the process; Run puts the interrupts back when it stops.
+// OpenDevice opens ifc with AF_XDP on all queues. Dedicated mode takes all packets; Shared mode
+// (the default) takes UDP 443 and 1000 to the own addresses and refuses a host XDP program.
 func OpenDevice(ifc Interface, aead AEAD) (*Device, error) {
+	mode, err := interfaceMode(ifc.Mode)
+	if err != nil {
+		return nil, err
+	}
+	shared := mode == configv1alpha1.RelayInterfaceModeShared
 	cpus, err := relayCPUs(ifc.CPUs)
 	if err != nil {
 		return nil, err
@@ -34,23 +38,40 @@ func OpenDevice(ifc Interface, aead AEAD) (*Device, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to find the relay interface: %w", err)
 	}
-	// The host does not set the dedicated interface up. Set it up before AF_XDP binds its queues,
-	// because ENA sets up its queues again when the link goes up.
-	if link.Attrs().Flags&net.FlagUp == 0 {
+	var kernel neighbors
+	if shared {
+		if err := checkHostXDP(link); err != nil {
+			return nil, err
+		}
+		// Before the XDP attach, so that the table gets the neighbor changes of the attach.
+		k, err := openKernelNeighbors(link.Attrs().Index)
+		if err != nil {
+			return nil, err
+		}
+		kernel = k
+	} else if link.Attrs().Flags&net.FlagUp == 0 {
+		// The host does not set the dedicated interface up. Set it up before AF_XDP binds its
+		// queues, because ENA sets up its queues again when the link goes up.
 		if err := netlink.LinkSetUp(link); err != nil {
 			return nil, fmt.Errorf("failed to set the relay interface up: %w", err)
 		}
 		slog.Info("Set the relay interface up", "link", ifc.Name)
 	}
+	closeKernel := func() {
+		if kernel != nil {
+			kernel.close()
+		}
+	}
 	impair, err := openImpairMap()
 	if err != nil {
+		closeKernel()
 		return nil, err
 	}
 	xdpOpts := append(modeOptions(ifc.ZeroCopy), frameOptions()...)
 	// The relay places its threads and the queue interrupts itself, so go-afxdp does neither.
 	xdpOpts = append(xdpOpts, xdp.WithoutAffinity())
 	xdpOpts = append(xdpOpts, xdp.WithProgram(func(sockets, queues *ebpf.Map) (*ebpf.Program, error) {
-		return loadRelayXDP(sockets, queues, impair)
+		return loadRelayXDP(sockets, queues, impair, shared, ifc.Own)
 	}))
 	xdpOpt := afxdp.WithXDP(xdpOpts...)
 	// The kernel frees the queues of a stopped relay some milliseconds later, so a relay that
@@ -63,6 +84,7 @@ func OpenDevice(ifc Interface, aead AEAD) (*Device, error) {
 	}
 	if err != nil {
 		impair.Close()
+		closeKernel()
 		return nil, fmt.Errorf("failed to open %s with AF_XDP: %w", ifc.Name, err)
 	}
 	setSendBuffers(ifc.Name, dev)
@@ -77,14 +99,15 @@ func OpenDevice(ifc Interface, aead AEAD) (*Device, error) {
 			counts:  kickCounts(s),
 		})
 	}
-	d, err := newDevice(ifc, dev, ports, uint32(link.Attrs().MTU), &Impair{m: impair}, aead)
+	d, err := newDevice(ifc, dev, ports, uint32(link.Attrs().MTU), &Impair{m: impair}, aead, kernel)
 	if err != nil {
 		dev.Close()
 		impair.Close()
+		closeKernel()
 		return nil, err
 	}
 	if err := d.placeCPUs("/sys", "/proc", cpus); err != nil {
-		d.ns.close()
+		d.nbrs.close()
 		dev.Close()
 		impair.Close()
 		return nil, fmt.Errorf("failed to place the queue interrupts and the threads of the relay: %w", err)
@@ -94,8 +117,8 @@ func OpenDevice(ifc Interface, aead AEAD) (*Device, error) {
 	if err != nil {
 		slog.Warn("Failed to read the AF_XDP state of the relay interface", "link", ifc.Name, "error", err)
 	}
-	slog.Info("Opened the relay interface", "link", ifc.Name, "zero_copy", info.ZeroCopy, "xdp_mode", info.XDPMode,
-		"queues", info.NumQueues, "frame_size", info.FrameSize, "driver", info.Driver)
+	slog.Info("Opened the relay interface", "link", ifc.Name, "mode", mode, "zero_copy", info.ZeroCopy,
+		"xdp_mode", info.XDPMode, "queues", info.NumQueues, "frame_size", info.FrameSize, "driver", info.Driver)
 	return d, nil
 }
 
@@ -254,14 +277,56 @@ func publisher(s *xdp.Socket) func([]packetio.Desc) int {
 	}
 }
 
-// loadRelayXDP loads the relay XDP program with the XSK map and the queue map of go-afxdp, and the
-// impair map.
-func loadRelayXDP(sockets, queues, impair *ebpf.Map) (*ebpf.Program, error) {
+// checkHostXDP returns an error when link has an XDP program that is not relay_xdp: a shared link
+// keeps the XDP program of the host. A relay_xdp that a stopped relay left is replaced.
+func checkHostXDP(link netlink.Link) error {
+	x := link.Attrs().Xdp
+	if x == nil || !x.Attached || x.ProgId == 0 {
+		return nil
+	}
+	p, err := ebpf.NewProgramFromID(ebpf.ProgramID(x.ProgId))
+	if err != nil {
+		return fmt.Errorf("failed to read the XDP program %d of the relay interface: %w", x.ProgId, err)
+	}
+	defer p.Close()
+	info, err := p.Info()
+	if err != nil {
+		return fmt.Errorf("failed to read the XDP program %d of the relay interface: %w", x.ProgId, err)
+	}
+	if info.Name != "relay_xdp" {
+		return fmt.Errorf("the relay interface %s has the XDP program %q of the host", link.Attrs().Name, info.Name)
+	}
+	return nil
+}
+
+// loadRelayXDP loads the relay XDP program with the XSK map and the queue map of go-afxdp, the
+// impair map, the mode and the own addresses.
+func loadRelayXDP(sockets, queues, impair *ebpf.Map, shared bool, own []netip.Prefix) (*ebpf.Program, error) {
 	spec, err := loadXdp()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load the relay XDP objects: %w", err)
 	}
-	maps := map[string]*ebpf.Map{"xsks_map": sockets, "qidconf_map": queues, "impair": impair}
+	var mode uint32
+	if shared {
+		mode = 1
+	}
+	if err := spec.Variables["relay_shared"].Set(mode); err != nil {
+		return nil, fmt.Errorf("failed to set the mode of the relay XDP program: %w", err)
+	}
+	as := spec.Maps["relay_addrs"]
+	as.MaxEntries = uint32(max(1, len(own)))
+	addrs, err := ebpf.NewMap(as)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make the relay address map: %w", err)
+	}
+	defer addrs.Close() // The program keeps the map.
+	for _, p := range own {
+		// As16 gives an IPv4 address as ::ffff:a.b.c.d. Dedicated mode does not read the map.
+		if err := addrs.Put(&xdpRelayAddr{Addr: p.Addr().As16()}, uint8(1)); err != nil {
+			return nil, fmt.Errorf("failed to write the relay address %s: %w", p.Addr(), err)
+		}
+	}
+	maps := map[string]*ebpf.Map{"xsks_map": sockets, "qidconf_map": queues, "impair": impair, "relay_addrs": addrs}
 	for name, m := range maps {
 		spec.Maps[name].MaxEntries = m.MaxEntries()
 	}

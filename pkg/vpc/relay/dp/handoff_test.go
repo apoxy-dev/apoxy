@@ -23,6 +23,7 @@ import (
 
 	"github.com/apoxy-dev/softpsp/psp"
 
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -253,8 +254,8 @@ func newEngineSize(t *testing.T, nTx, nRx, txFrames, size int) *engine {
 	for range nRx {
 		e.rxs = append(e.rxs, newFakeRx(256))
 	}
-	ifc := Interface{Name: "fake0", MAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, Own: []netip.Prefix{fakeOwn, fakeOwn6}}
-	d, err := newDevice(ifc, fakeQueues{tx: e.txs, rx: e.rxs}, ports, 1500, emptyImpair{}, goAEAD{})
+	ifc := Interface{Name: "fake0", MAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, Own: []netip.Prefix{fakeOwn, fakeOwn6}, Mode: configv1alpha1.RelayInterfaceModeDedicated}
+	d, err := newDevice(ifc, fakeQueues{tx: e.txs, rx: e.rxs}, ports, 1500, emptyImpair{}, goAEAD{}, nil)
 	require.NoError(t, err)
 	e.Device = d
 	t.Cleanup(func() {

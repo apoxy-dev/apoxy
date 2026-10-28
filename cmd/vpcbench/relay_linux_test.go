@@ -103,7 +103,8 @@ func enterNetns(ns netns.NsHandle) error {
 }
 
 // TestRelay runs the relay on a relay device in its own netns, and the server and the client in
-// this process, for one second with each transport.
+// this process, for one second with each transport in each mode of the relay link. vb-r has a
+// kernel address, so in Shared mode the relay kernel answers ARP.
 func TestRelay(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the agents for a few seconds")
@@ -112,13 +113,15 @@ func TestRelay(t *testing.T) {
 		t.Skip("needs root for netns, veth and AF_XDP")
 	}
 	ns := relayNetns(t)
-	for _, transport := range []string{"psp", "quic"} {
-		t.Run(transport, func(t *testing.T) {
+	for _, tc := range []struct{ mode, transport string }{
+		{"Dedicated", "psp"}, {"Dedicated", "quic"}, {"Shared", "psp"}, {"Shared", "quic"},
+	} {
+		t.Run(tc.mode+"/"+tc.transport, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
-			o := options{WorkDir: t.TempDir(), Driver: "netstack", Transport: transport, Via: "relay", StartTimeout: 30 * time.Second}
+			o := options{WorkDir: t.TempDir(), Driver: "netstack", Transport: tc.transport, Via: "relay", StartTimeout: 30 * time.Second}
 			ro := o
-			ro.Iface, ro.Listen = "vb-r", netip.AddrPortFrom(relayCtlIP.Addr(), 0).String()
+			ro.Iface, ro.Listen, ro.Mode = "vb-r", netip.AddrPortFrom(relayCtlIP.Addr(), 0).String(), tc.mode
 			addr := make(chan netip.AddrPort, 1)
 			relayErr := make(chan error, 1)
 			go func() {

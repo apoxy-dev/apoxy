@@ -26,6 +26,8 @@ type xdpImpairValue struct {
 	Dropped uint64
 }
 
+type xdpRelayAddr struct{ Addr [16]uint8 }
+
 // loadXdp returns the embedded CollectionSpec for xdp.
 func loadXdp() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_XdpBytes)
@@ -77,6 +79,7 @@ type xdpProgramSpecs struct {
 type xdpMapSpecs struct {
 	Impair     *ebpf.MapSpec `ebpf:"impair"`
 	QidconfMap *ebpf.MapSpec `ebpf:"qidconf_map"`
+	RelayAddrs *ebpf.MapSpec `ebpf:"relay_addrs"`
 	XsksMap    *ebpf.MapSpec `ebpf:"xsks_map"`
 }
 
@@ -84,6 +87,7 @@ type xdpMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type xdpVariableSpecs struct {
+	RelayShared *ebpf.VariableSpec `ebpf:"relay_shared"`
 }
 
 // xdpObjects contains all objects after they have been loaded into the kernel.
@@ -108,6 +112,7 @@ func (o *xdpObjects) Close() error {
 type xdpMaps struct {
 	Impair     *ebpf.Map `ebpf:"impair"`
 	QidconfMap *ebpf.Map `ebpf:"qidconf_map"`
+	RelayAddrs *ebpf.Map `ebpf:"relay_addrs"`
 	XsksMap    *ebpf.Map `ebpf:"xsks_map"`
 }
 
@@ -115,6 +120,7 @@ func (m *xdpMaps) Close() error {
 	return _XdpClose(
 		m.Impair,
 		m.QidconfMap,
+		m.RelayAddrs,
 		m.XsksMap,
 	)
 }
@@ -123,6 +129,7 @@ func (m *xdpMaps) Close() error {
 //
 // It can be passed to loadXdpObjects or ebpf.CollectionSpec.LoadAndAssign.
 type xdpVariables struct {
+	RelayShared *ebpf.Variable `ebpf:"relay_shared"`
 }
 
 // xdpPrograms contains all programs after they have been loaded into the kernel.

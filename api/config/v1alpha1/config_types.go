@@ -264,8 +264,8 @@ type KubeMirrorConfig struct {
 
 // RelayConfig configures the VPC relay.
 type RelayConfig struct {
-	// Interface is the network interface that the relay owns. The kernel has
-	// no address on it.
+	// Interface is the network interface of the relay. Its Mode tells if the
+	// relay shares it with the host.
 	Interface *RelayInterface `json:"interface,omitempty"`
 	// CPUs is the CPU list (for example "2-15,18-31") where the relay places
 	// the queue interrupts of the interface and its packet threads. Empty (the
@@ -287,15 +287,15 @@ type RelayInterfaceSource string
 
 const (
 	// RelayInterfaceSourceIMDS finds the interface in IMDSv2 of the instance:
-	// the ENI with device number 1. Its private and public IPv4 are the
-	// addresses.
+	// the primary ENI (device number 0) in Shared mode, the ENI with device
+	// number 1 in Dedicated mode. Its private and public IPv4 are the addresses.
 	RelayInterfaceSourceIMDS RelayInterfaceSource = "IMDS"
 	// RelayInterfaceSourceStatic uses MAC, Addresses and Gateways.
 	RelayInterfaceSourceStatic RelayInterfaceSource = "Static"
 )
 
-// RelayInterface is the network interface that the relay owns. The relay
-// gets two addresses of it: its own address, which the other relays use, and
+// RelayInterface is the network interface of the relay. The relay gets two
+// addresses of it: its own address, which the other relays use, and
 // the public address, which agents dial.
 type RelayInterface struct {
 	// Source tells where the relay finds the interface and its addresses.
@@ -316,4 +316,22 @@ type RelayInterface struct {
 	// the driver cannot give it.
 	// +optional
 	ZeroCopy bool `json:"zeroCopy,omitempty"`
+	// Mode tells if the relay shares the interface with the host: Shared (the
+	// default when empty) or Dedicated.
+	// +optional
+	Mode RelayInterfaceMode `json:"mode,omitempty"`
 }
+
+// RelayInterfaceMode tells if the relay shares its interface with the host.
+type RelayInterfaceMode string
+
+const (
+	// RelayInterfaceModeShared shares the interface with the host, which owns
+	// its addresses, routes and link. The relay takes only UDP 443 and 1000 to
+	// its addresses; the kernel gets all other packets.
+	RelayInterfaceModeShared RelayInterfaceMode = "Shared"
+	// RelayInterfaceModeDedicated gives the relay all packets of the
+	// interface. The kernel has no address on it; the relay answers ARP, ICMP
+	// and NDP and sets the link up.
+	RelayInterfaceModeDedicated RelayInterfaceMode = "Dedicated"
+)

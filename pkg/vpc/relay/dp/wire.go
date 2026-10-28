@@ -14,7 +14,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 )
 
-// The UDP ports of the relay on the dedicated interface. PortData carries PSP packets, probes and
+// The UDP ports of the relay on its interface. PortData carries PSP packets, probes and
 // lane keep-alives; agents get it in Welcome.
 const (
 	PortData = 1000
