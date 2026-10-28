@@ -41,6 +41,26 @@ const bit<8> R_WORKER_FULL = 21;
 // The handoff of the interface: the RX queue of the packet has its frame allowance at the workers.
 const bit<8> R_WORKER_ALLOWANCE = 22;
 
+// The v1model port of the packets of the control plane: a FRAME in comes from it.
+const bit<9> CPU_PORT = 255;
+// The kind of packet_in for the root.
+const bit<8> KIND_PUNT = 1;
+const bit<8> KIND_MISS = 2;
+// The color of a v1model meter when the packet is over the rate.
+const bit<2> METER_RED = 2;
+// A keepalive is one byte. A probe has its type and version 2 in its first two bytes, and has
+// PROBE_MIN bytes or more. A PSP packet has PSP_MIN bytes or more (the header, the VC and the ICV).
+const bit<8> KEEPALIVE = 0x03;
+const bit<16> PROBE = 0x0202;
+const bit<32> PROBE_MIN = 70;
+const bit<32> PSP_MIN = 40;
+// PSP Next Header: an inner IPv4 or IPv6 packet, or a message between relays (trunk only).
+const bit<8> NEXT_V4 = 4;
+const bit<8> NEXT_V6 = 41;
+const bit<8> NEXT_MESSAGE = 63;
+// The type of a peerconn data frame.
+const bit<8> FRAME_DATA = 0x03;
+
 // A VPC name: "<VPC UID>/<network ID>". The CP sends a string; the DP maps it to a number.
 @p4runtime_translation("apoxy.dev/relay/name", string)
 type bit<32> name_t;
@@ -64,15 +84,39 @@ header packet_out_t {
     bit<144> to;
 }
 
-header ethernet_t {
-    bit<48> dst;
-    bit<48> src;
-    bit<16> ethertype;
+// The PSP header of softpsp, tunnel mode with the VC in clear: Next Header, Hdr Ext Len 2, Crypt
+// Offset 2, the S, D, version, V and always-1 bits, the SPI and the IV.
+header psp_t {
+    bit<8> next;
+    bit<8> ext_len;
+    bit<2> r;
+    bit<6> crypt_off;
+    bit<1> s;
+    bit<1> d;
+    bit<4> version;
+    bit<1> v;
+    bit<1> one;
+    bit<32> spi;
+    bit<64> iv;
+}
+// The VC: the VNI word (the VNI and the flags) and the sequence number.
+header vc_t {
+    bit<24> vni;
+    bit<8> flags;
+    bit<32> seq;
+}
+// A peerconn data frame: its type and the VNI word, then the inner packet.
+header frame_t {
+    bit<8> kind;
+    bit<24> vni;
+    bit<8> low;
 }
 struct headers_t {
     packet_in_t packet_in;
     packet_out_t packet_out;
-    ethernet_t eth;
+    psp_t psp;
+    vc_t vc;
+    frame_t frame;
 }
 struct port_t {
     bit<1> trunk;
@@ -109,19 +153,37 @@ struct meta_t {
     bool local_only;
     bit<128> src;
     bit<128> dst;
+    // The target sets from: the outer address and port of a UDP 1000 packet, 0 for a FRAME in.
+    bit<144> from;
+    // The parser sets punt for a probe or a keepalive.
+    bool punt;
+    // The PSP Next Header of the inner packet (inner_addrs).
+    bit<8> next;
+    bit<32> hash;
+    // The forward action sets routed.
+    bool routed;
     port_t p;
     context_t c;
     fwd_t fwd;
     local_t local;
 }
 
+// The inner IPv4 or IPv6 packet after the PSP header or the frame: its source and destination
+// address as an IPv6 address (IPv4-mapped for IPv4), and its PSP Next Header, NEXT_V4 or NEXT_V6. It
+// gives 0 when the packet is not IPv4 or IPv6.
+extern bit<8> inner_addrs(out bit<128> src, out bit<128> dst);
+// The flow hash of the inner packet: FNV-1a of the addresses, the protocol and, for TCP, UDP and
+// SCTP, the ports. 0 when the packet is not IPv4 or IPv6.
+extern bit<32> flow_hash();
+
 // The keys table. Writer: the root, with the agent or trunk key engine. A Read gives an empty key;
 // for an RX entry it also gives the packet count and the highest accepted sequence number.
 extern PspSa {
     PspSa(bit<32> size);
     // Opens in place by SPI and moves seq. Sets m.port, m.sa_session, m.spi, m.lane (RX keys entry)
-    // and m.vni (packet). It does not count the packet.
-    bool open(in bit<32> spi, inout meta_t m);
+    // and m.vni (packet). It does not count the packet. It gives 0, R_UNKNOWN_SPI (no RX entry) or
+    // R_OPEN (the version, no sequence number, the AEAD, Next Header or the replay window).
+    bit<8> open(in bit<32> spi);
     // Counts a packet in the RX keys entry of spi. check_in calls it after the meters pass, so
     // seq minus packets includes the meter drops (as today's reportRx).
     void count(in bit<32> spi);
@@ -147,27 +209,112 @@ control Relay(inout headers_t h,
     meter(1 << 18, MeterType.bytes) lane_meter;
     meter(1 << 16, MeterType.packets) punt_meter;
     PspSa(1 << 18) keys;
-    @hidden action open_psp() {
-    }
-    @hidden action check_in() {
-    }
-    @hidden action read_tag() {
-    }
-    @hidden action route_end() {
-    }
-    @hidden action send_out() {
-    }
     // hide:begin
-    action drop(bit<8> reason) {
+    // The drop of a packet: count_drop counts it and marks it to drop, then the caller exits. An
+    // action calls count_drop and exits itself, because p4test 1.2.5.18 stops with a compiler bug
+    // when one action calls an action with exit two times.
+    @hidden action count_drop(bit<8> reason) {
         drops.count((bit<32>)reason);
         bit<32> i = m.out_meter_index != 0 ? m.out_meter_index : m.p.meter_index;
         if (i != 0) {
             port_drops.count((i << 5) | (bit<32>)reason);
         }
         mark_to_drop(sm);
+    }
+    action drop(bit<8> reason) {
+        count_drop(reason);
         exit;
     }
     // hide:end
+    // A PUNT or a MISS to the root, within the punt meter of the in port (0: a probe or a keepalive).
+    // The target gives the root the packet after its parsed headers.
+    @hidden action to_root(bit<8> kind) {
+        bit<2> color;
+        punt_meter.execute_meter(m.p.meter_index, color);
+        if (color == METER_RED) {
+            count_drop(R_METER);
+            exit;
+        }
+        h.packet_in.setValid();
+        h.packet_in.kind = kind;
+        h.packet_in.port = m.port;
+        h.packet_in.session = m.p.session;
+        h.packet_in.hash = m.hash;
+        h.packet_in.from = m.from;
+        exit;
+    }
+    // The session of the RX entry or the FRAME in must be the port session. A PSP packet must be
+    // from addr, prev or a lane port at the IP of addr, and in its lane meter. Then the port meter,
+    // and keys.count for PSP.
+    @hidden action check_in() {
+        if (m.sa_session != m.p.session) {
+            count_drop(R_OLD_SESSION);
+            exit;
+        }
+        bit<2> color;
+        if (h.psp.isValid()) {
+            bit<16> from_port = (bit<16>)m.from;
+            bool lane = m.p.addr != 0 && (m.from >> 16) == (m.p.addr >> 16) && from_port != 0 &&
+                (from_port == (bit<16>)(m.p.lanes >> 32) || from_port == (bit<16>)(m.p.lanes >> 16) ||
+                 from_port == (bit<16>)m.p.lanes);
+            if (m.from == 0 || m.from != m.p.addr && m.from != m.p.prev && !lane) {
+                count_drop(R_UNKNOWN_SOURCE);
+                exit;
+            }
+            lane_meter.execute_meter((m.p.meter_index << 2) | (bit<32>)m.lane, color);
+            if (color == METER_RED) {
+                count_drop(R_METER);
+                exit;
+            }
+        }
+        port_meter.execute_meter(m.p.meter_index, color);
+        if (color == METER_RED) {
+            count_drop(R_METER);
+            exit;
+        }
+        if (h.psp.isValid()) {
+            keys.count(m.spi);
+        }
+    }
+    // A trunk packet carries the sender's session tag in the VNI field; tag 0 goes to the root. An
+    // access packet has tag 0. Then the inner addresses: a packet that is not IPv4 or IPv6 is
+    // malformed.
+    @hidden action read_tag() {
+        if (m.p.trunk == 1) {
+            m.tag = m.vni;
+            if (m.tag == 0) {
+                to_root(KIND_PUNT);
+            }
+        }
+        m.next = inner_addrs(m.src, m.dst);
+        if (m.next == 0) {
+            count_drop(R_MALFORMED);
+            exit;
+        }
+    }
+    // The out port: the winner, or the local target from a trunk port or with local_only. No entry:
+    // MISS from an access port, no_route from a trunk port. No out port: no_route.
+    @hidden action route_end() {
+        if (!m.routed) {
+            if (m.p.trunk == 1) {
+                count_drop(R_NO_ROUTE);
+                exit;
+            }
+            to_root(KIND_MISS);
+        }
+        if (m.p.trunk == 1 || m.local_only) {
+            m.fwd.port = m.local.port;
+            m.fwd.cell = m.local.cell;
+        }
+        if (m.fwd.port == 0) {
+            count_drop(R_NO_ROUTE);
+            exit;
+        }
+    }
+    // The ports entry of m.fwd.port, the checks, and keys.seal or the FRAME out. A Go step of the
+    // target: an empty @hidden action.
+    @hidden action send_out() {
+    }
     // Writer: A (access) or M (trunk). addr 0: data on QUIC. lanes: 3 ports at addr's IP. seen:
     // bit i is set after a keepalive from lane i; seal sends lane i to addr until then. prev
     // (access): cleared 5 s after the agent moves. tag: the session tag of an access port.
@@ -191,6 +338,7 @@ control Relay(inout headers_t h,
     action forward(bit<64> port, bit<32> cell, bit<64> local_port, bit<32> local_cell) {
         m.fwd = {port, cell};
         m.local = {local_port, local_cell};
+        m.routed = true;
     }
     // A source entry of a remote address that V accepted. send_out drops it to a trunk port.
     action local_only() {
@@ -231,20 +379,35 @@ control Relay(inout headers_t h,
         actions = { forward; drop; }
     }
     apply {
-        // 1. UDP 1000 from the Go demux: the parser punts probes and keepalives. 2. FRAME in
-        // (a PacketOut from a frame reader) starts at ports, with its port and session.
-        open_psp();
+        // 1. parse runs the parser and this if up to keys.open. A drop or a punt in this if runs in
+        // apply, with all that comes after it, in RX order. A probe or a keepalive goes to the root.
+        bit<8> r = 0;
+        if (sm.parser_error != error.NoError) {
+            drop(R_MALFORMED);
+        } else if (m.punt) {
+            to_root(KIND_PUNT);
+        } else if (h.psp.isValid()) {
+            r = keys.open(h.psp.spi);
+        }
+        if (r != 0) {
+            drop(r);
+        }
+        // 2. A FRAME in starts at ports, with the port and session of its PacketOut.
         ports.apply();
-        // sa_session must be m.p.session. PSP from addr, prev or a lane. Lane and port meters,
-        // then keys.count(m.spi).
         check_in();
-        // 3. Tag: the VNI field (sender's session tag) on a trunk port, else 0. Trunk tag 0: PUNT.
+        // 3. The tag and the inner addresses.
         read_tag();
-        // 4. On access, a VNI in the packet must be m.c.vni. Count. 5. The inner source.
+        // 4. On access, the VNI of the packet must be m.c.vni. Count the receive cell. 5. The inner
+        // source.
         classify.apply();
+        if (m.p.trunk == 0 && m.vni != m.c.vni) {
+            drop(R_NO_CONTEXT);
+        }
+        cells.count(m.c.cell << 1);
         source.apply();
         // 6. Route: from a trunk port or with local_only, the local target. No entry on an access
         // port: MISS. No local target: no_route.
+        m.hash = flow_hash();
         route.apply();
         route_end();
         // 7. ports entry of m.fwd.port (no_target; it sets m.out_meter_index), no trunk to trunk,
@@ -253,13 +416,97 @@ control Relay(inout headers_t h,
     }
 }
 
+// A parser error does not drop the packet: the ingress control gets it with parser_error set.
 parser RelayParser(packet_in pkt,
                    out headers_t h,
                    inout meta_t m,
                    inout standard_metadata_t sm) {
     state start {
-        pkt.extract(h.eth);
+        transition select(sm.ingress_port) {
+            CPU_PORT: frame_in;
+            default: udp;
+        }
+    }
+    // A FRAME in: a PacketOut FRAME from the frame reader of a port. SEAL and RAW do not come here.
+    state frame_in {
+        pkt.extract(h.packet_out);
+        pkt.extract(h.frame);
+        m.port = h.packet_out.port;
+        m.sa_session = h.packet_out.session;
+        m.vni = h.frame.vni;
+        transition select(h.frame.kind) {
+            FRAME_DATA: accept;
+        }
+    }
+    // A UDP 1000 payload: a keepalive, a probe or a PSP packet. Each other packet has no match.
+    state udp {
+        transition select(sm.packet_length) {
+            1: keepalive;
+            PSP_MIN .. PROBE_MIN - 1: psp;
+            PROBE_MIN .. 0xffffffff: probe;
+        }
+    }
+    state keepalive {
+        transition select(pkt.lookahead<bit<8>>()) {
+            KEEPALIVE: punt;
+        }
+    }
+    state probe {
+        transition select(pkt.lookahead<bit<16>>()) {
+            PROBE: punt;
+            default: psp;
+        }
+    }
+    state punt {
+        m.punt = true;
         transition accept;
+    }
+    // The checks of psp.ParseTrunkHeader.
+    state psp {
+        pkt.extract(h.psp);
+        pkt.extract(h.vc);
+        transition select(h.psp.next) {
+            NEXT_V4: psp_ext_len;
+            NEXT_V6: psp_ext_len;
+            NEXT_MESSAGE: psp_ext_len;
+        }
+    }
+    state psp_ext_len {
+        transition select(h.psp.ext_len) {
+            2: psp_crypt_off;
+        }
+    }
+    state psp_crypt_off {
+        transition select(h.psp.crypt_off) {
+            2: psp_d;
+        }
+    }
+    state psp_d {
+        transition select(h.psp.d) {
+            0: psp_v;
+        }
+    }
+    state psp_v {
+        transition select(h.psp.v) {
+            1: psp_one;
+        }
+    }
+    state psp_one {
+        transition select(h.psp.one) {
+            1: psp_version;
+        }
+    }
+    // AES-GCM-128 or AES-GCM-256.
+    state psp_version {
+        transition select(h.psp.version) {
+            0 .. 1: psp_spi;
+        }
+    }
+    // An SPI with its low 31 bits 0 is reserved.
+    state psp_spi {
+        transition select(h.psp.spi & 0x7fffffff) {
+            1 .. 0x7fffffff: accept;
+        }
     }
 }
 
@@ -282,11 +529,12 @@ control RelayCompute(inout headers_t h,
     }
 }
 
+// The target gives the root a PacketIn when apply ends with packet_in valid: packet_in is its
+// metadata, and the packet after its parsed headers is its payload.
 control RelayDeparser(packet_out pkt,
                       in headers_t h) {
     apply {
         pkt.emit(h.packet_in);
-        pkt.emit(h.eth);
     }
 }
 

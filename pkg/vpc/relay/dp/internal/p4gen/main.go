@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Command p4gen reads relay.p4, a P4 program of the subset of the relay engine design, and
-// writes its P4Info in the text layout of p4test and the Go IDs, entry types, drop reasons and
-// PspSa instance of the pipeline. It has its own parser and does not use p4c; CI runs p4test
-// as the type check and compares the two P4Info files with diff.
+// writes its P4Info in the text layout of p4test and the Go code of the pipeline: the IDs, entry
+// types, drop reasons and PspSa instance, and the parse and apply code (pipe.go). It has its own
+// parser and does not use p4c; CI runs p4test as the type check and compares the two P4Info files
+// with diff.
 package main
 
 import (

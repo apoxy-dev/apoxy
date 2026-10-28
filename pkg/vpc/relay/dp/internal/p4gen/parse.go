@@ -117,9 +117,12 @@ func (p *parser) program() *program {
 			prog.newTypes = append(prog.newTypes, p.newType(anns))
 		case p.is("header") || p.is("struct"):
 			prog.structs = append(prog.structs, p.structType(anns))
-		case p.is("extern"):
+		case p.is("extern") && p.peekAt(2).text == "{":
 			p.only(anns)
 			prog.externs = append(prog.externs, p.externType())
+		case p.is("extern"):
+			p.only(anns)
+			prog.funcs = append(prog.funcs, p.externFunc())
 		case p.is("control"):
 			p.only(anns)
 			prog.controls = append(prog.controls, p.control())
@@ -313,6 +316,19 @@ func (p *parser) externType() *externType {
 	return e
 }
 
+// externFunc reads `extern T name(params);` or `extern void name(params);`.
+func (p *parser) externFunc() *method {
+	t := p.expect("extern")
+	m := &method{pos: pos{t.line}}
+	if !p.accept("void") {
+		m.ret = p.typeRef()
+	}
+	m.name = p.name().text
+	m.params = p.params()
+	p.expect(";")
+	return m
+}
+
 func (p *parser) control() *controlDecl {
 	t := p.expect("control")
 	c := &controlDecl{pos: pos{t.line}, name: p.name().text}
@@ -459,6 +475,9 @@ func (p *parser) parserDecl() *parserDecl {
 				c := &selectCase{pos: pos{p.peek().line}}
 				if !p.accept("default") {
 					c.val = p.expr()
+					if t := p.peek(); p.accept("..") {
+						c.val = &rangeExpr{pos: pos{t.line}, lo: c.val, hi: p.expr()}
+					}
 				}
 				p.expect(":")
 				c.to = p.name().text
@@ -608,6 +627,9 @@ func (p *parser) primary() node {
 		return &intLit{pos{t.line}, t.val, t.width}
 	case t.kind == tIdent && (t.text == "true" || t.text == "false"):
 		return &boolLit{pos{t.line}, t.text == "true"}
+	case t.kind == tIdent && t.text == "error" && p.is("."):
+		p.next()
+		return &errorLit{pos{t.line}, p.name().text}
 	case t.kind == tIdent && !keywords[t.text]:
 		return &ident{pos{t.line}, t.text}
 	case t.kind == tPunct && t.text == "(":

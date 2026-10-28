@@ -56,6 +56,19 @@ func (b *bucket) take(n int, now time.Time) bool {
 	return true
 }
 
+// meter reports whether the packet is green in meter index i. An index with no configuration has
+// no limit.
+func (s *state) meter(id, i uint32, size int) bool {
+	b := s.meters[meterKey{id, i}]
+	if b == nil {
+		return true
+	}
+	if meterPackets[id] {
+		size = 1
+	}
+	return b.take(size, time.Now())
+}
+
 // meterIndex checks the meter ID and index of a MeterEntry.
 func meterIndex(me *p4.MeterEntry) (meterKey, error) {
 	size, ok := meterSizes[me.GetMeterId()]

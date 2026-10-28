@@ -5,6 +5,7 @@
 package dp
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net/netip"
 
@@ -874,4 +875,728 @@ func DecodePacketOutMeta(md []*p4.PacketMetadata) (PacketOutMeta, error) {
 		}
 	}
 	return m, nil
+}
+
+// The constants of relay.p4 that are not drop reasons.
+const (
+	cpuPort     uint16 = 255
+	kindPunt    uint8  = 1
+	kindMiss    uint8  = 2
+	meterRed    uint8  = 2
+	keepalive   uint8  = 3
+	probe       uint16 = 514
+	probeMin    uint32 = 70
+	pspMin      uint32 = 40
+	nextV4      uint8  = 4
+	nextV6      uint8  = 41
+	nextMessage uint8  = 63
+	frameData   uint8  = 3
+)
+
+// The errors of core.p4: the values of parser_error.
+const (
+	p4ErrNoError uint8 = iota
+	p4ErrPacketTooShort
+	p4ErrNoMatch
+	p4ErrStackOutOfBounds
+	p4ErrHeaderTooShort
+	p4ErrParserTimeout
+	p4ErrParserInvalidArgument
+)
+
+// p4DropPort is the egress_spec of mark_to_drop.
+const p4DropPort uint16 = 511
+
+// The start points of apply in pass.at: after keys.open, or at the end after an exit in parse.
+// A branch of the first if that parse did not run has a start point of 3 or more.
+const (
+	atOpen = 1
+	atExit = 2
+)
+
+// packetInT is the header packet_in_t. valid is its validity.
+type packetInT struct {
+	valid   bool
+	kind    uint8          // bit<8>
+	port    uint64         // bit<64>
+	session uint64         // bit<64>
+	hash    uint32         // bit<32>
+	from    netip.AddrPort // bit<144>
+}
+
+// packetOutT is the header packet_out_t. valid is its validity.
+type packetOutT struct {
+	valid   bool
+	kind    uint8          // bit<8>
+	port    uint64         // bit<64>
+	session uint64         // bit<64>
+	to      netip.AddrPort // bit<144>
+}
+
+// pspT is the header psp_t. valid is its validity.
+type pspT struct {
+	valid    bool
+	next     uint8  // bit<8>
+	extLen   uint8  // bit<8>
+	r        uint8  // bit<2>
+	cryptOff uint8  // bit<6>
+	s        uint8  // bit<1>
+	d        uint8  // bit<1>
+	version  uint8  // bit<4>
+	v        uint8  // bit<1>
+	one      uint8  // bit<1>
+	spi      uint32 // bit<32>
+	iv       uint64 // bit<64>
+}
+
+// vcT is the header vc_t. valid is its validity.
+type vcT struct {
+	valid bool
+	vni   uint32 // bit<24>
+	flags uint8  // bit<8>
+	seq   uint32 // bit<32>
+}
+
+// frameT is the header frame_t. valid is its validity.
+type frameT struct {
+	valid bool
+	kind  uint8  // bit<8>
+	vni   uint32 // bit<24>
+	low   uint8  // bit<8>
+}
+
+// headers is the struct headers_t.
+type headers struct {
+	packetIn  packetInT  // packet_in_t
+	packetOut packetOutT // packet_out_t
+	psp       pspT       // psp_t
+	vc        vcT        // vc_t
+	frame     frameT     // frame_t
+}
+
+// portT is the struct port_t.
+type portT struct {
+	trunk      uint8          // bit<1>
+	session    uint64         // bit<64>
+	tag        uint32         // bit<24>
+	addr       netip.AddrPort // bit<144>
+	prev       netip.AddrPort // bit<144>
+	lanes      uint64         // bit<48>
+	seen       uint8          // bit<3>
+	mtu        uint16         // bit<16>
+	meterIndex uint32         // bit<32>
+}
+
+// contextT is the struct context_t.
+type contextT struct {
+	vpc  uint32 // name_t
+	vni  uint32 // bit<24>
+	cell uint32 // bit<32>
+}
+
+// fwdT is the struct fwd_t.
+type fwdT struct {
+	port uint64 // bit<64>
+	cell uint32 // bit<32>
+}
+
+// localT is the struct local_t.
+type localT struct {
+	port uint64 // bit<64>
+	cell uint32 // bit<32>
+}
+
+// meta is the struct meta_t.
+type meta struct {
+	port          uint64         // bit<64>
+	saSession     uint64         // bit<64>
+	spi           uint32         // bit<32>
+	outMeterIndex uint32         // bit<32>
+	lane          uint8          // bit<2>
+	vni           uint32         // bit<24>
+	tag           uint32         // bit<24>
+	localOnly     bool           // bool
+	src           netip.Addr     // bit<128>
+	dst           netip.Addr     // bit<128>
+	from          netip.AddrPort // bit<144>
+	punt          bool           // bool
+	next          uint8          // bit<8>
+	hash          uint32         // bit<32>
+	routed        bool           // bool
+	p             portT          // port_t
+	c             contextT       // context_t
+	fwd           fwdT           // fwd_t
+	local         localT         // local_t
+}
+
+// standardMetadata has the fields of standard_metadata_t that the Go writer has.
+type standardMetadata struct {
+	ingressPort  uint16 // bit<9>
+	egressSpec   uint16 // bit<9>
+	packetLength uint32 // The length of the packet in.
+	parserError  uint8
+}
+
+// metadata returns the packet_in controller header of hd.
+func (hd *packetInT) metadata() PacketInMeta {
+	return PacketInMeta{Kind: hd.kind, Port: hd.port, Session: hd.session, Hash: hd.hash, From: hd.from}
+}
+
+// pass is one packet in the pipeline: the packet, its headers and metadata, and where apply
+// starts.
+type pass struct {
+	h    headers
+	m    meta
+	sm   standardMetadata
+	in   []byte        // The packet in.
+	off  int           // The bytes of in that the parser took.
+	data []byte        // The packet after its parsed headers.
+	ctl  PacketOutMeta // The controller header of a PacketOut.
+	at   uint8         // Where apply starts: atOpen, atExit or a branch of the first if.
+	open uint8         // The value of keys.open.
+	lR   uint8         // The local r of apply, which parse sets.
+}
+
+// PspSa is the extern PspSa of relay.p4, with the methods that the pipeline calls. The runtime
+// implements it on *part.
+type PspSa interface {
+	// Open is the first half of keys.open, in parse: 0 and one open op, or a drop reason.
+	Open(pkt *packet, spi uint32, m *meta) uint8
+	// Opened is the second half of keys.open, in apply in RX order, after the AEAD.
+	Opened(pkt *packet, m *meta) uint8
+	Count(spi uint32)
+}
+
+// parse runs the parser and the control Relay up to keys.open. It counts nothing: a branch
+// that it does not run, or an exit, only sets pkt.at, and apply runs it in RX order.
+func (x *part) parse(pkt *packet) {
+	// The parser RelayParser.
+	switch v := pkt.sm.ingressPort; {
+	case v == cpuPort:
+		goto pStateFrameIn
+	default:
+		goto pStateUdp
+	}
+pStateFrameIn:
+	pkt.h.packetOut = packetOutT{valid: true, kind: pkt.ctl.Kind, port: pkt.ctl.Port, session: pkt.ctl.Session, to: pkt.ctl.To}
+	if len(pkt.in)-pkt.off < 5 {
+		pkt.sm.parserError = p4ErrPacketTooShort
+		goto pEnd
+	}
+	{
+		b := pkt.in[pkt.off : pkt.off+5]
+		pkt.h.frame = frameT{valid: true, kind: b[0], vni: (uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])), low: b[4]}
+	}
+	pkt.off += 5
+	pkt.m.port = pkt.h.packetOut.port
+	pkt.m.saSession = pkt.h.packetOut.session
+	pkt.m.vni = pkt.h.frame.vni
+	switch v := pkt.h.frame.kind; {
+	case v == frameData:
+		goto pEnd
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStateUdp:
+	switch v := pkt.sm.packetLength; {
+	case v == 1:
+		goto pStateKeepalive
+	case pspMin <= v && v <= 69:
+		goto pStatePsp
+	case probeMin <= v:
+		goto pStateProbe
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStateKeepalive:
+	if len(pkt.in)-pkt.off < 1 {
+		pkt.sm.parserError = p4ErrPacketTooShort
+		goto pEnd
+	}
+	switch v := pkt.in[pkt.off]; {
+	case v == keepalive:
+		goto pStatePunt
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStateProbe:
+	if len(pkt.in)-pkt.off < 2 {
+		pkt.sm.parserError = p4ErrPacketTooShort
+		goto pEnd
+	}
+	switch v := binary.BigEndian.Uint16(pkt.in[pkt.off:]); {
+	case v == probe:
+		goto pStatePunt
+	default:
+		goto pStatePsp
+	}
+pStatePunt:
+	pkt.m.punt = true
+	goto pEnd
+pStatePsp:
+	if len(pkt.in)-pkt.off < 16 {
+		pkt.sm.parserError = p4ErrPacketTooShort
+		goto pEnd
+	}
+	{
+		b := pkt.in[pkt.off : pkt.off+16]
+		pkt.h.psp = pspT{valid: true, next: b[0], extLen: b[1], r: b[2] >> 6, cryptOff: b[2] & 63, s: b[3] >> 7, d: b[3] >> 6 & 1, version: b[3] >> 2 & 15, v: b[3] >> 1 & 1, one: b[3] & 1, spi: binary.BigEndian.Uint32(b[4:]), iv: binary.BigEndian.Uint64(b[8:])}
+	}
+	pkt.off += 16
+	if len(pkt.in)-pkt.off < 8 {
+		pkt.sm.parserError = p4ErrPacketTooShort
+		goto pEnd
+	}
+	{
+		b := pkt.in[pkt.off : pkt.off+8]
+		pkt.h.vc = vcT{valid: true, vni: (uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2])), flags: b[3], seq: binary.BigEndian.Uint32(b[4:])}
+	}
+	pkt.off += 8
+	switch v := pkt.h.psp.next; {
+	case v == nextV4:
+		goto pStatePspExtLen
+	case v == nextV6:
+		goto pStatePspExtLen
+	case v == nextMessage:
+		goto pStatePspExtLen
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStatePspExtLen:
+	switch v := pkt.h.psp.extLen; {
+	case v == 2:
+		goto pStatePspCryptOff
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStatePspCryptOff:
+	switch v := pkt.h.psp.cryptOff; {
+	case v == 2:
+		goto pStatePspD
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStatePspD:
+	switch v := pkt.h.psp.d; {
+	case v == 0:
+		goto pStatePspV
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStatePspV:
+	switch v := pkt.h.psp.v; {
+	case v == 1:
+		goto pStatePspOne
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStatePspOne:
+	switch v := pkt.h.psp.one; {
+	case v == 1:
+		goto pStatePspVersion
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStatePspVersion:
+	switch v := pkt.h.psp.version; {
+	case v <= 1:
+		goto pStatePspSPI
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pStatePspSPI:
+	switch v := pkt.h.psp.spi & 0x7fffffff; {
+	case 1 <= v && v <= 0x7fffffff:
+		goto pEnd
+	}
+	pkt.sm.parserError = p4ErrNoMatch
+	goto pEnd
+pEnd:
+	pkt.data = pkt.in[pkt.off:]
+	pkt.lR = 0
+	if pkt.sm.parserError != p4ErrNoError {
+		pkt.at = 3
+		return
+	}
+	if pkt.m.punt {
+		pkt.at = 4
+		return
+	}
+	if pkt.h.psp.valid {
+		pkt.open = x.Open(pkt, pkt.h.psp.spi, &pkt.m)
+		pkt.at = atOpen
+		return
+	}
+	pkt.at = 5
+}
+
+// apply runs the control Relay from keys.open on.
+func (x *part) apply(pkt *packet) {
+	var r uint8 = pkt.lR
+	switch pkt.at {
+	case 3:
+		// drop
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonMalformed), pkt)
+			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMalformed), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	case 4:
+		// to_root
+		{
+			var color uint8
+			color = x.executeMeter(MeterPunt, pkt.m.p.meterIndex, pkt)
+			if color == meterRed {
+				// count_drop
+				{
+					x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+					var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+					if i != 0 {
+						x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
+					}
+					pkt.sm.egressSpec = p4DropPort
+				}
+				return
+			}
+			pkt.h.packetIn.valid = true
+			pkt.h.packetIn.kind = kindPunt
+			pkt.h.packetIn.port = pkt.m.port
+			pkt.h.packetIn.session = pkt.m.p.session
+			pkt.h.packetIn.hash = pkt.m.hash
+			pkt.h.packetIn.from = pkt.m.from
+			return
+		}
+	case 5:
+	default:
+		r = pkt.open
+		if r == 0 {
+			r = x.Opened(pkt, &pkt.m)
+		}
+	}
+	if r != 0 {
+		// drop
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(r), pkt)
+			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(r), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	}
+	if e := x.st.lookupPorts(pkt.m.port); e == nil {
+		// drop
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonOldSession), pkt)
+			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonOldSession), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	} else {
+		switch a := e.action.(type) {
+		case PortAction:
+			// port
+			pkt.m.p = portT{trunk: p4bit(a.Trunk), session: a.Session, tag: a.Tag, addr: a.Addr, prev: a.Prev, lanes: a.Lanes, seen: a.Seen, mtu: a.MTU, meterIndex: a.MeterIndex}
+		case DropAction:
+			// drop
+			// count_drop
+			{
+				x.countIndex(CounterDrops, uint32(a.Reason), pkt)
+				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+				if i != 0 {
+					x.countIndex(CounterPortDrops, (i<<5)|uint32(a.Reason), pkt)
+				}
+				pkt.sm.egressSpec = p4DropPort
+			}
+			return
+		}
+	}
+	// check_in
+	{
+		if pkt.m.saSession != pkt.m.p.session {
+			// count_drop
+			{
+				x.countIndex(CounterDrops, uint32(ReasonOldSession), pkt)
+				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+				if i != 0 {
+					x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonOldSession), pkt)
+				}
+				pkt.sm.egressSpec = p4DropPort
+			}
+			return
+		}
+		var color uint8
+		if pkt.h.psp.valid {
+			var fromPort uint16 = pkt.m.from.Port()
+			var lane bool = ((pkt.m.p.addr.IsValid() && (pkt.m.from.Addr() == pkt.m.p.addr.Addr())) && (fromPort != 0)) && (((fromPort == uint16(pkt.m.p.lanes>>32)) || (fromPort == uint16(pkt.m.p.lanes>>16))) || (fromPort == uint16(pkt.m.p.lanes)))
+			if !pkt.m.from.IsValid() || (((pkt.m.from != pkt.m.p.addr) && (pkt.m.from != pkt.m.p.prev)) && !lane) {
+				// count_drop
+				{
+					x.countIndex(CounterDrops, uint32(ReasonUnknownSource), pkt)
+					var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+					if i != 0 {
+						x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonUnknownSource), pkt)
+					}
+					pkt.sm.egressSpec = p4DropPort
+				}
+				return
+			}
+			color = x.executeMeter(MeterLane, (pkt.m.p.meterIndex<<2)|uint32(pkt.m.lane), pkt)
+			if color == meterRed {
+				// count_drop
+				{
+					x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+					var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+					if i != 0 {
+						x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
+					}
+					pkt.sm.egressSpec = p4DropPort
+				}
+				return
+			}
+		}
+		color = x.executeMeter(MeterPort, pkt.m.p.meterIndex, pkt)
+		if color == meterRed {
+			// count_drop
+			{
+				x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+				if i != 0 {
+					x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
+				}
+				pkt.sm.egressSpec = p4DropPort
+			}
+			return
+		}
+		if pkt.h.psp.valid {
+			x.Count(pkt.m.spi)
+		}
+	}
+	// read_tag
+	if pkt.m.p.trunk == 1 {
+		pkt.m.tag = pkt.m.vni
+		if pkt.m.tag == 0 {
+			// to_root
+			{
+				var color uint8
+				color = x.executeMeter(MeterPunt, pkt.m.p.meterIndex, pkt)
+				if color == meterRed {
+					// count_drop
+					{
+						x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+						var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+						if i != 0 {
+							x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
+						}
+						pkt.sm.egressSpec = p4DropPort
+					}
+					return
+				}
+				pkt.h.packetIn.valid = true
+				pkt.h.packetIn.kind = kindPunt
+				pkt.h.packetIn.port = pkt.m.port
+				pkt.h.packetIn.session = pkt.m.p.session
+				pkt.h.packetIn.hash = pkt.m.hash
+				pkt.h.packetIn.from = pkt.m.from
+				return
+			}
+		}
+	}
+	pkt.m.next = innerAddrs(pkt, &pkt.m.src, &pkt.m.dst)
+	if pkt.m.next == 0 {
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonMalformed), pkt)
+			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMalformed), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	}
+	if e := x.st.lookupClassify(pkt.m.port, pkt.m.p.session, pkt.m.tag); e == nil {
+		// drop
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonNoContext), pkt)
+			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonNoContext), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	} else {
+		switch a := e.action.(type) {
+		case ContextAction:
+			// context
+			pkt.m.c = contextT{vpc: e.vpc, vni: a.VNI, cell: a.Cell}
+		case DropAction:
+			// drop
+			// count_drop
+			{
+				x.countIndex(CounterDrops, uint32(a.Reason), pkt)
+				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+				if i != 0 {
+					x.countIndex(CounterPortDrops, (i<<5)|uint32(a.Reason), pkt)
+				}
+				pkt.sm.egressSpec = p4DropPort
+			}
+			return
+		}
+	}
+	if (pkt.m.p.trunk == 0) && (pkt.m.vni != pkt.m.c.vni) {
+		// drop
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonNoContext), pkt)
+			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonNoContext), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	}
+	x.countIndex(CounterCells, pkt.m.c.cell<<1, pkt)
+	if e := x.st.lookupSource(pkt.m.port, pkt.m.p.session, pkt.m.tag, pkt.m.src); e == nil {
+		// drop
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonSource), pkt)
+			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonSource), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	} else {
+		switch a := e.action.(type) {
+		case NoAction:
+		case LocalOnlyAction:
+			// local_only
+			pkt.m.localOnly = true
+		case DropAction:
+			// drop
+			// count_drop
+			{
+				x.countIndex(CounterDrops, uint32(a.Reason), pkt)
+				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+				if i != 0 {
+					x.countIndex(CounterPortDrops, (i<<5)|uint32(a.Reason), pkt)
+				}
+				pkt.sm.egressSpec = p4DropPort
+			}
+			return
+		}
+	}
+	pkt.m.hash = flowHash(pkt)
+	if e := x.st.lookupRoute(pkt.m.c.vpc, pkt.m.dst); e != nil {
+		switch a := e.action.(type) {
+		case ForwardAction:
+			// forward
+			pkt.m.fwd = fwdT{port: a.Port, cell: a.Cell}
+			pkt.m.local = localT{port: a.LocalPort, cell: a.LocalCell}
+			pkt.m.routed = true
+		case DropAction:
+			// drop
+			// count_drop
+			{
+				x.countIndex(CounterDrops, uint32(a.Reason), pkt)
+				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+				if i != 0 {
+					x.countIndex(CounterPortDrops, (i<<5)|uint32(a.Reason), pkt)
+				}
+				pkt.sm.egressSpec = p4DropPort
+			}
+			return
+		}
+	}
+	// route_end
+	if !pkt.m.routed {
+		if pkt.m.p.trunk == 1 {
+			// count_drop
+			{
+				x.countIndex(CounterDrops, uint32(ReasonNoRoute), pkt)
+				var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+				if i != 0 {
+					x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonNoRoute), pkt)
+				}
+				pkt.sm.egressSpec = p4DropPort
+			}
+			return
+		}
+		// to_root
+		{
+			var color uint8
+			color = x.executeMeter(MeterPunt, pkt.m.p.meterIndex, pkt)
+			if color == meterRed {
+				// count_drop
+				{
+					x.countIndex(CounterDrops, uint32(ReasonMeter), pkt)
+					var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+					if i != 0 {
+						x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonMeter), pkt)
+					}
+					pkt.sm.egressSpec = p4DropPort
+				}
+				return
+			}
+			pkt.h.packetIn.valid = true
+			pkt.h.packetIn.kind = kindMiss
+			pkt.h.packetIn.port = pkt.m.port
+			pkt.h.packetIn.session = pkt.m.p.session
+			pkt.h.packetIn.hash = pkt.m.hash
+			pkt.h.packetIn.from = pkt.m.from
+			return
+		}
+	}
+	if (pkt.m.p.trunk == 1) || pkt.m.localOnly {
+		pkt.m.fwd.port = pkt.m.local.port
+		pkt.m.fwd.cell = pkt.m.local.cell
+	}
+	if pkt.m.fwd.port == 0 {
+		// count_drop
+		{
+			x.countIndex(CounterDrops, uint32(ReasonNoRoute), pkt)
+			var i uint32 = p4cond(pkt.m.outMeterIndex != 0, pkt.m.outMeterIndex, pkt.m.p.meterIndex)
+			if i != 0 {
+				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonNoRoute), pkt)
+			}
+			pkt.sm.egressSpec = p4DropPort
+		}
+		return
+	}
+	if x.stepSendOut(pkt) {
+		return
+	}
+}
+
+// p4cond is the ?: operator of P4.
+func p4cond[T any](c bool, a, b T) T {
+	if c {
+		return a
+	}
+	return b
+}
+
+// p4bit is the bit<1> value of a bool.
+func p4bit(b bool) uint8 {
+	if b {
+		return 1
+	}
+	return 0
 }

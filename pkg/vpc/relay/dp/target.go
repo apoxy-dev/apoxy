@@ -69,9 +69,9 @@ type TxBatch struct {
 	txq    *txQueue        // The TX queue of the worker, or nil.
 	hops   hopCache        // The next-hop MACs of the worker, or nil.
 
-	rx    []rxState // The parse result of each RX packet of the part of Receive.
-	opens []AEADOp  // The open ops of the part.
-	seals []AEADOp  // The seal ops of the part.
+	pkts  []packet // The packets of the part of Receive, or the FRAME in of a PacketOut.
+	opens []AEADOp // The open ops of the part.
+	seals []AEADOp // The seal ops of the part.
 }
 
 // Len is the number of packets in the batch.
@@ -150,15 +150,16 @@ func (b *TxBatch) add(to netip.AddrPort, off, n int) {
 	b.ends = append(b.ends, off+n)
 }
 
-// reset empties the batch. It also clears the parse results and the ops, which hold keys, so an
-// idle batch keeps no key. The TX frames stay: Send and the worker give them back.
+// reset empties the batch. It also clears the packets and the ops, which hold keys, so an idle
+// batch keeps no key, and the next part starts with zero packets. The TX frames stay: Send and the
+// worker give them back.
 func (b *TxBatch) reset() {
-	clear(b.rx)
+	clear(b.pkts)
 	clear(b.opens)
 	clear(b.seals)
 	b.one[0] = nil
 	b.to, b.starts, b.ends, b.buf = b.to[:0], b.starts[:0], b.ends[:0], b.buf[:0]
-	b.rx, b.opens, b.seals = b.rx[:0], b.opens[:0], b.seals[:0]
+	b.pkts, b.opens, b.seals = b.pkts[:0], b.opens[:0], b.seals[:0]
 }
 
 // Sender sends the UDP payloads of port 1000 of a batch. Send never waits: it drops and counts
@@ -184,7 +185,6 @@ func (c *counter) add(n int) {
 type Pipeline struct {
 	send     Sender
 	aead     AEAD
-	defaults map[uint32]Action
 	packetIn atomic.Pointer[func(*p4.PacketIn) bool]
 	bufs     sync.Pool
 	batches  sync.Pool // The TxBatch of a PacketOut.
@@ -219,20 +219,12 @@ func New(send Sender, aead AEAD) *Pipeline {
 	p := &Pipeline{
 		send:      send,
 		aead:      aead,
-		defaults:  map[uint32]Action{},
 		cells:     make([]counter, counterSizes[CounterCells]),
 		drops:     make([]counter, counterSizes[CounterDrops]),
 		portDrops: make([]counter, counterSizes[CounterPortDrops]),
 		cur:       newState(),
 		spare:     &state{},
 		writers:   map[uint64]func([]byte) error{},
-	}
-	for id, a := range defaultActions {
-		d, err := decodeAction(a)
-		if err != nil {
-			panic(err) // The generated default actions always decode.
-		}
-		p.defaults[id] = d
 	}
 	p.bufs.New = func() any { b := make([]byte, maxPacket); return &b }
 	p.batches.New = func() any { return &TxBatch{} }

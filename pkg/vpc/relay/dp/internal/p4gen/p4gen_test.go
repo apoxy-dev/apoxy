@@ -4,7 +4,14 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
+	"go/importer"
+	goparser "go/parser"
+	gotoken "go/token"
+	"go/types"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,16 +24,21 @@ import (
 
 // p4case is a case of TestP4gen, from a txtar file in testdata/cases. The comment of the archive
 // has the expectations, one "key: value" per line; a line that starts with # is a note. The files
-// of the archive are prog.p4, the program, and p4info.txtpb, the P4Info text that it must give.
+// of the archive are prog.p4, the program, p4info.txtpb, the P4Info text that it must give, and
+// stub.go, the extern functions and Go steps of prog.p4 for the type check.
 type p4case struct {
 	name    string            // name: the name of the subtest.
 	srcName string            // The file name in the errors: prog.p4, or the base name of file:.
 	src     string            // prog.p4, or the text of file:, a program outside testdata.
 	wantErr string            // error: a part of the error after "file:line: "; "// here" marks the line.
+	genErr  string            // generr: a part of the error of the Go writer, as wantErr.
 	info    string            // p4info.txtpb, or the text of the file at the path info:.
 	gen     string            // gen: the Go file that the generated code must be.
 	ids     map[string]uint32 // ids: name=ID pairs; each ids line adds to the map.
 	local   string            // local: the local of the split; "" for no split.
+	goStub  string            // stub.go.
+	// The Go code of prog.p4 is type-checked, unless "typecheck: false". The code of file: is not.
+	typeCheck bool
 }
 
 // readCase reads the case in the txtar file path. With "nonewline: true", prog.p4 has no newline
@@ -38,7 +50,7 @@ func readCase(t *testing.T, path string) p4case {
 	a := txtar.Parse(b)
 	tc := p4case{srcName: "prog.p4"}
 	var file, info string
-	noNewline := false
+	noNewline, check := false, true
 	for _, l := range strings.Split(string(a.Comment), "\n") {
 		if l == "" || strings.HasPrefix(l, "#") {
 			continue
@@ -52,6 +64,8 @@ func readCase(t *testing.T, path string) p4case {
 			file = v
 		case "error":
 			tc.wantErr = v
+		case "generr":
+			tc.genErr = v
 		case "info":
 			info = v
 		case "gen":
@@ -71,6 +85,9 @@ func readCase(t *testing.T, path string) p4case {
 		case "nonewline":
 			noNewline, err = strconv.ParseBool(v)
 			require.NoError(t, err, path)
+		case "typecheck":
+			check, err = strconv.ParseBool(v)
+			require.NoError(t, err, path)
 		default:
 			t.Fatalf("%s: the key %q is not known", path, k)
 		}
@@ -81,10 +98,13 @@ func readCase(t *testing.T, path string) p4case {
 			tc.src = string(f.Data)
 		case "p4info.txtpb":
 			tc.info = string(f.Data)
+		case "stub.go":
+			tc.goStub = string(f.Data)
 		default:
 			t.Fatalf("%s: the file %s is not known", path, f.Name)
 		}
 	}
+	tc.typeCheck = check && file == ""
 	if file != "" {
 		b, err := os.ReadFile(file)
 		require.NoError(t, err)
@@ -107,6 +127,7 @@ func TestP4gen(t *testing.T) {
 	paths, err := filepath.Glob("testdata/cases/*.txtar")
 	require.NoError(t, err)
 	require.NotEmpty(t, paths)
+	imp := goImporter(t)
 	for _, path := range paths {
 		tc := readCase(t, path)
 		t.Run(tc.name, func(t *testing.T) {
@@ -119,8 +140,18 @@ func TestP4gen(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			_, err = goCode(prog, c, name, "dp")
-			require.NoError(t, err)
+			code, err := goCode(prog, c, name, "dp")
+			switch {
+			case tc.genErr != "":
+				line := strings.Count(src[:strings.Index(src, "// here")], "\n") + 1
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), fmt.Sprintf("%s:%d: %s", name, line, tc.genErr))
+			case tc.typeCheck:
+				require.NoError(t, err)
+				typeCheck(t, imp, code, tc.goStub)
+			default:
+				require.NoError(t, err)
+			}
 			sp, err := split(name, prog)
 			require.NoError(t, err)
 			if tc.local == "" {
@@ -131,7 +162,7 @@ func TestP4gen(t *testing.T) {
 			if tc.info != "" {
 				assert.Equal(t, tc.info, string(textFile(c.info)))
 			}
-			if tc.gen != "" {
+			if tc.gen != "" && tc.genErr == "" {
 				want, err := os.ReadFile(tc.gen)
 				require.NoError(t, err)
 				got, err := goCode(prog, c, name, "dp")
@@ -161,6 +192,63 @@ func TestP4gen(t *testing.T) {
 			}
 		})
 	}
+}
+
+// runtimeStub declares the part of the dp runtime that the generated code of the prog.p4 programs
+// calls, with empty bodies.
+const runtimeStub = `package dp
+
+type part struct{ st *state }
+
+type packet struct{ pass }
+
+type state struct{}
+
+type entry struct{ action Action }
+
+func (s *state) lookupPorts(port uint64) *entry               { return nil }
+func (x *part) countIndex(id, i uint32, pkt *packet)          {}
+func (x *part) executeMeter(id, i uint32, pkt *packet) uint8 { return 0 }
+func (x *part) Open(pkt *packet, spi uint32, m *meta) uint8   { return 0 }
+func (x *part) Opened(pkt *packet, m *meta) uint8             { return 0 }
+func (x *part) Count(spi uint32)                              {}
+
+var _ PspSa = (*part)(nil)
+
+func encodeUint(v uint64, bits int) []byte          { return nil }
+func decodeUint(b []byte, bits int) (uint64, error) { return 0, nil }
+`
+
+// goImporter reads the packages that the generated code imports from the export data of the go
+// command.
+func goImporter(t *testing.T) types.Importer {
+	out, err := exec.Command("go", "list", "-export", "-deps", "-f", "{{.ImportPath}} {{.Export}}",
+		"encoding/binary", "fmt", "net/netip", "github.com/p4lang/p4runtime/go/p4/v1").Output()
+	require.NoError(t, err)
+	exports := map[string]string{}
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		path, file, _ := strings.Cut(l, " ")
+		exports[path] = file
+	}
+	return importer.ForCompiler(gotoken.NewFileSet(), "gc", func(path string) (io.ReadCloser, error) {
+		return os.Open(exports[path])
+	})
+}
+
+// typeCheck type-checks code, the Go file of goCode, with runtimeStub and stub.
+func typeCheck(t *testing.T, imp types.Importer, code []byte, stub string) {
+	t.Helper()
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	fset := gotoken.NewFileSet()
+	var files []*ast.File
+	for name, src := range map[string]string{"relay.gen.go": string(code), "runtime.go": runtimeStub + stub} {
+		f, err := goparser.ParseFile(fset, filepath.Join(dir, name), src, 0)
+		require.NoError(t, err, name)
+		files = append(files, f)
+	}
+	_, err = (&types.Config{Importer: imp}).Check("dp", fset, files, nil)
+	require.NoError(t, err)
 }
 
 // baseProg is the program of the no split case. It declares R_X.

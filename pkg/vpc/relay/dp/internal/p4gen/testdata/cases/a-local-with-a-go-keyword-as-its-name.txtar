@@ -1,0 +1,62 @@
+name: a local with a Go keyword as its name
+generr: the name go has the Go name go, which Go or the Go writer uses
+-- prog.p4 --
+#include <core.p4>
+#include <v1model.p4>
+const bit<8> R_X = 1;
+header psp_t {
+    bit<32> spi;
+}
+struct headers_t {
+    psp_t psp;
+}
+struct meta_t {
+    bit<64> port;
+    bit<32> spi;
+}
+extern PspSa {
+    PspSa(bit<32> size);
+    bit<8> open(in bit<32> spi);
+    void count(in bit<32> spi);
+    bool seal(in bit<64> port);
+}
+parser P(packet_in pkt, out headers_t h, inout meta_t m, inout standard_metadata_t sm) {
+    state start {
+        pkt.extract(h.psp);
+        transition accept;
+    }
+}
+control C(inout headers_t h, inout meta_t m, inout standard_metadata_t sm) {
+    counter(32, CounterType.packets) drops;
+    meter(4, MeterType.bytes) rate;
+    PspSa(16) keys;
+    action drop(bit<8> reason) {
+        drops.count((bit<32>)reason);
+        exit;
+    }
+    action note() {
+        m.port = 1;
+    }
+    table ports {
+        key = { m.port: exact; }
+        actions = { drop; }
+        const default_action = drop(R_X);
+    }
+    apply {
+        bit<8> go = 0; // here
+    }
+}
+control E(inout headers_t h, inout meta_t m, inout standard_metadata_t sm) {
+    apply {
+    }
+}
+control V(inout headers_t h, inout meta_t m) {
+    apply {
+    }
+}
+control D(packet_out pkt, in headers_t h) {
+    apply {
+        pkt.emit(h.psp);
+    }
+}
+V1Switch(P(), V(), C(), E(), V(), D()) main;

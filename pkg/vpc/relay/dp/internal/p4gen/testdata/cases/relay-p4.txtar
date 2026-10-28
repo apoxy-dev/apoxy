@@ -2,6 +2,7 @@ name: relay.p4
 file: ../../relay.p4
 info: ../../relay.p4info.txtpb
 gen: ../../relay.gen.go
+local: r
 # The IDs of today's relay.p4, as p4test gives them, and the PspSa instance.
 ids: NoAction=21257015 Relay.cells=317147353 Relay.classify=37194576 Relay.context=25404084
 ids: Relay.drop=16983990 Relay.drops=309103603 Relay.forward=22957411 Relay.keys=0x81621bac

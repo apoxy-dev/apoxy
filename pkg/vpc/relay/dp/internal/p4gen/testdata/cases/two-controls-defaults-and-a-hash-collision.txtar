@@ -1,4 +1,5 @@
 name: two controls, defaults and a hash collision
+generr: control SmallEgress must have an empty apply: the Go writer runs only the ingress control SmallIngress
 # The hashes of c2002 and c3002 are the same in the low 24 bits; the first name in sorted
 # order gets it.
 ids: NoAction=21257015 SmallEgress.t=37562719 SmallIngress.c2002=0x02b3e7ee
@@ -140,7 +141,7 @@ control SmallEgress(inout headers_t h, inout meta_t m, inout standard_metadata_t
         size = SIZE;
     }
     apply {
-        if (h.from_cp.isValid()) {
+        if (h.from_cp.isValid()) { // here: the Go writer runs only the ingress control.
             t.apply();
         }
     }

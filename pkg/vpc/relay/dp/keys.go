@@ -91,16 +91,47 @@ func newKey(a AEAD, key []byte) (AEADKey, psp.Version, error) {
 	return k, v, err
 }
 
-// accepts reports whether a PSP packet with header h can open with sa: the checks of open_psp
-// before the AEAD.
-func (sa *rxSA) accepts(h psp.Header) bool {
-	return h.Version == sa.version && h.Flags&psp.FlagSeq != 0
+var _ PspSa = (*part)(nil)
+
+// Open is the first half of keys.open, in parse. With the RX entry of spi, and the version of the
+// entry and a sequence number in the packet, it adds one open op of the packet to the batch and
+// gives 0. Else it gives the drop reason. It sets the port, session, SPI and lane of the RX entry
+// and the VNI of the packet in m.
+func (x *part) Open(pkt *packet, spi uint32, m *meta) uint8 {
+	sa := x.st.rx[spi]
+	switch {
+	case sa == nil:
+		return ReasonUnknownSPI
+	case psp.Version(pkt.h.psp.version) != sa.version || pkt.h.vc.flags&psp.FlagSeq == 0:
+		return ReasonOpen
+	}
+	mem, off := x.tx.in(pkt.mem, pkt.in)
+	pkt.mem, pkt.sa, pkt.op = mem, sa, len(x.tx.opens)
+	x.tx.opens = append(x.tx.opens, AEADOp{Key: sa.key, Mem: mem, Off: off, Len: len(pkt.in)})
+	m.port, m.saSession, m.spi, m.lane, m.vni = sa.port, sa.session, sa.spi, sa.lane, pkt.h.vc.vni
+	return 0
 }
 
-// opened is open_psp after the AEAD opened the PSP packet pkt with header h in place: ok tells that
-// pkt authenticates. It checks Next Header and the replay window, and moves seq. It returns the
-// payload, or false. It does not count the packet: check_in counts it after the meters.
-func (sa *rxSA) opened(h psp.Header, pkt []byte, ok bool) ([]byte, bool) {
+// Opened is the second half of keys.open, in apply in RX order, after the AEAD: the result of the
+// open op, Next Header and the replay window. Then the packet after the PSP header is the payload.
+func (x *part) Opened(pkt *packet, m *meta) uint8 {
+	op := &x.tx.opens[pkt.op]
+	payload, ok := pkt.sa.opened(pkt.h.vc.seq, x.tx.memories()[op.Mem][op.Off:op.Off+op.Len], op.OK)
+	if !ok {
+		return ReasonOpen
+	}
+	pkt.data = payload
+	return 0
+}
+
+// Count is keys.count: it adds a packet to the RX entry of spi.
+func (x *part) Count(spi uint32) { x.st.count(spi) }
+
+// opened is keys.open after the AEAD opened the PSP packet pkt with the sequence number seq in
+// place: ok tells that pkt authenticates. It checks Next Header and the replay window, and moves
+// seq. It returns the payload, or false. It does not count the packet: check_in counts it after the
+// meters.
+func (sa *rxSA) opened(seq uint32, pkt []byte, ok bool) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
@@ -110,7 +141,7 @@ func (sa *rxSA) opened(h psp.Header, pkt []byte, ok bool) ([]byte, bool) {
 		return nil, false
 	}
 	sa.mu.Lock()
-	ok = sa.window.Check(h.Seq)
+	ok = sa.window.Check(seq)
 	last := sa.window.Last()
 	sa.mu.Unlock()
 	if !ok {

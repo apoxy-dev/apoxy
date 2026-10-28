@@ -18,6 +18,7 @@ type program struct {
 	newTypes []*newType
 	structs  []*structType // Headers and structs, in source order.
 	externs  []*externType
+	funcs    []*method // The extern functions.
 	parsers  []*parserDecl
 	controls []*controlDecl
 	main     *packageInst
@@ -82,6 +83,16 @@ type (
 	list struct {
 		pos
 		elems []node
+	}
+	// errorLit is error.name of core.p4.
+	errorLit struct {
+		pos
+		name string
+	}
+	// rangeExpr is lo .. hi in a select case.
+	rangeExpr struct {
+		pos
+		lo, hi node
 	}
 )
 
@@ -257,6 +268,8 @@ func inspect(n node, f func(node) bool) {
 		each(n.x)
 	case *list:
 		each(n.elems...)
+	case *rangeExpr:
+		each(n.lo, n.hi)
 	case *block:
 		each(n.stmts...)
 	case *varDecl:

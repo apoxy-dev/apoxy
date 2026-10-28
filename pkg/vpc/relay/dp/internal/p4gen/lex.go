@@ -33,7 +33,7 @@ var includes = map[string]bool{"#include <core.p4>": true, "#include <v1model.p4
 
 // Two-character operators. The lexer gives each '>' alone, so that `lookahead<bit<8>>()`
 // closes two type lists; the expression parser joins '>' with a '>' or '=' next to it.
-var punct2 = []string{"<<", "<=", "==", "!=", "&&", "||"}
+var punct2 = []string{"<<", "<=", "==", "!=", "&&", "||", ".."}
 
 const punct1 = "{}()[]<>;:,.=+-*/%&|^~!?@"
 

@@ -17,6 +17,8 @@ var (
 	counterUnits = map[string]bool{"packets": true, "bytes": true, "packets_and_bytes": true}
 	meterUnits   = map[string]bool{"packets": true, "bytes": true}
 	headerOps    = []string{"isValid", "setValid", "setInvalid"}
+	// The errors of core.p4, in their order.
+	coreErrors = []string{"NoError", "PacketTooShort", "NoMatch", "StackOutOfBounds", "HeaderTooShort", "ParserTimeout", "ParserInvalidArgument"}
 )
 
 const pspSa = "PspSa"
@@ -28,6 +30,26 @@ func check(file string, prog *program) error {
 		if e.name != pspSa {
 			return errAt(file, e, "extern %s is not in the subset; only extern %s is", e.name, pspSa)
 		}
+	}
+	for _, f := range prog.funcs {
+		if prog.extern(f.name) != nil || prog.function(f.name) != f {
+			return errAt(file, f, "extern function %s is declared two times", f.name)
+		}
+		for _, prm := range f.params {
+			if prm.dir != "in" && prm.dir != "out" {
+				return errAt(file, prm, "a parameter of extern function %s must be in or out", f.name)
+			}
+		}
+	}
+	var badErr error
+	inspect(progNodes(prog), func(n node) bool {
+		if e, ok := n.(*errorLit); ok && badErr == nil && !slices.Contains(coreErrors, e.name) {
+			badErr = errAt(file, e, "error.%s is not an error of core.p4", e.name)
+		}
+		return badErr == nil
+	})
+	if badErr != nil {
+		return badErr
 	}
 	pk := prog.main
 	if pk.typ != "V1Switch" || pk.name != "main" || len(pk.args) != 6 {
@@ -80,9 +102,17 @@ func checkParser(file string, prog *program, d *parserDecl) error {
 			}
 			targets = targets[:0]
 			for _, c := range t.cases {
-				if c.val != nil {
-					if _, ok := prog.constValue(c.val); !ok {
-						return errAt(file, c, "a select case must be a constant")
+				var vals []node
+				switch v := c.val.(type) {
+				case nil:
+				case *rangeExpr:
+					vals = []node{v.lo, v.hi}
+				default:
+					vals = []node{v}
+				}
+				for _, v := range vals {
+					if _, ok := prog.constValue(v); !ok {
+						return errAt(file, c, "a select case must be a constant or a range of two constants")
 					}
 				}
 				targets = append(targets, c.to)
@@ -197,7 +227,7 @@ func (s *scope) calls(n node) error {
 
 func (s *scope) call(c *call) error {
 	if id, ok := c.fun.(*ident); ok {
-		if s.ctl != nil && (s.ctl.action(id.name) != nil || id.name == "mark_to_drop") && len(c.typeArgs) == 0 {
+		if s.ctl != nil && (s.ctl.action(id.name) != nil || id.name == "mark_to_drop" || s.prog.function(id.name) != nil) && len(c.typeArgs) == 0 {
 			return nil
 		}
 		return errAt(s.file, c, "a call of %s is not in the subset here", id.name)
@@ -275,6 +305,35 @@ func (prog *program) extern(name string) *externType {
 		}
 	}
 	return nil
+}
+
+func (prog *program) function(name string) *method {
+	for _, f := range prog.funcs {
+		if f.name == name {
+			return f
+		}
+	}
+	return nil
+}
+
+// progNodes returns the bodies of the parsers and controls of prog as one block.
+func progNodes(prog *program) node {
+	b := &block{}
+	for _, d := range prog.parsers {
+		for _, s := range d.states {
+			b.stmts = append(b.stmts, s.stmts...)
+			if s.next.sel != nil {
+				b.stmts = append(b.stmts, s.next.sel)
+			}
+		}
+	}
+	for _, c := range prog.controls {
+		for _, a := range c.actions {
+			b.stmts = append(b.stmts, a.body)
+		}
+		b.stmts = append(b.stmts, c.apply)
+	}
+	return b
 }
 
 func (prog *program) structType(name string) *structType {

@@ -120,6 +120,30 @@ func lookup[V any](t *bart.Table[V], a netip.Addr) (V, bool) {
 	return t.Lookup(a)
 }
 
+// The table lookups of the generated apply: the entry of the keys, or nil.
+
+func (s *state) lookupPorts(port uint64) *entry[PortsKey] { return s.ports[port] }
+
+func (s *state) lookupClassify(port, session uint64, tag uint32) *entry[ClassifyKey] {
+	return s.classify[ClassifyKey{Port: port, Session: session, Tag: tag}]
+}
+
+func (s *state) lookupSource(port, session uint64, tag uint32, src netip.Addr) *entry[SourceKey] {
+	if t := s.source[setKey{port, session, tag}]; t != nil {
+		e, _ := lookup(t, src)
+		return e
+	}
+	return nil
+}
+
+func (s *state) lookupRoute(vpc uint32, dst netip.Addr) *entry[RouteKey] {
+	if t := s.route[vpc]; t != nil {
+		e, _ := lookup(t, dst)
+		return e
+	}
+	return nil
+}
+
 // trieChange is the change of one source or route trie in a Write. The DELETEs of prefixes of old
 // go into del, and the INSERTs and MODIFYs into add: new tries that no part reads. At the end of
 // the Write one path-copy call removes del from old and one adds add, and each call copies each
