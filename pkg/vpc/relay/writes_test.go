@@ -623,8 +623,16 @@ func TestTableWriteChain(t *testing.T) {
 		srcA, srcB netip.Addr
 		sock       *net.UDPConn
 	)
+	// In the Drain case, relay-2 (other) has agent-b with the same route as agent-a on relay-1.
+	const drainPrefix = "fd00:3::/64"
+	var (
+		other  *env
+		member *agent
+		idB    string
+	)
 	cases := []struct {
 		name string
+		mesh bool // relay-1 is in a mesh with other.
 		// setup runs before the call. Its last step writes, so the interval is not over at the call.
 		setup func(t *testing.T, e *env, a *agent)
 		// call makes the call and returns the arrival time of each answer.
@@ -751,11 +759,63 @@ func TestTableWriteChain(t *testing.T) {
 			},
 			need: []func(*p4.Update) bool{isTable(p4.Update_MODIFY, dp.TablePorts)},
 		},
+		{
+			// The Draining state moves the route to agent-b, and the member gets it before Drain.
+			name: "Drain",
+			mesh: true,
+			setup: func(t *testing.T, e *env, a *agent) {
+				a.open(dpv1.Mode_MODE_QUIC)
+				idA := a.attach(drainPrefix).GetAttachmentId()
+				b := other.dial(t, "agent-b")
+				b.open(dpv1.Mode_MODE_QUIC)
+				idB = b.attach(drainPrefix).GetAttachmentId()
+				member = e.dial(t, "member")
+				member.open(dpv1.Mode_MODE_QUIC)
+				require.Eventually(t, func() bool {
+					r := member.route(drainPrefix)
+					return r.GetOrigin() == idA && slices.Contains(r.GetStandby(), idB)
+				}, wait, 10*time.Millisecond)
+				// The Welcome comes after a write, so the interval is not over at the call.
+				e.dial(t, "agent-h").open(dpv1.Mode_MODE_QUIC)
+			},
+			call: func(t *testing.T, e *env, _ *agent) []time.Time {
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					e.srv.Drain(ctx)
+				}()
+				t.Cleanup(func() {
+					cancel()
+					<-done
+				})
+				isDrain := func(m *dpv1.SessionResponse) bool { return m.GetDrain() != nil }
+				moved := func(m *dpv1.SessionResponse) bool {
+					return slices.ContainsFunc(m.GetRouteDelta().GetAdd(), func(r *dpv1.Route) bool {
+						return r.GetPrefix() == drainPrefix && r.GetOrigin() == idB
+					})
+				}
+				at := member.arrival(isDrain)
+				member.arrival(moved)
+				member.mu.Lock()
+				iMoved, iDrain := slices.IndexFunc(member.msgs, moved), slices.IndexFunc(member.msgs, isDrain)
+				member.mu.Unlock()
+				require.Less(t, iMoved, iDrain, "the member got Drain before the route with the origin agent-b")
+				return []time.Time{at}
+			},
+			need: []func(*p4.Update) bool{isTable(p4.Update_MODIFY, dp.TableRoute)},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &writeLog{}
-			e := newEnvWith(t, envOpts{interval: new(time.Second), writes: log})
+			o := envOpts{interval: new(time.Second), writes: log}
+			var e *env
+			if tc.mesh {
+				e, other = newMesh(t, o, envOpts{interval: new(time.Duration(0))})
+			} else {
+				e = newEnvWith(t, o)
+			}
 			a := e.dial(t, "agent-a")
 			tc.setup(t, e, a)
 			t0 := time.Now()

@@ -632,12 +632,18 @@ func (v *vpcProc) setState(a *aChild, state dpv1.AnnouncerState, reason string, 
 func (v *vpcProc) drain(e toDrain) {
 	v.draining, v.alts = true, e.alternates
 	now := time.Now()
-	for _, a := range v.as {
+	as := slices.Collect(maps.Values(v.as))
+	for _, a := range as {
 		if a.state != stateSuspect {
 			v.setState(a, stateDraining, "relay drains", now)
 		}
-		a.box.send(e)
 	}
+	// The root writes the Draining routes at once. Drain goes after them, so each agent gets them first.
+	v.answerCall(func() {
+		for _, a := range as {
+			a.box.send(e)
+		}
+	})
 }
 
 // connEnded removes the candidates of an A that ended, and tells the root.

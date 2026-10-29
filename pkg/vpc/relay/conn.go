@@ -284,7 +284,8 @@ func (a *connProc) open() {
 		}}},
 	}
 	if a.drained {
-		head = append(head, a.drainMsg())
+		// The Drain goes after the first table.
+		a.out.queue(a.drainMsg())
 	}
 	w := &writer{st: a.st, values: a.down, s: a.s, out: a.out}
 	a.readerOn, a.writerOn = true, true

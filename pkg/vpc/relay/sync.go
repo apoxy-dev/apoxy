@@ -121,6 +121,8 @@ func (w *writer) run(ctx context.Context, head []*dpv1.SessionResponse) error {
 // ends the first table.
 func (w *writer) take() []*dpv1.SessionResponse {
 	first := w.rev == 0
+	// The queued messages are taken before the route table, so the table has the routes stored before them.
+	msgs, rep := w.out.take()
 	var out []*dpv1.SessionResponse
 	for _, d := range w.parts(load[*routeTable](w.values, keyRoutes).view(w.s)) {
 		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RouteDelta{RouteDelta: d}})
@@ -129,7 +131,6 @@ func (w *writer) take() []*dpv1.SessionResponse {
 		w.rev++
 		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RouteDelta{RouteDelta: &dpv1.RouteDelta{Rev: w.rev}}})
 	}
-	msgs, rep := w.out.take()
 	out = append(out, msgs...)
 	if rep != nil {
 		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RxReport{RxReport: rep}})
