@@ -39,15 +39,9 @@ const (
 	driverTun      = "tun"
 )
 
-var transportModes = map[string]agent.TransportMode{
-	"auto": agent.TransportAuto,
-	"quic": agent.TransportQUIC,
-}
-
 // connectOptions are the flags of vpc connect.
 type connectOptions struct {
 	name      string
-	transport string
 	driver    string
 	routes    []string
 	labels    map[string]string
@@ -107,7 +101,6 @@ gets a new certificate, the host uses it with no restart.`,
 func (o *connectOptions) addFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
 	f.StringVar(&o.name, "name", "", "Attachment name, a DNS label (default: the host name).")
-	f.StringVar(&o.transport, "transport", "auto", "Data transport: auto or quic. Auto starts on quic, and changes to psp when the path to the relay carries psp.")
 	f.StringVar(&o.driver, "driver", "auto", "Data path: auto, netstack or tun. Auto uses tun when the process has NET_ADMIN, else netstack.")
 	f.StringArrayVar(&o.routes, "route", nil, "CIDR behind this host. Repeatable. The VPC is IPv6 only: the host advertises each IPv6 CIDR into the VPC and does not send an IPv4 CIDR. "+
 		"On a netstack host an IPv4 CIDR names the IPv4 addresses that the host dials for a packet to its VPC /96 with the IPv4 address in the last 32 bits.")
@@ -131,11 +124,6 @@ func (o *connectOptions) agentConfig(host string, canTun bool) (agent.Config, st
 	if err := identity.ValidateAgentName(cfg.Name); err != nil {
 		return cfg, "", fmt.Errorf("%w; set --name", err)
 	}
-	mode, ok := transportModes[o.transport]
-	if !ok {
-		return cfg, "", fmt.Errorf("invalid --transport %q: use auto or quic", o.transport)
-	}
-	cfg.TransportMode = mode
 	driver := o.driver
 	switch driver {
 	case "auto":

@@ -32,7 +32,6 @@ func TestAgentConfig(t *testing.T) {
 
 		wantErr       bool
 		wantName      string
-		wantMode      agent.TransportMode
 		wantDriver    string
 		wantMTU       int
 		wantRoutes    []netip.Prefix
@@ -46,7 +45,6 @@ func TestAgentConfig(t *testing.T) {
 			name:          "defaults without NET_ADMIN",
 			host:          "Build-Host.example.com",
 			wantName:      "build-host",
-			wantMode:      agent.TransportAuto,
 			wantDriver:    driverNetstack,
 			wantSocksAddr: "localhost:1080",
 			wantTunIfname: "apoxy0",
@@ -78,26 +76,6 @@ func TestAgentConfig(t *testing.T) {
 		{
 			name:    "unknown driver",
 			args:    []string{"--driver", "afxdp"},
-			host:    "node1",
-			wantErr: true,
-		},
-		{
-			name:    "psp transport",
-			args:    []string{"--transport", "psp"},
-			host:    "node1",
-			wantErr: true,
-		},
-		{
-			name:       "quic transport",
-			args:       []string{"--transport", "quic"},
-			host:       "node1",
-			wantName:   "node1",
-			wantMode:   agent.TransportQUIC,
-			wantDriver: driverNetstack,
-		},
-		{
-			name:    "unknown transport",
-			args:    []string{"--transport", "tcp"},
 			host:    "node1",
 			wantErr: true,
 		},
@@ -232,7 +210,6 @@ func TestAgentConfig(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, tc.wantName, cfg.Name)
-			require.Equal(t, tc.wantMode, cfg.TransportMode)
 			require.Equal(t, tc.wantDriver, driver)
 			require.Equal(t, tc.wantMTU, cfg.MTU)
 			require.Equal(t, tc.wantRoutes, cfg.Routes)
