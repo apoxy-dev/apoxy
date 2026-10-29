@@ -17,10 +17,12 @@ import (
 
 // The CPU plan of the device (plan D-i). Each queue gets its own physical core for its interrupts:
 // a queue keeps the CPU of its interrupt when that core has no other queue, else its interrupts
-// move to the first free core. The RX goroutine of a queue runs on the SMT sibling of its interrupt
-// CPU. One worker runs on each physical core with no queue interrupt, at most one for each TX
-// queue and at least one, and the kicker of TX queue w on the sibling of worker w. A thread with no
-// CPU in the plan runs where the scheduler puts it.
+// move to the first free core. When the host has fewer physical cores than queues, the queues with
+// no free core share the cores in turn: their interrupts go to the lead CPU of the next core. The
+// RX goroutine of a queue runs on the SMT sibling of its interrupt CPU. One worker runs on each
+// physical core with no queue interrupt, at most one for each TX queue and at least one, and the
+// kicker of TX queue w on the sibling of worker w. A thread with no CPU in the plan runs where the
+// scheduler puts it.
 
 // cpuPlan is the CPU of each RX goroutine, worker and kicker (-1: none), and the interrupt CPU of
 // each queue.
@@ -43,8 +45,9 @@ type cpuTopology struct {
 	irqCPUs  map[int][]int // The CPUs of each interrupt now.
 }
 
-// makePlan returns the plan of t for nRx RX queues and nTx TX queues. It fails when a queue has
-// no physical core for its interrupts.
+// makePlan returns the plan of t for nRx RX queues and nTx TX queues. When no free core is left
+// for a queue, its interrupts share a core with other queues, the cores in turn. It fails only
+// when t has no CPU.
 func makePlan(t cpuTopology, nRx, nTx int) (cpuPlan, error) {
 	in := map[int]bool{}
 	for _, c := range t.cpus {
@@ -81,6 +84,7 @@ func makePlan(t cpuTopology, nRx, nTx int) (cpuPlan, error) {
 			used[core(cpus[0])] = true
 		}
 	}
+	next := 0 // The core that the next queue with no free core shares.
 	for q := range nRx {
 		if p.irq[q] >= 0 {
 			continue
@@ -92,9 +96,14 @@ func makePlan(t cpuTopology, nRx, nTx int) (cpuPlan, error) {
 				break
 			}
 		}
-		if p.irq[q] < 0 {
-			return cpuPlan{}, fmt.Errorf("no free physical core for the interrupts of queue %d: %d queues, %d cores", q, nRx, len(cores))
+		if p.irq[q] >= 0 {
+			continue
 		}
+		if len(cores) == 0 {
+			return cpuPlan{}, fmt.Errorf("no CPU for the interrupts of queue %d", q)
+		}
+		p.irq[q] = lead[cores[next%len(cores)]]
+		next++
 	}
 	for _, c := range p.irq {
 		p.rx = append(p.rx, other(c))
@@ -118,10 +127,10 @@ func makePlan(t cpuTopology, nRx, nTx int) (cpuPlan, error) {
 }
 
 // placeCPUs makes the CPU plan of d from the sysfs at sys and the procfs at proc, places the queue
-// interrupts, and sets the CPU of each thread. cpus is the CPU set of the relay. A link with no
-// device (veth) has no queue interrupts: it gets no plan. When it fails, it puts back the
-// interrupt affinities that it changed, and the relay must not start. Run puts them back when it
-// stops.
+// interrupts, and sets the CPU of each thread. cpus is the CPU set of the relay. It logs a warning
+// when queues share a core. A link with no device (veth) has no queue interrupts: it gets no plan.
+// When it fails, it puts back the interrupt affinities that it changed, and the relay must not
+// start. Run puts them back when it stops.
 func (d *Device) placeCPUs(sys, proc string, cpus []int) error {
 	link := d.ifc.Name
 	if _, err := os.Stat(filepath.Join(sys, "class/net", link, "device")); errors.Is(err, os.ErrNotExist) {
@@ -136,6 +145,14 @@ func (d *Device) placeCPUs(sys, proc string, cpus []int) error {
 	p, err := makePlan(t, nRx, nTx)
 	if err != nil {
 		return err
+	}
+	cores := map[int]bool{}
+	for _, c := range t.cpus {
+		cores[t.siblings[c][0]] = true
+	}
+	if nRx > len(cores) {
+		slog.Warn("The host has fewer physical cores than queues, so queues share a core for their interrupts",
+			"link", link, "queues", nRx, "cores", len(cores))
 	}
 	saved, err := setIRQs(proc, t.irqs, p.irq)
 	if err != nil {

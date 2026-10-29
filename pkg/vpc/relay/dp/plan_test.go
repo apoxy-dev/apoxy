@@ -96,10 +96,38 @@ func TestMakePlan(t *testing.T) {
 			want: cpuPlan{irq: []int{5}, rx: []int{1}, wk: []int{4}, kick: []int{-1}},
 		},
 		{
-			name: "more queues than physical cores",
+			name: "more queues than physical cores: the queues share the core",
 			topo: cpuTopology{cpus: []int{0, 4}, siblings: smt(4, 0, 4),
 				irqs: map[int][]int{0: {100}, 1: {101}}, irqCPUs: map[int][]int{100: {0}, 101: {4}}},
-			nRx: 2, nTx: 2, err: true,
+			nRx: 2, nTx: 2,
+			want: cpuPlan{irq: []int{0, 0}, rx: []int{4, 4}, wk: []int{-1}, kick: []int{-1, -1}},
+		},
+		{
+			name: "c6in.large: one core with two SMT siblings and two queues",
+			topo: cpuTopology{cpus: []int{0, 1}, siblings: smt(1, 0, 1),
+				irqs: map[int][]int{0: {100}, 1: {101}}, irqCPUs: map[int][]int{100: {0}, 101: {1}}},
+			nRx: 2, nTx: 2,
+			want: cpuPlan{irq: []int{0, 0}, rx: []int{1, 1}, wk: []int{-1}, kick: []int{-1, -1}},
+		},
+		{
+			name: "two cores and three queues",
+			topo: cpuTopology{cpus: span(0, 3), siblings: smt(2, span(0, 3)...),
+				irqs: map[int][]int{0: {100}, 1: {101}, 2: {102}}, irqCPUs: map[int][]int{100: {0}, 101: {1}, 102: {2}}},
+			nRx: 3, nTx: 3,
+			want: cpuPlan{irq: []int{0, 1, 0}, rx: []int{2, 3, 2}, wk: []int{-1}, kick: []int{-1, -1, -1}},
+		},
+		{
+			name: "two cores and five queues: the queues share the cores in turn",
+			topo: cpuTopology{cpus: span(0, 3), siblings: smt(2, span(0, 3)...),
+				irqs:    map[int][]int{0: {100}, 1: {101}, 2: {102}, 3: {103}, 4: {104}},
+				irqCPUs: map[int][]int{100: {3}, 101: {2}, 102: {0}, 103: {1}, 104: {0}}},
+			nRx: 5, nTx: 2,
+			want: cpuPlan{irq: []int{3, 2, 0, 1, 0}, rx: []int{1, 0, 2, 3, 2}, wk: []int{-1}, kick: []int{-1, -1}},
+		},
+		{
+			name: "no CPU",
+			topo: cpuTopology{irqs: map[int][]int{0: {100}}, irqCPUs: map[int][]int{100: {0}}},
+			nRx:  1, nTx: 1, err: true,
 		},
 	}
 	for _, tc := range cases {
@@ -192,9 +220,9 @@ func TestPlaceCPUs(t *testing.T) {
 			rx: nil, wk: []int{-1, -1}, kick: []int{-1, -1}, steer: map[uint32]int{engSPIA1: 0, engSPIA3: 1},
 		},
 		{
-			name: "more queues than cores", cpus: []int{0, 4}, irqs: map[int]string{0: "0", 1: "4"}, err: true,
-			after: map[int][]int{100: {0}, 101: {4}}, wk: []int{-1, -1}, kick: []int{-1, -1},
-			steer: map[uint32]int{engSPIA1: 0, engSPIA3: 1},
+			name: "more queues than cores: the queues share the core", cpus: []int{0, 4}, irqs: map[int]string{0: "0", 1: "4"},
+			after: map[int][]int{100: {0}, 101: {0}}, rx: []int{4, 4}, wk: []int{-1}, kick: []int{-1, -1},
+			steer: map[uint32]int{engSPIA1: 0, engSPIA3: 0},
 		},
 		{
 			name: "a failed setup puts the affinities back", cpus: span(0, 7), irqs: map[int]string{0: "0-7"}, badIRQ: true, err: true,
