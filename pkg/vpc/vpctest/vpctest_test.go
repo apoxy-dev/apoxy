@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
@@ -167,6 +169,54 @@ func TestAddresses(t *testing.T) {
 			for s, want := range tc.live {
 				assert.Equal(t, want, a.LiveOf(s), s)
 			}
+		})
+	}
+}
+
+// TestNoProbeConn checks that NoProbeConn drops the PSP path probes and sends
+// each other packet, on both write paths of QUIC.
+func TestNoProbeConn(t *testing.T) {
+	probe := p2p.AppendProbe(nil, p2p.Probe{Counter: 1}, 0, new([32]byte))
+	other := []byte{0x40, 1, 2, 3} // A QUIC short header packet.
+	cases := []struct {
+		name string
+		pkt  []byte
+		msg  bool // Sends with WriteMsgUDP, as QUIC does on a *net.UDPConn.
+		sent bool
+	}{
+		{name: "probe with WriteTo", pkt: probe},
+		{name: "probe with WriteMsgUDP", pkt: probe, msg: true},
+		{name: "QUIC with WriteTo", pkt: other, sent: true},
+		{name: "QUIC with WriteMsgUDP", pkt: other, msg: true, sent: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rx, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			require.NoError(t, err)
+			defer rx.Close()
+			tx, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			require.NoError(t, err)
+			defer tx.Close()
+			c := NoProbeConn{tx}
+			to := rx.LocalAddr().(*net.UDPAddr)
+			var n int
+			if tc.msg {
+				n, _, err = c.WriteMsgUDP(tc.pkt, nil, to)
+			} else {
+				n, err = c.WriteTo(tc.pkt, to)
+			}
+			require.NoError(t, err)
+			assert.Equal(t, len(tc.pkt), n)
+
+			_ = rx.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+			buf := make([]byte, 2048)
+			n, _, err = rx.ReadFromUDP(buf)
+			if !tc.sent {
+				require.Error(t, err, "the conn sent the probe")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.pkt, buf[:n])
 		})
 	}
 }

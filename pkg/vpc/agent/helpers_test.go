@@ -665,6 +665,8 @@ type testAgent struct {
 	// pspPath reports whether the PSP probes of the agent get a reply. Then
 	// attached waits for PSP mode.
 	pspPath func() bool
+	// noPSP makes attached wait until the first probe of the session fails.
+	noPSP bool
 
 	stackOnce sync.Once
 	stack     *stack.Stack
@@ -689,7 +691,9 @@ type agentOptions struct {
 	block *blockConn    // Wraps the agent socket if set.
 	slow  *slowConn     // Wraps the agent socket if set.
 	move  *moveConn     // Wraps the agent socket if set.
-	mode  TransportMode
+	// noPSP makes the agent socket a vpctest.NoProbeConn, so the sessions fall
+	// back to QUIC mode. attached then waits for the probe timeout.
+	noPSP bool
 	// quicStart makes attached return while the session is in QUIC mode. Else it
 	// waits for PSP mode when the PSP probes of the agent get a reply.
 	quicStart bool
@@ -863,6 +867,9 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		udp = loopback(t)
 	}
 	var conn net.PacketConn = udp
+	if opts.noPSP {
+		conn = vpctest.NoProbeConn{UDPConn: udp}
+	}
 	if opts.conn != nil {
 		opts.conn.PacketConn = conn
 		conn = opts.conn
@@ -884,8 +891,9 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		routes: map[netip.Prefix]bool{}, extras: map[string]netip.Addr{}, vpcStack: opts.vpcStack,
 	}
 	ta.pspPath = func() bool {
-		return opts.mode != TransportQUIC && !opts.quicStart && (opts.conn == nil || !opts.conn.limitProbes.Load())
+		return !opts.noPSP && !opts.quicStart && (opts.conn == nil || !opts.conn.limitProbes.Load())
 	}
+	ta.noPSP = opts.noPSP && !opts.quicStart
 	enroll := func(context.Context) (*identity.Credential, error) {
 		n := ta.enrolls.Add(1)
 		cred := w.enrollCA().credential(t, testProject, testVPC, cmp.Or(opts.identity, name), opts.life)
@@ -918,15 +926,14 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		opts.relays, opts.noRoots = nil, true
 	}
 	cfg := Config{
-		Identity:      ids,
-		Relays:        opts.relays,
-		RelayRoots:    w.relayCA.Pool(),
-		Sessions:      cmp.Or(opts.sessions, 1),
-		Transport:     ta.tr,
-		TransportMode: opts.mode,
-		Name:          name,
-		Routes:        opts.routes,
-		MTU:           opts.mtu,
+		Identity:   ids,
+		Relays:     opts.relays,
+		RelayRoots: w.relayCA.Pool(),
+		Sessions:   cmp.Or(opts.sessions, 1),
+		Transport:  ta.tr,
+		Name:       name,
+		Routes:     opts.routes,
+		MTU:        opts.mtu,
 
 		LocalRoutesOnly: opts.localRoutesOnly,
 		// A first PSP probe that a loaded host loses must not keep a session in QUIC mode.
@@ -1214,15 +1221,30 @@ func (ta *testAgent) modeOf(addr netip.Addr) dp.Mode {
 	return dp.Mode_MODE_UNSPECIFIED
 }
 
-// attached waits for the next OnAttach call. Each session starts in QUIC mode,
-// so it also waits for the change to PSP mode of an agent with a PSP path.
+// fellBack reports whether the session with the address addr is in QUIC mode
+// because its probe failed.
+func (ta *testAgent) fellBack(addr netip.Addr) bool {
+	for _, c := range ta.a.Status().Connections {
+		if c.Address == addr {
+			return c.Mode == dp.Mode_MODE_QUIC && c.Reason == dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
+		}
+	}
+	return false
+}
+
+// attached waits for the next OnAttach call, then for PSP mode of an agent with a
+// PSP path, or for the probe timeout of an agent with agentOptions.noPSP.
 func (ta *testAgent) attached(t *testing.T) attachEvent {
 	t.Helper()
 	select {
 	case ev := <-ta.attach:
-		if ta.pspPath() {
+		switch {
+		case ta.pspPath():
 			require.Eventually(t, func() bool { return ta.modeOf(ev.addr) == dp.Mode_MODE_PSP }, 10*time.Second, time.Millisecond,
 				"session did not change to PSP mode")
+		case ta.noPSP:
+			require.Eventually(t, func() bool { return ta.fellBack(ev.addr) }, 10*time.Second, time.Millisecond,
+				"session did not fall back to QUIC mode")
 		}
 		return ev
 	case <-time.After(10 * time.Second):

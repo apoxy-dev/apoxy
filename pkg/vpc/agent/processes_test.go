@@ -172,8 +172,10 @@ func TestProcesses(t *testing.T) {
 		}},
 		{name: "latency change with no session event", run: func(t *testing.T, w *world, r *testRelay) {
 			slow := &slowConn{}
-			a := w.agent(t, "a", r, agentOptions{mode: TransportQUIC, slow: slow})
-			b := w.agent(t, "b", r, agentOptions{mode: TransportQUIC})
+			// No probe retry runs in the RTT checks: a retry sends a status update.
+			retry := [3]time.Duration{time.Minute}
+			a := w.agent(t, "a", r, agentOptions{noPSP: true, slow: slow, pspRetry: retry})
+			b := w.agent(t, "b", r, agentOptions{noPSP: true, pspRetry: retry})
 			ea, eb := a.attached(t), b.attached(t)
 			echo(t, b.stack, eb.addr, 9000)
 			// The RTT is the smoothed RTT of the QUIC connection, and the data

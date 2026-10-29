@@ -108,14 +108,12 @@ func TestPSPRetry(t *testing.T) {
 func TestSessionStart(t *testing.T) {
 	cases := []struct {
 		name   string
-		mode   TransportMode
 		drop   bool // The PSP port of the relay drops each packet.
 		want   dp.Mode
 		reason dp.FallbackReason
 	}{
 		{name: "PSP path passes", want: dp.Mode_MODE_PSP},
 		{name: "PSP port drops packets", drop: true, want: dp.Mode_MODE_QUIC, reason: dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT},
-		{name: "QUIC mode in the config", mode: TransportQUIC, want: dp.Mode_MODE_QUIC, reason: dp.FallbackReason_FALLBACK_REASON_CONFIG},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -123,7 +121,7 @@ func TestSessionStart(t *testing.T) {
 			r := w.relay(t, "relay-1")
 			conn := &lossyConn{}
 			conn.limitProbes.Store(tc.drop)
-			a := w.agent(t, "a", r, agentOptions{conn: conn, mode: tc.mode, tcp: true, quicStart: true, pspRetry: [3]time.Duration{time.Minute}})
+			a := w.agent(t, "a", r, agentOptions{conn: conn, tcp: true, quicStart: true, pspRetry: [3]time.Duration{time.Minute}})
 			b := w.agent(t, "b", r, agentOptions{tcp: true})
 			ea, eb := a.attached(t), b.attached(t)
 			rc, id := a.current(), a.a.Attachments()[0].ID
@@ -143,9 +141,6 @@ func TestSessionStart(t *testing.T) {
 			} else {
 				require.Never(t, func() bool { return conn.probes.Load() > sent }, checkTx+checkTx/2, 25*time.Millisecond,
 					"a session in QUIC mode sent a probe")
-			}
-			if tc.mode == TransportQUIC {
-				assert.Zero(t, sent, "probes of an agent with QUIC mode in its config")
 			}
 			st := a.a.Status()
 			assert.Equal(t, tc.want, st.Mode)

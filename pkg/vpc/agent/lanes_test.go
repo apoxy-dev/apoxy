@@ -34,8 +34,8 @@ func TestLanes(t *testing.T) {
 			w := newWorld(t)
 			w.relayCfg = relay.Config{LaneSources: tc.relayLanes}
 			r := w.relay(t, "relay-1")
-			a := w.agent(t, "a", r, agentOptions{mode: TransportAuto, lanes: tc.lanes})
-			b := w.agent(t, "b", r, agentOptions{mode: TransportAuto, lanes: tc.lanes})
+			a := w.agent(t, "a", r, agentOptions{lanes: tc.lanes})
+			b := w.agent(t, "b", r, agentOptions{lanes: tc.lanes})
 			ea, eb := a.attached(t), b.attached(t)
 			require.Eventually(t, func() bool { return a.a.Status().Mode == dp.Mode_MODE_PSP }, 10*time.Second, 10*time.Millisecond,
 				"the session commits to PSP mode")

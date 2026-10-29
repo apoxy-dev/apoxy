@@ -296,28 +296,29 @@ func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, na
 	if err != nil {
 		return nil, err
 	}
-	tr := &quic.Transport{Conn: uc}
+	var conn net.PacketConn = uc
+	if o.Transport == "quic" {
+		// The binding sets these options only on a *net.UDPConn, so the QUIC run sets them here.
+		psp.SetSocketOptions(uc)
+		conn = vpctest.NoProbeConn{UDPConn: uc}
+	}
+	tr := &quic.Transport{Conn: conn}
 	s := &side{uc: uc, stop: []func(){func() {
 		_ = tr.Close()
 		_ = uc.Close()
 	}}}
-	mode := agent.TransportAuto
-	if o.Transport == "quic" {
-		mode = agent.TransportQUIC
-	}
 	var mu sync.Mutex
 	attached := make(chan struct{})
 	s.a = agent.New(agent.Config{
 		Identity: identity.NewManager(cred, func(context.Context) (*identity.Credential, error) {
 			return ca.Credential(project, vpcName, name, 24*time.Hour)
 		}),
-		Relays:        []identity.Relay{{ID: relayID, Addresses: []string{relayAddr}}},
-		RelayRoots:    ca.Pool(),
-		Sessions:      1,
-		Transport:     tr,
-		TransportMode: mode,
-		Name:          name,
-		MTU:           o.MTU,
+		Relays:     []identity.Relay{{ID: relayID, Addresses: []string{relayAddr}}},
+		RelayRoots: ca.Pool(),
+		Sessions:   1,
+		Transport:  tr,
+		Name:       name,
+		MTU:        o.MTU,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, _ []netip.Prefix) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -351,11 +352,9 @@ func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, na
 		s.close()
 		return nil, fmt.Errorf("agent %s did not attach in %s", name, o.StartTimeout)
 	}
-	if o.Transport == "psp" {
-		if err := waitPSP(ctx, s.a, name, o.StartTimeout); err != nil {
-			s.close()
-			return nil, err
-		}
+	if err := waitMode(ctx, s.a, name, o.Transport, o.StartTimeout); err != nil {
+		s.close()
+		return nil, err
 	}
 	if err := s.startNet(ctx, fail, o, tunnet.NetworkPrefixOf(s.addr)); err != nil {
 		s.close()
@@ -364,17 +363,24 @@ func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, na
 	return s, nil
 }
 
-// waitPSP waits until the relay session of a is in PSP mode. Each session starts in
-// QUIC mode, so a run with -transport psp must not start before the change.
-func waitPSP(ctx context.Context, a *agent.Agent, name string, limit time.Duration) error {
+// waitMode waits until the relay session of a is in the mode of transport: PSP mode
+// after a probe passed, or QUIC mode after the probe failed.
+func waitMode(ctx context.Context, a *agent.Agent, name, transport string, limit time.Duration) error {
+	want, reason := dp.Mode_MODE_PSP, dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED
+	if transport == "quic" {
+		want, reason = dp.Mode_MODE_QUIC, dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
+	}
 	t := time.NewTicker(10 * time.Millisecond)
 	defer t.Stop()
 	end := time.After(limit)
-	for a.Status().Mode != dp.Mode_MODE_PSP {
+	for st := a.Status(); st.Mode != want || st.Reason != reason; st = a.Status() {
 		select {
 		case <-ctx.Done():
 			return context.Cause(ctx)
 		case <-end:
+			if transport == "quic" {
+				return fmt.Errorf("agent %s did not fall back to QUIC mode in %s: mode %s, reason %s", name, limit, st.Mode, st.Reason)
+			}
 			return fmt.Errorf("agent %s did not change to PSP mode in %s: the path to the PSP port of the relay carries no PSP", name, limit)
 		case <-t.C:
 		}

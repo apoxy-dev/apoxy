@@ -118,7 +118,8 @@ func (a *Agent) hello(d *dialed) error {
 	d.st = st
 	sent := time.Now()
 	if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{
-		Mode: a.wantedMode(), FallbackReason: a.configReason(), Version: a.ver, Name: a.cfg.Name,
+		// The agent asks for PSP mode, with no fallback reason. The relay only counts them.
+		Mode: dp.Mode_MODE_PSP, Version: a.ver, Name: a.cfg.Name,
 		// The relay tells two processes with one identity and one name apart by the instance.
 		Instance:        a.instance,
 		LocalRoutesOnly: a.cfg.LocalRoutesOnly,
@@ -160,21 +161,4 @@ func (a *Agent) hello(d *dialed) error {
 	}
 	d.config = cfg
 	return nil
-}
-
-// wantedMode returns the mode that Hello tells the relay. The relay only counts it.
-func (a *Agent) wantedMode() dp.Mode {
-	if a.wantsPSP() {
-		return dp.Mode_MODE_PSP
-	}
-	return dp.Mode_MODE_QUIC
-}
-
-// configReason returns the fallback reason of a new session: the config, or
-// none before the first probe.
-func (a *Agent) configReason() dp.FallbackReason {
-	if a.wantsPSP() {
-		return dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED
-	}
-	return dp.FallbackReason_FALLBACK_REASON_CONFIG
 }

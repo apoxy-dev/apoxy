@@ -78,7 +78,7 @@ func TestRelayRevisions(t *testing.T) {
 			runErr := make(chan error, 1)
 			// A relay that refuses the agent answers no path probe, so the agent sends
 			// PSP with no probe before Hello.
-			a := w.agent(t, "a", relays[0], agentOptions{relays: refs, runErr: runErr, mode: TransportAuto})
+			a := w.agent(t, "a", relays[0], agentOptions{relays: refs, runErr: runErr})
 
 			if tc.upgrade {
 				select {

@@ -23,8 +23,8 @@ func TestBreaker(t *testing.T) {
 	w := newWorld(t)
 	w.relayCfg = relay.Config{LaneRate: meter}
 	r := w.relay(t, "relay-1")
-	a := w.agent(t, "a", r, agentOptions{mode: TransportAuto})
-	b := w.agent(t, "b", r, agentOptions{mode: TransportAuto})
+	a := w.agent(t, "a", r, agentOptions{})
+	b := w.agent(t, "b", r, agentOptions{})
 	ea, eb := a.attached(t), b.attached(t)
 
 	sink, err := gonet.DialUDP(b.stack, fullAddr(eb.addr, 9000), nil, ipv6.ProtocolNumber)

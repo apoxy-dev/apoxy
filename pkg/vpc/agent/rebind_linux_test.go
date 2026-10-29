@@ -88,8 +88,8 @@ func roam(t *testing.T, noRoute time.Duration) {
 	// The relay takes lane ports, and drops them when the agent moves.
 	w.relayCfg.LaneSources = relay.MaxLaneSources
 	r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP), tap)
-	b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), mode: TransportAuto})
-	a := w.agent(t, "a", r, agentOptions{udp: udp, mode: TransportAuto, lanes: 4})
+	b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP)})
+	a := w.agent(t, "a", r, agentOptions{udp: udp, lanes: 4})
 	ea, eb := a.attached(t), b.attached(t)
 	echo(t, b.stack, eb.addr, 7)
 	ping(t, a.stack, ea.addr, eb.addr, 7, "before the move")

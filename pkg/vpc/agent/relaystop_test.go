@@ -49,11 +49,11 @@ func TestRelayStops(t *testing.T) {
 	const within = 9 * time.Second
 	cases := []struct {
 		name    string
-		mode    TransportMode
+		noPSP   bool // The PSP probes of the agent get no reply.
 		pspOnly bool // Only the PSP path between the agent and relay 1 stops.
 	}{
 		{name: "relay stops in PSP mode"},
-		{name: "relay stops in QUIC mode", mode: TransportQUIC},
+		{name: "relay stops in QUIC mode", noPSP: true},
 		{name: "PSP port stops", pspOnly: true},
 	}
 	for _, tc := range cases {
@@ -72,7 +72,7 @@ func TestRelayStops(t *testing.T) {
 			// and the session on relay 1 gets rank 0.
 			slow := &slowConn{}
 			slow.set(r2, 150*time.Millisecond)
-			a, rcs := w.agentOn(t, "a", agentOptions{mode: tc.mode, block: block, slow: slow, rttChoice: true, routes: []netip.Prefix{route}}, 2, r1, r2)
+			a, rcs := w.agentOn(t, "a", agentOptions{noPSP: tc.noPSP, block: block, slow: slow, rttChoice: true, routes: []netip.Prefix{route}}, 2, r1, r2)
 			slow.set(r2, 0)
 			require.Equal(t, r1.addr, rcs[0].addr, "relay of rank 0")
 			b := w.agent(t, "b", r2, agentOptions{})
@@ -85,7 +85,7 @@ func TestRelayStops(t *testing.T) {
 			require.True(t, sameSession(t, lost, a.current()))
 			ping(t, a.stack, far, eb.addr, 9000, "from the advertised network before")
 			want := dp.Mode_MODE_PSP
-			if tc.mode == TransportQUIC {
+			if tc.noPSP {
 				want = dp.Mode_MODE_QUIC
 			}
 			require.Equal(t, want, a.modeOf(lost.self))

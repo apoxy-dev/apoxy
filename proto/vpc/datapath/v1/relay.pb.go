@@ -88,11 +88,12 @@ func (RelayCloseCode) EnumDescriptor() ([]byte, []int) {
 type FallbackReason int32
 
 const (
-	// No fallback: the agent is in PSP mode.
+	// No fallback: the agent is in PSP mode, or in QUIC mode before the result
+	// of its first PSP probe.
 	FallbackReason_FALLBACK_REASON_UNSPECIFIED FallbackReason = 0
 	// No PSP probe got a reply before the probe timer ended.
 	FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT FallbackReason = 1
-	// The agent config sets QUIC mode.
+	// The agent config sets QUIC mode. Only older agents send it.
 	FallbackReason_FALLBACK_REASON_CONFIG FallbackReason = 2
 )
 

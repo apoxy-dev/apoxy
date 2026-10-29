@@ -172,6 +172,17 @@ type Binding struct {
 	load  laneLoad
 }
 
+// SetSocketOptions sets the buffers of the agent socket uc and makes it accept
+// a zero UDP checksum. New does this for a Transport.Conn that is a *net.UDPConn.
+func SetSocketOptions(uc *net.UDPConn) {
+	if err := setSockBufs(uc, sockBuf, sockBuf); err != nil {
+		slog.Debug("Failed to set the agent socket buffers", "bytes", sockBuf, "error", err)
+	}
+	if err := acceptZeroSum(uc); err != nil {
+		slog.Debug("Failed to make the agent socket accept a zero UDP checksum", "error", err)
+	}
+}
+
 // New returns a binding with a new master key and no peers.
 func New(cfg Config) (*Binding, error) {
 	if cfg.Transport == nil || cfg.Demux == nil || cfg.Transport.NonQUICPacketHandler == nil ||
@@ -237,12 +248,7 @@ func New(cfg Config) (*Binding, error) {
 		return nil, errors.New("psp: demux already has a binding")
 	}
 	if uc, ok := cfg.Transport.Conn.(*net.UDPConn); ok {
-		if err := setSockBufs(uc, sockBuf, sockBuf); err != nil {
-			slog.Debug("Failed to set the agent socket buffers", "bytes", sockBuf, "error", err)
-		}
-		if err := acceptZeroSum(uc); err != nil {
-			slog.Debug("Failed to make the agent socket accept a zero UDP checksum", "error", err)
-		}
+		SetSocketOptions(uc)
 	}
 	if err := cfg.Transport.Start(); err != nil {
 		_ = b.Close()

@@ -256,17 +256,17 @@ func TestAttachmentsOnNewSession(t *testing.T) {
 // detaches the extra attachment that b dialed its peer session to.
 func TestDetachDialedAttachment(t *testing.T) {
 	cases := []struct {
-		name string
-		mode TransportMode
+		name  string
+		noPSP bool // The PSP probes of a and b get no reply.
 	}{
-		{name: "PSP", mode: TransportAuto},
-		{name: "QUIC", mode: TransportQUIC},
+		{name: "PSP"},
+		{name: "QUIC", noPSP: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a, b := w.agent(t, "a", r, agentOptions{mode: tc.mode}), w.agent(t, "b", r, agentOptions{mode: tc.mode})
+			a, b := w.agent(t, "a", r, agentOptions{noPSP: tc.noPSP}), w.agent(t, "b", r, agentOptions{noPSP: tc.noPSP})
 			ea, eb := a.attached(t), b.attached(t)
 			echo(t, a.stack, ea.addr, 9001)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -322,7 +322,7 @@ func TestAttachmentMemory(t *testing.T) {
 		return
 	}
 	w := newWorld(t)
-	ta := w.agent(t, "a", w.relay(t, "relay-1"), agentOptions{mode: TransportQUIC})
+	ta := w.agent(t, "a", w.relay(t, "relay-1"), agentOptions{noPSP: true})
 	ta.attached(t)
 	a := ta.a
 	ctx := context.Background()
@@ -364,19 +364,19 @@ func TestAttachmentMemory(t *testing.T) {
 func TestExtraAttachments(t *testing.T) {
 	cases := []struct {
 		name   string
-		mode   TransportMode
+		noPSP  bool // The PSP probes of a get no reply.
 		before bool // a attaches the extra before the first packet.
 	}{
 		{name: "PSP, extra after the first packet"},
 		{name: "PSP, extra before the first packet", before: true},
-		{name: "QUIC, extra after the first packet", mode: TransportQUIC},
-		{name: "QUIC, extra before the first packet", mode: TransportQUIC, before: true},
+		{name: "QUIC, extra after the first packet", noPSP: true},
+		{name: "QUIC, extra before the first packet", noPSP: true, before: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a, b := w.agent(t, "a", r, agentOptions{mode: tc.mode}), w.agent(t, "b", r, agentOptions{})
+			a, b := w.agent(t, "a", r, agentOptions{noPSP: tc.noPSP}), w.agent(t, "b", r, agentOptions{})
 			ea, eb := a.attached(t), b.attached(t)
 			echo(t, a.stack, ea.addr, 9000)
 			echo(t, b.stack, eb.addr, 9001)

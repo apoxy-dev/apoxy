@@ -65,18 +65,6 @@ var relayQUIC = &quic.Config{
 
 var errNoRelay = errors.New("no relay session")
 
-// TransportMode picks how an agent sends data.
-type TransportMode int
-
-const (
-	// TransportAuto sends QUIC data frames at first, and PSP after the PSP path
-	// to the relay passes a probe.
-	TransportAuto TransportMode = iota
-	// TransportQUIC always sends QUIC data frames on the relay session. Only
-	// tests and benches use it.
-	TransportQUIC
-)
-
 type Config struct {
 	// Identity keeps the agent cert and the relays from enroll. Run starts it.
 	Identity *identity.Manager
@@ -95,9 +83,6 @@ type Config struct {
 	// not be in use yet, and its port must not have an XDP program. At the end
 	// of Run the agent sets a write deadline on its Conn.
 	Transport *quic.Transport
-	// TransportMode picks how data goes to the relays. The zero value is auto.
-	// Only tests and benches set it; the CLI always uses TransportAuto.
-	TransportMode TransportMode
 	// Name and labels of the attachment.
 	Name   string
 	Labels map[string]string
@@ -295,9 +280,6 @@ func (a *Agent) deviceMTU(vpcMTU int) int {
 	}
 	return vpcMTU
 }
-
-// wantsPSP reports whether a session changes to PSP mode when its PSP path passes.
-func (a *Agent) wantsPSP() bool { return a.cfg.TransportMode != TransportQUIC }
 
 // pspAddr returns where the PSP packets, the path probes and the lane
 // keep-alives of a session go: the PSP host of the relay, or dialed, the IP

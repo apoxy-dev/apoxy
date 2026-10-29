@@ -200,9 +200,9 @@ func TestNotECT(t *testing.T) {
 	px := newECNProxy(t, quicSock.LocalAddr(), pspSock.LocalAddr(), pspFront)
 	r := w.relayOn(t, "relay-1", quicSock, pspSock)
 	relays := []identity.Relay{{ID: r.id, Addresses: []string{px.addr()}}}
-	a := w.agent(t, "a", r, agentOptions{mode: TransportAuto, relays: relays})
-	b := w.agent(t, "b", r, agentOptions{mode: TransportQUIC, relays: relays})
-	c := w.agent(t, "c", r, agentOptions{mode: TransportAuto, relays: relays})
+	a := w.agent(t, "a", r, agentOptions{relays: relays})
+	b := w.agent(t, "b", r, agentOptions{noPSP: true, relays: relays})
+	c := w.agent(t, "c", r, agentOptions{relays: relays})
 	ea, eb, ec := a.attached(t), b.attached(t), c.attached(t)
 	echo(t, b.stack, eb.addr, 9000)
 	echo(t, c.stack, ec.addr, 9000)

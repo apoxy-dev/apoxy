@@ -74,18 +74,18 @@ func ping(t *testing.T, s *stack.Stack, src, dst netip.Addr, port uint16, msg st
 // attachment names. Each agent reaches the other two.
 func TestSharedIdentity(t *testing.T) {
 	cases := []struct {
-		name string
-		mode TransportMode // Mode of a2.
+		name  string
+		noPSP bool // The PSP probes of a2 get no reply.
 	}{
 		{name: "PSP"},
-		{name: "one agent in QUIC mode", mode: TransportQUIC},
+		{name: "one agent in QUIC mode", noPSP: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
 			a1 := w.agent(t, "a1", r, agentOptions{identity: "shared"})
-			a2 := w.agent(t, "a2", r, agentOptions{identity: "shared", mode: tc.mode})
+			a2 := w.agent(t, "a2", r, agentOptions{identity: "shared", noPSP: tc.noPSP})
 			c := w.agent(t, "c", r, agentOptions{})
 			e1, e2, ec := a1.attached(t), a2.attached(t), c.attached(t)
 			echo(t, a1.stack, e1.addr, 9001)
@@ -106,42 +106,37 @@ func TestSharedIdentity(t *testing.T) {
 	}
 }
 
-// TestTransportModes sends UDP both ways between agents where one or both
-// send QUIC data frames. The relay bridges a PSP agent and a QUIC agent.
+// TestTransportModes sends UDP both ways between agents in PSP mode and agents
+// that fall back to QUIC mode. The relay bridges the two modes.
 func TestTransportModes(t *testing.T) {
 	inPSP := Status{Mode: dp.Mode_MODE_PSP}
-	quicConfig := Status{Mode: dp.Mode_MODE_QUIC, Reason: dp.FallbackReason_FALLBACK_REASON_CONFIG}
-	quicTimeout := Status{Mode: dp.Mode_MODE_QUIC, Reason: dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT}
+	inQUIC := Status{Mode: dp.Mode_MODE_QUIC, Reason: dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT}
 	cases := []struct {
-		name         string
-		a, b         TransportMode
-		noProbes     bool // The PSP probes of a get no reply.
-		wantA, wantB Status
+		name   string
+		noPSPA bool // The PSP probes of a get no reply.
+		noPSPB bool // The PSP probes of b get no reply.
 	}{
-		{name: "PSP to QUIC", a: TransportAuto, b: TransportQUIC, wantA: inPSP, wantB: quicConfig},
-		{name: "QUIC to PSP", a: TransportQUIC, b: TransportAuto, wantA: quicConfig, wantB: inPSP},
-		{name: "QUIC to QUIC", a: TransportQUIC, b: TransportQUIC, wantA: quicConfig, wantB: quicConfig},
-		{name: "auto with no PSP path to auto", noProbes: true, wantA: quicTimeout, wantB: inPSP},
+		{name: "PSP to QUIC", noPSPB: true},
+		{name: "QUIC to PSP", noPSPA: true},
+		{name: "QUIC to QUIC", noPSPA: true, noPSPB: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			optsA := agentOptions{mode: tc.a}
-			if tc.noProbes {
-				optsA.conn = &lossyConn{}
-				optsA.conn.limitProbes.Store(true)
-			}
-			a, b := w.agent(t, "a", r, optsA), w.agent(t, "b", r, agentOptions{mode: tc.b})
+			a, b := w.agent(t, "a", r, agentOptions{noPSP: tc.noPSPA}), w.agent(t, "b", r, agentOptions{noPSP: tc.noPSPB})
 			ea, eb := a.attached(t), b.attached(t)
 			for _, x := range []struct {
-				ta   *testAgent
-				want Status
-			}{{a, tc.wantA}, {b, tc.wantB}} {
-				// The reason of a probe that failed comes after the wait for its reply.
-				require.Eventually(t, func() bool { return x.ta.a.Status().Reason == x.want.Reason }, 5*time.Second, 5*time.Millisecond)
+				ta    *testAgent
+				noPSP bool
+			}{{a, tc.noPSPA}, {b, tc.noPSPB}} {
+				want := inPSP
+				if x.noPSP {
+					want = inQUIC
+				}
 				st := x.ta.a.Status()
-				assert.Equal(t, x.want.Mode, st.Mode)
+				assert.Equal(t, want.Mode, st.Mode)
+				assert.Equal(t, want.Reason, st.Reason)
 				assert.Positive(t, st.Connect)
 				assert.Less(t, st.Connect, openTimeout)
 			}
@@ -158,12 +153,12 @@ func TestTransportModes(t *testing.T) {
 // socket and the relay is on IPv4.
 func TestDualStackSocket(t *testing.T) {
 	cases := []struct {
-		name string
-		mode TransportMode
-		want dp.Mode
+		name  string
+		noPSP bool // The PSP probes of a get no reply.
+		want  dp.Mode
 	}{
-		{name: "PSP", mode: TransportAuto, want: dp.Mode_MODE_PSP},
-		{name: "QUIC", mode: TransportQUIC, want: dp.Mode_MODE_QUIC},
+		{name: "PSP", want: dp.Mode_MODE_PSP},
+		{name: "QUIC", noPSP: true, want: dp.Mode_MODE_QUIC},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,7 +168,7 @@ func TestDualStackSocket(t *testing.T) {
 			}
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a, b := w.agent(t, "a", r, agentOptions{mode: tc.mode, udp: udp}), w.agent(t, "b", r, agentOptions{mode: TransportAuto})
+			a, b := w.agent(t, "a", r, agentOptions{noPSP: tc.noPSP, udp: udp}), w.agent(t, "b", r, agentOptions{})
 			ea, eb := a.attached(t), b.attached(t)
 			assert.Equal(t, tc.want, a.a.Status().Mode)
 
@@ -192,13 +187,13 @@ func TestStatusRTT(t *testing.T) {
 	cases := []struct {
 		name   string
 		attach bool
-		mode   TransportMode
+		noPSP  bool // The PSP probes of the agent get no reply.
 		end    bool // The relay session ends and the relay takes no new one.
 	}{
 		{name: "no session"},
-		{name: "PSP session", attach: true, mode: TransportAuto},
-		{name: "QUIC session", attach: true, mode: TransportQUIC},
-		{name: "ended session", attach: true, mode: TransportQUIC, end: true},
+		{name: "PSP session", attach: true},
+		{name: "QUIC session", attach: true, noPSP: true},
+		{name: "ended session", attach: true, noPSP: true, end: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -208,7 +203,7 @@ func TestStatusRTT(t *testing.T) {
 			}
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
-			a := w.agent(t, "a", r, agentOptions{mode: tc.mode})
+			a := w.agent(t, "a", r, agentOptions{noPSP: tc.noPSP})
 			a.attached(t)
 			require.Eventually(t, func() bool { return a.a.Status().RTT > 0 }, 5*time.Second, 10*time.Millisecond)
 			assert.Less(t, a.a.Status().RTT, openTimeout)
@@ -646,16 +641,16 @@ func TestDrainLocalRoutesOnly(t *testing.T) {
 // address, and UDP passes both ways before, during and after the drain.
 func TestDrainMesh(t *testing.T) {
 	cases := []struct {
-		name string
-		mode TransportMode
-	}{{name: "PSP"}, {name: "QUIC", mode: TransportQUIC}}
+		name  string
+		noPSP bool // The PSP probes of a and b get no reply.
+	}{{name: "PSP"}, {name: "QUIC", noPSP: true}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, r1, r2 := meshRelays(t)
-			a := w.agent(t, "a", r1, agentOptions{mode: tc.mode})
+			a := w.agent(t, "a", r1, agentOptions{noPSP: tc.noPSP})
 			ea := a.attached(t)
 			prev := a.current()
-			b := w.agent(t, "b", r2, agentOptions{mode: tc.mode})
+			b := w.agent(t, "b", r2, agentOptions{noPSP: tc.noPSP})
 			eb := b.attached(t)
 			echo(t, a.stack, ea.addr, 9000)
 			echo(t, b.stack, eb.addr, 9000)

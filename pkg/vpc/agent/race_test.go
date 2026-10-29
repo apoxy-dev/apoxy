@@ -147,7 +147,7 @@ func TestRelayChoice(t *testing.T) {
 				}
 			}
 			start := time.Now()
-			a := w.agent(t, "a", nil, agentOptions{mode: TransportAuto, slow: slow, relays: list, rttChoice: !tc.twice})
+			a := w.agent(t, "a", nil, agentOptions{slow: slow, relays: list, rttChoice: !tc.twice})
 			a.attached(t)
 			if tc.silent {
 				assert.Less(t, time.Since(start), openTimeout/2, "the attach does not wait for the dial of the relay with no answer")

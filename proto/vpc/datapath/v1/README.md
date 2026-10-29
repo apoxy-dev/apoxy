@@ -58,16 +58,17 @@ relay sends the inner packet to that relay (see "Trunk").
 Each session starts in QUIC mode. It changes from QUIC mode to PSP mode, on
 the open session, when the agent calls `Rekey`, and back to QUIC mode when its
 PSP path is lost (see "PSP path check"). `Hello.mode` tells
-the relay which mode the agent wants, and the relay only counts it. After
-`Welcome`, an agent that wants PSP mode sends path probes to
-the PSP socket of the relay, while its `Attach` call runs. These probes have the
+the relay which mode the agent wants, and the relay only counts it. The agent
+sends PSP mode and no `fallback_reason`. After `Welcome`, the agent sends path
+probes to the PSP socket of the relay, while its `Attach` call runs. These probes have the
 size of the largest inner packet of QUIC mode: the device MTU of the agent,
 and 1308 B at most. When the first probe passes, the agent calls `Rekey` with
 its SAs for the relay. When no reply comes in 1 s, the session stays in QUIC
 mode and the agent probes again with backoff (30 s, doubling to 10 min). After
 a probe that failed, two probes in a row must pass, 5 s apart. In PSP mode the
-agent sends no such probe: the PSP path check sends its packets. An agent with
-QUIC mode in its config sends `fallback_reason` `CONFIG` and does not probe.
+agent sends no such probe: the PSP path check sends its packets. Only an older
+agent can have QUIC mode in its config. It sends `fallback_reason` `CONFIG` and
+does not probe, and the relay still counts it.
 
 A probe has a counter, which the agent increases for each probe that it sends
 with the keys of one relay connection. The relay answers a probe on its PSP

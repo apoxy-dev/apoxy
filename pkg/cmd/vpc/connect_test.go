@@ -30,6 +30,7 @@ func TestAgentConfig(t *testing.T) {
 		host   string
 		canTun bool
 
+		wantParseErr  string // An error of the flag parse.
 		wantErr       bool
 		wantName      string
 		wantDriver    string
@@ -188,6 +189,12 @@ func TestAgentConfig(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:         "removed transport flag",
+			args:         []string{"--transport", "quic"},
+			host:         "node1",
+			wantParseErr: "unknown flag: --transport",
+		},
+		{
 			name:          "socks off",
 			args:          []string{"--socks-addr", ""},
 			host:          "node1",
@@ -201,6 +208,10 @@ func TestAgentConfig(t *testing.T) {
 			var o connectOptions
 			cmd := &cobra.Command{}
 			o.addFlags(cmd)
+			if tc.wantParseErr != "" {
+				require.ErrorContains(t, cmd.ParseFlags(tc.args), tc.wantParseErr)
+				return
+			}
 			require.NoError(t, cmd.ParseFlags(tc.args))
 
 			cfg, driver, err := o.agentConfig(tc.host, tc.canTun)

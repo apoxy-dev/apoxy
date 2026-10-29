@@ -62,8 +62,8 @@ func TestPathMTUNetns(t *testing.T) {
 			w := newWorld(t)
 			w.mtu = 1400
 			r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP), listenIn(t, relayNS, relayIP))
-			b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), tcp: true, mode: TransportAuto})
-			a := w.agent(t, "a", r, agentOptions{udp: listenIn(t, agentNS, agentIP), tcp: true, mode: TransportAuto, pspRetry: retry})
+			b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP), tcp: true})
+			a := w.agent(t, "a", r, agentOptions{udp: listenIn(t, agentNS, agentIP), tcp: true, pspRetry: retry})
 			var ea attachEvent
 			for i, mtu := range tc.linkMTU {
 				link(mtu)

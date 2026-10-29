@@ -254,11 +254,12 @@ message RegisterLanesRequest {
 
 // FallbackReason is why an agent sends data in QUIC mode.
 enum FallbackReason {
-  // No fallback: the agent is in PSP mode.
+  // No fallback: the agent is in PSP mode, or in QUIC mode before the result
+  // of its first PSP probe.
   FALLBACK_REASON_UNSPECIFIED = 0;
   // No PSP probe got a reply before the probe timer ended.
   FALLBACK_REASON_PROBE_TIMEOUT = 1;
-  // The agent config sets QUIC mode.
+  // The agent config sets QUIC mode. Only older agents send it.
   FALLBACK_REASON_CONFIG = 2;
 }
 

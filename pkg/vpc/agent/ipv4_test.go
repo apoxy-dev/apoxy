@@ -25,21 +25,21 @@ func TestIPv4(t *testing.T) {
 	src := netip.MustParseAddr("192.0.2.10")
 	cases := []struct {
 		name     string
-		mode     TransportMode
+		noPSP    bool // The PSP probes of a and b get no reply.
 		embedded bool // To far in the /96 of the peer, from the overlay address of the sender.
 	}{
-		{name: "PSP plain IPv4", mode: TransportAuto},
-		{name: "PSP IPv4 in the /96 of the peer", mode: TransportAuto, embedded: true},
-		{name: "QUIC plain IPv4", mode: TransportQUIC},
-		{name: "QUIC IPv4 in the /96 of the peer", mode: TransportQUIC, embedded: true},
+		{name: "PSP plain IPv4"},
+		{name: "PSP IPv4 in the /96 of the peer", embedded: true},
+		{name: "QUIC plain IPv4", noPSP: true},
+		{name: "QUIC IPv4 in the /96 of the peer", noPSP: true, embedded: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t)
 			r := w.relay(t, "relay-1")
 			own := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
-			a := w.agent(t, "a", r, agentOptions{mode: tc.mode, routes: own})
-			b := w.agent(t, "b", r, agentOptions{mode: tc.mode, routes: []netip.Prefix{lan}})
+			a := w.agent(t, "a", r, agentOptions{noPSP: tc.noPSP, routes: own})
+			b := w.agent(t, "b", r, agentOptions{noPSP: tc.noPSP, routes: []netip.Prefix{lan}})
 			ea, eb := a.attached(t), b.attached(t)
 			a.hasRoutes(t, eb.prefixes...)
 			assert.NotContains(t, a.routeSet(), lan, "the relay refuses an IPv4 route")

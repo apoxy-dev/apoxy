@@ -72,6 +72,9 @@ The tun driver makes a kernel TUN device, so all processes on the host can
 reach the VPC. The netstack driver needs no privileges. It gives a SOCKS5
 proxy, and it forwards connections from the VPC to localhost.
 
+Data to the relay starts on QUIC, moves to PSP when the PSP probe to the relay
+passes, and stays on QUIC when the probe fails.
+
 With --identity, the host connects with the certificate of an identity file
 from "apoxy alpha vpc enroll". It makes no API call and needs no API key. The
 file names the network, so the command takes no VPC argument. When the file

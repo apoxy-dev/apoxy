@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
-	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // quietWait is how long a check waits for a dial that must not come. It is
@@ -241,7 +240,7 @@ func TestWantedRelays(t *testing.T) {
 	cases := []struct {
 		name   string
 		relays int
-		mode   TransportMode
+		noPSP  bool        // The PSP probes of the agents get no reply.
 		agents []meshAgent // a, b, c, d.
 		// dead gives relay-2 an agent address that does not answer.
 		dead bool
@@ -264,7 +263,7 @@ func TestWantedRelays(t *testing.T) {
 			want:   map[string][]int{"a": {1}, "b": {2, 1}},
 		},
 		{
-			name: "twelve sessions in QUIC mode", relays: 4, mode: TransportQUIC,
+			name: "twelve sessions in QUIC mode", relays: 4, noPSP: true,
 			agents: []meshAgent{{relay: 1}, {relay: 2}, {relay: 3}, {relay: 4}},
 			want:   map[string][]int{"a": {1, 2, 3, 4}, "b": {2, 1, 3, 4}, "c": {3, 1, 2, 4}, "d": {4, 1, 2, 3}},
 		},
@@ -302,7 +301,7 @@ func TestWantedRelays(t *testing.T) {
 					slots = append(slots, slot)
 				}
 				r := relays[m.relay-1]
-				ta := w.agent(t, name, r, agentOptions{mode: tc.mode})
+				ta := w.agent(t, name, r, agentOptions{noPSP: tc.noPSP})
 				agents = append(agents, placed{name: name, ta: ta, ev: ta.attached(t), r: r})
 			}
 			// connsOf returns the relay addresses of the connections of ta.
@@ -347,8 +346,9 @@ func TestWantedRelays(t *testing.T) {
 				var ranks []uint32
 				for _, c := range cs {
 					ranks = append(ranks, c.Rank)
-					if tc.mode == TransportQUIC {
-						assert.Equal(t, dp.Mode_MODE_QUIC, c.Mode, "mode of the connection of %s to %s", p.name, c.Relay)
+					if tc.noPSP {
+						require.Eventually(t, func() bool { return p.ta.fellBack(c.Address) }, 5*time.Second, 10*time.Millisecond,
+							"the connection of %s to %s did not fall back to QUIC mode", p.name, c.Relay)
 					}
 				}
 				slices.Sort(ranks)

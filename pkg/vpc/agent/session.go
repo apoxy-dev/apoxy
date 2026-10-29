@@ -175,15 +175,10 @@ func (s *session) start() {
 			f()
 		}
 	}(s.w)
-	if !s.a.wantsPSP() {
-		s.reason = dp.FallbackReason_FALLBACK_REASON_CONFIG
-	}
 	s.attachBase()
-	if s.a.wantsPSP() {
-		// One pass is enough at the first probe of a session.
-		s.passes, s.wait = pspPasses-1, s.a.retryMin
-		s.startProbe()
-	}
+	// One pass is enough at the first probe of a session.
+	s.passes, s.wait = pspPasses-1, s.a.retryMin
+	s.startProbe()
 }
 
 // read starts the stream reader. After a RouteDelta it waits for next, so the
@@ -551,8 +546,8 @@ func (s *session) status() {
 	}})
 }
 
-// fallback returns why s is in QUIC mode: its config or a probe that failed. It
-// returns no reason before the first probe result and in PSP mode.
+// fallback returns why s is in QUIC mode: a probe that failed. It returns no
+// reason before the first probe result and in PSP mode.
 func (s *session) fallback() dp.FallbackReason {
 	if s.mode != dp.Mode_MODE_QUIC {
 		return dp.FallbackReason_FALLBACK_REASON_UNSPECIFIED

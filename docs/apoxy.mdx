@@ -430,6 +430,14 @@ The tun driver makes a kernel TUN device, so all processes on the host can
 reach the VPC. The netstack driver needs no privileges. It gives a SOCKS5
 proxy, and it forwards connections from the VPC to localhost.
 
+Data to the relay starts on QUIC, moves to PSP when the PSP probe to the relay
+passes, and stays on QUIC when the probe fails.
+
+With --identity, the host connects with the certificate of an identity file
+from "apoxy alpha vpc enroll". It makes no API call and needs no API key. The
+file names the network, so the command takes no VPC argument. When the file
+gets a new certificate, the host uses it with no restart.
+
 ```
 apoxy alpha vpc connect [VPC] [flags]
 ```
@@ -440,10 +448,11 @@ apoxy alpha vpc connect [VPC] [flags]
       --admin-addr string      Unix socket path of a local HTTP API that adds and removes attachments. Only this user and root can use it. Empty disables the API.
       --driver string          Data path: auto, netstack or tun. Auto uses tun when the process has NET_ADMIN, else netstack. (default "auto")
   -h, --help                   help for connect
+      --identity string        Path of an identity file from "apoxy alpha vpc enroll". The host connects with its certificate and makes no API call. Many hosts can use one file, each with its own --name.
       --label stringToString   Attachment label (key=value) for VPCService selection. Repeatable. (default [])
       --mtu int                Device MTU, 1280 to 1412. 0 uses the VPC MTU when the path to the relay carries it, else 1280.
       --name string            Attachment name, a DNS label (default: the host name).
-      --relays int             Relay sessions to keep, 1 to 3. One carries the traffic. The others are open on other relays and take over when it ends. (default 2)
+      --relays int             Relay connections to keep, 1 to 3, each on its own relay. Each connection has its own VPC address. (default 2)
       --route stringArray      CIDR behind this host. Repeatable. The VPC is IPv6 only: the host advertises each IPv6 CIDR into the VPC and does not send an IPv4 CIDR. On a netstack host an IPv4 CIDR names the IPv4 addresses that the host dials for a packet to its VPC /96 with the IPv4 address in the last 32 bits.
       --socks-addr string      SOCKS5 listen address of the netstack driver. Empty disables the proxy. (default "localhost:1080")
       --tun-ifname string      Name of the TUN device of the tun driver. (default "apoxy0")
