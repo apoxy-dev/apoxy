@@ -39,11 +39,12 @@ type session struct {
 	ending bool
 	err    error
 
-	rx    chan *dp.SessionResponse // From the stream reader.
-	next  chan struct{}            // Lets the stream reader read after a RouteDelta.
-	sw    *mailbox                 // The stream writer.
-	w     chan func()              // The writer.
-	drops int                      // Writes that the full writer queue dropped.
+	rx      chan *dp.SessionResponse // From the stream reader.
+	next    chan struct{}            // Lets the stream reader read after a RouteDelta.
+	sw      *mailbox                 // The stream writer.
+	writing bool                     // The stream writer runs.
+	w       chan func()              // The writer.
+	drops   int                      // Writes that the full writer queue dropped.
 
 	attached bool
 	id       string // Attachment ID.
@@ -160,15 +161,15 @@ func tickerC(t *time.Ticker) <-chan time.Time {
 
 // idle reports whether the session has no child and no task.
 func (s *session) idle() bool {
-	return s.tasks == 0 && len(s.checks) == 0
+	return s.tasks == 0 && len(s.checks) == 0 && !s.writing
 }
 
 // start starts the long tasks, the attach and the first PSP probe. The probe
 // runs while the relay attaches.
 func (s *session) start() {
 	s.read()
-	s.sw = newMailbox()
-	go writeStream(s.d.st, s.sw, s.mb)
+	s.sw, s.writing = newMailbox(), true
+	go writeStream(s.d.st.Send, s.sw, s.mb)
 	s.w = make(chan func(), writerQueue)
 	go func(w chan func()) {
 		for f := range w {
@@ -211,30 +212,33 @@ func (s *session) read() {
 // readerEnded is the result of the stream reader.
 type readerEnded struct{ err error }
 
-// ackMsg asks the stream writer for the Ack of a RouteDelta; ackSent is its answer.
+// ackMsg asks for the Ack of a RouteDelta; ackSent is the answer. streamEnded is
+// the last message of the stream writer, with the error of a failed send.
 type (
-	ackMsg  struct{ rev uint64 }
-	ackSent struct{ rev uint64 }
+	ackMsg      struct{ rev uint64 }
+	ackSent     struct{ rev uint64 }
+	streamEnded struct{ err error }
 )
 
 // writeStream sends the Acks and the remote addresses on the Session stream
-// until end or the end of the connection.
-func writeStream(st interface {
-	Send(*dp.SessionRequest) error
-}, mb, up *mailbox) {
+// until end or a send that fails.
+func writeStream(send func(*dp.SessionRequest) error, mb, up *mailbox) {
+	var err error
+	defer func() { up.send(streamEnded{err}) }()
 	for range mb.wake {
 		for _, m := range mb.take() {
 			switch m := m.(type) {
 			case endMsg:
 				return
 			case ackMsg:
-				if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: m.rev}}}); err != nil {
+				if err = send(&dp.SessionRequest{Msg: &dp.SessionRequest_Ack{Ack: &dp.Ack{Rev: m.rev}}}); err != nil {
+					err = fmt.Errorf("send the Ack of revision %d: %w", m.rev, err)
 					return
 				}
 				up.send(ackSent{m.rev})
 			case remoteMsg:
-				if err := st.Send(&dp.SessionRequest{Msg: &dp.SessionRequest_Remote{Remote: m.m}}); err != nil {
-					slog.Warn("Failed to send the attachments on the other relays", "attachment", m.m.GetAttachmentId(), "error", err)
+				if err = send(&dp.SessionRequest{Msg: &dp.SessionRequest_Remote{Remote: m.m}}); err != nil {
+					err = fmt.Errorf("send the attachments on the other relays of %s: %w", m.m.GetAttachmentId(), err)
 					return
 				}
 			}
@@ -287,6 +291,13 @@ func (s *session) handle(m any) {
 		delete(s.checks, m.c)
 		s.counter = max(s.counter, m.counter)
 		return
+	case streamEnded:
+		s.writing = false
+		// The reader waits for the Ack, so a failed send must end the session.
+		if !s.ending {
+			s.end(s.connErr(m.err))
+		}
+		return
 	case endMsg:
 		s.end(errAgentStopped)
 		return
@@ -296,11 +307,7 @@ func (s *session) handle(m any) {
 	}
 	switch m := m.(type) {
 	case readerEnded:
-		err := m.err
-		if cause := context.Cause(s.d.qc.Context()); cause != nil {
-			err = cause
-		}
-		s.end(err)
+		s.end(s.connErr(m.err))
 	case ackSent:
 		if m.rev == s.waitRev {
 			s.ackOK = true
@@ -350,6 +357,14 @@ func (s *session) handle(m any) {
 	default:
 		s.handleExtras(m)
 	}
+}
+
+// connErr returns the close cause of the connection when it closed, else err.
+func (s *session) connErr(err error) error {
+	if cause := context.Cause(s.d.qc.Context()); cause != nil {
+		return cause
+	}
+	return err
 }
 
 // stream takes a message of the Session stream.

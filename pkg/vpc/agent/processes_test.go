@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // TestProcesses checks the order of the public calls and the callbacks when
@@ -196,6 +197,27 @@ func TestProcesses(t *testing.T) {
 				"RTT after the delay went: %v", a.a.Status().RTT)
 			assert.Equal(t, []string{"attach a " + a.current().self.String()}, a.events("a"), "no session event")
 		}},
+		{name: "failed Ack ends the session", run: func(t *testing.T, w *world, r *testRelay) {
+			a := w.agent(t, "a", r, agentOptions{})
+			ea := a.attached(t)
+			first := a.current()
+			require.NotNil(t, first.qc, "the relay has no connection of the session")
+			tap := r.tapOf(first.qc)
+			n := len(tap.responses())
+			// The connection stays open, so only the stream writer sees the error.
+			tap.stopAgentSends()
+			// The routes of b come to a in a RouteDelta, and a sends its Ack.
+			b := w.agent(t, "b", r, agentOptions{})
+			b.attached(t)
+			require.Eventually(t, func() bool {
+				return slices.ContainsFunc(tap.responses()[n:], func(m *dp.SessionResponse) bool { return m.GetRouteDelta() != nil })
+			}, 10*time.Second, 10*time.Millisecond, "the relay sent no RouteDelta to a after the attach of b")
+			require.Eventually(t, first.ended, 10*time.Second, 10*time.Millisecond, "the session with the failed Ack stays")
+			require.Eventually(t, func() bool { return slices.Contains(a.events("a"), "detach a "+ea.addr.String()) }, 5*time.Second, 10*time.Millisecond,
+				"no OnDetach of the session with the failed Ack")
+			a.attached(t)
+			assert.False(t, closed(a.done), "Run returned")
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -216,4 +238,35 @@ func countPrefix(events []string, prefix string) int {
 		}
 	}
 	return n
+}
+
+// TestRunEndsWhileStreamWriterWaits cancels Run while the stream writer of a
+// session waits in a send. The end of the session resets the stream, which
+// ends that send at once, so no outside input can show that Run waits for the
+// writer. The test checks only that Run returns.
+func TestRunEndsWhileStreamWriterWaits(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	w.streamWindow = 512
+	r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+	a, ss := w.agentOn(t, "a", agentOptions{}, 2, r1, r2)
+	i := slices.IndexFunc(ss, func(s sessionRef) bool { return s.addr == r1.addr })
+	require.GreaterOrEqual(t, i, 0, "no session on relay-1")
+	resume := r1.tapOf(ss[i].qc).pause()
+	defer resume()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// Each cycle gives session 1 a remote set of about 110 bytes. 100 sets fill
+	// the stream window of the relay and the send buffer of the stream.
+	for i := range 100 {
+		_, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-1"})
+		require.NoError(t, err, "cycle %d", i)
+		require.NoError(t, a.a.Detach(ctx, "x-1"), "cycle %d", i)
+	}
+	a.cancel()
+	select {
+	case <-a.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return while the stream writer waits in a send")
+	}
 }

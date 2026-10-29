@@ -197,7 +197,10 @@ type world struct {
 	// advertise gives the addresses that a relay sends to agents and members,
 	// by the relay ID. Else it sends the address of its QUIC socket.
 	advertise map[string][]string
-	relays    []*testRelay
+	// streamWindow sets the QUIC stream receive window of the relays. Zero
+	// keeps the default.
+	streamWindow uint64
+	relays       []*testRelay
 }
 
 // relayAt returns the relay with the QUIC address addr, or nil.
@@ -271,6 +274,7 @@ type acceptedConn struct {
 	qc   *quic.Conn
 	from netip.AddrPort
 	kind *atomic.Int32 // connUnknown until the relay reads the Hello.
+	tap  *sessionTap   // The Session call of the connection.
 }
 
 // Kinds of an agent connection, from its Hello.
@@ -284,9 +288,21 @@ const (
 func (r *testRelay) keep(qc *quic.Conn) rpc.Streams {
 	r.connsMu.Lock()
 	defer r.connsMu.Unlock()
-	c := acceptedConn{qc, unmap(qc.RemoteAddr().(*net.UDPAddr).AddrPort()), new(atomic.Int32)}
+	c := acceptedConn{qc, unmap(qc.RemoteAddr().(*net.UDPAddr).AddrPort()), new(atomic.Int32), &sessionTap{}}
 	r.conns = append(r.conns, c)
-	return &helloConn{qc: qc, r: r, kind: c.kind}
+	return &helloConn{qc: qc, r: r, kind: c.kind, tap: c.tap}
+}
+
+// tapOf returns the tap of the Session call of the agent connection qc.
+func (r *testRelay) tapOf(qc *quic.Conn) *sessionTap {
+	r.connsMu.Lock()
+	defer r.connsMu.Unlock()
+	for _, c := range r.conns {
+		if c.qc == qc {
+			return c.tap
+		}
+	}
+	return nil
 }
 
 // helloConn reads the Hello of the Session call on the first stream, and
@@ -295,6 +311,7 @@ type helloConn struct {
 	qc    *quic.Conn
 	r     *testRelay
 	kind  *atomic.Int32
+	tap   *sessionTap
 	first atomic.Bool
 }
 
@@ -311,7 +328,7 @@ func (c *helloConn) AcceptStream(ctx context.Context) (rpc.Stream, error) {
 		c.r.addCall(1)
 		return &callStream{Stream: st, r: c.r}, nil
 	}
-	return &helloStream{Stream: st, kind: c.kind}, nil
+	return &helloStream{Stream: st, kind: c.kind, tap: c.tap}, nil
 }
 
 // callStream is a call stream that the relay ends with Close or CancelWrite.
@@ -337,49 +354,177 @@ func (s *callStream) CancelWrite(code quic.StreamErrorCode) {
 	s.Stream.CancelWrite(code)
 }
 
-// helloStream keeps the bytes that the relay reads until they have the Hello.
+// helloStream is the Session stream at the relay. It gives the bytes in both
+// directions to the tap of its connection, which finds the Hello.
 type helloStream struct {
 	*quic.Stream
 	kind *atomic.Int32
-	buf  []byte
+	tap  *sessionTap
 }
 
 func (s *helloStream) Read(p []byte) (int, error) {
+	ctx := s.Stream.Context()
+	if err := s.tap.wait(ctx); err != nil {
+		return 0, err
+	}
 	n, err := s.Stream.Read(p)
-	if s.buf != nil || s.kind.Load() == connUnknown {
-		s.buf = append(s.buf, p[:n]...)
-		if _, ok := readHello(s.buf); ok {
-			s.buf = nil
-			s.kind.Store(connSession)
+	if s.tap.read(p[:n]) {
+		s.kind.Store(connSession)
+	}
+	if err != nil {
+		// After a stop, the error of CancelRead waits for the end of the stream,
+		// so the relay keeps the call.
+		if werr := s.tap.wait(ctx); werr != nil {
+			return n, werr
 		}
 	}
 	return n, err
 }
 
-// readHello reads the Hello in the first bytes of a Session call: the call
-// type and version, a header frame, and a message frame. Each frame is a
-// kind, a length varint, and the message.
-func readHello(b []byte) (*dp.Hello, bool) {
-	if len(b) < 2 {
-		return nil, false
+func (s *helloStream) Write(p []byte) (int, error) {
+	if s.tap.takeStop() {
+		// The STOP_SENDING goes before the bytes of p, so each agent send after
+		// the agent reads p fails.
+		s.Stream.CancelRead(0)
 	}
-	b = b[2:]
-	var msg []byte
-	for range 2 {
-		if len(b) < 1 {
-			return nil, false
-		}
+	n, err := s.Stream.Write(p)
+	s.tap.wrote(p[:n])
+	return n, err
+}
+
+// sessionTap is the relay side of the Session call of one agent connection. It
+// decodes the messages in both directions. A test can make the relay stop the
+// agent sends while the connection stays open.
+type sessionTap struct {
+	mu       sync.Mutex
+	in, out  []byte // Read and written bytes that are not a whole frame yet.
+	inStart  bool   // The relay read the preamble of the call.
+	reqs     []*dp.SessionRequest
+	resps    []*dp.SessionResponse
+	stopNext bool // The next write of the relay stops the agent sends first.
+	stopped  bool
+	paused   chan struct{} // Not nil: the reads of the relay wait until it closes.
+}
+
+// rpcMessage is the kind of an rpc message frame.
+const rpcMessage = 0x02
+
+// frames takes the whole frames from the start of b: each is a kind, a length
+// varint and the message. It returns the messages of the message frames, and
+// the bytes after the last whole frame.
+func frames(b []byte) (msgs [][]byte, rest []byte) {
+	for len(b) > 1 {
 		n, w := binary.Uvarint(b[1:])
 		if w <= 0 || uint64(len(b)-1-w) < n {
-			return nil, false
+			break
 		}
-		msg, b = b[1+w:1+w+int(n)], b[1+w+int(n):]
+		if b[0] == rpcMessage {
+			msgs = append(msgs, b[1+w:1+w+int(n)])
+		}
+		b = b[1+w+int(n):]
 	}
-	var req dp.SessionRequest
-	if proto.Unmarshal(msg, &req) != nil {
-		return nil, false
+	return msgs, b
+}
+
+// read takes the bytes that the relay read, and reports whether they have the
+// Hello. The call starts with its type and version, and a header frame.
+func (t *sessionTap) read(b []byte) (hello bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.in = append(t.in, b...)
+	if !t.inStart {
+		if len(t.in) < 2 {
+			return false
+		}
+		t.in, t.inStart = t.in[2:], true
 	}
-	return req.GetHello(), true
+	msgs, rest := frames(t.in)
+	for _, b := range msgs {
+		m := &dp.SessionRequest{}
+		if proto.Unmarshal(b, m) == nil {
+			t.reqs = append(t.reqs, m)
+			hello = hello || m.GetHello() != nil
+		}
+	}
+	t.in = slices.Clone(rest)
+	return hello
+}
+
+// wrote takes the bytes that the relay wrote.
+func (t *sessionTap) wrote(b []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.out = append(t.out, b...)
+	msgs, rest := frames(t.out)
+	for _, b := range msgs {
+		m := &dp.SessionResponse{}
+		if proto.Unmarshal(b, m) == nil {
+			t.resps = append(t.resps, m)
+		}
+	}
+	t.out = slices.Clone(rest)
+}
+
+// responses returns the messages that the relay sent, in order.
+func (t *sessionTap) responses() []*dp.SessionResponse {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.resps)
+}
+
+// pause stops the reads of the relay until resume runs. When the stream window
+// of the relay is full, the agent sends then wait.
+func (t *sessionTap) pause() (resume func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ch := make(chan struct{})
+	t.paused = ch
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			t.mu.Lock()
+			t.paused = nil
+			t.mu.Unlock()
+			close(ch)
+		})
+	}
+}
+
+// stopAgentSends makes the relay send STOP_SENDING before its next message.
+// The relay then reads no more, and keeps the call until the stream ends.
+func (t *sessionTap) stopAgentSends() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stopNext = true
+}
+
+func (t *sessionTap) takeStop() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.stopNext {
+		return false
+	}
+	t.stopNext, t.stopped = false, true
+	return true
+}
+
+// wait waits while the reads are paused, and for the end of ctx after a stop.
+func (t *sessionTap) wait(ctx context.Context) error {
+	t.mu.Lock()
+	paused, stopped := t.paused, t.stopped
+	t.mu.Unlock()
+	switch {
+	case stopped:
+		<-ctx.Done()
+		return context.Cause(ctx)
+	case paused != nil:
+		select {
+		case <-paused:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
+	return nil
 }
 
 // sessionConns returns the connections from the address from with a Session
@@ -484,6 +629,9 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 	quicConf := &quic.Config{
 		EnableDatagrams: true, DisableECN: true, MaxIncomingStreams: 512,
 		KeepAlivePeriod: relay.AgentKeepAlive,
+	}
+	if w.streamWindow != 0 {
+		quicConf.InitialStreamReceiveWindow, quicConf.MaxStreamReceiveWindow = w.streamWindow, w.streamWindow
 	}
 	if w.mesh {
 		// As at a real relay, the mesh sessions use the socket of the agents.
