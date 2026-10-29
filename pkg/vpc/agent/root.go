@@ -29,6 +29,11 @@ var (
 type home struct {
 	s  *session
 	ep endpoint
+	// up are the values of the session, and down the values for the session.
+	// unwatch ends the watch of up.
+	up, down *proc.Values
+	unwatch  context.CancelFunc
+	report   *rxReport // The last report that the peer took.
 	// id is the relay ID from the Welcome. The session holds it from the dial
 	// result until it ends, so no other connection to that relay attaches.
 	id         string
@@ -46,7 +51,8 @@ type home struct {
 	held       map[string]heldX
 	pending    map[string]*AttachmentSpec
 	deprecated bool
-	// remotes is the last remote set sent for each attachment ID of the session.
+	// remotes is the key of the last remote set stored for each attachment ID
+	// of the session.
 	remotes map[string]string
 }
 
@@ -376,8 +382,10 @@ func (r *root) handle(m any) {
 func (r *root) handleLive(m any) {
 	now := time.Now()
 	switch m := m.(type) {
-	case statusMsg:
-		r.status(m)
+	case sessAttached:
+		r.sessAttached(m)
+	case upChanged:
+		r.upChanged(m, now)
 	case clampMsg:
 		if r.homeOf(m.s) == nil {
 			return
@@ -389,8 +397,6 @@ func (r *root) handleLive(m any) {
 		r.peerMode(m.peer, m.mode)
 	case routesMsg:
 		r.routes(m)
-	case reportMsg:
-		m.peer.Report(now, m.sas)
 	case offerMsg:
 		req, err := m.peer.Offer(now)
 		m.s.mb.Send(rekeyMsg{peer: m.peer, attempt: m.attempt, req: req, err: err})
@@ -426,12 +432,16 @@ func (r *root) take(d *dialed, wanted bool) bool {
 		return false
 	}
 	k := &r.keep
-	s := newSession(r.a, r.ctx, r.mb, d, k.rank)
+	up, down := &proc.Values{}, &proc.Values{}
+	s := newSession(r.a, r.ctx, r.mb, up, down, d, k.rank)
+	ctx, unwatch := context.WithCancel(r.ctx)
 	r.homes = append(r.homes, &home{
-		s: s, ep: d.ep, id: d.relayID, wanted: wanted, rank: k.rank,
+		s: s, ep: d.ep, id: d.relayID, wanted: wanted, rank: k.rank, up: up, down: down, unwatch: unwatch,
 		routes: map[netip.Prefix]routeInfo{}, held: map[string]heldX{}, pending: map[string]*AttachmentSpec{}, remotes: map[string]string{},
 	})
 	k.rank++
+	mb := r.mb
+	proc.Watch(ctx, up, func(keys []string) { mb.Send(upChanged{s, keys}) })
 	go s.run()
 	return true
 }
@@ -476,18 +486,13 @@ func (r *root) primary() *home {
 	return live[0]
 }
 
-// status takes the state of a home session. The first attached state makes
-// the session one of the agent.
-func (r *root) status(m statusMsg) {
+// sessAttached makes an attached session one of the agent.
+func (r *root) sessAttached(m sessAttached) {
 	h := r.homeOf(m.s)
-	if h == nil {
+	if h == nil || h.st.attached {
 		return
 	}
-	first := m.st.attached && !h.st.attached
 	h.st = m.st
-	if !first {
-		return
-	}
 	k := &r.keep
 	k.failed, k.refused = 0, nil
 	h.since = time.Now()
@@ -529,6 +534,7 @@ func (r *root) sessEnded(m sessEnded) {
 		return
 	}
 	r.homes = slices.DeleteFunc(r.homes, func(o *home) bool { return o == h })
+	h.unwatch()
 	if !r.ending {
 		slog.Info("Relay session ended", "relay", h.ep.addr, "error", m.err)
 	}
@@ -573,6 +579,19 @@ func (r *root) sessEnded(m sessEnded) {
 		r.retry([]string{h.id}, fmt.Errorf("relay %s: %w", h.ep.addr, m.err))
 	}
 	r.plan()
+}
+
+// upChanged gives the newest receive report of a session to its relay peer.
+// The snapshot loads the mode itself.
+func (r *root) upChanged(m upChanged, now time.Time) {
+	h := r.homeOf(m.s)
+	if h == nil || !slices.Contains(m.keys, keyReport) {
+		return
+	}
+	if rep := proc.Load[*rxReport](h.up, keyReport); rep != nil && rep != h.report {
+		h.report = rep
+		rep.peer.Report(now, rep.sas)
+	}
 }
 
 // removePeer removes a relay peer from the binding with its SAs and routes.
@@ -930,9 +949,13 @@ func (r *root) callbackDone() {
 func (r *root) publish(running bool) {
 	s := &snapshot{running: running, specs: maps.Clone(r.specs)}
 	for _, h := range r.live() {
+		mode, reason := h.st.mode, h.st.reason
+		if ms := proc.Load[*modeState](h.up, keyMode); ms != nil {
+			mode, reason = ms.mode, ms.reason
+		}
 		c := &connSnap{
 			relay: h.ep.addr, name: h.s.d.name, rank: h.rank, draining: h.draining,
-			mode: h.st.mode, reason: h.st.reason, connect: h.st.connect, setup: h.st.setup, stats: h.st.stats,
+			mode: mode, reason: reason, connect: h.st.connect, setup: h.st.setup, stats: h.st.stats,
 			base: h.st.base, dnsServers: h.st.dnsServers, dnsSearch: h.st.dnsSearch,
 		}
 		for _, x := range h.held {
@@ -962,9 +985,9 @@ func runCallbacks(mb, up *proc.Mailbox) {
 	}
 }
 
-// sendRemotes gives each live session, for each of its attachments, the
+// sendRemotes stores for each live session, for each of its attachments, the
 // attachments of the same name on the other live sessions when that set
-// changed. The relay keeps the last set of each attachment.
+// changed. The stream writer of the session sends the newest sets.
 func (r *root) sendRemotes() {
 	if !r.remoteDirty || r.ending {
 		return
@@ -995,8 +1018,14 @@ func (r *root) sendRemotes() {
 				continue
 			}
 			h.remotes[at.ID] = key.String()
-			h.s.mb.Send(remoteMsg{&dp.RemoteAddresses{AttachmentId: at.ID, Attachments: others}})
+			proc.Store(h.down, keyRemote+at.ID, &dp.RemoteAddresses{AttachmentId: at.ID, Attachments: others})
 		}
-		maps.DeleteFunc(h.remotes, func(id string, _ string) bool { return !ids[id] })
+		maps.DeleteFunc(h.remotes, func(id string, _ string) bool {
+			if ids[id] {
+				return false
+			}
+			h.down.Delete(keyRemote + id)
+			return true
+		})
 	}
 }

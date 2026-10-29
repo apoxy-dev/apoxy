@@ -64,17 +64,22 @@ type (
 		refused []uint32
 		err     error
 	}
-	// remoteMsg has the attachments of the same name on the other relays of
-	// the agent, for one attachment of the session.
-	remoteMsg struct{ m *dp.RemoteAddresses }
+	// downChanged has the keys of the down values of the session that changed.
+	downChanged struct{ keys []string }
 )
 
 // A session to its parent.
 type (
-	// statusMsg has the state of a home session for the snapshot.
-	statusMsg struct {
+	// sessAttached has the state of a home session at its attach. Later mode
+	// changes go only in the mode value.
+	sessAttached struct {
 		s  *session
 		st sessState
+	}
+	// upChanged has the keys of the up values of the session that changed.
+	upChanged struct {
+		s    *session
+		keys []string
 	}
 	// bindMsg asks for the binding after the attach.
 	bindMsg struct {
@@ -103,11 +108,6 @@ type (
 		first   bool
 		delta   bool
 		rev     uint64
-	}
-	reportMsg struct {
-		s    *session
-		peer *psp.Peer
-		sas  []psp.SACount
 	}
 	offerMsg struct {
 		s       *session
@@ -151,6 +151,27 @@ type (
 		peer *psp.Peer
 	}
 )
+
+// The keys of the values of a session. The session writes the up values, and
+// the root writes the down values.
+const (
+	keyMode   = "mode"    // Up: *modeState.
+	keyReport = "report"  // Up: *rxReport.
+	keyRemote = "remote/" // Down, with the attachment ID: *dp.RemoteAddresses.
+)
+
+// modeState is the data mode of a session and why it is in QUIC mode.
+type modeState struct {
+	mode   dp.Mode
+	reason dp.FallbackReason
+}
+
+// rxReport is the newest receive report of the relay peer of a session. The
+// counts only grow, so the root can skip a report.
+type rxReport struct {
+	peer *psp.Peer
+	sas  []psp.SACount
+}
 
 // sessState is the state of a home session that the root keeps.
 type sessState struct {

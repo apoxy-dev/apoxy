@@ -684,6 +684,37 @@ func TestDrainMesh(t *testing.T) {
 	}
 }
 
+// TestDrainBeforeAttach drains the relay while the base Attach of the session
+// waits in Assign. After the Attach, the agent runs OnAttach, marks the session
+// draining and opens a session on another relay.
+func TestDrainBeforeAttach(t *testing.T) {
+	t.Parallel()
+	w, r1, r2 := meshRelays(t)
+	release := w.addrs.hold("a")
+	// A session that drains before its attach stays in QUIC mode.
+	a := w.agent(t, "a", r1, agentOptions{quicStart: true, relays: []identity.Relay{r1.ref()}})
+	require.Eventually(t, func() bool { now, _ := w.addrs.held(); return now == 1 }, 5*time.Second, 10*time.Millisecond,
+		"the base Attach does not wait in Assign")
+	qcs := r1.sessionConns(a.tr.Conn.LocalAddr())
+	require.Len(t, qcs, 1)
+	tap := r1.tapOf(qcs[0])
+	drain(t, r1)
+	require.Eventually(t, func() bool {
+		return slices.ContainsFunc(tap.responses(), func(m *dp.SessionResponse) bool { return m.GetDrain() != nil })
+	}, 5*time.Second, 10*time.Millisecond, "the relay sent no Drain while the Attach waits")
+	now, _ := w.addrs.held()
+	require.Equal(t, 1, now, "the base Attach ended before the Drain")
+	release()
+	first := a.attached(t)
+	require.Eventually(t, func() bool {
+		cs := a.a.Status().Connections
+		return len(cs) > 0 && cs[0].Address == first.addr && cs[0].Draining
+	}, 5*time.Second, 10*time.Millisecond, "the session on the draining relay is not draining")
+	second := a.attached(t)
+	assert.Equal(t, r2.addr, a.current().addr, "the new session has the default address")
+	assert.Equal(t, []string{"attach a " + first.addr.String(), "deprecate a " + first.addr.String(), "attach a " + second.addr.String()}, a.events("a"))
+}
+
 // TestRelist checks that the agent enrolls again when all relays fail or the
 // list is empty, and keeps the cached list while the enroll fails.
 func TestRelist(t *testing.T) {

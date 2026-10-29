@@ -472,6 +472,13 @@ func (t *sessionTap) responses() []*dp.SessionResponse {
 	return slices.Clone(t.resps)
 }
 
+// requests returns the messages of the agent that the relay read, in order.
+func (t *sessionTap) requests() []*dp.SessionRequest {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.reqs)
+}
+
 // pause stops the reads of the relay until resume runs. When the stream window
 // of the relay is full, the agent sends then wait.
 func (t *sessionTap) pause() (resume func()) {
