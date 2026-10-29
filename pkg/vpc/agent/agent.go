@@ -17,6 +17,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/build"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -154,7 +155,7 @@ type Agent struct {
 
 // runRef is how the public calls reach the root of one Run.
 type runRef struct {
-	mb      *mailbox
+	mb      *proc.Mailbox
 	stopped chan struct{} // Closed when Run returns.
 }
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp/keyproto"
@@ -30,7 +31,7 @@ var errNoDataPath = errors.New("no data path")
 // attachments of the agent.
 type session struct {
 	a      *Agent
-	mb, up *mailbox
+	mb, up *proc.Mailbox
 	d      *dialed
 	rank   uint32
 	ctx    context.Context
@@ -41,7 +42,7 @@ type session struct {
 
 	rx      chan *dp.SessionResponse // From the stream reader.
 	next    chan struct{}            // Lets the stream reader read after a RouteDelta.
-	sw      *mailbox                 // The stream writer.
+	sw      *proc.Mailbox            // The stream writer.
 	writing bool                     // The stream writer runs.
 	w       chan func()              // The writer.
 	drops   int                      // Writes that the full writer queue dropped.
@@ -88,9 +89,9 @@ type session struct {
 }
 
 // newSession returns the session on the connection d. The session ends with ctx.
-func newSession(a *Agent, ctx context.Context, up *mailbox, d *dialed, rank uint32) *session {
+func newSession(a *Agent, ctx context.Context, up *proc.Mailbox, d *dialed, rank uint32) *session {
 	s := &session{
-		a: a, mb: newMailbox(), up: up, d: d, rank: rank,
+		a: a, mb: proc.NewMailbox(0), up: up, d: d, rank: rank,
 		rx: make(chan *dp.SessionResponse, 1), next: make(chan struct{}, 1),
 		mode: dp.Mode_MODE_QUIC, lanes: 1,
 		checks: map[*check]bool{},
@@ -108,7 +109,7 @@ func (s *session) addr() string { return s.d.ep.addr }
 func (s *session) task(f func() any) {
 	s.tasks++
 	mb := s.mb
-	go func() { mb.send(taskDone{f()}) }()
+	go func() { mb.Send(taskDone{f()}) }()
 }
 
 // write gives f to the writer. A full queue drops it.
@@ -131,8 +132,8 @@ func (s *session) run() {
 			rx = s.rx
 		}
 		select {
-		case <-s.mb.wake:
-			for _, m := range s.mb.take() {
+		case <-s.mb.Wake():
+			for _, m := range s.mb.Take() {
 				s.handle(m)
 			}
 		case m := <-rx:
@@ -148,7 +149,8 @@ func (s *session) run() {
 		}
 	}
 	close(s.w)
-	s.up.send(sessEnded{s, s.err, s.link, s.peer})
+	s.mb.Close()
+	s.up.Send(sessEnded{s, s.err, s.link, s.peer})
 }
 
 // tickerC returns the channel of t, or nil.
@@ -168,7 +170,7 @@ func (s *session) idle() bool {
 // runs while the relay attaches.
 func (s *session) start() {
 	s.read()
-	s.sw, s.writing = newMailbox(), true
+	s.sw, s.writing = proc.NewMailbox(0), true
 	go writeStream(s.d.st.Send, s.sw, s.mb)
 	s.w = make(chan func(), writerQueue)
 	go func(w chan func()) {
@@ -222,11 +224,14 @@ type (
 
 // writeStream sends the Acks and the remote addresses on the Session stream
 // until end or a send that fails.
-func writeStream(send func(*dp.SessionRequest) error, mb, up *mailbox) {
+func writeStream(send func(*dp.SessionRequest) error, mb, up *proc.Mailbox) {
 	var err error
-	defer func() { up.send(streamEnded{err}) }()
-	for range mb.wake {
-		for _, m := range mb.take() {
+	defer func() {
+		mb.Close()
+		up.Send(streamEnded{err})
+	}()
+	for range mb.Wake() {
+		for _, m := range mb.Take() {
 			switch m := m.(type) {
 			case endMsg:
 				return
@@ -235,7 +240,7 @@ func writeStream(send func(*dp.SessionRequest) error, mb, up *mailbox) {
 					err = fmt.Errorf("send the Ack of revision %d: %w", m.rev, err)
 					return
 				}
-				up.send(ackSent{m.rev})
+				up.Send(ackSent{m.rev})
 			case remoteMsg:
 				if err = send(&dp.SessionRequest{Msg: &dp.SessionRequest_Remote{Remote: m.m}}); err != nil {
 					err = fmt.Errorf("send the attachments on the other relays of %s: %w", m.m.GetAttachmentId(), err)
@@ -264,10 +269,10 @@ func (s *session) end(err error) {
 		_ = s.pc.Close()
 	}
 	for c := range s.checks {
-		c.mb.send(endMsg{})
+		c.mb.Send(endMsg{})
 	}
 	s.chk = nil
-	s.sw.send(endMsg{})
+	s.sw.Send(endMsg{})
 	if s.retry != nil {
 		s.retry.Stop()
 		s.retry = nil
@@ -323,7 +328,7 @@ func (s *session) handle(m any) {
 	case bindingMsg:
 		s.bound(m)
 	case remoteMsg:
-		s.sw.send(m)
+		s.sw.Send(m)
 	case probeDone:
 		s.probeDone(m)
 	case rekeyMsg:
@@ -351,7 +356,7 @@ func (s *session) handle(m any) {
 	case checkLost:
 		if m.c == s.chk {
 			s.chk = nil
-			m.c.mb.send(endMsg{})
+			m.c.mb.Send(endMsg{})
 			s.useQUIC()
 		}
 	default:
@@ -380,7 +385,7 @@ func (s *session) stream(m *dp.SessionResponse) {
 		s.relayKeys(m.Rekey)
 	case *dp.SessionResponse_RxReport:
 		if s.peer != nil {
-			s.up.send(reportMsg{s: s, peer: s.peer, sas: fromReport(m.RxReport)})
+			s.up.Send(reportMsg{s: s, peer: s.peer, sas: fromReport(m.RxReport)})
 		}
 	case *dp.SessionResponse_Config:
 		if m.Config.GetMtu() != s.d.config.GetMtu() {
@@ -396,8 +401,8 @@ func (s *session) routeDelta(d *dp.RouteDelta) {
 	synced := s.routes.synced
 	changes := s.routes.apply(d, s.ownOrigin)
 	s.waitRev, s.waiting, s.ackOK, s.routesOK = d.GetRev(), true, false, false
-	s.sw.send(ackMsg{d.GetRev()})
-	s.up.send(routesMsg{s: s, changes: changes, first: !synced && s.routes.synced, delta: true, rev: d.GetRev()})
+	s.sw.Send(ackMsg{d.GetRev()})
+	s.up.Send(routesMsg{s: s, changes: changes, first: !synced && s.routes.synced, delta: true, rev: d.GetRev()})
 }
 
 // noRoute sends an ICMP error to the sender of a packet to the address of a
@@ -441,7 +446,7 @@ func (s *session) drain(alts []endpoint) {
 	}
 	s.draining, s.alts = true, alts
 	if s.attached {
-		s.up.send(drainedMsg{s, alts})
+		s.up.Send(drainedMsg{s, alts})
 	}
 	// An attempt that did not give its keys yet ends.
 	if s.att != nil && s.att.rekeys == 0 {
@@ -488,9 +493,9 @@ func (s *session) baseAttached(m baseAttached) {
 	s.id, s.prefixes, s.self = m.id, m.prefixes, overlayAddr(m.prefixes)
 	// The routes that came for the attachment before the attach leave the table.
 	if removed := s.routes.drop(m.id); len(removed) > 0 {
-		s.up.send(routesMsg{s: s, changes: removed})
+		s.up.Send(routesMsg{s: s, changes: removed})
 	}
-	s.up.send(bindMsg{s, s.d.config})
+	s.up.Send(bindMsg{s, s.d.config})
 }
 
 // bound makes the link of the session in the binding, its relay peer and its
@@ -535,7 +540,7 @@ func (s *session) bound(m bindingMsg) {
 	s.attached = true
 	s.status()
 	if s.draining {
-		s.up.send(drainedMsg{s, s.alts})
+		s.up.Send(drainedMsg{s, s.alts})
 	}
 	s.takePending()
 }
@@ -550,7 +555,7 @@ func (s *session) useConn() error {
 // status gives the root the state of the session.
 func (s *session) status() {
 	cfg := &s.a.cfg
-	s.up.send(statusMsg{s, sessState{
+	s.up.Send(statusMsg{s, sessState{
 		attached: s.attached, link: s.link, peer: s.peer,
 		base: Attachment{
 			Name: cfg.Name, Labels: maps.Clone(cfg.Labels), Routes: slices.Clone(cfg.Routes),
@@ -584,13 +589,13 @@ func (s *session) relayKeys(m *dp.KeysRequest) {
 			s.failAttempt(fmt.Errorf("relay SAs: %w", err))
 			return
 		}
-		s.up.send(applyMsg{s: s, peer: s.peer, attempt: gen, req: req})
+		s.up.Send(applyMsg{s: s, peer: s.peer, attempt: gen, req: req})
 	case gen == 0 || s.mode == dp.Mode_MODE_PSP && gen == s.attempt:
 		if err != nil {
 			slog.Warn("Failed to apply relay SAs", "relay", s.addr(), "error", err)
 			return
 		}
-		s.up.send(applyMsg{s: s, peer: s.peer, req: req})
+		s.up.Send(applyMsg{s: s, peer: s.peer, req: req})
 	default:
 		// The relay revokes the SAs of an older attempt in its own tables.
 		s.staleOffers++

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -66,7 +67,7 @@ type routeWait struct {
 // records of the home sessions and the public requests.
 type root struct {
 	a      *Agent
-	mb     *mailbox
+	mb     *proc.Mailbox
 	ctx    context.Context
 	cancel context.CancelFunc
 	tasks  int
@@ -112,7 +113,7 @@ type root struct {
 	clamps   map[*psp.Peer]int
 	pspPeers map[*psp.Peer]bool
 
-	cb        *mailbox
+	cb        *proc.Mailbox
 	cbRunning bool
 	cbEnding  bool
 	seq, done uint64
@@ -132,7 +133,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return fmt.Errorf("agent cert: %w", err)
 	}
 	r := &root{
-		a: a, mb: newMailbox(), retryWait: minBackoff,
+		a: a, mb: proc.NewMailbox(0), retryWait: minBackoff,
 		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]routeInfo{}, relayRefs: map[string]int{},
 		relayAddrs: map[string][]string{}, welcome: map[string]string{}, wanted: map[string]bool{},
 		clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
@@ -174,7 +175,7 @@ func (a *Agent) setRunning() map[string]*AttachmentSpec {
 
 func (r *root) run() error {
 	r.startIdentity()
-	r.cb, r.cbRunning = newMailbox(), true
+	r.cb, r.cbRunning = proc.NewMailbox(0), true
 	go runCallbacks(r.cb, r.mb)
 	r.keep.backoff = minBackoff
 	r.plan()
@@ -192,7 +193,7 @@ func (r *root) run() error {
 			if !r.cbEnding {
 				// The callbacks run each event that the root queued before.
 				r.cbEnding = true
-				r.cb.send(endMsg{})
+				r.cb.Send(endMsg{})
 			}
 		}
 		var stop <-chan struct{}
@@ -202,8 +203,8 @@ func (r *root) run() error {
 		select {
 		case <-stop:
 			r.shutdown()
-		case <-r.mb.wake:
-			for _, m := range r.mb.take() {
+		case <-r.mb.Wake():
+			for _, m := range r.mb.Take() {
 				r.handle(m)
 			}
 		case now := <-tick.C:
@@ -227,6 +228,8 @@ func (r *root) run() error {
 			r.attachMissing()
 		}
 	}
+	// The public calls that come after this go to the wait for the end of Run.
+	r.mb.Close()
 	if b := r.b; b != nil {
 		// The close waits for the lane read loops, which a blocked device write
 		// holds. The API user stops the driver after Run returns.
@@ -248,7 +251,7 @@ func timerC(t *time.Timer) <-chan time.Time {
 func (r *root) task(f func() any) {
 	r.tasks++
 	mb := r.mb
-	go func() { mb.send(taskDone{f()}) }()
+	go func() { mb.Send(taskDone{f()}) }()
 }
 
 // idle reports whether the root has no child and no task.
@@ -293,7 +296,7 @@ func (r *root) shutdown() {
 		r.attachRetry = nil
 	}
 	for _, h := range r.homes {
-		h.s.mb.send(endMsg{})
+		h.s.mb.Send(endMsg{})
 	}
 	for spec, q := range r.attaches {
 		q.reply <- attachReply{err: errNoRelay}
@@ -310,7 +313,7 @@ func (r *root) shutdown() {
 func (r *root) startIdentity() {
 	r.idRunning = true
 	id, ctx, mb := r.a.cfg.Identity, r.ctx, r.mb
-	go func() { mb.send(identityEnded{id.Run(ctx)}) }()
+	go func() { mb.Send(identityEnded{id.Run(ctx)}) }()
 }
 
 func (r *root) handle(m any) {
@@ -381,7 +384,7 @@ func (r *root) handleLive(m any) {
 		}
 		r.clamps[m.peer] = m.mtu
 		r.setClamp()
-		m.s.mb.send(clampedMsg{m.peer, m.attempt})
+		m.s.mb.Send(clampedMsg{m.peer, m.attempt})
 	case peerMode:
 		r.peerMode(m.peer, m.mode)
 	case routesMsg:
@@ -390,13 +393,13 @@ func (r *root) handleLive(m any) {
 		m.peer.Report(now, m.sas)
 	case offerMsg:
 		req, err := m.peer.Offer(now)
-		m.s.mb.send(rekeyMsg{peer: m.peer, attempt: m.attempt, req: req, err: err})
+		m.s.mb.Send(rekeyMsg{peer: m.peer, attempt: m.attempt, req: req, err: err})
 	case refusedMsg:
 		req, err := m.peer.Refused(m.spis, now)
-		m.s.mb.send(rekeyMsg{peer: m.peer, attempt: m.attempt, req: req, err: err})
+		m.s.mb.Send(rekeyMsg{peer: m.peer, attempt: m.attempt, req: req, err: err})
 	case applyMsg:
 		refused, err := m.peer.Apply(m.req, now)
-		m.s.mb.send(appliedMsg{peer: m.peer, attempt: m.attempt, refused: refused, err: err})
+		m.s.mb.Send(appliedMsg{peer: m.peer, attempt: m.attempt, refused: refused, err: err})
 	case drainedMsg:
 		r.drained(m)
 	}
@@ -544,6 +547,7 @@ func (r *root) sessEnded(m sessEnded) {
 		r.routesOf = nil
 	}
 	r.routeWaits = slices.DeleteFunc(r.routeWaits, func(w routeWait) bool { return w.s == h.s })
+	r.bindWait = slices.DeleteFunc(r.bindWait, func(s *session) bool { return s == h.s })
 	for _, q := range r.attaches {
 		q.sessEnded(h.s)
 	}
@@ -632,10 +636,10 @@ type bound struct {
 func (r *root) bind(m bindMsg) {
 	switch {
 	case r.ending:
-		m.s.mb.send(bindingMsg{err: errAgentStopped})
+		m.s.mb.Send(bindingMsg{err: errAgentStopped})
 		return
 	case r.b != nil:
-		m.s.mb.send(bindingMsg{b: r.b})
+		m.s.mb.Send(bindingMsg{b: r.b})
 		return
 	}
 	r.bindWait = append(r.bindWait, m.s)
@@ -656,7 +660,7 @@ func (r *root) bound(m bound) {
 		r.b = m.b
 	}
 	for _, s := range r.bindWait {
-		s.mb.send(bindingMsg{m.b, m.err})
+		s.mb.Send(bindingMsg{m.b, m.err})
 	}
 	r.bindWait = nil
 }
@@ -693,7 +697,7 @@ func (r *root) tick(now time.Time) {
 	}
 	for _, u := range ups {
 		if h := r.peerHome(u.Peer); h != nil {
-			h.s.mb.send(rekeyMsg{peer: u.Peer, req: u.Request})
+			h.s.mb.Send(rekeyMsg{peer: u.Peer, req: u.Request})
 		}
 	}
 }
@@ -799,7 +803,7 @@ func (r *root) routes(m routesMsg) {
 		r.routeWaits = append(r.routeWaits, routeWait{m.s, m.rev, r.seq})
 		return
 	}
-	m.s.mb.send(routesDone{m.rev})
+	m.s.mb.Send(routesDone{m.rev})
 }
 
 // syncRoutes makes the reported routes the routes of the primary and queues
@@ -902,7 +906,7 @@ func (r *root) queue(fn func()) {
 func (r *root) flush() {
 	r.publish(true)
 	for _, e := range r.events {
-		r.cb.send(e)
+		r.cb.Send(e)
 	}
 	r.events = nil
 }
@@ -913,7 +917,7 @@ func (r *root) callbackDone() {
 		if w.seq > r.done {
 			return false
 		}
-		w.s.mb.send(routesDone{w.rev})
+		w.s.mb.Send(routesDone{w.rev})
 		return true
 	})
 	for _, q := range r.attaches {
@@ -942,15 +946,16 @@ func (r *root) publish(running bool) {
 
 // runCallbacks runs the user callbacks in order, one at a time, until end.
 // It runs each event that came before end.
-func runCallbacks(mb, up *mailbox) {
-	for range mb.wake {
-		for _, m := range mb.take() {
+func runCallbacks(mb, up *proc.Mailbox) {
+	for range mb.Wake() {
+		for _, m := range mb.Take() {
 			switch m := m.(type) {
 			case eventMsg:
 				m.fn()
-				up.send(doneMsg{m.seq})
+				up.Send(doneMsg{m.seq})
 			case endMsg:
-				up.send(cbEnded{})
+				mb.Close()
+				up.Send(cbEnded{})
 				return
 			}
 		}
@@ -990,7 +995,7 @@ func (r *root) sendRemotes() {
 				continue
 			}
 			h.remotes[at.ID] = key.String()
-			h.s.mb.send(remoteMsg{&dp.RemoteAddresses{AttachmentId: at.ID, Attachments: others}})
+			h.s.mb.Send(remoteMsg{&dp.RemoteAddresses{AttachmentId: at.ID, Attachments: others}})
 		}
 		maps.DeleteFunc(h.remotes, func(id string, _ string) bool { return !ids[id] })
 	}

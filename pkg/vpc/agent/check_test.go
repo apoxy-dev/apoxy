@@ -3,7 +3,9 @@
 package agent
 
 import (
+	"bytes"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -110,6 +112,79 @@ func TestPSPPathLost(t *testing.T) {
 			roundTrip(t, c, "back in PSP mode")
 			same()
 		})
+	}
+}
+
+// floodConn counts the packets that the agent socket reads: the forged probes,
+// and the BFD packets from the PSP socket of the relay.
+type floodConn struct {
+	net.PacketConn
+	forged atomic.Pointer[[]byte]
+	relay  string // Address of the PSP socket of the relay.
+	got    atomic.Int32
+	bfd    atomic.Int32
+}
+
+func (c *floodConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, from, err := c.PacketConn.ReadFrom(p)
+	if err != nil {
+		return n, from, err
+	}
+	if f := c.forged.Load(); f != nil && bytes.Equal(p[:n], *f) {
+		c.got.Add(1)
+	} else if from.String() == c.relay && n > 0 && p[0] == p2p.TypeProbe {
+		c.bfd.Add(1)
+	}
+	return n, from, err
+}
+
+// TestCheckFlood sends forged probes with the SID of the check of a session in
+// PSP mode, in bursts larger than the probe mailbox of the check. BFD stays Up
+// for more than its detect time, so the session stays in PSP mode, and Run
+// ends while the flood goes on.
+func TestCheckFlood(t *testing.T) {
+	t.Parallel()
+	w := newWorld(t)
+	r := w.relay(t, "relay-1")
+	fc := &floodConn{relay: r.psp}
+	a := w.agent(t, "a", r, agentOptions{flood: fc})
+	a.attached(t)
+	ref := a.current()
+	require.NotNil(t, ref.qc, "the relay has no connection of the session")
+	keys, err := p2p.NewProbeKeys(ref.qc.ConnectionState().TLS)
+	require.NoError(t, err)
+	var bad [32]byte
+	forged := p2p.AppendProbe(nil, p2p.Probe{Reply: true, SID: keys.SID}, 0, &bad)
+	fc.forged.Store(&forged)
+	src, to := loopback(t), a.tr.Conn.LocalAddr()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer close(stop)
+	wg.Go(func() {
+		tk := time.NewTicker(10 * time.Millisecond)
+		defer tk.Stop()
+		for {
+			for range 4 * checkPkts {
+				_, _ = src.WriteTo(forged, to)
+			}
+			select {
+			case <-stop:
+				return
+			case <-tk.C:
+			}
+		}
+	})
+	bfd := fc.bfd.Load()
+	require.Never(t, func() bool { return a.a.Status().Mode != dp.Mode_MODE_PSP }, (bfdl.DefaultDetectMult+1)*checkTx, 50*time.Millisecond,
+		"the session left PSP mode during the flood")
+	assert.Greater(t, fc.got.Load(), int32(10*checkPkts), "forged probes that the agent read")
+	assert.GreaterOrEqual(t, fc.bfd.Load()-bfd, int32(bfdl.DefaultDetectMult), "BFD packets of the relay during the flood")
+	a.cancel()
+	select {
+	case <-a.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return during the flood")
 	}
 }
 

@@ -101,7 +101,11 @@ func (a *Agent) Attach(ctx context.Context, s AttachmentSpec) (Attachment, error
 			continue
 		}
 		reply := make(chan attachReply, 1)
-		ref.mb.send(attachReqMsg{sp, ctx, reply})
+		if !ref.mb.Send(attachReqMsg{sp, ctx, reply}) {
+			// The root ended; the snapshot of the end of Run comes before stopped.
+			<-ref.stopped
+			continue
+		}
 		done := ctx.Done()
 	wait:
 		for {
@@ -116,7 +120,7 @@ func (a *Agent) Attach(ctx context.Context, s AttachmentSpec) (Attachment, error
 				}
 				break wait
 			case <-done:
-				ref.mb.send(cancelReqMsg{sp})
+				ref.mb.Send(cancelReqMsg{sp})
 				done = nil
 			}
 		}
@@ -148,7 +152,10 @@ func (a *Agent) Detach(ctx context.Context, name string) error {
 			continue
 		}
 		reply := make(chan error, 1)
-		ref.mb.send(detachReqMsg{name, ctx, reply})
+		if !ref.mb.Send(detachReqMsg{name, ctx, reply}) {
+			<-ref.stopped
+			continue
+		}
 		select {
 		case err := <-reply:
 			return err
@@ -209,7 +216,7 @@ func (r *root) attachRequest(m attachReqMsg) {
 	}
 	for _, h := range hs {
 		h.pending[name] = m.spec
-		h.s.mb.send(attachX{m.spec, m.ctx})
+		h.s.mb.Send(attachX{m.spec, m.ctx})
 		q.wait[h.s], q.rank[h.s] = true, h.rank
 	}
 	r.attaches[m.spec] = q
@@ -218,7 +225,7 @@ func (r *root) attachRequest(m attachReqMsg) {
 func (r *root) cancelRequest(m cancelReqMsg) {
 	if q := r.attaches[m.spec]; q != nil {
 		for s := range q.wait {
-			s.mb.send(cancelX{m.spec})
+			s.mb.Send(cancelX{m.spec})
 		}
 	}
 }
@@ -267,7 +274,7 @@ func (r *root) forget(spec *AttachmentSpec, ctx context.Context) map[*session]bo
 		} else {
 			continue
 		}
-		h.s.mb.send(detachX{spec, ctx})
+		h.s.mb.Send(detachX{spec, ctx})
 		out[h.s] = true
 	}
 	return out
@@ -386,7 +393,7 @@ func (r *root) attachMissing() {
 				continue
 			}
 			h.pending[name] = spec
-			h.s.mb.send(attachX{spec: spec})
+			h.s.mb.Send(attachX{spec: spec})
 		}
 	}
 }
@@ -450,7 +457,7 @@ func (s *session) handleExtras(m any) {
 			if j.ctx != nil && j.ctx.Err() != nil {
 				err = j.ctx.Err()
 			}
-			s.up.send(attachedX{s: s, spec: j.spec, err: err})
+			s.up.Send(attachedX{s: s, spec: j.spec, err: err})
 			return true
 		})
 	case detachX:
@@ -469,7 +476,7 @@ func (s *session) admit() {
 		j := s.queue[0]
 		s.queue = s.queue[1:]
 		if j.ctx != nil && j.ctx.Err() != nil {
-			s.up.send(attachedX{s: s, spec: j.spec, err: j.ctx.Err()})
+			s.up.Send(attachedX{s: s, spec: j.spec, err: j.ctx.Err()})
 			continue
 		}
 		s.running[j] = true
@@ -505,7 +512,7 @@ func (s *session) xattached(m xattached) {
 	defer s.admit()
 	switch {
 	case m.err != nil:
-		s.up.send(attachedX{s: s, spec: j.spec, err: m.err})
+		s.up.Send(attachedX{s: s, spec: j.spec, err: m.err})
 		return
 	case j.detached:
 		// Detach forgot the spec during the call, so the attachment goes again.
@@ -515,7 +522,7 @@ func (s *session) xattached(m xattached) {
 	x := m.x
 	// Routes of the attachment that came before leave the route table.
 	if removed := s.routes.drop(x.id); len(removed) > 0 {
-		s.up.send(routesMsg{s: s, changes: removed})
+		s.up.Send(routesMsg{s: s, changes: removed})
 	}
 	for _, pfx := range x.prefixes {
 		if err := s.link.AddSource(pfx); err != nil {
@@ -523,7 +530,7 @@ func (s *session) xattached(m xattached) {
 		}
 	}
 	s.extras[x.spec.Name], s.byID[x.id] = x, x
-	s.up.send(attachedX{s: s, spec: j.spec, at: s.attachmentOf(x)})
+	s.up.Send(attachedX{s: s, spec: j.spec, at: s.attachmentOf(x)})
 }
 
 // attachmentOf returns the extra attachment x of s.
@@ -539,20 +546,20 @@ func (s *session) detachExtra(m detachX) {
 	name := m.spec.Name
 	if i := slices.IndexFunc(s.queue, func(j *xjob) bool { return j.spec == m.spec }); i >= 0 {
 		s.queue = slices.Delete(s.queue, i, i+1)
-		s.up.send(attachedX{s: s, spec: m.spec, err: fmt.Errorf("%w: %s", ErrNoAttachment, name)})
-		s.up.send(detachedX{s, m.spec})
+		s.up.Send(attachedX{s: s, spec: m.spec, err: fmt.Errorf("%w: %s", ErrNoAttachment, name)})
+		s.up.Send(detachedX{s, m.spec})
 		return
 	}
 	for j := range s.running {
 		if j.spec == m.spec {
 			j.detached = true
-			s.up.send(detachedX{s, m.spec})
+			s.up.Send(detachedX{s, m.spec})
 			return
 		}
 	}
 	x := s.extras[name]
 	if x == nil || x.spec != m.spec {
-		s.up.send(detachedX{s, m.spec})
+		s.up.Send(detachedX{s, m.spec})
 		return
 	}
 	delete(s.extras, name)
@@ -594,10 +601,10 @@ func (s *session) xdetached(m xdetached) {
 		slog.Warn("Failed to detach an attachment at the relay; the relay keeps it until the session ends", "relay", s.addr(), "error", m.err)
 	}
 	if j := m.j; j != nil {
-		s.up.send(attachedX{s: s, spec: j.spec, err: fmt.Errorf("%w: %s", ErrNoAttachment, j.spec.Name)})
+		s.up.Send(attachedX{s: s, spec: j.spec, err: fmt.Errorf("%w: %s", ErrNoAttachment, j.spec.Name)})
 		return
 	}
-	s.up.send(detachedX{s, m.dj.spec})
+	s.up.Send(detachedX{s, m.dj.spec})
 }
 
 // advertised returns the prefixes of ps that the agent advertises: the IPv6

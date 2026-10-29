@@ -218,6 +218,45 @@ func TestProcesses(t *testing.T) {
 			a.attached(t)
 			assert.False(t, closed(a.done), "Run returned")
 		}},
+		{name: "public calls during the end of Run", run: func(t *testing.T, w *world, r *testRelay) {
+			a := w.agent(t, "a", r, agentOptions{})
+			a.attached(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			stop := make(chan struct{})
+			var wg sync.WaitGroup
+			var ok atomic.Int32
+			for i := range 8 {
+				wg.Go(func() {
+					name := fmt.Sprintf("x-%d", i)
+					for !closed(stop) {
+						if _, err := a.a.Attach(ctx, AttachmentSpec{Name: name}); err == nil {
+							ok.Add(1)
+						}
+						_ = a.a.Detach(ctx, name)
+					}
+				})
+			}
+			require.Eventually(t, func() bool { return ok.Load() > 0 }, 5*time.Second, time.Millisecond, "no Attach call returned an attachment")
+			a.cancel()
+			select {
+			case <-a.done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("Run did not return")
+			}
+			close(stop)
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("an Attach or Detach call did not return after Run")
+			}
+			assert.NoError(t, ctx.Err(), "a call waited for its context")
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -837,6 +837,7 @@ type agentOptions struct {
 	mtu   int           // Config.MTU.
 	conn  *lossyConn    // Wraps the agent socket if set.
 	block *blockConn    // Wraps the agent socket if set.
+	flood *floodConn    // Wraps the agent socket if set.
 	slow  *slowConn     // Wraps the agent socket if set.
 	move  *moveConn     // Wraps the agent socket if set.
 	// noPSP makes the agent socket a vpctest.NoProbeConn, so the sessions fall
@@ -1025,6 +1026,10 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 	if opts.block != nil {
 		opts.block.PacketConn = conn
 		conn = opts.block
+	}
+	if opts.flood != nil {
+		opts.flood.PacketConn = conn
+		conn = opts.flood
 	}
 	if opts.move != nil {
 		opts.move.PacketConn = conn

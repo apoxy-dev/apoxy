@@ -169,7 +169,7 @@ func (s *session) beginAttempt() {
 
 // offer asks the root for the receive SAs of the attempt.
 func (s *session) offer() {
-	s.up.send(offerMsg{s: s, peer: s.peer, attempt: s.att.n})
+	s.up.Send(offerMsg{s: s, peer: s.peer, attempt: s.att.n})
 }
 
 // rekeyMsg takes receive SAs from the root: for the attempt, or a renewal.
@@ -232,7 +232,7 @@ func (s *session) rekeyDone(m rekeyDone) {
 	case len(m.spis) > 0 && s.att.rekeys >= maxRefusals:
 		s.failAttempt(errors.New("relay refused the SAs too many times"))
 	case len(m.spis) > 0:
-		s.up.send(refusedMsg{s: s, peer: s.peer, attempt: m.attempt, spis: m.spis})
+		s.up.Send(refusedMsg{s: s, peer: s.peer, attempt: m.attempt, spis: m.spis})
 	default:
 		s.att.keysOK = true
 		s.advance()
@@ -253,7 +253,7 @@ func (s *session) renewDone(m rekeyDone) {
 		slog.Warn("Failed to give receive SAs to the relay", "relay", s.addr(), "error", "relay refused the SAs too many times")
 	default:
 		s.renewRefusals++
-		s.up.send(refusedMsg{s: s, peer: s.peer, spis: m.spis})
+		s.up.Send(refusedMsg{s: s, peer: s.peer, spis: m.spis})
 	}
 }
 
@@ -274,7 +274,7 @@ func (s *session) advance() {
 		return
 	}
 	at.clamp = true
-	s.up.send(clampMsg{s: s, peer: s.peer, attempt: at.n, mtu: at.mtu})
+	s.up.Send(clampMsg{s: s, peer: s.peer, attempt: at.n, mtu: at.mtu})
 }
 
 // registerLanes starts the task that registers the lane ports of the binding
@@ -369,7 +369,7 @@ func (s *session) clamped(m clampedMsg) {
 	s.att.timer.Stop()
 	s.att = nil
 	s.mode = dp.Mode_MODE_PSP
-	s.up.send(peerMode{s: s, peer: s.peer, mode: dp.Mode_MODE_PSP})
+	s.up.Send(peerMode{s: s, peer: s.peer, mode: dp.Mode_MODE_PSP})
 	s.status()
 	slog.Info("Changed the relay session from QUIC mode to PSP mode", "relay", s.addr(), "address", s.self)
 }
@@ -386,7 +386,7 @@ func (s *session) failAttempt(err error) {
 	if err != nil {
 		slog.Warn("Failed to change the relay session to PSP mode; data stays on QUIC", "relay", s.addr(), "error", err)
 	}
-	s.up.send(peerMode{s: s, peer: s.peer, mode: dp.Mode_MODE_QUIC})
+	s.up.Send(peerMode{s: s, peer: s.peer, mode: dp.Mode_MODE_QUIC})
 	s.status()
 	if !s.draining {
 		s.backoff()
@@ -406,7 +406,7 @@ func (s *session) useQUIC() {
 	s.mode = dp.Mode_MODE_QUIC
 	s.reason = dp.FallbackReason_FALLBACK_REASON_PROBE_TIMEOUT
 	s.stopLanes()
-	s.up.send(peerMode{s: s, peer: s.peer, mode: dp.Mode_MODE_QUIC})
+	s.up.Send(peerMode{s: s, peer: s.peer, mode: dp.Mode_MODE_QUIC})
 	s.status()
 	s.wait = s.a.retryMin
 	s.backoff()

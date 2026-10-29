@@ -11,6 +11,7 @@ import (
 	pspwire "github.com/apoxy-dev/softpsp/psp"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 )
@@ -19,12 +20,17 @@ import (
 // has the same period, so the two ends have the same detect time.
 const checkTx = bfdl.DefaultTxInterval
 
+// checkPkts is the most probe packets that wait for a check. A packet goes in
+// before its tag check, so a flood with the SID of the check drops here.
+const checkPkts = 64
+
 // check is the BFD session of a relay session in PSP mode: a child process of
 // the session. Its packets go to the PSP socket of the relay in path probes,
 // so they use the PSP path.
 type check struct {
-	mb      *mailbox
-	up      *mailbox // The session.
+	mb      *proc.Mailbox // From the session.
+	pkts    *proc.Mailbox // Probe packets from the socket read path.
+	up      *proc.Mailbox // The session.
 	keys    p2p.ProbeKeys
 	bfd     *p2p.Check
 	b       *psp.Binding
@@ -58,18 +64,26 @@ type (
 
 // newCheck returns the check of a session with its keys, the address of the
 // agent socket that the relay sees and the probe counter.
-func newCheck(up *mailbox, keys p2p.ProbeKeys, b *psp.Binding, seen netip.AddrPort, counter uint64) *check {
-	return &check{mb: newMailbox(), up: up, keys: keys, bfd: p2p.NewCheck(p2p.RoleAgent, checkTx), b: b, seen: seen, counter: counter}
+func newCheck(up *proc.Mailbox, keys p2p.ProbeKeys, b *psp.Binding, seen netip.AddrPort, counter uint64) *check {
+	return &check{
+		mb: proc.NewMailbox(0), pkts: proc.NewMailbox(checkPkts), up: up,
+		keys: keys, bfd: p2p.NewCheck(p2p.RoleAgent, checkTx), b: b, seen: seen, counter: counter,
+	}
 }
 
 // run sends a BFD packet at each period until the session ends the check. The
 // packets also keep the NAT mapping, and give the relay a new source address.
 func (c *check) run(probes *probeRegistry) {
-	t := probes.add(c.keys.SID, func(pkt []byte) { c.mb.send(checkPkt{bytes.Clone(pkt)}) })
+	t := probes.add(c.keys.SID, func(pkt []byte) {
+		// A full mailbox drops the packet, and BFD takes it as a loss.
+		c.pkts.Send(checkPkt{bytes.Clone(pkt)})
+	})
 	defer func() {
 		probes.remove(c.keys.SID, t)
 		c.bfd.Close()
-		c.up.send(checkEnded{c, c.counter})
+		c.mb.Close()
+		c.pkts.Close()
+		c.up.Send(checkEnded{c, c.counter})
 	}()
 	tx := time.NewTicker(checkTx)
 	defer tx.Stop()
@@ -78,14 +92,15 @@ func (c *check) run(probes *probeRegistry) {
 	c.send()
 	for {
 		select {
-		case <-c.mb.wake:
-			for _, m := range c.mb.take() {
-				switch m := m.(type) {
-				case endMsg:
+		case <-c.mb.Wake():
+			for _, m := range c.mb.Take() {
+				if _, ok := m.(endMsg); ok {
 					return
-				case checkPkt:
-					c.reply(m.pkt)
 				}
+			}
+		case <-c.pkts.Wake():
+			for _, m := range c.pkts.Take() {
+				c.reply(m.(checkPkt).pkt)
 			}
 		case now := <-detect.C:
 			if !c.lost && c.bfd.Lost(now) {
@@ -104,7 +119,7 @@ func (c *check) run(probes *probeRegistry) {
 func (c *check) setLost() {
 	if !c.lost {
 		c.lost = true
-		c.up.send(checkLost{c})
+		c.up.Send(checkLost{c})
 	}
 }
 
@@ -114,7 +129,7 @@ func (c *check) send() {
 	c.bfd.SetSize(cmp.Or(c.b.ClampMTU(), c.b.DeviceMTU()) + pspwire.Overhead)
 	c.counter++
 	pkt := c.bfd.Append(nil, p2p.Probe{SID: c.keys.SID, Counter: c.counter}, &c.keys.Dialer)
-	c.up.send(checkSend{c, pkt})
+	c.up.Send(checkSend{c, pkt})
 }
 
 // reply takes a BFD packet of the relay.
@@ -128,7 +143,7 @@ func (c *check) reply(pkt []byte) {
 	}
 	if r.Seen != c.seen {
 		c.seen = r.Seen
-		c.up.send(checkSeen{c, r.Seen})
+		c.up.Send(checkSeen{c, r.Seen})
 	}
 	changed := c.bfd.Receive(r)
 	switch {
