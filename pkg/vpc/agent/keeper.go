@@ -300,13 +300,10 @@ func (r *root) closeRound() {
 	r.plan()
 }
 
-// wantedSet returns the relay IDs that the reported routes name, and the
-// relay of the last primary, without the relay of the live primary.
+// wantedSet returns the relays that a route of a session named in this Run, and
+// the relay of the last primary, without the relay of the live primary.
 func (r *root) wantedSet() map[string]bool {
-	w := map[string]bool{}
-	for id := range r.relayRefs {
-		w[id] = true
-	}
+	w := maps.Clone(r.named)
 	if r.primaryID != "" {
 		w[r.primaryID] = true
 	}
@@ -318,22 +315,13 @@ func (r *root) wantedSet() map[string]bool {
 			slog.Info("A route names a relay of the agent", "relay", id, "addresses", r.addrsOf(id))
 		}
 	}
-	for id := range r.wanted {
-		if !w[id] {
-			slog.Info("No route names a relay of the agent; the agent dials it no more", "relay", id)
-		}
-	}
 	r.wanted = w
 	return w
 }
 
-// keepAddrs forgets the addresses of each relay that is not wanted, that no
-// session holds and that no dial uses, and the Welcome of each address that
-// is not an address to dial.
+// keepAddrs forgets the Welcome of each address that is not an address to dial.
+// The addresses of a named relay stay for the life of Run.
 func (r *root) keepAddrs(wanted map[string]bool) {
-	maps.DeleteFunc(r.relayAddrs, func(id string, _ []string) bool {
-		return !wanted[id] && r.holder(id) == nil && !r.keep.dialing[id]
-	})
 	addrs := map[string]bool{}
 	for _, e := range r.endpoints() {
 		addrs[e.addr] = true
@@ -364,16 +352,17 @@ func (r *root) addrsOf(id string) []string {
 	return nil
 }
 
-// wantDialed is the result of the dial of a wanted relay.
+// wantDialed is the result of the dial of a wanted relay. others has the
+// relay ID of the Welcome at each address where another relay answered.
 type wantDialed struct {
-	id  string
-	d   *dialed
-	err error
+	id     string
+	d      *dialed
+	err    error
+	others map[string]string
 }
 
-// dialWanted starts a dial task for each wanted relay that no session holds,
-// that no dial uses, whose backoff ended and that has an address. The task
-// dials the addresses in order.
+// dialWanted dials each wanted relay with an address, no session, no dial and no
+// backoff. The task closes a connection to another relay and tries the next address.
 func (r *root) dialWanted(wanted map[string]bool, now time.Time, next *time.Time) {
 	k := &r.keep
 	for _, id := range slices.Sorted(maps.Keys(wanted)) {
@@ -388,20 +377,26 @@ func (r *root) dialWanted(wanted map[string]bool, now time.Time, next *time.Time
 		a, ctx, roots := r.a, r.ctx, r.a.relayRoots(r.a.cfg.Identity.Current())
 		r.task(func() any {
 			var errs []error
+			others := map[string]string{}
 			for _, addr := range addrs {
 				d, err := a.dial(ctx, endpoint{id: id, addr: addr}, roots)
-				if err == nil {
-					return wantDialed{id: id, d: d}
+				switch {
+				case err != nil:
+					errs = append(errs, fmt.Errorf("relay %s at %s: %w", id, addr, err))
+				case d.relayID != id:
+					others[addr] = d.relayID
+					d.close("agent dialed another relay at this address")
+					errs = append(errs, fmt.Errorf("relay %s at %s: relay %s answered", id, addr, d.relayID))
+				default:
+					return wantDialed{id: id, d: d, others: others}
 				}
-				errs = append(errs, fmt.Errorf("relay %s at %s: %w", id, addr, err))
 			}
-			return wantDialed{id: id, err: errors.Join(errs...)}
+			return wantDialed{id: id, err: errors.Join(errs...), others: others}
 		})
 	}
 }
 
-// wantDone takes the result of the dial of a wanted relay. The session starts
-// also when the relay left the wanted set during the dial.
+// wantDone takes the result of the dial of a wanted relay.
 func (r *root) wantDone(m wantDialed) {
 	delete(r.keep.dialing, m.id)
 	if r.ending {
@@ -409,6 +404,10 @@ func (r *root) wantDone(m wantDialed) {
 			m.d.close("agent stopped")
 		}
 		return
+	}
+	for addr, other := range m.others {
+		r.welcome[addr] = other
+		slog.Warn("Another relay answered at an address of a wanted relay; closed the connection", "relay", m.id, "address", addr, "other_relay", other)
 	}
 	switch {
 	case m.err != nil:
@@ -419,12 +418,6 @@ func (r *root) wantDone(m wantDialed) {
 		r.failRelay(m.id)
 	default:
 		r.welcome[m.d.ep.addr] = m.d.relayID
-		if m.d.relayID != m.id {
-			// Another relay has the address now. The connection holds the ID of
-			// its Welcome, and the wanted relay waits for its backoff.
-			slog.Warn("A wanted relay address has another relay", "relay", m.id, "address", m.d.ep.addr, "other_relay", m.d.relayID)
-			r.failRelay(m.id)
-		}
 		r.take(m.d, true)
 	}
 	r.plan()

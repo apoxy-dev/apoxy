@@ -13,6 +13,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/apoxy-dev/apoxy/pkg/tunnel/ipalloc"
+	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
@@ -93,16 +95,21 @@ type root struct {
 	retryWait   time.Duration
 
 	// reported are the routes of the primary that OnRoutes has. They stay
-	// while no session is live, and the wanted set comes from them.
+	// while no session is live.
 	routesOf   *home
 	reported   map[netip.Prefix]routeInfo
-	relayRefs  map[string]int // Count of the reported routes of each relay ID.
 	routeWaits []routeWait
+	// visits is the visit table of the last OnVisits step: each slot that the
+	// primary has no route for, to the session that has it from its own relay.
+	visits map[netip.Prefix]*home
+	// named are the relay IDs that a route of a session named in this Run. They
+	// stay in the wanted set.
+	named map[string]bool
 	// primaryID is the relay of the last primary, and primaryAddr the address
 	// that the agent dialed for it. They stay while no session is live.
 	primaryID, primaryAddr string
-	// relayAddrs are the newest addresses that a route gave for each relay ID
-	// that is wanted or that a session holds.
+	// relayAddrs are the newest addresses that a route of a session gave for
+	// each relay ID that is wanted or that a session holds.
 	relayAddrs map[string][]string
 	// welcome is the relay ID of the newest Welcome at each dialed address.
 	welcome map[string]string
@@ -132,7 +139,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	r := &root{
 		a: a, mb: proc.NewMailbox(0), retryWait: minBackoff,
-		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]routeInfo{}, relayRefs: map[string]int{},
+		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]routeInfo{}, named: map[string]bool{},
 		relayAddrs: map[string][]string{}, welcome: map[string]string{}, wanted: map[string]bool{},
 		clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
 	}
@@ -528,6 +535,8 @@ func (r *root) sessEnded(m sessEnded) {
 	if !r.ending {
 		slog.Info("Relay session ended", "relay", h.ep.addr, "error", m.err)
 	}
+	// The binding and the host stop the use of the addresses before they go.
+	r.visit()
 	if f := r.a.cfg.OnDetach; f != nil && h.st.attached {
 		for _, at := range slices.Backward(r.attachmentsOf(h)) {
 			r.queue(func() { f(at) })
@@ -720,10 +729,8 @@ func (r *root) peerHome(p *psp.Peer) *home {
 	return nil
 }
 
-// prefer queues OnDeprecated for the addresses of each session that is not the
-// attached session with the lowest rank, and OnPreferred for that session when
-// its addresses were deprecated. A new connection then takes its source address
-// from the relay with the lowest rank that is up.
+// prefer deprecates the addresses of each session but the lowest-rank one that does not drain,
+// and prefers that one's again. New connections use its address, except to a slot of OnVisits.
 func (r *root) prefer() {
 	live := r.live()
 	var best *home
@@ -759,25 +766,22 @@ func (r *root) attachmentsOf(h *home) []Attachment {
 	return out
 }
 
-// usePrimary gives the primary session the packets with no session source, and
-// OnRoutes its routes. The relay of the primary replaces the kept one. Run it
-// after the callbacks of the change.
+// usePrimary gives the primary the packets with no session source and its routes
+// to OnRoutes, then computes the visit table. Run it after the change's callbacks.
 func (r *root) usePrimary() {
-	p := r.primary()
-	if p == nil || r.routesOf == p {
-		return
+	if p := r.primary(); p != nil && r.routesOf != p {
+		r.b.SetDefault(p.st.link)
+		r.routesOf = p
+		r.primaryID, r.primaryAddr = p.id, p.ep.addr
+		if p.synced {
+			r.syncRoutes()
+		}
 	}
-	r.b.SetDefault(p.st.link)
-	r.routesOf = p
-	r.primaryID, r.primaryAddr = p.id, p.ep.addr
-	if p.synced {
-		r.syncRoutes()
-	}
+	r.visit()
 }
 
-// routes takes a change of the route table of a session. The routes of the
-// primary go to OnRoutes; the end of the first table of a session is a sync.
-// The wanted set follows the reported routes.
+// routes takes a route change of a session. The primary's routes go to OnRoutes,
+// and a route of each session can change the visit table and name a relay to dial.
 func (r *root) routes(m routesMsg) {
 	h := r.homeOf(m.s)
 	if h == nil {
@@ -786,6 +790,7 @@ func (r *root) routes(m routesMsg) {
 	for _, c := range m.changes {
 		if c.add {
 			h.routes[c.prefix] = c.routeInfo
+			r.name(c.routeInfo)
 		} else {
 			delete(h.routes, c.prefix)
 		}
@@ -801,12 +806,15 @@ func (r *root) routes(m routesMsg) {
 	default:
 		queued = r.report(m.changes)
 	}
-	if r.routesOf == h {
-		r.plan()
+	if r.visit() {
+		queued = true
 	}
+	r.plan()
 	if !m.delta {
 		return
 	}
+	// The reader reads on after the callbacks of this change, and at once for
+	// a change with no callback.
 	if queued {
 		r.routeWaits = append(r.routeWaits, routeWait{m.s, m.rev, r.seq})
 		return
@@ -823,12 +831,12 @@ func (r *root) syncRoutes() bool {
 		if _, ok := r.reported[p]; !ok {
 			add = append(add, p)
 		}
-		r.setReported(p, info)
+		r.reported[p] = info
 	}
 	for p := range r.reported {
 		if _, ok := want[p]; !ok {
 			remove = append(remove, p)
-			r.unsetReported(p)
+			delete(r.reported, p)
 		}
 	}
 	return r.onRoutes(add, remove)
@@ -843,9 +851,9 @@ func (r *root) report(changes []routeChange) bool {
 			_, had[c.prefix] = r.reported[c.prefix]
 		}
 		if c.add {
-			r.setReported(c.prefix, c.routeInfo)
+			r.reported[c.prefix] = c.routeInfo
 		} else {
-			r.unsetReported(c.prefix)
+			delete(r.reported, c.prefix)
 		}
 	}
 	var add, remove []netip.Prefix
@@ -860,31 +868,15 @@ func (r *root) report(changes []routeChange) bool {
 	return r.onRoutes(add, remove)
 }
 
-// setReported sets the reported route of p. A route with the addresses of its
-// relay gives the newest addresses of that relay.
-func (r *root) setReported(p netip.Prefix, info routeInfo) {
-	r.unsetReported(p)
-	r.reported[p] = info
-	if info.relay != "" {
-		r.relayRefs[info.relay]++
-		if len(info.addrs) > 0 {
-			r.relayAddrs[info.relay] = info.addrs
-		}
-	}
-}
-
-// unsetReported removes the reported route of p.
-func (r *root) unsetReported(p netip.Prefix) {
-	old, ok := r.reported[p]
-	if !ok {
+// name keeps the relay of a route in the wanted set, with the newest addresses
+// that a route gave.
+func (r *root) name(info routeInfo) {
+	if info.relay == "" {
 		return
 	}
-	delete(r.reported, p)
-	if old.relay == "" {
-		return
-	}
-	if r.relayRefs[old.relay]--; r.relayRefs[old.relay] <= 0 {
-		delete(r.relayRefs, old.relay)
+	r.named[info.relay] = true
+	if len(info.addrs) > 0 {
+		r.relayAddrs[info.relay] = info.addrs
 	}
 }
 
@@ -899,6 +891,65 @@ func (r *root) onRoutes(add, remove []netip.Prefix) bool {
 		return false
 	}
 	r.queue(func() { f(add, remove) })
+	return true
+}
+
+// visitTable returns each slot that the primary has no route for, to the live
+// session with the lowest rank that has the slot from its own relay.
+func (r *root) visitTable() map[netip.Prefix]*home {
+	out := map[netip.Prefix]*home{}
+	p := r.primary()
+	if p == nil {
+		return out
+	}
+	for _, h := range r.live() {
+		if h == p {
+			continue
+		}
+		network := tunnet.NetworkPrefixOf(h.st.base.Address)
+		for pfx, info := range h.routes {
+			if info.relay != h.id || pfx != ipalloc.SlotPrefixOf(pfx.Addr()) || !network.Contains(pfx.Addr()) {
+				continue
+			}
+			if _, ok := p.routes[pfx]; ok {
+				continue
+			}
+			if _, ok := out[pfx]; !ok {
+				out[pfx] = h
+			}
+		}
+	}
+	return out
+}
+
+// visit computes the visit table again. On a change it queues SetVisits(old and
+// new), OnVisits(new) and SetVisits(new) as one step, and returns true.
+func (r *root) visit() bool {
+	next := r.visitTable()
+	if maps.Equal(next, r.visits) {
+		return false
+	}
+	both, links, addrs := map[netip.Prefix]*psp.Link{}, map[netip.Prefix]*psp.Link{}, map[netip.Prefix]netip.Addr{}
+	for pfx, h := range r.visits {
+		both[pfx] = h.st.link
+	}
+	for pfx, h := range next {
+		both[pfx], links[pfx], addrs[pfx] = h.st.link, h.st.link, h.st.base.Address
+	}
+	r.visits = next
+	slog.Info("Changed the slots that go on the session of their own relay", "visits", addrs)
+	b, f := r.b, r.a.cfg.OnVisits
+	r.queue(func() {
+		if b != nil {
+			b.SetVisits(both)
+		}
+		if f != nil {
+			f(addrs)
+		}
+		if b != nil {
+			b.SetVisits(links)
+		}
+	})
 	return true
 }
 

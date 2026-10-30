@@ -142,6 +142,31 @@ func (f *fakeAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost 
 	return p, err
 }
 
+// slotAddresses gives the attachments of one relay the next addresses of a slot
+// of testNetwork. The hold and the fixed addresses of the fakeAddresses apply.
+type slotAddresses struct {
+	*fakeAddresses
+	slot int
+	mu   sync.Mutex
+	next int
+}
+
+func (s *slotAddresses) Assign(ctx context.Context, a *relay.Attachment, onLost func()) ([]netip.Prefix, error) {
+	s.fakeAddresses.mu.Lock()
+	_, fixed := s.fixed[a.Name]
+	s.fakeAddresses.mu.Unlock()
+	p, err := s.fakeAddresses.Assign(ctx, a, onLost)
+	if err != nil || fixed {
+		return p, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.next++
+	b := testNetwork.Addr().As16()
+	b[9], b[10], b[11] = byte(s.slot>>8), byte(s.slot), byte(s.next)
+	return []netip.Prefix{netip.PrefixFrom(netip.AddrFrom16(b), 96)}, nil
+}
+
 // fix makes Assign give the address p to the next attachment named name.
 func (f *fakeAddresses) fix(name string, p netip.Prefix) {
 	f.mu.Lock()
@@ -197,6 +222,12 @@ type world struct {
 	// advertise gives the addresses that a relay sends to agents and members,
 	// by the relay ID. Else it sends the address of its QUIC socket.
 	advertise map[string][]string
+	// certName gives the name in the cert of a relay, by the relay ID. Else the
+	// cert names the relay ID.
+	certName map[string]string
+	// slots gives the slot of testNetwork that a relay takes the addresses of
+	// its attachments from, by the relay ID. Else it takes them from the pool.
+	slots map[string]int
 	// streamWindow sets the QUIC stream receive window of the relays. Zero
 	// keeps the default.
 	streamWindow uint64
@@ -400,7 +431,8 @@ type sessionTap struct {
 	in, out  []byte // Read and written bytes that are not a whole frame yet.
 	inStart  bool   // The relay read the preamble of the call.
 	resps    []*dp.SessionResponse
-	stopNext bool // The next write of the relay stops the agent sends first.
+	acks     []uint64 // It has the revisions of the Acks of the agent, in order.
+	stopNext bool     // The next write of the relay stops the agent sends first.
 	stopped  bool
 	paused   chan struct{} // Not nil: the reads of the relay wait until it closes.
 }
@@ -442,6 +474,9 @@ func (t *sessionTap) read(b []byte) (hello bool) {
 		m := &dp.SessionRequest{}
 		if proto.Unmarshal(b, m) == nil {
 			hello = hello || m.GetHello() != nil
+			if a := m.GetAck(); a != nil {
+				t.acks = append(t.acks, a.GetRev())
+			}
 		}
 	}
 	t.in = slices.Clone(rest)
@@ -468,6 +503,13 @@ func (t *sessionTap) responses() []*dp.SessionResponse {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return slices.Clone(t.resps)
+}
+
+// acked returns the revisions of the Acks that the relay read, in order.
+func (t *sessionTap) acked() []uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.acks)
 }
 
 // pause stops the reads of the relay until resume runs. When the stream window
@@ -607,7 +649,7 @@ func (w *world) relay(t testing.TB, id string) *testRelay {
 // pspSock, and closes them at the end of the test.
 func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketConn) *testRelay {
 	t.Helper()
-	cert := w.relayCA.relayCert(t, id)
+	cert := w.relayCA.relayCert(t, cmp.Or(w.certName[id], id))
 	plane := vpctest.NewSocketTarget(pspSock)
 	cfg := w.relayCfg
 	cfg.Relay = &dp.RelayRef{Id: id, Addresses: []string{quicSock.LocalAddr().String()}}
@@ -615,6 +657,9 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 		cfg.Relay.Addresses = a
 	}
 	cfg.Trust, cfg.Addresses, cfg.Target = w.trust, w.addrs, plane
+	if s, ok := w.slots[id]; ok {
+		cfg.Addresses = &slotAddresses{fakeAddresses: w.addrs, slot: s}
+	}
 	r, err := relay.NewRouter(cfg)
 	require.NoError(t, err)
 	r.AddTenant(testProject)
@@ -820,13 +865,14 @@ type testAgent struct {
 	ns        *netstack.Stack // Set with vpcStack.
 
 	routesMu sync.Mutex
-	routes   map[netip.Prefix]bool // From OnRoutes.
-	routeLog []string              // "+prefix" or "-prefix" from OnRoutes, in order.
+	routes   map[netip.Prefix]bool       // OnRoutes sets it.
+	routeLog []string                    // It has "+prefix" or "-prefix" from OnRoutes, in order.
+	visits   map[netip.Prefix]netip.Addr // The last OnVisits sets it.
 
 	extraMu sync.Mutex
 	extras  map[string]netip.Addr // Last address of each extra attachment, from OnAttachment and OnDetach.
-	// log has "attach name address", "deprecate name address", "prefer name
-	// address" or "detach name address" for each callback of an address, in order.
+	// log has "attach|deprecate|prefer|detach name address" for each address callback,
+	// and "visits name slot=address,..." for each OnVisits, in order.
 	log []string
 }
 
@@ -885,10 +931,11 @@ type agentOptions struct {
 	relist [2]time.Duration
 	// lanes sets Config.Lanes.
 	lanes int
-	// onAttach and onAttachment run at the start of the OnAttach and the
-	// OnAttachment callbacks.
+	// onAttach, onAttachment and onVisits run at the start of the OnAttach, the
+	// OnAttachment and the OnVisits callbacks.
 	onAttach     func(addr netip.Addr)
 	onAttachment func(at Attachment)
+	onVisits     func(visits map[netip.Prefix]netip.Addr)
 }
 
 // lossyConn drops the sent packets that are larger than a max that is not zero.
@@ -1153,6 +1200,12 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 			ta.note(t, "detach", at.Name, at.Address)
 			ta.removeAddr(t, at.Address)
 		},
+		OnVisits: func(visits map[netip.Prefix]netip.Addr) {
+			if opts.onVisits != nil {
+				opts.onVisits(visits)
+			}
+			ta.noteVisits(t, name, visits)
+		},
 	}
 	if cfg.Relays == nil && opts.enrolled == nil && !opts.identityFile {
 		cfg.Relays = []identity.Relay{r.ref()}
@@ -1287,6 +1340,35 @@ func (ta *testAgent) note(t *testing.T, event, name string, addr netip.Addr) {
 	ta.log = append(ta.log, event+" "+name+" "+addr.String())
 }
 
+// noteVisits keeps the set of an OnVisits call and adds it to the log. It fails
+// t when an address of the set is not on the agent.
+func (ta *testAgent) noteVisits(t *testing.T, name string, visits map[netip.Prefix]netip.Addr) {
+	ta.extraMu.Lock()
+	defer ta.extraMu.Unlock()
+	held := map[netip.Addr]bool{}
+	for _, e := range ta.log {
+		if f := strings.Fields(e); f[0] == "attach" || f[0] == "detach" {
+			held[netip.MustParseAddr(f[2])] = f[0] == "attach"
+		}
+	}
+	var parts []string
+	for _, p := range slices.SortedFunc(maps.Keys(visits), netip.Prefix.Compare) {
+		if !held[visits[p]] {
+			t.Errorf("agent %s: OnVisits gives %s for %s, which the agent does not have: %v", name, visits[p], p, ta.log)
+		}
+		parts = append(parts, p.String()+"="+visits[p].String())
+	}
+	ta.visits = maps.Clone(visits)
+	ta.log = append(ta.log, "visits "+name+" "+cmp.Or(strings.Join(parts, ","), "-"))
+}
+
+// visitSet returns the set of the last OnVisits.
+func (ta *testAgent) visitSet() map[netip.Prefix]netip.Addr {
+	ta.extraMu.Lock()
+	defer ta.extraMu.Unlock()
+	return maps.Clone(ta.visits)
+}
+
 // deprecateAddr makes addr not preferred in the netstack.
 func (ta *testAgent) deprecateAddr(t *testing.T, addr netip.Addr) {
 	var err error
@@ -1313,17 +1395,25 @@ func (ta *testAgent) preferAddr(t *testing.T, addr netip.Addr) {
 	}
 }
 
-// events returns the callbacks for the addresses of the attachment name.
+// events returns the callbacks for the addresses of the attachment name, with
+// no OnVisits calls.
 func (ta *testAgent) events(name string) []string {
 	ta.extraMu.Lock()
 	defer ta.extraMu.Unlock()
 	var out []string
 	for _, e := range ta.log {
-		if strings.Fields(e)[1] == name {
+		if f := strings.Fields(e); f[1] == name && f[0] != "visits" {
 			out = append(out, e)
 		}
 	}
 	return out
+}
+
+// history returns the log of the address callbacks and the OnVisits calls.
+func (ta *testAgent) history() []string {
+	ta.extraMu.Lock()
+	defer ta.extraMu.Unlock()
+	return slices.Clone(ta.log)
 }
 
 // removeAddr removes addr from the netstack, if it is valid.

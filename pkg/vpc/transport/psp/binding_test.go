@@ -613,7 +613,7 @@ func TestLinks(t *testing.T) {
 	own, extra := netip.MustParseAddr("10.0.1.1"), netip.MustParseAddr("10.7.0.5")
 	forwarded := netip.MustParseAddr("192.168.4.4")
 	route := func(src netip.Addr) *Peer {
-		l := a.b.linkOf(packet(src, b.v4, 17, 1, 2, 100))
+		l := a.b.linkOf(packet(src, b.v4, 17, 1, 2, 100), b.v4)
 		if l == nil {
 			return nil
 		}

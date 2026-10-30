@@ -236,6 +236,7 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	cfg.OnDeprecated = h.deprecated
 	cfg.OnPreferred = h.preferred
 	cfg.OnDetach = h.detach
+	cfg.OnVisits = h.visit
 	h.agent = agent.New(cfg)
 	fmt.Fprintf(out, "Connecting to %s as %q.\n", target, cfg.Name)
 	var admin sync.WaitGroup
@@ -321,8 +322,8 @@ func credentialPath(project uuid.UUID, vpc, name string) string {
 type overlay interface {
 	// addAddr puts an overlay address on the device.
 	addAddr(addr netip.Addr) error
-	// deprecate makes an overlay address not preferred: a new connection uses
-	// another address, and open connections keep it.
+	// deprecate makes an overlay address not preferred: a new connection uses another
+	// address, except to a slot of the visit set, and open connections keep it.
 	deprecate(addr netip.Addr) error
 	// prefer ends deprecate for an overlay address.
 	prefer(addr netip.Addr) error
@@ -330,6 +331,9 @@ type overlay interface {
 	delAddr(addr netip.Addr) error
 	// route changes the routes of the prefixes of the other attachments.
 	route(add, remove []netip.Prefix)
+	// visit replaces the visit set: a new connection to an address in one of
+	// its slots uses the overlay address of that slot as its source.
+	visit(visits map[netip.Prefix]netip.Addr)
 	// own sets the routes that this host advertises for all attachments.
 	own(routes []netip.Prefix)
 }
@@ -395,6 +399,13 @@ func (h *hostDevice) start(b *psp.Binding, addr netip.Addr) {
 func (h *hostDevice) route(add, remove []netip.Prefix) {
 	if h.dev != nil {
 		h.dev.route(add, remove)
+	}
+}
+
+// visit gives the driver the visit set of the agent.
+func (h *hostDevice) visit(visits map[netip.Prefix]netip.Addr) {
+	if h.dev != nil {
+		h.dev.visit(visits)
 	}
 }
 
@@ -487,7 +498,8 @@ func (h *hostDevice) ownRoutes() []netip.Prefix {
 
 // netstackDev is the user-space network of the netstack driver.
 type netstackDev struct {
-	ns *netstack.Stack
+	ns  *netstack.Stack
+	out *visitNetwork // The SOCKS proxy dials through it.
 }
 
 // startNetstack runs the binding on a user-space network. It forwards
@@ -509,7 +521,7 @@ func (h *hostDevice) startNetstack(b *psp.Binding, addr netip.Addr, dns *network
 	if err != nil {
 		return nil, err
 	}
-	n := &netstackDev{ns: ns}
+	n := &netstackDev{ns: ns, out: newVisitNetwork(ns.Stack, ns.NICID, dns)}
 	if err := n.addAddr(addr); err != nil {
 		ns.Close()
 		return nil, err
@@ -530,10 +542,7 @@ func (h *hostDevice) startNetstack(b *psp.Binding, addr netip.Addr, dns *network
 		}
 	}()
 	if h.socksAddr != "" {
-		if len(dns.Nameservers) == 0 {
-			dns = nil
-		}
-		proxy := socksproxy.NewServer(h.socksAddr, ns.Network(dns), network.Host())
+		proxy := socksproxy.NewServer(h.socksAddr, n.out, network.Host())
 		go func() {
 			if err := proxy.ListenAndServe(h.ctx); err != nil && h.ctx.Err() == nil {
 				h.fail(fmt.Errorf("SOCKS proxy failed: %w", err))
@@ -581,6 +590,9 @@ func (n *netstackDev) route(_, _ []netip.Prefix) {}
 
 // own does nothing. The forward network gets the routes from hostDevice.
 func (n *netstackDev) own([]netip.Prefix) {}
+
+// visit gives the visit set to the network of the SOCKS proxy.
+func (n *netstackDev) visit(visits map[netip.Prefix]netip.Addr) { n.out.setVisits(visits) }
 
 func (n *netstackDev) addAddr(addr netip.Addr) error {
 	return n.ns.AddAddr(netip.PrefixFrom(addr, addr.BitLen()))

@@ -40,6 +40,8 @@ type tunDev struct {
 	routes  map[netip.Prefix]bool // Kernel routes that route added.
 	skipped map[netip.Prefix]bool // IPv4 prefixes that wait for an own IPv4 route.
 	own4    []netip.Prefix        // IPv4 routes that this host advertises.
+	// visits are the kernel routes of the visit set, with their source address.
+	visits map[netip.Prefix]netip.Addr
 }
 
 // startTun makes the TUN device with its offloads, routes the VPC network to
@@ -49,7 +51,7 @@ func startTun(ctx context.Context, fail context.CancelCauseFunc, b *psp.Binding,
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN device %s: %w", name, err)
 	}
-	t := &tunDev{routes: map[netip.Prefix]bool{}, skipped: map[netip.Prefix]bool{}, own4: ipv4Only(own)}
+	t := &tunDev{routes: map[netip.Prefix]bool{}, skipped: map[netip.Prefix]bool{}, own4: ipv4Only(own), visits: map[netip.Prefix]netip.Addr{}}
 	t.link, err = netlink.LinkByName(name)
 	if err == nil {
 		err = t.addAddr(addr)
@@ -87,7 +89,7 @@ func (t *tunDev) addAddr(addr netip.Addr) error {
 }
 
 // deprecate sets the preferred lifetime of addr to 0. The kernel then selects
-// another address as the source of a new connection.
+// another source for a new connection, except on a visit route with addr.
 func (t *tunDev) deprecate(addr netip.Addr) error {
 	a := hostAddr(addr)
 	a.PreferedLft, a.ValidLft = 0, math.MaxInt32
@@ -129,6 +131,34 @@ func (t *tunDev) route(add, remove []netip.Prefix) {
 		default:
 			t.add(p)
 		}
+	}
+}
+
+// visit replaces the routes of the visit set: each slot gets a route with its
+// source, which the kernel uses also for a deprecated address.
+func (t *tunDev) visit(visits map[netip.Prefix]netip.Addr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for p := range t.visits {
+		if _, ok := visits[p]; ok {
+			continue
+		}
+		delete(t.visits, p)
+		if err := netlink.RouteDel(&netlink.Route{LinkIndex: t.link.Attrs().Index, Dst: ipNet(p)}); err != nil {
+			slog.Warn("Failed to remove the route of a visited slot", "prefix", p, "error", err)
+		}
+	}
+	for p, src := range visits {
+		if old, ok := t.visits[p]; ok && old == src {
+			continue
+		}
+		r := &netlink.Route{LinkIndex: t.link.Attrs().Index, Dst: ipNet(p), Src: src.AsSlice()}
+		if err := netlink.RouteReplace(r); err != nil {
+			slog.Warn("Failed to add the route of a visited slot", "prefix", p, "source", src, "error", err)
+			delete(t.visits, p)
+			continue
+		}
+		t.visits[p] = src
 	}
 }
 

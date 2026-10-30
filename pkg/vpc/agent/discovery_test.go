@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 )
 
 // quietWait is how long a check waits for a dial that must not come. It is
@@ -364,19 +365,17 @@ func TestWantedRelays(t *testing.T) {
 	}
 }
 
-// TestWantedRelayEnd checks that the connection to a wanted relay stays when
-// the last route that names the relay goes, and that the agent dials the relay
-// again after the connection ends only while a route or the config names it.
+// TestWantedRelayEnd checks that a relay that a route named once stays wanted:
+// its connection stays, and the agent dials it again after the connection ends.
 func TestWantedRelayEnd(t *testing.T) {
 	cases := []struct {
 		name       string
 		keepRoute  bool // b stays on relay-2.
 		configured bool // The config of a has both relays, with Config.Sessions 2.
-		redial     bool
 	}{
-		{name: "a route names the relay", keepRoute: true, redial: true},
-		{name: "no route names the relay"},
-		{name: "no route names the relay, which is in the config", configured: true, redial: true},
+		{name: "a route names the relay", keepRoute: true},
+		{name: "no route names the relay now"},
+		{name: "no route names the relay now, which is in the config", configured: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -408,14 +407,85 @@ func TestWantedRelayEnd(t *testing.T) {
 			for _, qc := range r2.agentConns(a.tr.Conn.LocalAddr(), true) {
 				require.NoError(t, qc.CloseWithError(0, "relay closed the session"))
 			}
-			if tc.redial {
-				a.attached(t)
-				require.Eventually(t, func() bool { return a.dials(r2) == 2 }, 5*time.Second, 10*time.Millisecond, "dials of relay-2")
-				return
-			}
-			require.Eventually(t, func() bool { return len(a.a.Status().Connections) == 1 }, 5*time.Second, 10*time.Millisecond,
-				"the connection to relay-2 ends")
-			require.Never(t, func() bool { return a.dials(r2) != 1 }, quietWait, 10*time.Millisecond, "dial of a relay that no route names")
+			a.attached(t)
+			require.Eventually(t, func() bool { return a.dials(r2) == 2 }, 5*time.Second, 10*time.Millisecond, "dials of relay-2")
 		})
 	}
+}
+
+// TestWantedRelayAddresses checks that the dial of a wanted relay skips another
+// relay that answers at its address, and dials again after the last address.
+func TestWantedRelayAddresses(t *testing.T) {
+	cases := []struct {
+		name      string
+		wrongOnly bool // The route of relay-2 gives only the address of relay-3.
+	}{
+		{name: "first address has another relay"},
+		{name: "only address has another relay", wrongOnly: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.mesh = true
+			w.certName = map[string]string{"relay-3": "relay-2"}
+			r3 := w.relay(t, "relay-3")
+			q2 := loopback(t)
+			w.advertise = map[string][]string{"relay-2": {r3.addr, q2.LocalAddr().String()}}
+			if tc.wrongOnly {
+				w.advertise["relay-2"] = []string{r3.addr}
+			}
+			r1, r2 := w.relay(t, "relay-1"), w.relayOn(t, "relay-2", q2, loopback(t))
+			joinMesh(t, r1, r2)
+			a := w.agent(t, "a", r1, agentOptions{})
+			a.attached(t)
+			b := w.agent(t, "b", r2, agentOptions{})
+			a.hasRoutes(t, b.attached(t).prefixes[0])
+			if tc.wrongOnly {
+				require.Eventually(t, func() bool { return a.dials(r3) >= 2 }, 10*time.Second, 10*time.Millisecond, "dials of the address of relay-3")
+				assert.Zero(t, a.dials(r2), "dials of relay-2")
+				assert.Len(t, a.a.Status().Connections, 1)
+			} else {
+				a.attached(t)
+				require.Eventually(t, func() bool { return attachments("a", r2) == 1 }, 5*time.Second, 10*time.Millisecond, "attachment of a on relay-2")
+				assert.Equal(t, 1, a.dials(r3), "dials of the address of relay-3")
+				var relays []string
+				for _, c := range a.a.Status().Connections {
+					relays = append(relays, c.Relay)
+				}
+				assert.ElementsMatch(t, []string{r1.addr, r2.addr}, relays)
+			}
+			for _, qc := range r3.agentConns(a.tr.Conn.LocalAddr(), false) {
+				require.Eventually(t, func() bool { return qc.Context().Err() != nil }, 2*time.Second, 10*time.Millisecond,
+					"the agent closes its connection to relay-3")
+			}
+			assert.Zero(t, attachments("a", r3), "attachments of a on relay-3")
+			require.Never(t, func() bool { return attachments("a", r3) != 0 }, quietWait, 20*time.Millisecond, "attachment of a on relay-3")
+		})
+	}
+}
+
+// TestWantedRelayOfSession checks that the agent dials a relay that only a
+// route of a session that is not the primary names.
+func TestWantedRelayOfSession(t *testing.T) {
+	w := newWorld(t)
+	w.mesh = true
+	r1, r2, r3 := w.relay(t, "relay-1"), w.relay(t, "relay-2"), w.relay(t, "relay-3")
+	// Relay-1 is in a mesh with each other relay. Relay-2 and relay-3 are not.
+	member := func(r *testRelay) relay.MeshMember {
+		return relay.MeshMember{Name: r.id, Addr: netip.MustParseAddrPort(r.addr)}
+	}
+	r1.r.SetMembers([]relay.MeshMember{member(r2), member(r3)})
+	r2.r.SetMembers([]relay.MeshMember{member(r1)})
+	r3.r.SetMembers([]relay.MeshMember{member(r1)})
+	require.Eventually(t, func() bool {
+		return r1.r.Up("relay-2") && r1.r.Up("relay-3") && r2.r.Up("relay-1") && r3.r.Up("relay-1")
+	}, 10*time.Second, 10*time.Millisecond, "mesh sessions")
+	b := w.agent(t, "b", r1, agentOptions{})
+	c := w.agent(t, "c", r3, agentOptions{})
+	cp := c.attached(t).prefixes[0]
+	a := w.agent(t, "a", r2, agentOptions{})
+	a.attached(t)
+	a.hasRoutes(t, b.attached(t).prefixes[0])
+	require.Eventually(t, func() bool { return attachments("a", r3) == 1 }, 10*time.Second, 10*time.Millisecond, "attachment of a on relay-3")
+	assert.NotContains(t, a.routeSet(), cp, "route of relay-3 on the primary")
 }

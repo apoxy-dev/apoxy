@@ -65,11 +65,22 @@ func BenchmarkVirtToPhy(b *testing.B) {
 	}
 }
 
-// BenchmarkPrepareLinks reserves the send frame of one inner packet. With more
-// than one link, the source address of the packet selects the link.
+// BenchmarkPrepareLinks reserves the send frame of one inner packet, with its
+// link from its source, or from the visits and the default for an advertised source.
 func BenchmarkPrepareLinks(b *testing.B) {
-	for _, links := range []int{1, 3} {
-		b.Run(fmt.Sprintf("links=%d", links), func(b *testing.B) {
+	cases := []struct {
+		name       string
+		links      int
+		advertised bool // The source is an advertised address.
+		visit      bool // The visit table has one entry for the destination.
+	}{
+		{name: "links=1", links: 1},
+		{name: "links=3", links: 3},
+		{name: "links=2/advertised/visits=0", links: 2, advertised: true},
+		{name: "links=2/advertised/visits=1", links: 2, advertised: true, visit: true},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
 			var d *driver
 			var pkt []byte
 			var f netstack.TxFrame
@@ -81,12 +92,20 @@ func BenchmarkPrepareLinks(b *testing.B) {
 					x, y := newPair(b)
 					offer(b, time.Now(), x, y)
 					require.NoError(b, x.l.AddSource(netip.PrefixFrom(x.v4, 32)))
-					for n := 1; n < links; n++ {
+					for n := 1; n < tc.links; n++ {
 						l, err := x.b.AddLink()
 						require.NoError(b, err)
 						require.NoError(b, l.AddSource(netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 0, byte(n), 1}), 32)))
 					}
-					d, pkt = &driver{b: x.b}, packet(x.v4, y.v4, 6, 1, 2, DefaultMTU)
+					src := x.v4
+					if tc.advertised {
+						src = netip.MustParseAddr("10.7.0.5")
+						x.b.SetDefault(x.l)
+					}
+					if tc.visit {
+						x.b.SetVisits(map[netip.Prefix]*Link{netip.PrefixFrom(y.v4, 30): x.l})
+					}
+					d, pkt = &driver{b: x.b}, packet(src, y.v4, 6, 1, 2, DefaultMTU)
 					b.StartTimer()
 				}
 				if !d.Prepare(pkt, &f) {

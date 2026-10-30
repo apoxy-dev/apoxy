@@ -159,6 +159,53 @@ func TestTunDeprecate(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestTunVisits checks that a UDP socket to a visited slot gets the visit
+// source, also when it is deprecated, and the primary source after the removal.
+func TestTunVisits(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to make a network namespace")
+	}
+	ns := newNetns(t)
+	vpc := netip.MustParsePrefix("fd61:706f:7879:12:3400::/72")
+	primary := netip.MustParseAddr("fd61:706f:7879:12:3400:200::1")
+	visit := netip.MustParseAddr("fd61:706f:7879:12:3400:100::1")
+	slot := netip.MustParsePrefix("fd61:706f:7879:12:3400:100::/88")
+	inSlot, outside := netip.MustParseAddr("fd61:706f:7879:12:3400:100::9"), netip.MustParseAddr("fd61:706f:7879:12:3400:300::9")
+	steps := []struct {
+		name    string
+		visits  map[netip.Prefix]netip.Addr
+		want    map[netip.Addr]netip.Addr // It maps each destination to its source.
+		inRoute bool                      // The device has the route of the slot.
+	}{
+		{name: "no visit", visits: map[netip.Prefix]netip.Addr{}, want: map[netip.Addr]netip.Addr{inSlot: primary, outside: primary}},
+		{name: "visit", visits: map[netip.Prefix]netip.Addr{slot: visit}, want: map[netip.Addr]netip.Addr{inSlot: visit, outside: primary}, inRoute: true},
+		{name: "visit again", visits: map[netip.Prefix]netip.Addr{slot: visit}, want: map[netip.Addr]netip.Addr{inSlot: visit, outside: primary}, inRoute: true},
+		{name: "removed", visits: map[netip.Prefix]netip.Addr{}, want: map[netip.Addr]netip.Addr{inSlot: primary, outside: primary}},
+	}
+	err := netns.Do(ns, func() error {
+		vpc0 := upVeth(t, "vpc0")
+		dev := &tunDev{link: vpc0, vpc: vpc, routes: map[netip.Prefix]bool{}, skipped: map[netip.Prefix]bool{}, visits: map[netip.Prefix]netip.Addr{}}
+		require.NoError(t, dev.addAddr(primary))
+		require.NoError(t, dev.addAddr(visit))
+		require.NoError(t, dev.deprecate(visit))
+		require.NoError(t, netlink.RouteAdd(&netlink.Route{LinkIndex: vpc0.Attrs().Index, Dst: ipNet(vpc)}))
+		for _, st := range steps {
+			dev.visit(st.visits)
+			require.Equal(t, st.inRoute, routesOn(t, vpc0)[slot], "%s: route of the slot", st.name)
+			require.True(t, routesOn(t, vpc0)[vpc], "%s: route of the VPC network", st.name)
+			for dst, want := range st.want {
+				c, err := net.DialUDP("udp6", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(dst, 9)))
+				require.NoError(t, err, st.name)
+				src := c.LocalAddr().(*net.UDPAddr).AddrPort().Addr()
+				_ = c.Close()
+				require.Equal(t, want, src, "%s: source to %s", st.name, dst)
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+}
+
 // deprecatedOn returns the overlay addresses on link, true for each one that
 // is deprecated.
 func deprecatedOn(t *testing.T, link netlink.Link) map[netip.Addr]bool {

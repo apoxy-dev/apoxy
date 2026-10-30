@@ -299,12 +299,9 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	if !ok || len(virt) > b.mtu {
 		return errDrop
 	}
-	// A binding with one link has no call here.
-	l := b.only.Load()
+	l := b.linkOf(virt, dst)
 	if l == nil {
-		if l = b.sourceLink(virt); l == nil {
-			return ErrNoRoute
-		}
+		return ErrNoRoute
 	}
 	p, ok := l.routes.Lookup(dst)
 	if !ok {
@@ -346,7 +343,7 @@ func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFram
 	if !ok || size > b.mtu {
 		return false
 	}
-	l := b.linkOf(hdr)
+	l := b.linkOf(hdr, dst)
 	if l == nil {
 		return false
 	}

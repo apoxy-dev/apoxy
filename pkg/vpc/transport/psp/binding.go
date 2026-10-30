@@ -21,6 +21,7 @@ import (
 	"github.com/apoxy-dev/softpsp/engine"
 	"github.com/apoxy-dev/softpsp/keys"
 	pspwire "github.com/apoxy-dev/softpsp/psp"
+	"github.com/gaissmai/bart"
 	"github.com/quic-go/quic-go"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
@@ -132,9 +133,10 @@ type Binding struct {
 	onTrip func(*Peer, Trip)
 	heads  heads // The first packets to destinations on the relay routes, for ICMP errors.
 
-	// sources has the link of each source prefix, and def is the link of the other
-	// sources. only is the link of a binding with one link, which sends each packet.
+	// sources has the link of each source prefix, visits and def the links of the
+	// other sources by destination. only is the link of a binding with one link.
 	sources engine.Routes[*Link]
+	visits  atomic.Pointer[bart.Fast[*Link]]
 	def     atomic.Pointer[Link]
 	only    atomic.Pointer[Link]
 

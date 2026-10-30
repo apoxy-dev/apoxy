@@ -75,10 +75,8 @@ type Config struct {
 	// RelayRoots check relay certs, in place of the roots of the
 	// agent cert. With neither, the agent uses the system roots.
 	RelayRoots *x509.CertPool
-	// Sessions is the number of attached relay sessions to keep on the relays of
-	// Relays or of the agent cert, 1 to 3, each on its own relay. Each session
-	// has its own overlay address. Zero means 2. The agent also keeps a session
-	// on each other relay that a route of its lowest-rank session names.
+	// Sessions is the number of sessions, each with its own address on a relay of Relays or of the
+	// cert, 1 to 3 (zero means 2). The agent also keeps a session on each relay that a route named.
 	Sessions int
 	// Transport is the agent socket. New sets its packet handlers, so it must
 	// not be in use yet, and its port must not have an XDP program. At the end
@@ -100,9 +98,8 @@ type Config struct {
 	// OnAttachment gets an extra attachment after it attaches on a relay
 	// session: one call for each session.
 	OnAttachment func(at Attachment)
-	// OnDeprecated gets each attachment of a relay session that is not the
-	// attached session with the lowest rank, for example one whose relay drains,
-	// the attachment of Config too. New connections must not use its address.
+	// OnDeprecated gets each attachment of a session that is not the lowest-rank attached session
+	// that does not drain. Only new connections to a slot of OnVisits use its address.
 	OnDeprecated func(at Attachment)
 	// OnPreferred gets each attachment of OnDeprecated whose session became the
 	// attached session with the lowest rank. New connections use its address again.
@@ -110,6 +107,9 @@ type Config struct {
 	// OnDetach gets each attachment whose address the agent lost, before a next OnAttach of that
 	// address. The callbacks run in order, one at a time, and must not call Attach or Detach.
 	OnDetach func(at Attachment)
+	// OnVisits gets the visit set after each change: the source of new connections to each slot that the
+	// lowest-rank session that does not drain, else that drains, cannot reach. It comes before OnDetach.
+	OnVisits func(visits map[netip.Prefix]netip.Addr)
 	// MTU sets the device MTU, from 1280 to the VPC MTU. Zero means the VPC MTU.
 	// A PSP path that does not carry the device MTU gets a TCP MSS clamp.
 	MTU int

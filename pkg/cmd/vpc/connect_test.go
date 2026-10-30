@@ -409,6 +409,8 @@ func (f *fakeOverlay) delAddr(addr netip.Addr) error {
 
 func (f *fakeOverlay) route(_, _ []netip.Prefix) {}
 
+func (f *fakeOverlay) visit(map[netip.Prefix]netip.Addr) {}
+
 func (f *fakeOverlay) own(routes []netip.Prefix) { f.routes = routes }
 
 // TestHostDeviceAddresses follows the addresses of two relay sessions, A and
