@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -33,25 +32,21 @@ var errNoDataPath = errors.New("no data path")
 type session struct {
 	a      *Agent
 	mb, up *proc.Mailbox
-	// upv are the values that the session writes for the root, and down the
-	// values that the root writes for the session.
-	upv, down *proc.Values
-	d         *dialed
-	rank      uint32
-	ctx       context.Context
-	cancel    context.CancelFunc
-	tasks     int
-	ending    bool
-	err       error
+	// upv are the values that the session writes for the root.
+	upv    *proc.Values
+	d      *dialed
+	rank   uint32
+	ctx    context.Context
+	cancel context.CancelFunc
+	tasks  int
+	ending bool
+	err    error
 
 	rx      chan *dp.SessionResponse // From the stream reader.
 	next    chan struct{}            // Lets the stream reader read after a RouteDelta.
 	sw      *proc.Mailbox            // The stream writer.
 	writing bool                     // The stream writer runs.
 	w       chan func()              // The writer.
-	// remoteDirty tells that a remote set changed after the last remotesDirty.
-	// remoteAsked tells that a remotesDirty waits for its answer.
-	remoteDirty, remoteAsked bool
 
 	drops int // Writes that the full writer queue dropped.
 
@@ -97,9 +92,9 @@ type session struct {
 }
 
 // newSession returns the session on the connection d. The session ends with ctx.
-func newSession(a *Agent, ctx context.Context, up *proc.Mailbox, upv, down *proc.Values, d *dialed, rank uint32) *session {
+func newSession(a *Agent, ctx context.Context, up *proc.Mailbox, upv *proc.Values, d *dialed, rank uint32) *session {
 	s := &session{
-		a: a, mb: proc.NewMailbox(0), up: up, upv: upv, down: down, d: d, rank: rank,
+		a: a, mb: proc.NewMailbox(0), up: up, upv: upv, d: d, rank: rank,
 		rx: make(chan *dp.SessionResponse, 1), next: make(chan struct{}, 1),
 		mode: dp.Mode_MODE_QUIC, lanes: 1,
 		checks: map[*check]bool{},
@@ -179,9 +174,7 @@ func (s *session) idle() bool {
 func (s *session) start() {
 	s.read()
 	s.sw, s.writing = proc.NewMailbox(0), true
-	go writeStream(s.d.st.Send, s.sw, s.mb, s.down)
-	mb := s.mb
-	proc.Watch(s.ctx, s.down, func(keys []string) { mb.Send(downChanged{keys}) })
+	go writeStream(s.d.st.Send, s.sw, s.mb)
 	s.w = make(chan func(), writerQueue)
 	go func(w chan func()) {
 		for f := range w {
@@ -230,16 +223,11 @@ type (
 	ackMsg      struct{ rev uint64 }
 	ackSent     struct{ rev uint64 }
 	streamEnded struct{ err error }
-	// remotesDirty asks the stream writer to send the changed remote sets;
-	// remotesSent is the answer.
-	remotesDirty struct{}
-	remotesSent  struct{}
 )
 
-// writeStream sends the Acks and the remote sets of down on the Session stream
-// until end or a send that fails.
-func writeStream(send func(*dp.SessionRequest) error, mb, up *proc.Mailbox, down *proc.Values) {
-	sent := map[string]*dp.RemoteAddresses{} // The last set sent for each key.
+// writeStream sends the Acks on the Session stream until end or a send that
+// fails.
+func writeStream(send func(*dp.SessionRequest) error, mb, up *proc.Mailbox) {
 	var err error
 	defer func() {
 		mb.Close()
@@ -256,44 +244,9 @@ func writeStream(send func(*dp.SessionRequest) error, mb, up *proc.Mailbox, down
 					return
 				}
 				up.Send(ackSent{m.rev})
-			case remotesDirty:
-				if err = sendRemotes(send, down, sent); err != nil {
-					return
-				}
-				up.Send(remotesSent{})
 			}
 		}
 	}
-}
-
-// sendRemotes sends each remote set of down that is not the one in sent, and
-// forgets the keys that down does not have. The relay keeps the last set.
-func sendRemotes(send func(*dp.SessionRequest) error, down *proc.Values, sent map[string]*dp.RemoteAddresses) error {
-	keys := slices.Sorted(maps.Keys(down.LoadAll()))
-	for k := range sent {
-		if !slices.Contains(keys, k) {
-			delete(sent, k)
-		}
-	}
-	for _, k := range keys {
-		if !strings.HasPrefix(k, keyRemote) {
-			continue
-		}
-		// A send can wait, so each set loads just before its send.
-		m := proc.Load[*dp.RemoteAddresses](down, k)
-		if m == nil {
-			delete(sent, k)
-			continue
-		}
-		if sent[k] == m {
-			continue
-		}
-		if err := send(&dp.SessionRequest{Msg: &dp.SessionRequest_Remote{Remote: m}}); err != nil {
-			return fmt.Errorf("send the attachments on the other relays of %s: %w", m.GetAttachmentId(), err)
-		}
-		sent[k] = m
-	}
-	return nil
 }
 
 // end starts the end of the session with the reason err.
@@ -372,11 +325,6 @@ func (s *session) handle(m any) {
 		s.baseAttached(m)
 	case bindingMsg:
 		s.bound(m)
-	case downChanged:
-		s.downChanged(m)
-	case remotesSent:
-		s.remoteAsked = false
-		s.askRemotes()
 	case probeDone:
 		s.probeDone(m)
 	case rekeyMsg:
@@ -410,27 +358,6 @@ func (s *session) handle(m any) {
 	default:
 		s.handleExtras(m)
 	}
-}
-
-// downChanged takes a change of the down values. At most one remotesDirty
-// waits for the stream writer, so a writer that waits holds no old sets.
-func (s *session) downChanged(m downChanged) {
-	for _, k := range m.keys {
-		if strings.HasPrefix(k, keyRemote) {
-			s.remoteDirty = true
-		}
-	}
-	s.askRemotes()
-}
-
-// askRemotes asks the stream writer to send the changed remote sets, when no
-// other request waits.
-func (s *session) askRemotes() {
-	if !s.remoteDirty || s.remoteAsked {
-		return
-	}
-	s.remoteDirty, s.remoteAsked = false, true
-	s.sw.Send(remotesDirty{})
 }
 
 // connErr returns the close cause of the connection when it closed, else err.

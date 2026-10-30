@@ -11,7 +11,6 @@ import (
 	"maps"
 	"net/netip"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
@@ -29,11 +28,10 @@ var (
 type home struct {
 	s  *session
 	ep endpoint
-	// up are the values of the session, and down the values for the session.
-	// unwatch ends the watch of up.
-	up, down *proc.Values
-	unwatch  context.CancelFunc
-	report   *rxReport // The last report that the peer took.
+	// up are the values of the session. unwatch ends the watch of up.
+	up      *proc.Values
+	unwatch context.CancelFunc
+	report  *rxReport // The last report that the peer took.
 	// id is the relay ID from the Welcome. The session holds it from the dial
 	// result until it ends, so no other connection to that relay attaches.
 	id         string
@@ -51,9 +49,6 @@ type home struct {
 	held       map[string]heldX
 	pending    map[string]*AttachmentSpec
 	deprecated bool
-	// remotes is the key of the last remote set stored for each attachment ID
-	// of the session.
-	remotes map[string]string
 }
 
 // heldX is an extra attachment on a home session.
@@ -112,9 +107,6 @@ type root struct {
 	// welcome is the relay ID of the newest Welcome at each dialed address.
 	welcome map[string]string
 	wanted  map[string]bool // The last wanted set.
-	// remoteDirty tells that the attachments of a session changed, so the
-	// remote sets go again.
-	remoteDirty bool
 
 	clamps   map[*psp.Peer]int
 	pspPeers map[*psp.Peer]bool
@@ -190,7 +182,6 @@ func (r *root) run() error {
 	report := time.NewTicker(reportInterval)
 	defer report.Stop()
 	for {
-		r.sendRemotes()
 		r.flush()
 		if r.ending && r.idle() {
 			if !r.cbRunning {
@@ -432,12 +423,12 @@ func (r *root) take(d *dialed, wanted bool) bool {
 		return false
 	}
 	k := &r.keep
-	up, down := &proc.Values{}, &proc.Values{}
-	s := newSession(r.a, r.ctx, r.mb, up, down, d, k.rank)
+	up := &proc.Values{}
+	s := newSession(r.a, r.ctx, r.mb, up, d, k.rank)
 	ctx, unwatch := context.WithCancel(r.ctx)
 	r.homes = append(r.homes, &home{
-		s: s, ep: d.ep, id: d.relayID, wanted: wanted, rank: k.rank, up: up, down: down, unwatch: unwatch,
-		routes: map[netip.Prefix]routeInfo{}, held: map[string]heldX{}, pending: map[string]*AttachmentSpec{}, remotes: map[string]string{},
+		s: s, ep: d.ep, id: d.relayID, wanted: wanted, rank: k.rank, up: up, unwatch: unwatch,
+		routes: map[netip.Prefix]routeInfo{}, held: map[string]heldX{}, pending: map[string]*AttachmentSpec{},
 	})
 	k.rank++
 	mb := r.mb
@@ -496,7 +487,6 @@ func (r *root) sessAttached(m sessAttached) {
 	k := &r.keep
 	k.failed, k.refused = 0, nil
 	h.since = time.Now()
-	r.remoteDirty = true
 	st := &h.st
 	slog.Info("Attached to the VPC", "relay", h.ep.addr, "relay_id", h.id, "address", st.base.Address, "prefixes", st.base.Prefixes, "rank", h.rank,
 		"transport", transportName(st.mode), "fallback", st.reason, "connect", st.connect, "setup", st.setup)
@@ -568,7 +558,6 @@ func (r *root) sessEnded(m sessEnded) {
 		r.renew()
 	}
 	if h.st.attached {
-		r.remoteDirty = true
 		// After a session of this age, the next failed dial of its relay waits minBackoff.
 		if time.Since(h.since) > stableSession {
 			delete(r.keep.waits, h.id)
@@ -982,50 +971,5 @@ func runCallbacks(mb, up *proc.Mailbox) {
 				return
 			}
 		}
-	}
-}
-
-// sendRemotes stores for each live session, for each of its attachments, the
-// attachments of the same name on the other live sessions when that set
-// changed. The stream writer of the session sends the newest sets.
-func (r *root) sendRemotes() {
-	if !r.remoteDirty || r.ending {
-		return
-	}
-	r.remoteDirty = false
-	live := r.live()
-	for _, h := range live {
-		ids := map[string]bool{}
-		for _, at := range r.attachmentsOf(h) {
-			ids[at.ID] = true
-			var others []*dp.RemoteAttachment
-			for _, o := range live {
-				if o == h {
-					continue
-				}
-				for _, oat := range r.attachmentsOf(o) {
-					if oat.Name == at.Name {
-						others = append(others, &dp.RemoteAttachment{RelayId: o.id, AttachmentId: oat.ID, Addresses: prefixStrings(oat.Prefixes)})
-					}
-				}
-			}
-			slices.SortFunc(others, func(x, y *dp.RemoteAttachment) int { return cmp.Compare(x.RelayId, y.RelayId) })
-			var key strings.Builder
-			for _, o := range others {
-				fmt.Fprintf(&key, "%s %s %v;", o.RelayId, o.AttachmentId, o.Addresses)
-			}
-			if h.remotes[at.ID] == key.String() {
-				continue
-			}
-			h.remotes[at.ID] = key.String()
-			proc.Store(h.down, keyRemote+at.ID, &dp.RemoteAddresses{AttachmentId: at.ID, Attachments: others})
-		}
-		maps.DeleteFunc(h.remotes, func(id string, _ string) bool {
-			if ids[id] {
-				return false
-			}
-			h.down.Delete(keyRemote + id)
-			return true
-		})
 	}
 }

@@ -503,15 +503,6 @@
               "typeName": ".apoxy.vpc.datapath.v1.Status",
               "oneofIndex": 0,
               "jsonName": "status"
-            },
-            {
-              "name": "remote",
-              "number": 5,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_MESSAGE",
-              "typeName": ".apoxy.vpc.datapath.v1.RemoteAddresses",
-              "oneofIndex": 0,
-              "jsonName": "remote"
             }
           ],
           "oneofDecl": [
@@ -527,52 +518,6 @@
           ],
           "reservedName": [
             "moved"
-          ]
-        },
-        {
-          "name": "RemoteAddresses",
-          "field": [
-            {
-              "name": "attachment_id",
-              "number": 1,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_STRING",
-              "jsonName": "attachmentId"
-            },
-            {
-              "name": "attachments",
-              "number": 2,
-              "label": "LABEL_REPEATED",
-              "type": "TYPE_MESSAGE",
-              "typeName": ".apoxy.vpc.datapath.v1.RemoteAttachment",
-              "jsonName": "attachments"
-            }
-          ]
-        },
-        {
-          "name": "RemoteAttachment",
-          "field": [
-            {
-              "name": "relay_id",
-              "number": 1,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_STRING",
-              "jsonName": "relayId"
-            },
-            {
-              "name": "attachment_id",
-              "number": 2,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_STRING",
-              "jsonName": "attachmentId"
-            },
-            {
-              "name": "addresses",
-              "number": 3,
-              "label": "LABEL_REPEATED",
-              "type": "TYPE_STRING",
-              "jsonName": "addresses"
-            }
           ]
         },
         {

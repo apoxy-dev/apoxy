@@ -51,30 +51,9 @@ message SessionRequest {
     Hello hello = 1;
     Ack ack = 2;
     Status status = 3;
-    // The attachments of the same name on the other relays of the agent.
-    RemoteAddresses remote = 5;
   }
   reserved 4;
   reserved "moved";
-}
-
-// RemoteAddresses gives, for one attachment of the session, the attachments
-// of the same name on the other relays of the agent. Each message replaces the
-// last one for that attachment.
-message RemoteAddresses {
-  // Attachment of the session.
-  string attachment_id = 1;
-  repeated RemoteAttachment attachments = 2;
-}
-
-// RemoteAttachment is an attachment of the agent on another relay.
-message RemoteAttachment {
-  // ID of that relay, as its Welcome gave it.
-  string relay_id = 1;
-  // Attachment ID on that relay.
-  string attachment_id = 2;
-  // Address prefixes of the attachment on that relay.
-  repeated string addresses = 3;
 }
 
 // SessionResponse is a message from the relay on Session.

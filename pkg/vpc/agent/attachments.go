@@ -265,7 +265,6 @@ func (r *root) forget(spec *AttachmentSpec, ctx context.Context) map[*session]bo
 	for _, h := range r.homes {
 		if x, ok := h.held[name]; ok && x.spec == spec {
 			delete(h.held, name)
-			r.remoteDirty = true
 			if f := r.a.cfg.OnDetach; f != nil {
 				r.queue(func() { f(x.at) })
 			}
@@ -295,7 +294,6 @@ func (r *root) attached(m attachedX) {
 		err = fmt.Errorf("%w: %s", ErrNoAttachment, name)
 	case err == nil:
 		h.held[name] = heldX{m.spec, m.at}
-		r.remoteDirty = true
 		if f := r.a.cfg.OnAttachment; f != nil {
 			r.queue(func() { f(m.at) })
 		}

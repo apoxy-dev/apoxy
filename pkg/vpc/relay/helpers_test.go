@@ -455,6 +455,62 @@ func (a *agent) detach(id string) {
 	require.NoError(a.t, err)
 }
 
+// attachRank attaches the agent with the rank of its connection and returns the answer.
+func (a *agent) attachRank(rank uint32) *dpv1.AttachResponse {
+	a.t.Helper()
+	res, err := a.rc.Attach(context.Background(), &dpv1.AttachRequest{Vpc: vpcRef, Name: a.name, Rank: rank})
+	require.NoError(a.t, err)
+	return res
+}
+
+// delivers sends one packet from src to dst on the connection of a, and reports whether to gets a
+// packet from src to dst in d.
+func (a *agent) delivers(to *agent, src, dst netip.Addr, d time.Duration) bool {
+	a.sendFrame(packet(src, dst, 100))
+	return to.gets(src, dst, d)
+}
+
+// gets reports whether the agent gets a packet from src to dst in d.
+func (a *agent) gets(src, dst netip.Addr, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for left := d; left > 0; left = time.Until(deadline) {
+		b := a.recvFrame(left)
+		if b == nil {
+			return false
+		}
+		if len(b) >= 40 && netip.AddrFrom16([16]byte(b[8:24])) == src && netip.AddrFrom16([16]byte(b[24:40])) == dst {
+			return true
+		}
+	}
+	return false
+}
+
+// waitDelivers waits until a packet of a from src to dst reaches to.
+func (a *agent) waitDelivers(to *agent, src, dst netip.Addr) {
+	a.t.Helper()
+	require.Eventually(a.t, func() bool { return a.delivers(to, src, dst, 100*time.Millisecond) }, wait, time.Millisecond,
+		"%s to %s from %s to %s", a.name, to.name, src, dst)
+}
+
+// drain takes the data frames that wait on the connection.
+func (a *agent) drain() {
+	for a.recvFrame(50*time.Millisecond) != nil {
+	}
+}
+
+// drops returns the packets that the data plane of e dropped for reason.
+func (e *env) drops(t *testing.T, reason string) float64 {
+	t.Helper()
+	n, _ := metric(t, e.r, "apoxy_vpc_relay_dropped_packets_total", "reason", reason)
+	return n
+}
+
+// waitUp waits until e has a mesh session with peer.
+func (e *env) waitUp(t *testing.T, peer *env) {
+	t.Helper()
+	require.Eventually(t, func() bool { return e.r.Up(peer.id) }, 3*wait, 10*time.Millisecond, "%s up at %s", peer.id, e.id)
+}
+
 // addr returns the overlay address of an attachment.
 func addr(t testing.TB, res *dpv1.AttachResponse) netip.Addr {
 	t.Helper()

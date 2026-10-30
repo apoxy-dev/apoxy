@@ -330,11 +330,3 @@ func parsePrefixes(ss []string) ([]netip.Prefix, error) {
 func overlayAddr(prefixes []netip.Prefix) netip.Addr {
 	return relay.OverlayAddr(prefixes[0])
 }
-
-func prefixStrings(ps []netip.Prefix) []string {
-	out := make([]string, len(ps))
-	for i, p := range ps {
-		out[i] = p.String()
-	}
-	return out
-}

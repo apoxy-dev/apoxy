@@ -178,7 +178,10 @@ func TestHello(t *testing.T) {
 		// An agent at revision 22 can open a second QUIC connection for a session.
 		{name: "revision 22", hello: &dpv1.Hello{Mode: dpv1.Mode_MODE_QUIC, Version: &dpv1.Version{Revision: 22, MinRevision: 21}},
 			closeCode: dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE},
+		// An agent at revision 23 can send the addresses of its other relays.
 		{name: "revision 23", hello: &dpv1.Hello{Mode: dpv1.Mode_MODE_QUIC, Version: &dpv1.Version{Revision: 23, MinRevision: 23}},
+			closeCode: dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE},
+		{name: "revision 24", hello: &dpv1.Hello{Mode: dpv1.Mode_MODE_QUIC, Version: &dpv1.Version{Revision: 24, MinRevision: 24}},
 			code: rpc.OK, sessions: 1},
 		{name: "second Session call", hello: hello(dpv1.Mode_MODE_QUIC), twice: true, code: rpc.FailedPrecondition, sessions: 1},
 	}

@@ -399,7 +399,6 @@ type sessionTap struct {
 	mu       sync.Mutex
 	in, out  []byte // Read and written bytes that are not a whole frame yet.
 	inStart  bool   // The relay read the preamble of the call.
-	reqs     []*dp.SessionRequest
 	resps    []*dp.SessionResponse
 	stopNext bool // The next write of the relay stops the agent sends first.
 	stopped  bool
@@ -442,7 +441,6 @@ func (t *sessionTap) read(b []byte) (hello bool) {
 	for _, b := range msgs {
 		m := &dp.SessionRequest{}
 		if proto.Unmarshal(b, m) == nil {
-			t.reqs = append(t.reqs, m)
 			hello = hello || m.GetHello() != nil
 		}
 	}
@@ -470,13 +468,6 @@ func (t *sessionTap) responses() []*dp.SessionResponse {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return slices.Clone(t.resps)
-}
-
-// requests returns the messages of the agent that the relay read, in order.
-func (t *sessionTap) requests() []*dp.SessionRequest {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return slices.Clone(t.reqs)
 }
 
 // pause stops the reads of the relay until resume runs. When the stream window

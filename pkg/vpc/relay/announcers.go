@@ -42,15 +42,9 @@ type target struct {
 	origin string
 	// own is true for an attachment of this relay.
 	own bool
-	// far is the relay ID of the attachment of a fallback candidate, as the agent reports it. A
-	// fallback candidate goes to the port of the agent on this relay. It is empty for others.
-	far string
 	// ref is the relay of an attachment of a member, from its Open.
 	ref *dpv1.RelayRef
 }
-
-// local reports whether t is a port of this relay: an own attachment or a fallback candidate.
-func (t *target) local() bool { return t.own || t.far != "" }
 
 // candidate is what the selection reads of one attachment.
 type candidate struct {
@@ -166,7 +160,7 @@ type routeSet struct {
 func (set *routeSet) selectAgain(now time.Time) {
 	set.order = selectOrder(set.entries, now)
 	set.local = nil
-	if i := slices.IndexFunc(set.order, func(e *announcer) bool { return e.local() }); i >= 0 {
+	if i := slices.IndexFunc(set.order, func(e *announcer) bool { return e.own }); i >= 0 {
 		set.local = set.order[i]
 	}
 }

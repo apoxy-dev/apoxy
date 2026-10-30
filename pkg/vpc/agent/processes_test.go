@@ -279,29 +279,68 @@ func countPrefix(events []string, prefix string) int {
 	return n
 }
 
-// TestRunEndsWhileStreamWriterWaits cancels Run while the stream writer of a
-// session waits in a send. The end of the session resets the stream, which
-// ends that send at once, so no outside input can show that Run waits for the
-// writer. The test checks only that Run returns.
+// TestRunEndsWhileStreamWriterWaits fills the stream window of relay-1 with
+// Acks, so the stream writer waits in a send, and cancels Run: Run returns.
 func TestRunEndsWhileStreamWriterWaits(t *testing.T) {
 	t.Parallel()
 	w := newWorld(t)
 	w.streamWindow = 512
-	r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
-	a, ss := w.agentOn(t, "a", agentOptions{}, 2, r1, r2)
-	i := slices.IndexFunc(ss, func(s sessionRef) bool { return s.addr == r1.addr })
-	require.GreaterOrEqual(t, i, 0, "no session on relay-1")
-	resume := r1.tapOf(ss[i].qc).pause()
-	defer resume()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	// Each cycle gives session 1 a remote set of about 110 bytes. 100 sets fill
-	// the stream window of the relay and the send buffer of the stream.
-	for i := range 100 {
-		_, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-1"})
-		require.NoError(t, err, "cycle %d", i)
-		require.NoError(t, a.a.Detach(ctx, "x-1"), "cycle %d", i)
+	r1 := w.relay(t, "relay-1")
+	// a has one session, so it is the primary and OnRoutes has its route changes.
+	a := w.agent(t, "a", r1, agentOptions{})
+	a.attached(t)
+	b := w.agent(t, "b", r1, agentOptions{})
+	b.attached(t)
+	qc := a.current().qc
+	require.NotNil(t, qc)
+	tap := r1.tapOf(qc)
+	route := netip.MustParsePrefix("fd00:77::/64")
+	// flips counts the changes of whether route is present in the view of a.
+	flips := func() int {
+		n, have := 0, false
+		for _, m := range tap.responses() {
+			d := m.GetRouteDelta()
+			now := have && !slices.ContainsFunc(d.GetRemove(), func(r *dp.Route) bool { return r.GetPrefix() == route.String() })
+			now = now || slices.ContainsFunc(d.GetAdd(), func(r *dp.Route) bool { return r.GetPrefix() == route.String() })
+			if now != have {
+				n++
+			}
+			have = now
+		}
+		return n
 	}
+	callbacks := func() int { return len(a.routeEvents(route)) }
+	// stalled reports whether the relay wrote a change after the last callback,
+	// and no callback comes in 2 s.
+	stalled := func() bool {
+		n := callbacks()
+		for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+			if flips() <= n || callbacks() != n {
+				return false
+			}
+		}
+		return true
+	}
+	resume := tap.pause()
+	defer resume()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// Each change gets an Ack of about 7 bytes. The relay sends each change
+	// with no wait for its Ack, and the test waits for each send.
+	for i := 0; ; i++ {
+		require.Less(t, i, 1000, "the agent got each change of the relay")
+		_, err := b.a.Attach(ctx, AttachmentSpec{Name: "x-1", Routes: []netip.Prefix{route}})
+		require.NoError(t, err, "cycle %d", i)
+		require.Eventually(t, func() bool { return flips() == 2*i+1 }, 5*time.Second, time.Millisecond, "add of cycle %d", i)
+		require.NoError(t, b.a.Detach(ctx, "x-1"), "cycle %d", i)
+		require.Eventually(t, func() bool { return flips() == 2*i+2 }, 5*time.Second, time.Millisecond, "remove of cycle %d", i)
+		if flips()-callbacks() > 1 && stalled() {
+			break
+		}
+	}
+	require.NoError(t, qc.Context().Err(), "the session closed")
+
 	a.cancel()
 	select {
 	case <-a.done:

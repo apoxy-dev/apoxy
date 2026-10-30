@@ -339,20 +339,16 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, version, name, local_routes_only, instance}`, then `Ack{rev}`, `Status` (ICV failures; the first one after `Config` also has the time to connect) and `RemoteAddresses{attachment_id, attachments}`. Relay: `Welcome` (reflexive address, lane port limit, version, PSP address, relay ID), `Config`, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, version, name, local_routes_only, instance}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version, PSP address, relay ID), `Config`, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes, rank}` -> `AttachResponse{attachment_id, routes, addresses}`. `routes` has one status for each advertised route. `addresses` has the address prefixes that the relay gives the attachment. Errors: `FailedPrecondition` (the session sent no `Hello`), `AlreadyExists` (another session of this relay has the address). |
 | `Rekey`         | unary | `KeysRequest{op, generation}` -> `KeysResponse`: SAs for traffic from the relay to the agent. The first one from a session in QUIC mode changes it to PSP mode (see "Data mode"). Errors: `FailedPrecondition` (no `Session` call), `InvalidArgument` (an SA VNI is not the network ID), `Unavailable` (the relay has no PSP bridge, or it cannot make its relay SAs). |
 | `RegisterLanes` | unary | `{ports, receive}` -> `Empty`: replaces the lane ports of the session. The relay ignores `receive`. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `FailedPrecondition` (no PSP address). |
 
 `Welcome.relay_id` is the ID of the relay. `Route.relay` is the `RelayRef` of
 the relay that has the origin of the route, also of this relay for a local
-origin. It can have the ID and no addresses. `RemoteAddresses` gives, for one
-attachment of the session, the attachments of the same name on the other
-relays of the agent: the relay ID that each `Welcome` gave, the attachment ID
-and the address prefixes there. Each `RemoteAddresses` replaces the last one
-for its attachment. `KeysRequest.generation` is the key attempt of the agent,
-from 1. The relay copies it from the `Rekey` request that changes the mode
-into its `OfferSAs`, and its own renewals carry 0.
+origin. It can have the ID and no addresses. `KeysRequest.generation` is the
+key attempt of the agent, from 1. The relay copies it from the `Rekey` request
+that changes the mode into its `OfferSAs`, and its own renewals carry 0.
 
 A relay with a mesh refuses an `Attach` with more than 64 prefixes, the
 addresses and the advertised routes together, or whose entry does not fit in
@@ -754,11 +750,12 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 21 | `Relay.ResolvePeer`, `RegisterSPI`, `UnregisterSPI`, `Visit` and `Grant`, the `Peer` service (`apoxy-peer/1`), `AttachmentGrant` and `GrantClaims` are gone; `AttachResponse.grant` and `NoRoute.home_relay` are reserved. `Welcome.relay_id`, `Route.relay`, `AttachResponse.addresses`, `RemoteAddresses` and `KeysRequest.generation`. `ROUTE_RESULT_IPV4`. A Route for each slot. The first route table in parts. The minimum revision of each side is 21. | Opens no peer session and makes none of the removed calls. Sends the number of its key attempt in `KeysRequest.generation` of each `Rekey` that changes the mode. Takes the first route table in `RouteDelta` parts, up to the first one with no routes. | No duty. | Answers the removed calls with `Unimplemented`. Sends its ID in `Welcome.relay_id`, the `RelayRef` of the relay of the origin in `Route.relay`, and the addresses of an attachment in `AttachResponse.addresses`. Copies `generation` of the `Rekey` that changes the mode into its `OfferSAs`. Refuses each IPv4 prefix that is not a default route with `ROUTE_RESULT_IPV4`. Sends one Route for each /88 slot of the network of the VPC in place of the /96 routes of its attachments, with the ID of the relay that holds the slot as its origin. Sends the first route table in `RouteDelta` parts of at most 256 routes and 1 MiB, then one `RouteDelta` with no routes. Closes a session below revision 21 with `UPGRADE`. |
 | 22 | `Mesh.Presence` is a bidirectional call, one for each tenant and direction, with `PresenceUpdate{seq, vpcs, end_of_vpcs, parts}`, `PresencePart` and `PresenceControl{ack}`; `PresenceUpdate` fields 1 and 2 (`entries`, `end_of_full_set`) are reserved. `Mesh.SPIRows` and `SPIRowUpdate` are gone. A record lives with its call. Each packet between two relays is a trunk packet. The minimum revision of a relay on a mesh session is 22. | No duty. | No duty. | Opens one `Presence` call for each tenant with attachments on each mesh session, with the flow control and the limits of "Mesh", ends a call that has a message with no ack for 5 s and opens it again, and opens no new call of a tenant whose call ended for a different cause until the next session. Keeps the records of a call until the call ends, and deletes the records and the trunk SAs of a member at once when its session ends. Makes the routes of a member after the first probe result of its trunk. Takes a trunk packet only from the PSP socket that the member gave in `Open`, and refuses a member that gives no PSP port. With a mesh, refuses an `Attach` with more than 64 prefixes, or whose entry does not fit in one `PresenceUpdate`. Closes a mesh session with a relay below revision 22 with `UPGRADE`. |
 | 23 | The `Shard` message is gone, and `Hello` field 3 (`shard`) is reserved. The minimum revision of each side is 23, also on a mesh session. | Opens one QUIC connection for each relay session, and sends all data of the session on it. | No duty. | Sends the data frames of a session only on its session connection. Closes a session below revision 23, and a mesh session with a relay below revision 23, with `UPGRADE`. |
+| 24 | `RemoteAddresses` and `SessionRequest.remote` are gone. The minimum revision of each side is 24. | Sends no addresses of its other relays. | No duty. | Takes a source, and sends traffic for an address, only for the connection that it gave the address to. Closes a session below revision 24, and a mesh session with a relay below revision 24, with `UPGRADE`. |
 
 ### Minimum revision
 
 Each side has a minimum for the revision of the other side. A relay takes an
-agent at revision 23 or later, and another relay of its mesh at revision 23
+agent at revision 24 or later, and another relay of its mesh at revision 24
 or later. It closes a mesh session below that with the `MeshCloseCode`
 `UPGRADE`.
 
@@ -776,10 +773,13 @@ or later. It closes a mesh session below that with the `MeshCloseCode`
 
 ### Rules for a change
 
-- A change only adds: new fields, oneof cases, messages, methods and enum
-  values. No number, type or name changes. A removed field or enum value
-  becomes `reserved`, by number and by name. The zero value of a new field
-  means the old behavior.
+- An additive change only adds: new fields, oneof cases, messages, methods
+  and enum values. No number, type or name changes. The zero value of a new
+  field means the old behavior.
+- A removal of a field, an enum value, a message or a method is a different
+  kind of change. It moves the minimum revision of each side past the last
+  revision that used the item, deletes the item with no `reserved`, and
+  updates the descriptor lock in the same change.
 - Each change to the proto files or to a packet format adds 1 to `Revision`
   and one line to the table: the number, the change and the duty of each role.
   A role with no duty for a revision has nothing to implement. It only must
@@ -799,10 +799,16 @@ or later. It closes a mesh session below that with the `MeshCloseCode`
   `Welcome.max_lanes`, and its zero value means off.
 - A new ALPN name is only for a change that these rules cannot express: new
   stream framing, a new first exchange or a new datagram header.
-- Relays deploy before an agent release. A relay rollback is safe: the agent
-  sees the lower revision in the next `Welcome` and stops the newer behavior.
+- Relays deploy before an agent release. A rollback of one side is safe only
+  within the revisions that both sides accept: the agent sees the lower
+  revision in the next `Welcome` and stops the newer behavior. A change that
+  moves the minimum (as revision 24 does: the agent refuses a relay below 24,
+  and a relay refuses a mesh peer below 24) needs agents, VTEP agents and
+  relays at the new revision together. A rollback of one side then goes with
+  the rollback of the others.
 - When the minimum passes revision N, the code for the revisions below N goes
-  away in one change, and the fields that only they used become `reserved`.
+  away in one change, and the fields that only those revisions used are
+  deleted.
 
 The steps for one change:
 
@@ -811,8 +817,16 @@ The steps for one change:
 2. Use the new behavior only after a check of the revision of the other side.
 3. Add test cases for the other side at the old revision and at the new one.
 4. Deploy the relays, and then release the agents.
-5. After the minimum passes the revision, remove the old path and reserve its
-   fields.
+5. After the minimum passes the revision, remove the old path.
+
+The steps for a removal:
+
+1. Delete the fields, enum values, messages or methods, with no `reserved`.
+2. Add 1 to `Revision`, set `MinRevision` to the new revision, and add the
+   line to the table.
+3. Remove the code that used the deleted items, on each side.
+4. Update the descriptor lock (see "Descriptor lock").
+5. Deploy the relays, the agents and the VTEP agents together.
 
 ### Descriptor lock
 
@@ -825,7 +839,9 @@ number or name, when a message, an enum, a service or a method goes away, and
 when a method changes its input, its output or its streaming. A change that
 only adds passes.
 
-At each release, after the test passes, update the locked copy:
+At each release, after the test passes, update the locked copy. A removal
+change updates it too, in the same change. With `-update`, the test writes the
+lock and does no comparison; run it again with no flag to compare:
 
 ```
 go test ./proto/vpc/datapath/v1 -run TestDescriptorLock -update

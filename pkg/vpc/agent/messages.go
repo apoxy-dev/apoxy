@@ -64,8 +64,6 @@ type (
 		refused []uint32
 		err     error
 	}
-	// downChanged has the keys of the down values of the session that changed.
-	downChanged struct{ keys []string }
 )
 
 // A session to its parent.
@@ -152,12 +150,10 @@ type (
 	}
 )
 
-// The keys of the values of a session. The session writes the up values, and
-// the root writes the down values.
+// These keys name the values that a session writes for the root.
 const (
-	keyMode   = "mode"    // Up: *modeState.
-	keyReport = "report"  // Up: *rxReport.
-	keyRemote = "remote/" // Down, with the attachment ID: *dp.RemoteAddresses.
+	keyMode   = "mode"   // The value is a *modeState.
+	keyReport = "report" // The value is an *rxReport.
 )
 
 // modeState is the data mode of a session and why it is in QUIC mode.

@@ -20,7 +20,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
@@ -164,17 +163,6 @@ var (
 // anyOf matches the updates of a Write when f matches one of them.
 func anyOf(f func(*p4.Update) bool) func([]*p4.Update) bool {
 	return func(us []*p4.Update) bool { return slices.ContainsFunc(us, f) }
-}
-
-// routeTo matches an insert or a modify of a route entry to dst.
-func routeTo(dst netip.Prefix) func(*p4.Update) bool {
-	ms := dp.RouteKey{Dst: dst}.Entry(nil).GetMatch()
-	lpm := ms[slices.IndexFunc(ms, func(m *p4.FieldMatch) bool { return m.GetLpm() != nil })].GetLpm()
-	return func(u *p4.Update) bool {
-		te := u.GetEntity().GetTableEntry()
-		return te.GetTableId() == dp.TableRoute && u.GetType() != p4.Update_DELETE &&
-			slices.ContainsFunc(te.GetMatch(), func(m *p4.FieldMatch) bool { return proto.Equal(m.GetLpm(), lpm) })
-	}
 }
 
 // entries returns the number of table entries and of keys entries in the data plane.
@@ -543,73 +531,6 @@ func TestTableWriteFailedDelete(t *testing.T) {
 	ws := log.with(routeDelete)
 	require.NotEmpty(t, ws)
 	assert.Error(t, ws[0].err)
-}
-
-// TestTableWriteFailedFallback checks a failed write of the route of a fallback candidate: the
-// relay does not write it again for the same report, a newer report that waits for the next mark
-// gets its write, and the next call gets its answer.
-func TestTableWriteFailedFallback(t *testing.T) {
-	cases := []struct {
-		name  string
-		newer bool // A newer report comes while the first one waits for the mark.
-	}{
-		{name: "one report"},
-		{name: "newer report", newer: true},
-	}
-	newer := netip.MustParsePrefix("fd61:706f:7879:12:3400:5::/96")
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			// While refuse has a prefix, the relay refuses each Write with a route to it and no
-			// route to newer: the batch and the write of the event alone.
-			var refuse atomic.Pointer[netip.Prefix]
-			log := &writeLog{bad: func(us []*p4.Update) bool {
-				p := refuse.Load()
-				return p != nil && slices.ContainsFunc(us, routeTo(*p)) && !slices.ContainsFunc(us, routeTo(newer))
-			}}
-			e1, e2 := newMesh(t, envOpts{}, envOpts{interval: new(300 * time.Millisecond), writes: log})
-			x1 := e1.dial(t, "agent-x")
-			x1.open(dpv1.Mode_MODE_QUIC)
-			resX1 := x1.attachRank(0)
-			x2 := e2.dial(t, "agent-x")
-			x2.open(dpv1.Mode_MODE_QUIC)
-			resX2 := x2.attachRank(1)
-			pa := netip.MustParsePrefix(resX1.GetAddresses()[0])
-			// relay-2 wrote the route of the record of x on relay-1.
-			require.NoError(t, log.firstAfter(t, time.Time{}, routeTo(pa)).err)
-			// The Write of a new connection comes just before, so the reports wait for the mark.
-			e2.dial(t, "agent-h").open(dpv1.Mode_MODE_QUIC)
-
-			refuse.Store(&pa)
-			t0 := time.Now()
-			x2.report(resX2.GetAttachmentId(), "relay-1", resX1.GetAttachmentId(), pa.String())
-			if tc.newer {
-				// The newer report comes after the first one went up, and before the mark.
-				time.Sleep(50 * time.Millisecond)
-				x2.report(resX2.GetAttachmentId(), "relay-1", resX1.GetAttachmentId(), pa.String(), newer.String())
-			}
-			failed := log.firstAfter(t, t0, routeTo(pa))
-			require.Error(t, failed.err)
-			time.Sleep(time.Second)
-			refuse.Store(nil)
-			if tc.newer {
-				w := log.firstAfter(t, t0, routeTo(newer))
-				assert.NoError(t, w.err)
-				assert.Positive(t, w.count(routeTo(pa)), "route to the first address in the Write of the newer report")
-			} else {
-				var tries int
-				for _, w := range log.with(routeTo(pa)) {
-					if !w.start.Before(t0) {
-						tries++
-					}
-				}
-				assert.LessOrEqual(t, tries, 2, "Writes of the fallback route: the batch and the event alone")
-			}
-			ctx, cancel := context.WithTimeout(t.Context(), wait)
-			defer cancel()
-			_, err := x2.rc.Detach(ctx, &dpv1.DetachRequest{AttachmentId: resX2.GetAttachmentId()})
-			assert.NoError(t, err)
-		})
-	}
 }
 
 // TestTableWriteChain checks the events that a waiting chain needs: the root writes each step of

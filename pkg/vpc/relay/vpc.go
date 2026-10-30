@@ -49,12 +49,6 @@ type vpcProc struct {
 	// members has the candidates of the records of each member, by the key of the member.
 	members map[string]*vMember
 
-	// touched has the prefixes whose candidates changed in this step, or is nil when none did. The
-	// reports of remote addresses that overlap them are checked again.
-	touched *bart.Lite
-	// reports is the number of attachments with a report of remote addresses.
-	reports int
-
 	// dirty is true when the route table changed. unsynced has the prefixes whose route entries
 	// go in the next tables event. shown is the route table that the A processes have: V stores a
 	// new one after the write of its route entries.
@@ -90,23 +84,6 @@ type aChild struct {
 	cands map[string]*candidate
 	// prefixes has the prefixes of each attachment of A in the selection.
 	prefixes map[string][]netip.Prefix
-	// atts has the remote addresses of each attachment of A.
-	atts map[string]*vAtt
-}
-
-// vAtt is what V keeps of one attachment of A for its fallback candidates.
-type vAtt struct {
-	cell  uint32         // The transmit cell of the attachment.
-	addrs []netip.Prefix // The addresses that this relay gave it.
-	// report is the last report of remote addresses of the attachment, whole.
-	report []remoteAddr
-	// fallback has the fallback candidate of each remote address that V accepted.
-	fallback map[netip.Prefix]*announcer
-	// failed is true after the write of the fallback candidates of report failed. Only a new
-	// report makes candidates again.
-	failed bool
-	// gen counts the changes of the fallback candidates.
-	gen uint64
 }
 
 // startVPC starts the V of v.
@@ -141,11 +118,8 @@ func (v *vpcProc) run() {
 		for _, e := range v.c.box.take() {
 			v.handle(e)
 		}
-		if !v.final {
-			v.recheck(time.Now())
-			if v.ending && len(v.as) == 0 {
-				v.end()
-			}
+		if !v.final && v.ending && len(v.as) == 0 {
+			v.end()
 		}
 		v.flush()
 		if v.over {
@@ -214,8 +188,6 @@ func (v *vpcProc) handle(e any) {
 		v.statsAnswer(e)
 	case aStateChanged:
 		v.restate(e.port)
-	case aRemote:
-		v.remote(e)
 	}
 }
 
@@ -248,7 +220,6 @@ func (v *vpcProc) startConn(e toConn) {
 		state:    stateNormal,
 		cands:    map[string]*candidate{},
 		prefixes: map[string][]netip.Prefix{},
-		atts:     map[string]*vAtt{},
 	}
 	if v.draining {
 		a.state = stateDraining
@@ -352,7 +323,6 @@ func (v *vpcProc) attach(e aAttach) {
 	}
 	v.sync(ps, now)
 	a.cands[e.att.ID], a.prefixes[e.att.ID] = c, ps
-	a.atts[e.att.ID] = &vAtt{cell: e.cell, addrs: slices.Clone(e.att.Addresses), fallback: map[netip.Prefix]*announcer{}}
 	if ann != nil {
 		v.ann[e.att.ID], v.annDirty = ann, true
 	}
@@ -389,13 +359,6 @@ func (v *vpcProc) detach(e aDetach) {
 // prefixes.
 func (v *vpcProc) drop(a *aChild, id string, now time.Time) {
 	ps := a.prefixes[id]
-	if at := a.atts[id]; at != nil {
-		ps = append(slices.Clone(ps), v.removeFallback(at)...)
-		if len(at.report) > 0 {
-			v.reports--
-		}
-		delete(a.atts, id)
-	}
 	delete(a.cands, id)
 	delete(a.prefixes, id)
 	if _, ok := v.ann[id]; ok {
@@ -424,12 +387,6 @@ func (v *vpcProc) sync(ps []netip.Prefix, now time.Time) {
 			continue
 		}
 		seen[p] = struct{}{}
-		if v.reports > 0 {
-			if v.touched == nil {
-				v.touched = &bart.Lite{}
-			}
-			v.touched.Insert(p)
-		}
 		v.unsynced[p] = struct{}{}
 		set, _ := v.sets.Get(p)
 		if set == nil || len(set.entries) == 0 {
@@ -610,11 +567,6 @@ func (v *vpcProc) setState(a *aChild, state dpv1.AnnouncerState, reason string, 
 	for id, c := range a.cands {
 		c.restate(state, now)
 		ps = append(ps, a.prefixes[id]...)
-		if at := a.atts[id]; at != nil {
-			for p := range at.fallback {
-				ps = append(ps, p)
-			}
-		}
 		if v.r.mesh != nil {
 			v.ann[id], v.annDirty = v.announcement(a, id, a.prefixes[id], c, v.nextGen(now)), true
 		}
@@ -723,34 +675,14 @@ func (v *vpcProc) table() *routeTable {
 		self:    v.r.cfg.Relay,
 		orders:  make(map[netip.Prefix][]viewEntry, v.sets.Size()),
 	}
-	// A fallback candidate names the relay that the agent reports, with the reference of the
-	// member of that ID when there is one.
-	var refs map[string]*dpv1.RelayRef
 	for p, set := range v.sets.All() {
 		order := make([]viewEntry, len(set.order))
 		for i, e := range set.order {
 			order[i] = viewEntry{agent: e.agent, origin: e.origin, relay: e.relay, own: e.own, ref: e.ref}
-			if e.far != "" {
-				if refs == nil {
-					refs = v.memberRefs()
-				}
-				order[i].relay, order[i].ref = e.far, refs[e.far]
-			}
 		}
 		t.orders[p] = order
 	}
 	return t
-}
-
-// memberRefs returns the reference of each member with values, by its relay ID.
-func (v *vpcProc) memberRefs() map[string]*dpv1.RelayRef {
-	refs := make(map[string]*dpv1.RelayRef, len(v.members))
-	for _, vm := range v.members {
-		if vm.values != nil && vm.values.ref.GetId() != "" {
-			refs[vm.values.ref.GetId()] = vm.values.ref
-		}
-	}
-	return refs
 }
 
 // end deletes the route entries that are left and stores an empty announcement set. V refuses

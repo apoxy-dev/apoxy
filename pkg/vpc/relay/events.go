@@ -265,32 +265,13 @@ type (
 	}
 	// aStateChanged tells V that the up map of the A of port changed.
 	aStateChanged struct{ port uint64 }
-	// aRemote has the addresses that the agent reports for attachment att: the attachments of
-	// the same name on other relays. It replaces the last one of att.
-	aRemote struct {
-		port  uint64
-		att   string
-		addrs []remoteAddr
-	}
+
 	attached struct {
 		id  string
 		err error
 	}
 	detached struct{ id string }
-	// remoteAccepted has the remote addresses of attachment att that V accepted now.
-	remoteAccepted struct {
-		att   string
-		addrs []netip.Prefix
-	}
 )
-
-// remoteAddr is one address of an attachment of the agent on another relay, as the agent reports
-// it.
-type remoteAddr struct {
-	prefix netip.Prefix
-	relay  string // The ID of that relay.
-	origin string // The attachment ID on that relay.
-}
 
 // callKind is the kind of a call of the agent to A.
 type callKind uint8

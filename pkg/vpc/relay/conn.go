@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -40,8 +39,6 @@ type (
 	}
 	prevExpired struct{ addr netip.AddrPort }
 	checkLost   struct{ c *checkProc }
-	// remoteIn is a RemoteAddresses message of the agent, from the reader task.
-	remoteIn struct{ m *dpv1.RemoteAddresses }
 )
 
 // keyJob is one key operation of A. The root runs them in order, one at a time.
@@ -62,8 +59,6 @@ type connAtt struct {
 	statuses []*dpv1.RouteStatus
 	res      chan callResult // The Attach call, until it is answered.
 	assigned bool
-	// remote has the addresses of the attachments of the agent on other relays that V accepted.
-	remote []netip.Prefix
 	// detach is the Detach call that waits for V, or nil.
 	detach chan callResult
 }
@@ -107,8 +102,8 @@ type connProc struct {
 	probes  uint64 // The largest counter of a valid path probe.
 	limit   *rate.Limiter
 	check   *checkProc
-	// sources has the source entries of the port. The value is true for a remote address.
-	sources map[netip.Prefix]bool
+	// sources has the source entries of the port.
+	sources map[netip.Prefix]struct{}
 
 	atts    []*connAtt // Attached, the oldest first.
 	pend    map[string]*connAtt
@@ -176,7 +171,7 @@ func startConn(r *Router, vbox *mailbox, e toConn, down, up *valueMap, draining 
 		out:     newOutbox(),
 		mode:    dpv1.Mode_MODE_QUIC,
 		limit:   rate.NewLimiter(probeRate, probeRate),
-		sources: map[netip.Prefix]bool{},
+		sources: map[netip.Prefix]struct{}{},
 		pend:    map[string]*connAtt{},
 		noRoute: map[netip.Addr]time.Time{},
 		state:   stateNormal,
@@ -331,8 +326,6 @@ func (a *connProc) read() error {
 				connected = true
 				connectSeconds.WithLabelValues(modeLabel(a.hello.GetMode())).Observe(d.AsDuration().Seconds())
 			}
-		case *dpv1.SessionRequest_Remote:
-			a.box.send(remoteIn{m: m.Remote})
 		case nil:
 			slog.Debug("Ignoring an unknown message on a Session call", "agent", a.l.subject)
 		default:
@@ -361,10 +354,6 @@ func (a *connProc) handle(e any) {
 		a.attached(e)
 	case detached:
 		a.detached(e)
-	case remoteIn:
-		a.remote(e.m)
-	case remoteAccepted:
-		a.remoteAccepted(e)
 	case toKeysDone:
 		a.keysDone(e)
 	case toRekeyed:
@@ -651,76 +640,26 @@ func (a *connProc) detached(e detached) {
 	})
 }
 
-// remote sends V the addresses that the agent reports for an attached attachment: the
-// attachments of the same name on other relays.
-func (a *connProc) remote(m *dpv1.RemoteAddresses) {
-	id := m.GetAttachmentId()
-	if !slices.ContainsFunc(a.atts, func(ca *connAtt) bool { return ca.att.ID == id }) {
-		slog.Debug("Ignoring the remote addresses of an attachment that is not attached", "agent", a.l.subject, "attachment", id)
-		return
-	}
-	var addrs []remoteAddr
-	for _, ra := range m.GetAttachments() {
-		if n := len(ra.GetAddresses()); n > maxEntryPrefixes {
-			slog.Warn("Refused the remote addresses of an attachment", "agent", a.l.subject, "attachment", id,
-				"relay", ra.GetRelayId(), "reason", fmt.Sprintf("%d addresses, which is more than the limit %d", n, maxEntryPrefixes))
-			continue
-		}
-		for _, s := range ra.GetAddresses() {
-			p, err := netip.ParsePrefix(s)
-			if err != nil {
-				slog.Warn("Refused a remote address", "agent", a.l.subject, "attachment", id, "relay", ra.GetRelayId(), "error", err)
-				continue
-			}
-			addrs = append(addrs, remoteAddr{prefix: p, relay: ra.GetRelayId(), origin: ra.GetAttachmentId()})
-		}
-	}
-	a.vbox.send(aRemote{port: a.port, att: id, addrs: addrs})
-}
-
-// remoteAccepted writes the source entries again with the remote addresses that V accepted.
-func (a *connProc) remoteAccepted(e remoteAccepted) {
-	i := slices.IndexFunc(a.atts, func(ca *connAtt) bool { return ca.att.ID == e.att })
-	if i < 0 {
-		return
-	}
-	a.atts[i].remote = e.addrs
-	a.srcDirty = true
-}
-
 // sourceChanges adds to b the changes of the source entries to the prefixes of the attachments
-// that V has or gets, and the remote addresses that V accepted, and returns that set. A remote
-// address is local only: its packets never go out on a trunk port.
-func (a *connProc) sourceChanges(b *batch) map[netip.Prefix]bool {
-	want := map[netip.Prefix]bool{}
-	for _, ca := range a.atts {
-		for _, p := range ca.remote {
-			want[p] = true
-		}
-	}
+// that V has or gets, and returns that set.
+func (a *connProc) sourceChanges(b *batch) map[netip.Prefix]struct{} {
+	want := map[netip.Prefix]struct{}{}
 	for _, ca := range a.atts {
 		for _, p := range ca.att.prefixes() {
-			want[p] = false
+			want[p] = struct{}{}
 		}
 	}
 	for _, ca := range a.pend {
 		if ca.assigned {
 			for _, p := range ca.att.prefixes() {
-				want[p] = false
+				want[p] = struct{}{}
 			}
 		}
 	}
 	md := portKey(a.port)
-	for p, local := range want {
-		var act dp.Action = dp.NoAction{}
-		if local {
-			act = dp.LocalOnlyAction{}
-		}
-		switch have, ok := a.sources[p]; {
-		case !ok:
-			b.insert(dp.SourceKey{Port: a.port, Session: accessSession, Src: p}.Entry(act), md)
-		case have != local:
-			b.modify(dp.SourceKey{Port: a.port, Session: accessSession, Src: p}.Entry(act), md)
+	for p := range want {
+		if _, ok := a.sources[p]; !ok {
+			b.insert(dp.SourceKey{Port: a.port, Session: accessSession, Src: p}.Entry(dp.NoAction{}), md)
 		}
 	}
 	for p := range a.sources {
@@ -750,7 +689,7 @@ func (a *connProc) sendTables() {
 		pa = &p
 		b.port(p4.Update_MODIFY, a.port, pa, portKey(a.port))
 	}
-	var want map[netip.Prefix]bool
+	var want map[netip.Prefix]struct{}
 	if a.srcDirty && !a.closing {
 		want = a.sourceChanges(&b)
 	}

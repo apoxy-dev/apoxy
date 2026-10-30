@@ -15,7 +15,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -378,107 +377,4 @@ func TestAddressAgain(t *testing.T) {
 	require.Equal(t, first.addr, second.addr, "the relay gave the same address")
 	addr := first.addr.String()
 	require.Equal(t, []string{"attach a " + addr, "detach a " + addr, "attach a " + addr}, a.events("a"))
-}
-
-// TestRemoteSets stops the reads of the Session stream at relay 1 while an extra
-// attachment comes and goes many times. The small stream window of the relay
-// makes the stream writer of session 1 wait in a send. After the reads start
-// again, relay 1 gets far fewer sets than the cycles, no set of an attachment
-// two times, and the newest set of each live attachment.
-func TestRemoteSets(t *testing.T) {
-	const cycles = 100
-	cases := []struct {
-		name     string
-		reattach bool // The last cycle ends with an Attach.
-	}{
-		{name: "last cycle ends with a Detach"},
-		{name: "last cycle ends with an Attach", reattach: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			w := newWorld(t)
-			w.streamWindow = 512
-			r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
-			a, ss := w.agentOn(t, "a", agentOptions{}, 2, r1, r2)
-			require.Len(t, ss, 2)
-			i := slices.IndexFunc(ss, func(s sessionRef) bool { return s.addr == r1.addr })
-			require.GreaterOrEqual(t, i, 0, "no session on relay-1")
-			tap := r1.tapOf(ss[i].qc)
-			remotes := func() []*dp.RemoteAddresses {
-				var out []*dp.RemoteAddresses
-				for _, m := range tap.requests() {
-					if rm := m.GetRemote(); rm != nil {
-						out = append(out, rm)
-					}
-				}
-				return out
-			}
-			// setOf returns the newest remote set of the attachment name on session 1.
-			setOf := func(name string) *dp.RemoteAddresses {
-				m := &dp.RemoteAddresses{}
-				for _, c := range a.a.snap.Load().conns {
-					for _, at := range append([]Attachment{c.base}, c.extras...) {
-						switch {
-						case at.Name != name:
-						case c.relay == r1.addr:
-							m.AttachmentId = at.ID
-						default:
-							m.Attachments = append(m.Attachments, &dp.RemoteAttachment{RelayId: w.relayAt(c.relay).id, AttachmentId: at.ID, Addresses: prefixStrings(at.Prefixes)})
-						}
-					}
-				}
-				return m
-			}
-			base := setOf("a")
-			require.Len(t, base.Attachments, 1)
-			require.Eventually(t, func() bool {
-				return slices.ContainsFunc(remotes(), func(m *dp.RemoteAddresses) bool { return proto.Equal(base, m) })
-			}, 5*time.Second, 10*time.Millisecond, "relay-1 has no set of the base attachment")
-			before := len(remotes())
-			resume := tap.pause()
-			defer resume()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			for i := range cycles {
-				_, err := a.a.Attach(ctx, AttachmentSpec{Name: "x-1"})
-				require.NoError(t, err, "cycle %d", i)
-				require.NoError(t, a.a.Detach(ctx, "x-1"), "cycle %d", i)
-			}
-			live := []string{"m-1"} // An attachment after the cycles marks the end of the sends.
-			if tc.reattach {
-				live = append(live, "x-1")
-			}
-			var want []*dp.RemoteAddresses
-			for _, name := range live {
-				_, err := a.a.Attach(ctx, AttachmentSpec{Name: name})
-				require.NoError(t, err)
-				m := setOf(name)
-				require.NotEmpty(t, m.AttachmentId)
-				require.Len(t, m.Attachments, 1)
-				want = append(want, m)
-			}
-			resume()
-			// After the newest set of each live attachment, the writer has no change to send.
-			require.Eventually(t, func() bool {
-				got := remotes()
-				for _, m := range want {
-					if !slices.ContainsFunc(got, func(g *dp.RemoteAddresses) bool { return proto.Equal(m, g) }) {
-						return false
-					}
-				}
-				return true
-			}, 10*time.Second, 10*time.Millisecond, "relay-1 has no newest set of each live attachment")
-			got := remotes()[before:]
-			// A writer that sends each change gives one set for each cycle.
-			assert.Less(t, len(got), cycles/2, "sets after the pause")
-			seen := map[string]bool{}
-			for _, m := range got {
-				assert.NotEqual(t, base.AttachmentId, m.AttachmentId, "a set of the base attachment again")
-				assert.False(t, seen[m.AttachmentId], "a second set of %s", m.AttachmentId)
-				seen[m.AttachmentId] = true
-			}
-		})
-	}
 }
