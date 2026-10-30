@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 )
 
 // quietWait is how long a check waits for a dial that must not come. It is
@@ -488,4 +490,38 @@ func TestWantedRelayOfSession(t *testing.T) {
 	a.hasRoutes(t, b.attached(t).prefixes[0])
 	require.Eventually(t, func() bool { return attachments("a", r3) == 1 }, 10*time.Second, 10*time.Millisecond, "attachment of a on relay-3")
 	assert.NotContains(t, a.routeSet(), cp, "route of relay-3 on the primary")
+}
+
+// TestWantedRelayAfterFirstAttach checks that a relay that a route names is dialed after the
+// first attach, also when the relay of the config sends the route and answers the Attach late.
+func TestWantedRelayAfterFirstAttach(t *testing.T) {
+	w := newWorld(t)
+	w.mesh = true
+	w.slots = map[string]int{"relay-1": 1, "relay-2": 2}
+	pool := &fakeAddresses{Addresses: &vpctest.Addresses{}}
+	w.pools = map[string]*fakeAddresses{"relay-1": pool}
+	r1, r2 := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+	joinMesh(t, r1, r2)
+	b := w.agent(t, "b", r2, agentOptions{})
+	_, slot1 := slotAddr(1)
+	slot2 := slotOf(b.attached(t).addr)
+	// Relay-1 does not answer the Attach of a until the release.
+	var once sync.Once
+	hold := pool.hold("a")
+	release := func() { once.Do(hold) }
+	defer release()
+	a := w.agent(t, "a", r1, agentOptions{})
+	from := a.tr.Conn.LocalAddr()
+	require.Eventually(t, func() bool { return len(r1.sessionConns(from)) == 1 }, 5*time.Second, 10*time.Millisecond, "dial of relay-1")
+	tap := r1.tapOf(r1.sessionConns(from)[0])
+	require.Eventually(t, func() bool { return acked(tap, slot2) }, 5*time.Second, 10*time.Millisecond,
+		"Ack of the route of relay-2 before the attach")
+	assert.Never(t, func() bool { return a.dials(r2) != 0 }, quietWait, 20*time.Millisecond, "dial of relay-2 before the first attach")
+	release()
+	first := a.attached(t)
+	assert.Equal(t, slot1, slotOf(first.addr), "the first attach is on relay-1")
+	second := a.attached(t)
+	assert.Equal(t, slot2, slotOf(second.addr), "the next attach is on relay-2")
+	assert.Equal(t, 1, a.dials(r2), "dials of relay-2")
+	assert.Equal(t, r1.addr, a.current().addr, "relay-1 stays the primary")
 }

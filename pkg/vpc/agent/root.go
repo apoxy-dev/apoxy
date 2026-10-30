@@ -103,7 +103,7 @@ type root struct {
 	// primary has no route for, to the session that has it from its own relay.
 	visits map[netip.Prefix]*home
 	// named are the relay IDs that a route of a session named in this Run. They
-	// stay in the wanted set.
+	// stay in the wanted set from the first primary of Run.
 	named map[string]bool
 	// primaryID is the relay of the last primary, and primaryAddr the address
 	// that the agent dialed for it. They stay while no session is live.
@@ -868,8 +868,8 @@ func (r *root) report(changes []routeChange) bool {
 	return r.onRoutes(add, remove)
 }
 
-// name keeps the relay of a route in the wanted set, with the newest addresses
-// that a route gave.
+// name records the relay of a route for this Run, with the newest addresses
+// that a route gave. It is wanted from the first primary of Run.
 func (r *root) name(info routeInfo) {
 	if info.relay == "" {
 		return

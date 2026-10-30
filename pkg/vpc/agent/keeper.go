@@ -303,6 +303,12 @@ func (r *root) closeRound() {
 // wantedSet returns the relays that a route of a session named in this Run, and
 // the relay of the last primary, without the relay of the live primary.
 func (r *root) wantedSet() map[string]bool {
+	// Before the first primary of Run, no relay is wanted. The first attach is
+	// on a relay of Relays or of the cert.
+	if r.primaryID == "" && r.primary() == nil {
+		r.wanted = map[string]bool{}
+		return r.wanted
+	}
 	w := maps.Clone(r.named)
 	if r.primaryID != "" {
 		w[r.primaryID] = true

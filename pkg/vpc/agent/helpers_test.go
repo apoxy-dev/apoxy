@@ -228,6 +228,9 @@ type world struct {
 	// slots gives the slot of testNetwork that a relay takes the addresses of
 	// its attachments from, by the relay ID. Else it takes them from the pool.
 	slots map[string]int
+	// pools gives the address pool of a relay, by the relay ID, in place of
+	// addrs. A hold of the pool then applies only to that relay.
+	pools map[string]*fakeAddresses
 	// streamWindow sets the QUIC stream receive window of the relays. Zero
 	// keeps the default.
 	streamWindow uint64
@@ -656,9 +659,13 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 	if a, ok := w.advertise[id]; ok {
 		cfg.Relay.Addresses = a
 	}
-	cfg.Trust, cfg.Addresses, cfg.Target = w.trust, w.addrs, plane
+	pool := w.addrs
+	if p, ok := w.pools[id]; ok {
+		pool = p
+	}
+	cfg.Trust, cfg.Addresses, cfg.Target = w.trust, pool, plane
 	if s, ok := w.slots[id]; ok {
-		cfg.Addresses = &slotAddresses{fakeAddresses: w.addrs, slot: s}
+		cfg.Addresses = &slotAddresses{fakeAddresses: pool, slot: s}
 	}
 	r, err := relay.NewRouter(cfg)
 	require.NoError(t, err)
