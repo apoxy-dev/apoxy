@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,8 +67,13 @@ func NewServer(addr string, upstream network.Network, fallback network.Network, 
 		opt(cfg)
 	}
 
+	d := &dialer{upstream: upstream, fallback: fallback, cfg: cfg}
 	options := []socks5.Option{
-		socks5.WithDialAndRequest((&dialer{upstream: upstream, fallback: fallback, cfg: cfg}).DialContext),
+		socks5.WithDialAndRequest(d.DialContext),
+		// UDP ASSOCIATE dials with this function, so its packets use the same networks.
+		socks5.WithDial(func(ctx context.Context, network, address string) (net.Conn, error) {
+			return d.DialContext(ctx, network, address, nil)
+		}),
 		socks5.WithResolver(&resolver{net: upstream}),
 		socks5.WithBufferPool(bufferpool.NewPool(256 * 1024)),
 		socks5.WithLogger(&logger{}),
@@ -263,6 +269,10 @@ type upstreamConnWrapper struct {
 	bytesWritten int64
 	startTime    time.Time
 	guard        *deadlineGuard
+	dialAddr     net.Addr
+	// UDP ASSOCIATE can close a connection two times, so the close steps run once.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (c *upstreamConnWrapper) Read(b []byte) (int, error) {
@@ -285,7 +295,27 @@ func (c *upstreamConnWrapper) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// RemoteAddr returns the dialed address when the connection has none. A closed
+// netstack UDP connection has none, and the socks5 library uses it after errors.
+func (c *upstreamConnWrapper) RemoteAddr() net.Addr {
+	if a := c.Conn.RemoteAddr(); a != nil {
+		return a
+	}
+	return c.dialAddr
+}
+
+// dialedAddr is the address that a dial used.
+type dialedAddr struct{ network, address string }
+
+func (a dialedAddr) Network() string { return a.network }
+func (a dialedAddr) String() string  { return a.address }
+
 func (c *upstreamConnWrapper) Close() error {
+	c.closeOnce.Do(func() { c.closeErr = c.close() })
+	return c.closeErr
+}
+
+func (c *upstreamConnWrapper) close() error {
 	if c.startTime.IsZero() {
 		c.startTime = time.Now() // Fallback if not set
 	}
@@ -322,6 +352,15 @@ func (d *dialer) DialContext(ctx context.Context, network, address string, req *
 
 	// Track SOCKS command
 	cmdType := "connect" // Default for most cases
+	if req == nil && strings.HasPrefix(network, "udp") {
+		cmdType = "udp" // A dial of UDP ASSOCIATE has no request.
+	}
+	// A dial of UDP ASSOCIATE is for one destination of the command, so it does not count as a command.
+	countCommand := func(result string) {
+		if req != nil {
+			SocksCommands.WithLabelValues(cmdType, result).Inc()
+		}
+	}
 	clientAddr := "unknown"
 	if req != nil {
 		switch req.Command {
@@ -351,14 +390,14 @@ func (d *dialer) DialContext(ctx context.Context, network, address string, req *
 			SocksDNSRequests.WithLabelValues("failure").Inc()
 			SocksErrors.WithLabelValues("resolve_error").Inc()
 			SocksConnectionFailures.WithLabelValues("dns_failure").Inc()
-			SocksCommands.WithLabelValues(cmdType, "failure").Inc()
+			countCommand("failure")
 			return nil, fmt.Errorf("could not resolve hostname %s: %w", host, err)
 		}
 		if len(addrs) == 0 {
 			logger.Error("host not found", slog.String("host", host))
 			SocksDNSRequests.WithLabelValues("no_addresses").Inc()
 			SocksConnectionFailures.WithLabelValues("no_addresses").Inc()
-			SocksCommands.WithLabelValues(cmdType, "failure").Inc()
+			countCommand("failure")
 			return nil, fmt.Errorf("host not found")
 		}
 
@@ -368,7 +407,7 @@ func (d *dialer) DialContext(ctx context.Context, network, address string, req *
 			logger.Error("Failed to parse IP address", slog.Any("resolved_addrs", addrs), slog.Any("error", err))
 			SocksErrors.WithLabelValues("parse_error").Inc()
 			SocksConnectionFailures.WithLabelValues("parse_error").Inc()
-			SocksCommands.WithLabelValues(cmdType, "failure").Inc()
+			countCommand("failure")
 			return nil, fmt.Errorf("could not parse IP address %s: %w", addrs[0], err)
 		}
 
@@ -386,14 +425,16 @@ func (d *dialer) DialContext(ctx context.Context, network, address string, req *
 		conn      net.Conn
 		dialStart = time.Now()
 		destType  = "upstream"
+		// The dial uses the resolved address, so the network does not resolve the name again.
+		target = net.JoinHostPort(addr.String(), port)
 	)
 	if addr.IsLoopback() {
 		destType = "fallback"
 		logger.Info("Dialing loopback address (fallback)")
-		conn, err = d.fallback.DialContext(ctx, network, address)
+		conn, err = d.fallback.DialContext(ctx, network, target)
 	} else {
 		logger.Info("Dialing upstream address")
-		conn, err = d.upstream.DialContext(ctx, network, address)
+		conn, err = d.upstream.DialContext(ctx, network, target)
 	}
 
 	dialDur := time.Since(dialStart).Seconds()
@@ -405,7 +446,7 @@ func (d *dialer) DialContext(ctx context.Context, network, address string, req *
 			slog.Float64("dial_duration_s", dialDur))
 		SocksErrors.WithLabelValues("dial_error").Inc()
 		SocksConnectionFailures.WithLabelValues("dial_failure").Inc()
-		SocksCommands.WithLabelValues(cmdType, "failure").Inc()
+		countCommand("failure")
 		return nil, err
 	}
 
@@ -413,7 +454,7 @@ func (d *dialer) DialContext(ctx context.Context, network, address string, req *
 		slog.String("destination_type", destType),
 		slog.Float64("dial_duration_s", dialDur))
 
-	SocksCommands.WithLabelValues(cmdType, "success").Inc()
+	countCommand("success")
 
 	// Detect a dead/half-open upstream peer so a wedged copy eventually errors.
 	applyKeepAlive(conn, d.cfg.keepAlive, d.cfg.keepAlivePeriod)
@@ -424,6 +465,7 @@ func (d *dialer) DialContext(ctx context.Context, network, address string, req *
 		destType:  destType,
 		startTime: dialStart,
 		guard:     newDeadlineGuard(d.cfg, dialStart),
+		dialAddr:  dialedAddr{network: network, address: target},
 	}, nil
 }
 
