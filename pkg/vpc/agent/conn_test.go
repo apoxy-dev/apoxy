@@ -251,8 +251,8 @@ func TestSendRule(t *testing.T) {
 // relay closes the session, and a new one uses the address of the other session.
 func TestDrainKeepsStream(t *testing.T) {
 	w, r1, r2 := meshRelays(t)
-	a := w.agent(t, "a", r1, agentOptions{tcp: true, relays: []identity.Relay{r1.ref(), r2.ref()}})
-	ea := a.attached(t)
+	a := w.agent(t, "a", r1, agentOptions{tcp: true, sessions: 2, relays: []identity.Relay{r1.ref(), r2.ref()}})
+	ea, moved := a.attached(t), a.attached(t)
 	// The agent shuffles its relays, so the first session can be on either. b
 	// stays on the relay that does not drain.
 	prev := a.current()
@@ -260,12 +260,13 @@ func TestDrainKeepsStream(t *testing.T) {
 	if prev.addr == r2.addr {
 		first, other = r2, r1
 	}
+	if ea.addr != prev.self {
+		ea, moved = moved, ea
+	}
 	b := w.agent(t, "b", other, agentOptions{tcp: true})
 	eb := b.attached(t)
 	serveTCP(t, b.stack, eb.addr, 9000)
 	a.hasRoutes(t, eb.prefixes[0])
-	// The route of b names the other relay, so the agent attaches there too.
-	moved := a.attached(t)
 	sameSession(t, prev, a.current(), "the first session keeps the default address")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

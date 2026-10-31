@@ -37,7 +37,7 @@ type home struct {
 	// id is the relay ID from the Welcome. The session holds it from the dial
 	// result until it ends, so no other connection to that relay attaches.
 	id         string
-	wanted     bool // Dialed for the wanted set, not for Config.Sessions.
+	wanted     bool // Dialed for the relay of the last primary, not for Config.Sessions.
 	rank       uint32
 	st         sessState
 	since      time.Time // The attach.
@@ -102,9 +102,6 @@ type root struct {
 	// visits is the visit table of the last OnVisits step: each slot that the
 	// primary has no route for, to the session that has it from its own relay.
 	visits map[netip.Prefix]*home
-	// named are the relay IDs that a route of a session named in this Run. They
-	// stay in the wanted set from the first primary of Run.
-	named map[string]bool
 	// primaryID is the relay of the last primary, and primaryAddr the address
 	// that the agent dialed for it. They stay while no session is live.
 	primaryID, primaryAddr string
@@ -113,7 +110,6 @@ type root struct {
 	relayAddrs map[string][]string
 	// welcome is the relay ID of the newest Welcome at each dialed address.
 	welcome map[string]string
-	wanted  map[string]bool // The last wanted set.
 
 	clamps   map[*psp.Peer]int
 	pspPeers map[*psp.Peer]bool
@@ -139,8 +135,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	r := &root{
 		a: a, mb: proc.NewMailbox(0), retryWait: minBackoff,
-		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]routeInfo{}, named: map[string]bool{},
-		relayAddrs: map[string][]string{}, welcome: map[string]string{}, wanted: map[string]bool{},
+		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]routeInfo{},
+		relayAddrs: map[string][]string{}, welcome: map[string]string{},
 		clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
 	}
 	r.ctx, r.cancel = context.WithCancel(ctx)
@@ -505,7 +501,6 @@ func (r *root) sessAttached(m sessAttached) {
 	// OnRoutes follows the new session only after its OnAttach.
 	r.usePrimary()
 	r.attachMissing()
-	// The routes that came before the attach can name relays to dial.
 	r.plan()
 }
 
@@ -781,7 +776,7 @@ func (r *root) usePrimary() {
 }
 
 // routes takes a route change of a session. The primary's routes go to OnRoutes,
-// and a route of each session can change the visit table and name a relay to dial.
+// and a route of each session can change the visit table and give relay addresses.
 func (r *root) routes(m routesMsg) {
 	h := r.homeOf(m.s)
 	if h == nil {
@@ -790,7 +785,7 @@ func (r *root) routes(m routesMsg) {
 	for _, c := range m.changes {
 		if c.add {
 			h.routes[c.prefix] = c.routeInfo
-			r.name(c.routeInfo)
+			r.learnAddrs(c.routeInfo)
 		} else {
 			delete(h.routes, c.prefix)
 		}
@@ -868,14 +863,9 @@ func (r *root) report(changes []routeChange) bool {
 	return r.onRoutes(add, remove)
 }
 
-// name records the relay of a route for this Run, with the newest addresses
-// that a route gave. It is wanted from the first primary of Run.
-func (r *root) name(info routeInfo) {
-	if info.relay == "" {
-		return
-	}
-	r.named[info.relay] = true
-	if len(info.addrs) > 0 {
+// learnAddrs records the newest addresses that a route gave for its relay.
+func (r *root) learnAddrs(info routeInfo) {
+	if info.relay != "" && len(info.addrs) > 0 {
 		r.relayAddrs[info.relay] = info.addrs
 	}
 }

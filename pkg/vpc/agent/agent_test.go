@@ -636,9 +636,8 @@ func TestDrainLocalRoutesOnly(t *testing.T) {
 	assert.Empty(t, r2.r.AttachmentStats(), "the agent has no attachment on the other relay")
 }
 
-// TestDrainMesh drains relay-1 of a mesh of two relays. The route of b on
-// relay-2 makes a attach there too; at the drain that session gets the default
-// address, and UDP passes both ways before, during and after the drain.
+// TestDrainMesh drains the relay of the primary of agent a, with a session on each of two relays: the other
+// session gets the default address, and UDP passes both ways before, during and after the drain.
 func TestDrainMesh(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -647,10 +646,19 @@ func TestDrainMesh(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, r1, r2 := meshRelays(t)
-			a := w.agent(t, "a", r1, agentOptions{noPSP: tc.noPSP})
-			ea := a.attached(t)
+			a := w.agent(t, "a", r1, agentOptions{noPSP: tc.noPSP, sessions: 2, relays: []identity.Relay{r1.ref(), r2.ref()}})
+			ea, moved := a.attached(t), a.attached(t)
+			// The agent shuffles its relays, so the primary can be on either. b
+			// is on the relay that does not drain.
 			prev := a.current()
-			b := w.agent(t, "b", r2, agentOptions{noPSP: tc.noPSP})
+			first, other := r1, r2
+			if prev.addr == r2.addr {
+				first, other = r2, r1
+			}
+			if ea.addr != prev.self {
+				ea, moved = moved, ea
+			}
+			b := w.agent(t, "b", other, agentOptions{noPSP: tc.noPSP})
 			eb := b.attached(t)
 			echo(t, a.stack, ea.addr, 9000)
 			echo(t, b.stack, eb.addr, 9000)
@@ -658,13 +666,12 @@ func TestDrainMesh(t *testing.T) {
 			b.hasRoutes(t, ea.prefixes[0])
 			ping(t, a.stack, ea.addr, eb.addr, 9000, "a to b before the drain")
 			ping(t, b.stack, eb.addr, ea.addr, 9000, "b to a before the drain")
-			moved := a.attached(t)
-			sameSession(t, prev, a.current(), "the session on relay-1 keeps the default address")
+			sameSession(t, prev, a.current(), "the first session keeps the default address")
 			mode := a.a.Status().Mode
 
-			end := drain(t, r1)
-			require.Eventually(t, func() bool { return a.current().addr == r2.addr }, 5*time.Second, 10*time.Millisecond,
-				"the session on relay-2 gets the default address")
+			end := drain(t, first)
+			require.Eventually(t, func() bool { return a.current().addr == other.addr }, 5*time.Second, 10*time.Millisecond,
+				"the session on the other relay gets the default address")
 			assert.NoError(t, prev.qc.Context().Err(), "the draining session stays open")
 			assert.Equal(t, mode, a.a.Status().Mode)
 			echo(t, a.stack, moved.addr, 9000)
@@ -677,7 +684,7 @@ func TestDrainMesh(t *testing.T) {
 			closedByDrain(t, prev)
 			require.Eventually(t, func() bool { return !slices.Contains(b.routeSet(), ea.prefixes[0]) }, 5*time.Second, 10*time.Millisecond,
 				"b has no route to the address of the session that ended")
-			assert.Len(t, r2.r.AttachmentStats(), 2, "attachments on relay-2")
+			assert.Len(t, other.r.AttachmentStats(), 2, "attachments on the other relay")
 			ping(t, a.stack, moved.addr, eb.addr, 9000, "a to b after the drain")
 			ping(t, b.stack, eb.addr, moved.addr, 9000, "b to a after the drain")
 		})

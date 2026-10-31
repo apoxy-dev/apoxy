@@ -17,6 +17,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/vpctest"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -44,13 +46,14 @@ func (c cutConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	return c.PacketConn.WriteTo(p, addr)
 }
 
-// cutRelays returns relay-1 and relay-2 of one mesh, in slot 1 and slot 2 of
-// testNetwork, and the function that cuts (true) or heals (false) their path.
+// cutRelays returns relay-1 and relay-2 of one mesh, in slot 1 and slot 2 of testNetwork, relay-1 with
+// its own pool in w.pools, and the function that cuts (true) or heals (false) their path.
 func cutRelays(t *testing.T) (w *world, r1, r2 *testRelay, setCut func(bool)) {
 	t.Helper()
 	w = newWorld(t)
 	w.mesh = true
 	w.slots = map[string]int{"relay-1": 1, "relay-2": 2}
+	w.pools = map[string]*fakeAddresses{"relay-1": {Addresses: &vpctest.Addresses{}}}
 	q1, p1, q2, p2 := loopback(t), loopback(t), loopback(t), loopback(t)
 	addrOf := func(c *net.UDPConn) netip.AddrPort { return unmap(c.LocalAddr().(*net.UDPAddr).AddrPort()) }
 	c1 := &relayCut{to: []netip.AddrPort{addrOf(q2), addrOf(p2)}}
@@ -64,6 +67,27 @@ func cutRelays(t *testing.T) (w *world, r1, r2 *testRelay, setCut func(bool)) {
 		c2.on.Store(on)
 		require.Eventually(t, func() bool { return r1.r.Up("relay-2") != on && r2.r.Up("relay-1") != on }, meshWait, 10*time.Millisecond,
 			"mesh up %v", !on)
+	}
+}
+
+// twoSessions gives opts a session on relay-2, with rank 0 as relay-1 answers late, and one on
+// relay-1. first waits for the attach on relay-2 and returns its address.
+func twoSessions(t *testing.T, r1, r2 *testRelay, opts agentOptions) (agentOptions, func(ta *testAgent) netip.Addr) {
+	slow := &slowConn{}
+	slow.set(r1, 150*time.Millisecond)
+	// Both relays answer in the wait of the choice, so the agent dials each one time.
+	opts.slow, opts.rttChoice, opts.rttWait = slow, true, 5*time.Second
+	opts.sessions, opts.relays = 2, []identity.Relay{r2.ref(), r1.ref()}
+	return opts, func(ta *testAgent) netip.Addr {
+		t.Helper()
+		addr := ta.attached(t).addr
+		_, slot2 := slotAddr(2)
+		require.Equal(t, slot2, slotOf(addr), "the first attach is on relay-2")
+		require.True(t, slices.ContainsFunc(ta.a.Status().Connections, func(c ConnStatus) bool {
+			return c.Relay == r2.addr && c.Rank == 0
+		}), "the session on relay-2 has rank 0")
+		slow.set(r1, 0)
+		return addr
 	}
 }
 
@@ -99,8 +123,8 @@ func before(history []string, first, second func(string) bool) bool {
 	return i >= 0 && j >= 0 && i < j
 }
 
-// TestVisitCut checks that in a mesh cut, agents on relay-2 reach relay-1 from
-// their visit address, also with a reply from an advertised network.
+// TestVisitCut checks that in a mesh cut, agents with the primary on relay-2 reach relay-1 from their
+// address on relay-1, also with a reply from an advertised network.
 func TestVisitCut(t *testing.T) {
 	t.Parallel()
 	w, r1, r2, setCut := cutRelays(t)
@@ -108,15 +132,16 @@ func TestVisitCut(t *testing.T) {
 	c := w.agent(t, "c", r1, agentOptions{})
 	c1 := c.attached(t).addr
 	echo(t, c.stack, c1, 9000)
-	b := w.agent(t, "b", r2, agentOptions{routes: []netip.Prefix{route}})
-	b.attached(t)
+	bOpts, bFirst := twoSessions(t, r1, r2, agentOptions{routes: []netip.Prefix{route}})
+	b := w.agent(t, "b", r2, bOpts)
+	bFirst(b)
 	b1 := b.attached(t).addr
 	b.netstack(t, b.binding(), far, false)
 	echo(t, b.stack, far, 9000)
-	a := w.agent(t, "a", r2, agentOptions{})
-	a2 := a.attached(t).addr
+	aOpts, aFirst := twoSessions(t, r1, r2, agentOptions{})
+	a := w.agent(t, "a", r2, aOpts)
+	a2 := aFirst(a)
 	a1 := a.attached(t).addr
-	c.attached(t)
 	slot1 := slotOf(c1)
 	a.hasRoutes(t, slot1, route)
 	ping(t, a.stack, a2, c1, 9000, "a2 to c1 with the mesh up")
@@ -203,22 +228,24 @@ func TestVisitLifecycle(t *testing.T) {
 	w, r1, r2, setCut := cutRelays(t)
 	// Agent a advertises the network of far, and b on relay-2 answers.
 	route, far := netip.MustParsePrefix("fd95::/64"), netip.MustParseAddr("fd95::5")
-	blk, a := newVisitBlock(t, func(f func(map[netip.Prefix]netip.Addr)) *testAgent {
-		return w.agent(t, "a", r2, agentOptions{routes: []netip.Prefix{route}, onVisits: f})
-	})
-	a2 := a.attached(t).addr
-	a.netstack(t, a.binding(), far, false)
-	from := a.tr.Conn.LocalAddr()
 	b := w.agent(t, "b", r2, agentOptions{})
 	b2 := b.attached(t).addr
 	echo(t, b.stack, b2, 9000)
-	// The relay-1 sessions of a do not attach until the release.
-	var once sync.Once
-	hold := w.addrs.hold("a")
-	release := func() { once.Do(hold) }
-	defer release()
 	c := w.agent(t, "c", r1, agentOptions{})
 	c1 := c.attached(t).addr
+	// The relay-1 sessions of a do not attach until the release.
+	var once sync.Once
+	hold := w.pools["relay-1"].hold("a")
+	release := func() { once.Do(hold) }
+	defer release()
+	opts, firstAttach := twoSessions(t, r1, r2, agentOptions{routes: []netip.Prefix{route}})
+	blk, a := newVisitBlock(t, func(f func(map[netip.Prefix]netip.Addr)) *testAgent {
+		opts.onVisits = f
+		return w.agent(t, "a", r2, opts)
+	})
+	a2 := firstAttach(a)
+	a.netstack(t, a.binding(), far, false)
+	from := a.tr.Conn.LocalAddr()
 	slot1, slot2 := slotOf(c1), slotOf(a2)
 	a.hasRoutes(t, slot1)
 	require.Eventually(t, func() bool { return len(r1.sessionConns(from)) == 1 }, 5*time.Second, 10*time.Millisecond, "dial of relay-1")
@@ -315,14 +342,15 @@ func TestVisitLifecycle(t *testing.T) {
 func TestVisitAcks(t *testing.T) {
 	t.Parallel()
 	w, r1, r2, setCut := cutRelays(t)
-	blk, a := newVisitBlock(t, func(f func(map[netip.Prefix]netip.Addr)) *testAgent {
-		return w.agent(t, "a", r2, agentOptions{onVisits: f})
-	})
-	a.attached(t)
 	c := w.agent(t, "c", r1, agentOptions{})
 	c1 := c.attached(t).addr
+	opts, first := twoSessions(t, r1, r2, agentOptions{})
+	blk, a := newVisitBlock(t, func(f func(map[netip.Prefix]netip.Addr)) *testAgent {
+		opts.onVisits = f
+		return w.agent(t, "a", r2, opts)
+	})
+	first(a)
 	a1 := a.attached(t).addr
-	c.attached(t)
 	from := a.tr.Conn.LocalAddr()
 	tap1, tap2 := r1.tapOf(r1.agentConns(from, true)[0]), r2.tapOf(r2.agentConns(from, true)[0])
 
@@ -331,7 +359,7 @@ func TestVisitAcks(t *testing.T) {
 
 	// Agent d in slot 3 gives the session of a on relay-1 a change of only the visit set.
 	addr3, slot3 := slotAddr(3)
-	w.addrs.fix("d", addr3)
+	w.pools["relay-1"].fix("d", addr3)
 	blk.arm(2)
 	w.agent(t, "d", r1, agentOptions{}).attached(t)
 	release := blk.wait(t, "no OnVisits for slot 3")

@@ -75,8 +75,8 @@ type Config struct {
 	// RelayRoots check relay certs, in place of the roots of the
 	// agent cert. With neither, the agent uses the system roots.
 	RelayRoots *x509.CertPool
-	// Sessions is the number of sessions, each with its own address on a relay of Relays or of the
-	// cert, 1 to 3 (zero means 2). The agent also keeps a session on each relay that a route named.
+	// Sessions is the number of sessions, each with its own address on a relay
+	// of Relays or of the cert, 1 to 3 (zero means 2).
 	Sessions int
 	// Transport is the agent socket. New sets its packet handlers, so it must
 	// not be in use yet, and its port must not have an XDP program. At the end

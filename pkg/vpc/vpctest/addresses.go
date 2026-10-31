@@ -41,10 +41,14 @@ func (a *Addresses) Assign(_ context.Context, att *relay.Attachment, _ func()) (
 
 func (a *Addresses) Attached(*relay.Attachment) {}
 
+// Release counts one less live attachment of the subject. An address that a
+// wrapper of the pool gave in place of Assign has no count.
 func (a *Addresses) Release(att *relay.Attachment) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.live[att.Subject]--
+	if a.live[att.Subject] > 0 {
+		a.live[att.Subject]--
+	}
 }
 
 // Overlap returns the most attachments of subject that were live at once.
