@@ -511,8 +511,9 @@ func (r *root) drained(m drainedMsg) {
 	if h == nil || !h.st.attached || h.draining {
 		return
 	}
-	h.draining, h.alternates = true, m.alts
-	slog.Info("Relay drains; its session stays until the relay closes it", "relay", h.ep.addr, "address", h.st.base.Address, "alternates", len(m.alts))
+	h.draining, h.alternates = true, r.usableAlts(m.alts)
+	slog.Info("Relay drains; its session stays until the relay closes it", "relay", h.ep.addr, "address", h.st.base.Address,
+		"alternates", len(h.alternates), "alternates_not_configured", len(m.alts)-len(h.alternates))
 	r.prefer()
 	r.usePrimary()
 	r.plan()

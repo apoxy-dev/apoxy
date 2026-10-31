@@ -196,6 +196,8 @@ func TestAttachmentsOnNewSession(t *testing.T) {
 			opts := agentOptions{}
 			if w.mesh {
 				joinMesh(t, r1, r2)
+				// The relays of an identity file let the agent move to an alternate that is not in the list.
+				opts.identityFile = true
 			} else {
 				opts.relays = []identity.Relay{r1.ref(), r2.ref()}
 			}

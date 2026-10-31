@@ -617,6 +617,22 @@ func (r *root) endpoints() []endpoint {
 	return out
 }
 
+// usableAlts returns the alternates of a draining relay that the agent can move to. With
+// Config.Relays, it keeps only the alternates that are configured relays, by relay ID or by address.
+func (r *root) usableAlts(alts []endpoint) []endpoint {
+	if len(r.a.cfg.Relays) == 0 {
+		return alts
+	}
+	keys, addrs := map[string]bool{}, map[string]bool{}
+	for _, e := range r.endpoints() {
+		keys[r.keyOf(e)], addrs[e.addr] = true, true
+		if e.id != "" {
+			keys[e.id] = true
+		}
+	}
+	return slices.DeleteFunc(slices.Clone(alts), func(e endpoint) bool { return !addrs[e.addr] && !keys[r.keyOf(e)] })
+}
+
 // oneEach returns the first address of each relay in eps, so entries with one
 // key count as one relay.
 func (r *root) oneEach(eps []endpoint) []endpoint {

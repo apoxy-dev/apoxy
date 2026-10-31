@@ -511,8 +511,10 @@ func stateOf(a *testAgent, rc sessionRef) string {
 // The alternates are the mesh members of the relay that are up, in name order.
 func TestDrain(t *testing.T) {
 	cases := []struct {
-		name  string
-		known bool // The agent knows both relays.
+		name string
+		// known puts both relays in Config.Relays. Else the identity file has only
+		// the first relay, so the agent can move to an alternate that it does not know.
+		known bool
 		// first comes before the alternate that takes the agent: "drains" (a
 		// member that drains too) or "wrong address" (the first address of the
 		// alternate is of a relay that is not a member).
@@ -542,7 +544,7 @@ func TestDrain(t *testing.T) {
 				members = append(members, r3)
 			}
 			joinMesh(t, members...)
-			opts := agentOptions{}
+			opts := agentOptions{identityFile: !tc.known}
 			if tc.known {
 				opts.relays = []identity.Relay{r1.ref(), r2.ref()}
 			}
@@ -600,29 +602,111 @@ func TestDrain(t *testing.T) {
 	}
 }
 
-// TestDrainNoAlternate drains the only relay of an agent. The agent keeps its
-// session until the relay closes it, and dials no relay before.
+// TestDrainNoAlternate drains the only relay of an agent, also with an alternate that is not configured. The agent
+// keeps its session and dials no relay until the relay closes the session, then dials its relay again with backoff.
 func TestDrainNoAlternate(t *testing.T) {
-	w := newWorld(t)
-	r := w.relay(t, "relay-1")
-	a := w.agent(t, "a", r, agentOptions{})
-	a.attached(t)
-	prev := a.current()
-	sessions := func() int { return len(a.a.Status().Connections) }
+	cases := []struct {
+		name string
+		mesh bool // The relay gives an alternate that is not in Config.Relays.
+	}{
+		{name: "no mesh"},
+		{name: "alternate that is not configured", mesh: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.mesh = tc.mesh
+			r, other := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+			if tc.mesh {
+				joinMesh(t, r, other)
+			}
+			a := w.agent(t, "a", r, agentOptions{relays: []identity.Relay{r.ref()}})
+			a.attached(t)
+			prev := a.current()
+			src := a.tr.Conn.LocalAddr()
+			dials := func() int { return len(r.agentConns(src, false)) + len(other.agentConns(src, false)) }
+			require.Equal(t, 1, dials())
 
-	end := drain(t, r)
-	require.Eventually(t, func() bool { return stateOf(a, prev) == stDraining }, 5*time.Second, 10*time.Millisecond)
-	require.Never(t, func() bool { return sessions() != 1 || prev.qc.Context().Err() != nil },
-		time.Second, 20*time.Millisecond, "the agent opened or closed a session while its relay drains")
-	end()
-	closedByDrain(t, prev)
+			end := drain(t, r)
+			require.Eventually(t, func() bool { return stateOf(a, prev) == stDraining }, 5*time.Second, 10*time.Millisecond)
+			require.Never(t, func() bool { return dials() != 1 || prev.qc.Context().Err() != nil },
+				time.Second, 20*time.Millisecond, "the agent dialed a relay or lost its session while its relay drains")
+			end()
+			closedByDrain(t, prev)
+			// The relay refuses each new connection, so each dial fails and the next one waits a random time.
+			require.Eventually(t, func() bool { return len(r.agentConns(src, false)) > 1 }, 5*time.Second, 10*time.Millisecond,
+				"the agent did not dial its relay again")
+			require.Never(t, func() bool { return dials() > 20 }, 2*time.Second, 20*time.Millisecond,
+				"the agent dials with no backoff")
+			assert.Empty(t, other.agentConns(src, false), "the agent dialed the other relay")
+		})
+	}
+}
+
+// TestDrainConfiguredRelays drains the relay of an agent in a mesh of three relays. With Config.Relays, the agent
+// moves only to a relay of the list; with the same list in an identity file, it can move to each alternate.
+func TestDrainConfiguredRelays(t *testing.T) {
+	cases := []struct {
+		name       string
+		configured bool // The list is Config.Relays. Else it is in the identity file.
+		// other changes relay 2 in the list: "address" gives it an address with no relay, "id" another
+		// relay ID. The agent finds it in the alternates by its relay ID or by its address.
+		other string
+	}{
+		{name: "configured relays", configured: true},
+		{name: "configured relay at another address", configured: true, other: "address"},
+		{name: "configured relay with another ID", configured: true, other: "id"},
+		{name: "relays of the identity file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.mesh = true
+			r1, r2, r3 := w.relay(t, "relay-1"), w.relay(t, "relay-2"), w.relay(t, "relay-3")
+			joinMesh(t, r1, r2, r3)
+			ref2 := r2.ref()
+			switch tc.other {
+			case "address":
+				ref2.Addresses = []string{deadRelay(t)}
+			case "id":
+				// The cert of relay 2 does not have this name, so a dial of the list fails.
+				ref2.ID = "relay-9"
+			}
+			a := w.agent(t, "a", r1, agentOptions{relays: []identity.Relay{r1.ref(), ref2}, identityFile: !tc.configured})
+			a.attached(t)
+			prev := a.current()
+			// The agent shuffles its relays, so the session can be on either.
+			from, to := r1, r2
+			if prev.addr == r2.addr {
+				from, to = r2, r1
+			}
+			src := a.tr.Conn.LocalAddr()
+			require.Empty(t, r3.agentConns(src, false), "the agent dialed relay 3 before the drain")
+
+			end := drain(t, from)
+			a.attached(t)
+			assert.Equal(t, stDraining, stateOf(a, prev))
+			if tc.configured {
+				assert.Equal(t, to.addr, a.current().addr, "the agent moves to the other configured relay")
+				require.Never(t, func() bool { return len(r3.agentConns(src, false)) > 0 }, 500*time.Millisecond, 20*time.Millisecond,
+					"the agent dialed a relay that is not in Config.Relays")
+			} else {
+				assert.Contains(t, []string{to.addr, r3.addr}, a.current().addr, "the agent moves to an alternate")
+				require.Eventually(t, func() bool { return len(r3.agentConns(src, false)) > 0 }, 5*time.Second, 10*time.Millisecond,
+					"the agent did not dial the alternate that is not in its identity file")
+			}
+			end()
+			closedByDrain(t, prev)
+		})
+	}
 }
 
 // TestDrainLocalRoutesOnly drains the relay of an agent that has one agent for
 // each relay. The relay gives it no alternate, so it does not move.
 func TestDrainLocalRoutesOnly(t *testing.T) {
 	w, r1, r2 := meshRelays(t)
-	a := w.agent(t, "a", r1, agentOptions{localRoutesOnly: true, sessions: 1})
+	// With Config.Relays, the agent drops the alternates that are not configured, so the relays come from a file.
+	a := w.agent(t, "a", r1, agentOptions{localRoutesOnly: true, sessions: 1, identityFile: true})
 	a.attached(t)
 	prev := a.current()
 
@@ -634,6 +718,7 @@ func TestDrainLocalRoutesOnly(t *testing.T) {
 	assert.False(t, ae.Remote)
 	assert.Equal(t, quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN), ae.ErrorCode)
 	assert.Empty(t, r2.r.AttachmentStats(), "the agent has no attachment on the other relay")
+	assert.Empty(t, r2.agentConns(a.tr.Conn.LocalAddr(), false), "the agent dialed the other relay")
 }
 
 // TestDrainMesh drains the relay of the primary of agent a, with a session on each of two relays: the other
@@ -698,8 +783,9 @@ func TestDrainBeforeAttach(t *testing.T) {
 	t.Parallel()
 	w, r1, r2 := meshRelays(t)
 	release := w.addrs.hold("a")
-	// A session that drains before its attach stays in QUIC mode.
-	a := w.agent(t, "a", r1, agentOptions{quicStart: true, relays: []identity.Relay{r1.ref()}})
+	// A session that drains before its attach stays in QUIC mode. The identity
+	// file has only relay 1, so the agent moves to the alternate.
+	a := w.agent(t, "a", r1, agentOptions{quicStart: true, identityFile: true})
 	require.Eventually(t, func() bool { now, _ := w.addrs.held(); return now == 1 }, 5*time.Second, 10*time.Millisecond,
 		"the base Attach does not wait in Assign")
 	qcs := r1.sessionConns(a.tr.Conn.LocalAddr())

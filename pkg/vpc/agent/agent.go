@@ -69,8 +69,8 @@ var errNoRelay = errors.New("no relay session")
 type Config struct {
 	// Identity keeps the agent cert and the relays from enroll. Run starts it.
 	Identity *identity.Manager
-	// Relays are the relays to dial, in place of the relays of the agent cert.
-	// The agent attaches to the relays with the lowest round-trip times.
+	// Relays are the relays to dial, in place of the relays of the agent cert. The agent attaches
+	// to the relays with the lowest round-trip times, and when a relay drains, it moves only to these.
 	Relays []identity.Relay
 	// RelayRoots check relay certs, in place of the roots of the
 	// agent cert. With neither, the agent uses the system roots.

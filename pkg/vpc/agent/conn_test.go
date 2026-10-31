@@ -348,7 +348,8 @@ func TestNextRank(t *testing.T) {
 // own session, and that the agent attaches again with backoff.
 func TestAttachFails(t *testing.T) {
 	w, r1, r2 := meshRelays(t)
-	a := w.agent(t, "a", r1, agentOptions{})
+	// The relays of an identity file let the agent move to the alternate.
+	a := w.agent(t, "a", r1, agentOptions{identityFile: true})
 	a.attached(t)
 	prev := a.current()
 	// The Attach calls of the agent get no address, so they end at their time limit.
