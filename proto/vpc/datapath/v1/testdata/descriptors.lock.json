@@ -311,20 +311,6 @@
               "type": "TYPE_BOOL",
               "jsonName": "endOfVpcs"
             }
-          ],
-          "reservedRange": [
-            {
-              "start": 1,
-              "end": 2
-            },
-            {
-              "start": 2,
-              "end": 3
-            }
-          ],
-          "reservedName": [
-            "entries",
-            "end_of_full_set"
           ]
         },
         {
@@ -509,15 +495,6 @@
             {
               "name": "msg"
             }
-          ],
-          "reservedRange": [
-            {
-              "start": 4,
-              "end": 5
-            }
-          ],
-          "reservedName": [
-            "moved"
           ]
         },
         {
@@ -648,20 +625,6 @@
               "type": "TYPE_FIXED64",
               "jsonName": "instance"
             }
-          ],
-          "reservedRange": [
-            {
-              "start": 3,
-              "end": 4
-            },
-            {
-              "start": 5,
-              "end": 6
-            }
-          ],
-          "reservedName": [
-            "shard",
-            "spare"
           ]
         },
         {
@@ -743,14 +706,6 @@
               "label": "LABEL_REPEATED",
               "type": "TYPE_STRING",
               "jsonName": "standby"
-            },
-            {
-              "name": "relay",
-              "number": 5,
-              "label": "LABEL_OPTIONAL",
-              "type": "TYPE_MESSAGE",
-              "typeName": ".apoxy.vpc.datapath.v1.RelayRef",
-              "jsonName": "relay"
             }
           ]
         },
@@ -852,15 +807,6 @@
               "type": "TYPE_STRING",
               "jsonName": "address"
             }
-          ],
-          "reservedRange": [
-            {
-              "start": 3,
-              "end": 4
-            }
-          ],
-          "reservedName": [
-            "home_relay"
           ]
         },
         {
@@ -1001,15 +947,6 @@
               "type": "TYPE_STRING",
               "jsonName": "addresses"
             }
-          ],
-          "reservedRange": [
-            {
-              "start": 2,
-              "end": 3
-            }
-          ],
-          "reservedName": [
-            "grant"
           ]
         },
         {

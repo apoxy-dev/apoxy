@@ -108,8 +108,6 @@ message Presence {
 
 // PresenceUpdate is one message of the caller of Presence.
 message PresenceUpdate {
-  reserved 1, 2;
-  reserved "entries", "end_of_full_set";
   // Number of this message on the call: 1, 2, 3 and up.
   uint64 seq = 3;
   // Data of the VPCs, at most one part for each VPC.

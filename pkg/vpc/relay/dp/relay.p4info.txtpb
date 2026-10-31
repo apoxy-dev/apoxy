@@ -106,9 +106,6 @@ tables {
     id: 21257015
   }
   action_refs {
-    id: 24976605
-  }
-  action_refs {
     id: 16983990
   }
   const_default_action_id: 16983990
@@ -306,13 +303,6 @@ actions {
     id: 4
     name: "local_cell"
     bitwidth: 32
-  }
-}
-actions {
-  preamble {
-    id: 24976605
-    name: "Relay.local_only"
-    alias: "local_only"
   }
 }
 actions {

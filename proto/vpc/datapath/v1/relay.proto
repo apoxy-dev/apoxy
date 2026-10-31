@@ -52,8 +52,6 @@ message SessionRequest {
     Ack ack = 2;
     Status status = 3;
   }
-  reserved 4;
-  reserved "moved";
 }
 
 // SessionResponse is a message from the relay on Session.
@@ -79,15 +77,8 @@ message Hello {
   Mode mode = 1;
   // Maximum number of VPCs on this session. In the MVP the cert names one VPC.
   uint32 max_vpcs_per_session = 2;
-  // An agent at revision 22 or lower set field 3 on a second QUIC connection
-  // of a session.
-  reserved 3;
-  reserved "shard";
   // Why the agent is in QUIC mode.
   FallbackReason fallback_reason = 4;
-  // An agent of an older build set spare here for a session with no attachment.
-  reserved 5;
-  reserved "spare";
   // Revision of the agent. Not set by a build from before revisions.
   Version version = 6;
   // Name of the base attachment of the agent. Many agents can have one SPIFFE
@@ -134,9 +125,6 @@ message Route {
   // they become the active announcer. Only in an added route, for an agent at
   // revision 16 or later. An added route that the agent has gives a new list.
   repeated string standby = 4;
-  // Relay that has the origin, also this relay for a local origin. It can
-  // have the ID and no addresses.
-  RelayRef relay = 5;
 }
 
 // RouteDelta changes the routes of the agent. The first route table of a
@@ -173,8 +161,6 @@ message ICVFailures {
 message NoRoute {
   VPCRef vpc = 1;
   string address = 2;
-  reserved 3;
-  reserved "home_relay";
 }
 
 // Config is the configuration of a VPC for the agent.
@@ -207,8 +193,6 @@ message AttachRequest {
 
 message AttachResponse {
   string attachment_id = 1;
-  reserved 2;
-  reserved "grant";
   // Answer of the relay for each route of the request, in the order of the
   // request, for an agent at revision 16 or later. A route with no answer is
   // accepted.

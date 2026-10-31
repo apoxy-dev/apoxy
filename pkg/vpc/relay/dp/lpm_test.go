@@ -46,8 +46,8 @@ func TestLPM(t *testing.T) {
 	src := func(p string, a dp.Action) *p4.TableEntry { return source(1, 1, 0, p, a) }
 	src6e := src("2001:db8:a::/48", dp.NoAction{})
 	src6 := insert(src6e)
-	srcA1 := []*p4.TableEntry{src("100.64.1.0/24", dp.NoAction{}), src("100.64.77.7/32", dp.LocalOnlyAction{})} // In base.
-	bad := remove(route("uid-x/1", "10.0.0.0/8", 1, 1, 1, 1))                                                   // No such route.
+	srcA1 := []*p4.TableEntry{src("100.64.1.0/24", dp.NoAction{}), src("100.64.77.7/32", dp.DropAction{Reason: 31})} // In base.
+	bad := remove(route("uid-x/1", "10.0.0.0/8", 1, 1, 1, 1))                                                        // No such route.
 	a2, a4, at, miss := addrA2.String(), addrA4.String(), addrT.String(), "miss"
 	drop := func(reason uint8) string { return "drop " + strconv.Itoa(int(reason)) }
 	const v4, v6 = "100.64.1.5", "2001:db8:a::5" // Sources of A1 that pass.
@@ -101,12 +101,12 @@ func TestLPM(t *testing.T) {
 			pkts:   []pkt{{v6, "::ffff:10.1.2.3", a4}, {v6, "::ffff:11.0.0.1", a2}},
 		},
 		{
-			// 100.64.8.0/24 goes to T, and to A2 from a local-only source.
+			// 100.64.8.0/24 goes to T. The /32 source 100.64.77.7 of base drops in the /16.
 			name:   "the longest source prefix",
 			writes: [][]*p4.Update{{src6, insert(src("100.64.0.0/16", dp.NoAction{}))}},
 			tables: []*p4.TableEntry{src6e, src("100.64.0.0/16", dp.NoAction{})},
 			pkts: []pkt{
-				{"100.64.77.7", "100.64.8.5", a2}, {"100.64.77.8", "100.64.8.5", at},
+				{"100.64.77.7", "100.64.8.5", drop(31)}, {"100.64.77.8", "100.64.8.5", at},
 				{"100.65.0.1", "100.64.8.5", drop(dp.ReasonSource)},
 				{v6, "2001:db8::1", miss}, {"2001:db8:b::5", "2001:db8::1", drop(dp.ReasonSource)},
 			},
@@ -238,98 +238,142 @@ func TestLPM(t *testing.T) {
 	}
 }
 
-// TestLPMWrites sends packets from 100.64.1.5 to 10.1.0.5 while Writes change the source and route
-// tries that the packets read. Each Write changes both, between two states that send the packet to
-// A2: the source NoAction and the route to A2 (local target A4), or the source local-only and the
-// route to A4 (local target A2). A packet that sees one change of a Write and not the other goes to
-// A4. The Writes also insert and delete 300 routes in the route trie in turn. After each Write, a
-// Read of all tables gives the entries of that Write. With -race, the test also shows that a Write
-// does not change the tries of the packets.
+// TestLPMWrites sends packets from 100.64.1.5 to 10.1.0.5 while Writes change the tries between two
+// states. A packet that sees a part of a Write has a result that no whole state gives.
 func TestLPMWrites(t *testing.T) {
-	sources := [2]*p4.TableEntry{source(1, 1, 0, "100.64.1.0/24", dp.NoAction{}), source(1, 1, 0, "100.64.1.0/24", dp.LocalOnlyAction{})}
-	routes := [2]*p4.TableEntry{route(vpcA, "10.1.0.0/16", 2, 32, 4, 44), route(vpcA, "10.1.0.0/16", 4, 44, 2, 32)}
-	states := [2][]*p4.Update{{modify(sources[0]), modify(routes[0])}, {modify(sources[1]), modify(routes[1])}}
+	toA2, toA4 := route(vpcA, "10.1.0.0/16", 2, 32, 2, 32), route(vpcA, "10.1.0.0/16", 4, 44, 4, 44)
+	slice := route(vpcA, "10.1.0.0/24", 2, 32, 2, 32)
+	routeDrop := dp.RouteKey{VPC: vpcA, Dst: pfx("10.1.0.0/16")}.Entry(dp.DropAction{Reason: 31})
+	host5 := source(1, 1, 0, "100.64.1.5/32", dp.NoAction{})
+	srcPass := source(1, 1, 0, "100.64.1.0/24", dp.NoAction{}) // The base entries have this source.
+	srcDrop := source(1, 1, 0, "100.64.1.0/24", dp.DropAction{Reason: 30})
+	cases := []struct {
+		name string
+		// start is the Write to state 0 after base, and to has the Writes into state 0 and state 1.
+		start []*p4.Update
+		to    [2][]*p4.Update
+		// add has the entries of each state other than those of base; swap replaces srcPass in state 0.
+		add  [2][]*p4.TableEntry
+		swap *p4.TableEntry
+		// With deliver, each whole state sends the packet to A2. Else each whole state drops it.
+		deliver bool
+	}{
+		{
+			// In state 0, the /16 goes to A4 and the /24 goes to A2. State 1 moves the /16 to A2, removes
+			// the /24 and adds a /32 source. A part of a Write sends the packet to A4.
+			name:  "one table",
+			start: []*p4.Update{insert(toA4), insert(slice)},
+			to: [2][]*p4.Update{
+				{remove(host5), modify(toA4), insert(slice)},
+				{insert(host5), remove(slice), modify(toA2)},
+			},
+			add:     [2][]*p4.TableEntry{{toA4, slice}, {toA2, host5}},
+			deliver: true,
+		},
+		{
+			// In state 0, the source drops the packet and the route goes to A2. In state 1, the source
+			// passes it and the route drops it. Only a mix of the two states delivers the packet.
+			name:  "two tables",
+			start: []*p4.Update{modify(srcDrop), insert(toA2)},
+			to: [2][]*p4.Update{
+				{modify(toA2), modify(srcDrop)},
+				{modify(srcPass), modify(routeDrop)},
+			},
+			add:  [2][]*p4.TableEntry{{toA2}, {routeDrop}},
+			swap: srcDrop,
+		},
+	}
 	host := func(j int) *p4.TableEntry {
 		return route(vpcA, "10.1."+strconv.Itoa(1+j/150)+"."+strconv.Itoa(j%150)+"/32", 2, 32, 2, 32)
 	}
-	// want returns the table entries after Write i, as a set: base with the source and the route of
-	// the state of Write i, and the 300 routes after an INSERT Write and before the next DELETE.
-	want := func(i int) (map[string]bool, error) {
-		st := (i + 1) % 2
-		es := []*p4.TableEntry{routes[st]}
-		for _, e := range baseTables() {
-			if proto.Equal(e, sources[0]) {
-				e = sources[st]
-			}
-			es = append(es, e)
-		}
-		if i%4 == 0 || i%4 == 1 {
-			for j := range 300 {
-				es = append(es, host(j))
-			}
-		}
-		return entrySet(es)
-	}
-	r := newRelay(t, insert(routes[0]))
-	stop, errc := make(chan struct{}), make(chan error, 1)
-	var writes atomic.Int64
-	go func() {
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				errc <- nil
-				return
-			default:
-			}
-			us := slices.Clone(states[(i+1)%2])
-			for j := range 300 {
-				e := host(j)
-				switch i % 4 {
-				case 0:
-					us = append(us, insert(e))
-				case 2:
-					us = append(us, remove(e))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// want returns the table entries after Write i, as a set: base with the entries of the
+			// state of Write i, and the 300 routes after an INSERT Write and before the next DELETE.
+			want := func(i int) (map[string]bool, error) {
+				st := (i + 1) % 2
+				es := slices.Clone(tc.add[st])
+				for _, e := range baseTables() {
+					if st == 0 && tc.swap != nil && proto.Equal(e, srcPass) {
+						e = tc.swap
+					}
+					es = append(es, e)
 				}
+				if i%4 == 0 || i%4 == 1 {
+					for j := range 300 {
+						es = append(es, host(j))
+					}
+				}
+				return entrySet(es)
 			}
-			if err := write(context.Background(), r, us...); err != nil {
-				errc <- err
+			r := newRelay(t, tc.start...)
+			stop, errc := make(chan struct{}), make(chan error, 1)
+			var writes atomic.Int64
+			go func() {
+				for i := 0; ; i++ {
+					select {
+					case <-stop:
+						errc <- nil
+						return
+					default:
+					}
+					us := slices.Clone(tc.to[(i+1)%2])
+					for j := range 300 {
+						e := host(j)
+						switch i % 4 {
+						case 0:
+							us = append(us, insert(e))
+						case 2:
+							us = append(us, remove(e))
+						}
+					}
+					if err := write(context.Background(), r, us...); err != nil {
+						errc <- err
+						return
+					}
+					var es []*p4.TableEntry
+					req := &p4.ReadRequest{Entities: []*p4.Entity{{Entity: &p4.Entity_TableEntry{TableEntry: &p4.TableEntry{}}}}}
+					if err := r.Read(context.Background(), req, func(e *p4.Entity) { es = append(es, e.GetTableEntry()) }); err != nil {
+						errc <- err
+						return
+					}
+					got, err := entrySet(es)
+					if err != nil {
+						errc <- err
+						return
+					}
+					exp, err := want(i)
+					if err != nil {
+						errc <- err
+						return
+					}
+					if !maps.Equal(exp, got) {
+						errc <- fmt.Errorf("the tables after Write %d: %d entries, want %d entries", i, len(got), len(exp))
+						return
+					}
+					writes.Add(1)
+				}
+			}()
+			// The loop sends at least 2000 packets, and runs until 20 Writes are done or one fails.
+			seq := uint32(1)
+			for ; seq <= 2000 || (writes.Load() < 20 && len(errc) == 0); seq++ {
+				r.receive(addrA1, seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "10.1.0.5", 100)))
+			}
+			close(stop)
+			require.NoError(t, <-errc)
+			if tc.deliver {
+				require.Len(t, r.sent, int(seq-1))
+				for _, s := range r.sent {
+					assert.Equal(t, addrA2, s.to)
+				}
+				assert.Empty(t, counts(t, r, dp.CounterDrops))
 				return
 			}
-			var es []*p4.TableEntry
-			req := &p4.ReadRequest{Entities: []*p4.Entity{{Entity: &p4.Entity_TableEntry{TableEntry: &p4.TableEntry{}}}}}
-			if err := r.Read(context.Background(), req, func(e *p4.Entity) { es = append(es, e.GetTableEntry()) }); err != nil {
-				errc <- err
-				return
-			}
-			got, err := entrySet(es)
-			if err != nil {
-				errc <- err
-				return
-			}
-			exp, err := want(i)
-			if err != nil {
-				errc <- err
-				return
-			}
-			if !maps.Equal(exp, got) {
-				errc <- fmt.Errorf("the tables after Write %d: %d entries, want %d entries", i, len(got), len(exp))
-				return
-			}
-			writes.Add(1)
-		}
-	}()
-	// At least 2000 packets, and until 20 Writes are done or one fails.
-	seq := uint32(1)
-	for ; seq <= 2000 || (writes.Load() < 20 && len(errc) == 0); seq++ {
-		r.receive(addrA1, seal(spiA1In, vniA, seq, ipv4("100.64.1.5", "10.1.0.5", 100)))
+			assert.Empty(t, r.sent)
+			drops := counts(t, r, dp.CounterDrops)
+			assert.Equal(t, int64(seq-1), drops[30]+drops[31], "drops of the source (30) and of the route (31): %v", drops)
+		})
 	}
-	close(stop)
-	require.NoError(t, <-errc)
-	require.Len(t, r.sent, int(seq-1))
-	for _, s := range r.sent {
-		assert.Equal(t, addrA2, s.to)
-	}
-	assert.Empty(t, counts(t, r, dp.CounterDrops))
 }
 
 // entrySet returns the table entries es as a set of deterministic bytes.

@@ -136,7 +136,7 @@ func TestMeshUp(t *testing.T) {
 }
 
 // TestMeshRoutes checks the announcements between two relays: the full set on a new session, the
-// changes after it, and the Route.relay of a route of the other relay.
+// changes after it, and the origin of a route of the other relay.
 func TestMeshRoutes(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -165,16 +165,11 @@ func TestMeshRoutes(t *testing.T) {
 				res = a.attach("fd00:1::/64")
 			}
 
-			// The slot of relay-1 and the advertised route name relay-1 for the watcher.
-			r := w.waitRoute(slot, true)
-			assert.Equal(t, "relay-1", r.GetOrigin())
-			assert.Equal(t, "relay-1", r.GetRelay().GetId())
-			assert.Equal(t, []string{"192.0.2.1"}, r.GetRelay().GetAddresses())
-			r = w.waitRoute("fd00:1::/64", true)
-			assert.Equal(t, res.GetAttachmentId(), r.GetOrigin())
-			assert.Equal(t, "relay-1", r.GetRelay().GetId())
+			// The watcher gets the slot of relay-1, with relay-1 as its origin, and the advertised route.
+			assert.Equal(t, "relay-1", w.waitRoute(slot, true).GetOrigin())
+			assert.Equal(t, res.GetAttachmentId(), w.waitRoute("fd00:1::/64", true).GetOrigin())
 			// relay-1 gives the slot of relay-2 to its agent.
-			assert.Equal(t, "relay-2", a.waitRoute(slot2, true).GetRelay().GetId())
+			assert.Equal(t, "relay-2", a.waitRoute(slot2, true).GetOrigin())
 
 			// A detach removes the routes on the other relay.
 			_, err = a.rc.Detach(t.Context(), &dpv1.DetachRequest{AttachmentId: res.GetAttachmentId()})
@@ -359,11 +354,11 @@ func TestMeshTenants(t *testing.T) {
 		{name: "tenant a", vpc: vpcKey, ref: vpcRef, route: "fd00:a::/64"},
 		{name: "tenant b", vpc: vpcB, ref: refB, route: "fd00:b::/64"},
 	}
-	watchers := map[string]*agent{}
+	watchers, origins := map[string]*agent{}, map[string]string{}
 	for _, tc := range cases {
 		a := e1.dialIn(t, tc.vpc, "agent-"+tc.vpc.UID)
 		a.open(dpv1.Mode_MODE_QUIC)
-		a.attachIn(tc.ref, tc.route)
+		origins[tc.name] = a.attachIn(tc.ref, tc.route).GetAttachmentId()
 		w := e2.dialIn(t, tc.vpc, "watcher-"+tc.vpc.UID)
 		w.open(dpv1.Mode_MODE_QUIC)
 		w.attachIn(tc.ref)
@@ -372,7 +367,7 @@ func TestMeshTenants(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := watchers[tc.name]
-			assert.Equal(t, "relay-1", w.waitRoute(tc.route, true).GetRelay().GetId())
+			assert.Equal(t, origins[tc.name], w.waitRoute(tc.route, true).GetOrigin())
 		})
 	}
 
@@ -482,8 +477,17 @@ func (f *fakeMember) member() relay.MeshMember {
 	return relay.MeshMember{Name: f.name, Addr: f.tr.Conn.LocalAddr().(*net.UDPAddr).AddrPort()}
 }
 
-// open dials e and calls Open. It serves the calls of the relay until the connection closes.
+// open dials e and calls Open at the revision of this build. It serves the calls of the relay until
+// the connection closes.
 func (f *fakeMember) open(e *env) *quic.Conn {
+	f.t.Helper()
+	qc, err := f.dial(e, dpv1.LocalVersion("fake"))
+	require.NoError(f.t, err)
+	return qc
+}
+
+// dial dials e and calls Open with the version v. It returns the error of Open.
+func (f *fakeMember) dial(e *env, v *dpv1.Version) (*quic.Conn, error) {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
@@ -495,12 +499,55 @@ func (f *fakeMember) open(e *env) *quic.Conn {
 	conn := rpc.NewConn(qc, f.mux)
 	go func() { _ = conn.Serve(context.Background()) }()
 	res, err := dpv1.NewMeshClient(conn).Open(ctx, &dpv1.MeshOpenRequest{
-		Version: dpv1.LocalVersion("fake"), Name: f.name, Relay: &dpv1.RelayRef{Id: f.name},
+		Version: v, Name: f.name, Relay: &dpv1.RelayRef{Id: f.name},
 		PspPort: uint32(f.member().Addr.Port()),
 	})
-	require.NoError(f.t, err)
-	require.Equal(f.t, e.id, res.GetName())
-	return qc
+	if err == nil {
+		require.Equal(f.t, e.id, res.GetName())
+	}
+	return qc, err
+}
+
+// TestMeshRevision checks that a relay closes a mesh session of a relay below its minimum revision
+// with the close code UPGRADE, and takes one at its minimum.
+func TestMeshRevision(t *testing.T) {
+	cases := []struct {
+		name string
+		rev  uint32
+		up   bool
+	}{
+		{name: "revision 24", rev: 24},
+		{name: "revision 25", rev: 25, up: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ca, err := vpctest.NewCA()
+			require.NoError(t, err)
+			e := newEnvWith(t, envOpts{id: "relay-1", ca: ca, mesh: true})
+			f := newFakeMember(t, ca, "relay-0")
+			f.ack.Store(true)
+			e.r.SetMembers([]relay.MeshMember{f.member()})
+			qc, err := f.dial(e, &dpv1.Version{Revision: tc.rev, MinRevision: tc.rev, Build: "fake"})
+			if tc.up {
+				require.NoError(t, err)
+				assert.Equal(t, relay.MeshChange{Name: "relay-0", Up: true}, e.change(t))
+				return
+			}
+			require.Error(t, err)
+			select {
+			case <-qc.Context().Done():
+			case <-time.After(wait):
+				t.Fatal("the relay did not close the session")
+			}
+			var ae *quic.ApplicationError
+			require.ErrorAs(t, context.Cause(qc.Context()), &ae)
+			assert.True(t, ae.Remote)
+			assert.Equal(t, quic.ApplicationErrorCode(dpv1.MeshCloseCode_MESH_CLOSE_CODE_UPGRADE), ae.ErrorCode)
+			assert.Equal(t, "relay revision 24 is below the minimum 25", ae.ErrorMessage)
+			e.noChange(t, 300*time.Millisecond)
+			assert.False(t, e.r.Up("relay-0"))
+		})
+	}
 }
 
 func (f *fakeMember) Presence(_ context.Context, st rpc.BidiStreamServer[dpv1.PresenceUpdate, dpv1.PresenceControl]) error {

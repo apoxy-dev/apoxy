@@ -42,8 +42,6 @@ type target struct {
 	origin string
 	// own is true for an attachment of this relay.
 	own bool
-	// ref is the relay of an attachment of a member, from its Open.
-	ref *dpv1.RelayRef
 }
 
 // candidate is what the selection reads of one attachment.
@@ -186,7 +184,6 @@ type viewEntry struct {
 	origin string
 	relay  string
 	own    bool
-	ref    *dpv1.RelayRef // The relay of a candidate of a member.
 }
 
 // routeTable is the route table of a VPC that V gives to its A: the selection of each prefix. It
@@ -195,7 +192,6 @@ type routeTable struct {
 	vpc *dpv1.VPCRef
 	// network is the /72 of the VPC. A /96 in it is an address of a slot.
 	network netip.Prefix
-	self    *dpv1.RelayRef
 	orders  map[netip.Prefix][]viewEntry
 }
 
@@ -234,17 +230,6 @@ func (s session) standby(order []viewEntry) []string {
 // each session, another one only to a session with meshRoutes.
 func (s session) gets(e *viewEntry) bool { return e != nil && (e.own || s.meshRoutes) }
 
-// ref returns the relay of e: this relay, or the member of the candidate.
-func (t *routeTable) ref(e *viewEntry) *dpv1.RelayRef {
-	if e.own {
-		return t.self
-	}
-	if e.ref != nil {
-		return e.ref
-	}
-	return &dpv1.RelayRef{Id: e.relay}
-}
-
 // slotOf returns the slot of p: the /88 of a /96 in the network of the VPC.
 func (t *routeTable) slotOf(p netip.Prefix) (netip.Prefix, bool) {
 	if !t.network.IsValid() || p.Bits() != 96 || !t.network.Contains(p.Addr()) {
@@ -280,12 +265,12 @@ func (t *routeTable) view(s session) map[netip.Prefix]*dpv1.Route {
 			continue
 		}
 		if e := s.sees(order); e != nil {
-			out[p] = &dpv1.Route{Vpc: t.vpc, Prefix: p.String(), Origin: e.origin, Standby: s.standby(order), Relay: t.ref(e)}
+			out[p] = &dpv1.Route{Vpc: t.vpc, Prefix: p.String(), Origin: e.origin, Standby: s.standby(order)}
 		}
 	}
 	for slot, h := range holders {
 		if s.gets(h) {
-			out[slot] = &dpv1.Route{Vpc: t.vpc, Prefix: slot.String(), Origin: h.relay, Relay: t.ref(h)}
+			out[slot] = &dpv1.Route{Vpc: t.vpc, Prefix: slot.String(), Origin: h.relay}
 		}
 	}
 	return out

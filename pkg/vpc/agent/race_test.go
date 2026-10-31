@@ -157,10 +157,18 @@ func TestRelayChoice(t *testing.T) {
 			}
 			require.Equal(t, tc.first, on(a.current()), "relay of the attachment")
 			if tc.swap {
+				dials := map[*testRelay]int{}
+				for _, r := range relays {
+					dials[r] = a.dials(r)
+				}
 				slow.set(relays[0], tc.delays[1])
 				slow.set(relays[1], tc.delays[0])
 				a.reconnect()
 				a.attached(t)
+				// The new session comes from one round: at most one more Session call on each relay.
+				require.Never(t, func() bool {
+					return slices.ContainsFunc(relays, func(r *testRelay) bool { return a.dials(r) > dials[r]+1 })
+				}, quietWait, 20*ms, "more than one Session call on a relay after the session ended")
 			}
 			assert.Equal(t, tc.then, on(a.current()), "relay of the attachment at the end")
 			require.Eventually(t, func() bool {

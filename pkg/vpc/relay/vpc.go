@@ -672,13 +672,12 @@ func (v *vpcProc) table() *routeTable {
 	t := &routeTable{
 		vpc:     &dpv1.VPCRef{ProjectId: v.c.key.Project, VpcUid: v.c.key.UID, NetworkId: v.net.ID},
 		network: networkOf(v.net.ID),
-		self:    v.r.cfg.Relay,
 		orders:  make(map[netip.Prefix][]viewEntry, v.sets.Size()),
 	}
 	for p, set := range v.sets.All() {
 		order := make([]viewEntry, len(set.order))
 		for i, e := range set.order {
-			order[i] = viewEntry{agent: e.agent, origin: e.origin, relay: e.relay, own: e.own, ref: e.ref}
+			order[i] = viewEntry{agent: e.agent, origin: e.origin, relay: e.relay, own: e.own}
 		}
 		t.orders[p] = order
 	}
@@ -766,7 +765,7 @@ func (v *vpcProc) memberChanged(k string, now time.Time) {
 			relay:    vals.ref.GetId(),
 			attached: rec.attached, rank: rec.rank, state: rec.state, activeFrom: rec.activeFrom,
 		}
-		t := target{port: vals.port, cell: vals.cell, origin: id, ref: vals.ref}
+		t := target{port: vals.port, cell: vals.cell, origin: id}
 		for _, p := range rec.prefixes {
 			set, _ := v.sets.Get(p)
 			if set == nil {

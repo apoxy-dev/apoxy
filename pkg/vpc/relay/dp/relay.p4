@@ -18,7 +18,6 @@ const bit<8> R_METER = 7;
 const bit<8> R_NO_ROUTE = 8;
 const bit<8> R_NO_TARGET = 9;
 const bit<8> R_TRUNK_TO_TRUNK = 10;
-const bit<8> R_LOCAL_ONLY = 11;
 const bit<8> R_MTU = 12;
 // Egress: no TX keys entry of the out port session.
 const bit<8> R_NO_KEYS = 13;
@@ -161,7 +160,6 @@ struct meta_t {
     bit<2> lane;
     bit<24> vni;
     bit<24> tag;
-    bool local_only;
     bit<128> src;
     bit<128> dst;
     // The target sets from: the outer address and port of a UDP 1000 packet, 0 for a DATAGRAM in.
@@ -310,8 +308,8 @@ control Relay(inout headers_t h,
             exit;
         }
     }
-    // The out port: the winner, or the local target from a trunk port or with local_only. No entry:
-    // MISS from an access port, no_route from a trunk port. No out port: no_route.
+    // The out port is the winner, or the local target for a packet from a trunk port. With no
+    // entry, an access port gets MISS and a trunk port gets no_route. No out port gives no_route.
     @hidden action route_end() {
         if (!m.routed) {
             if (m.p.trunk == 1) {
@@ -320,7 +318,7 @@ control Relay(inout headers_t h,
             }
             to_root(KIND_MISS);
         }
-        if (m.p.trunk == 1 || m.local_only) {
+        if (m.p.trunk == 1) {
             m.fwd.port = m.local.port;
             m.fwd.cell = m.local.cell;
         }
@@ -348,15 +346,11 @@ control Relay(inout headers_t h,
         m.c = {vpc, vni, cell};
     }
     // One entry for each prefix. port, cell: the winner, for a packet from an access port.
-    // local_port, local_cell: the best local candidate, from a trunk port or local_only (0: none).
+    // local_port and local_cell are the best local candidate for a trunk packet (0 is none).
     action forward(bit<64> port, bit<32> cell, bit<64> local_port, bit<32> local_cell) {
         m.fwd = {port, cell};
         m.local = {local_port, local_cell};
         m.routed = true;
-    }
-    // A source entry of a remote address that V accepted. Egress drops it to a trunk port.
-    action local_only() {
-        m.local_only = true;
     }
     table ports {
         key = { m.port: exact; }
@@ -373,7 +367,7 @@ control Relay(inout headers_t h,
         actions = { context; drop; }
         const default_action = drop(R_NO_CONTEXT);
     }
-    // One set: A's attachment prefixes and the remote addresses V accepted, or a tag's records.
+    // The entries of a port are the attachment prefixes of A, or the records of a tag.
     table source {
         key = {
             m.port: exact;
@@ -381,7 +375,7 @@ control Relay(inout headers_t h,
             m.tag: exact;
             m.src: lpm;
         }
-        actions = { NoAction; local_only; drop; }
+        actions = { NoAction; drop; }
         const default_action = drop(R_SOURCE);
     }
     // Writer: V of the VPC.
@@ -419,8 +413,8 @@ control Relay(inout headers_t h,
         }
         cells.count(m.c.cell << 1);
         source.apply();
-        // 6. Route: from a trunk port or with local_only, the local target. No entry on an access
-        // port: MISS. No local target: no_route.
+        // 6. A packet from a trunk port goes to the local target. No entry on an access port gives
+        // MISS, and no local target gives no_route.
         m.hash = flow_hash();
         route.apply();
         route_end();
@@ -571,14 +565,11 @@ control RelayEgress(inout headers_t h,
         if (h.packet_in.isValid()) {
             exit;
         }
-        // 7. The out_ports entry of m.fwd.port (no_target), no trunk to trunk, no local_only to a
-        // trunk, mtu.
+        // 7. The out port must have an out_ports entry (no_target), must not be a trunk for a
+        // packet from a trunk (trunk_to_trunk), and must take the packet size (mtu).
         out_ports.apply();
         if (m.p.trunk == 1 && m.o.trunk == 1) {
             drop_out(R_TRUNK_TO_TRUNK);
-        }
-        if (m.local_only && m.o.trunk == 1) {
-            drop_out(R_LOCAL_ONLY);
         }
         if (m.o.mtu != 0 && inner_length() > (bit<32>)m.o.mtu) {
             drop_out(R_MTU);

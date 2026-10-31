@@ -294,11 +294,10 @@ gave none), and `direction`: `tx` to the member, `rx` from it.
   their answers do not count.
 - `apoxy_vpc_relay_trunk_dropped_packets_total`, also with the label `reason`:
   `tx` has the packets to the member that the relay dropped after it found the
-  `ports` entry of the trunk port (`mtu`, `no_keys`, `trunk_to_trunk`,
-  `local_only`). `rx` has the packets of the member that the relay dropped
-  before it found the `ports` entry of the out port (`malformed`,
-  `old_session`, `unknown_source`, `no_context`, `source`, `no_route`,
-  `no_target`, `punt_full`). Each of these series is there from the start.
+  `ports` entry of the trunk port (`mtu`, `no_keys`, `trunk_to_trunk`). `rx`
+  has the packets of the member that the relay dropped before it found the
+  `ports` entry of the out port (`malformed`, `old_session`, `unknown_source`,
+  `no_context`, `source`, `no_route`, `no_target`, `punt_full`). Each of these series is there from the start.
 - `apoxy_vpc_relay_mesh_rtt_seconds`: the smoothed RTT of the QUIC connection
   of the mesh session. A member with no session has no value.
 
@@ -344,9 +343,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 | `Rekey`         | unary | `KeysRequest{op, generation}` -> `KeysResponse`: SAs for traffic from the relay to the agent. The first one from a session in QUIC mode changes it to PSP mode (see "Data mode"). Errors: `FailedPrecondition` (no `Session` call), `InvalidArgument` (an SA VNI is not the network ID), `Unavailable` (the relay has no PSP bridge, or it cannot make its relay SAs). |
 | `RegisterLanes` | unary | `{ports, receive}` -> `Empty`: replaces the lane ports of the session. The relay ignores `receive`. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `FailedPrecondition` (no PSP address). |
 
-`Welcome.relay_id` is the ID of the relay. `Route.relay` is the `RelayRef` of
-the relay that has the origin of the route, also of this relay for a local
-origin. It can have the ID and no addresses. `KeysRequest.generation` is the
+`Welcome.relay_id` is the ID of the relay. `KeysRequest.generation` is the
 key attempt of the agent, from 1. The relay copies it from the `Rekey` request
 that changes the mode into its `OfferSAs`, and its own renewals carry 0.
 
@@ -466,10 +463,9 @@ changes neither the active announcer nor the standby list sends nothing.
 
 The /96 address prefixes of the attachments in the network of the VPC (its
 /72) get no route each. Each /88 slot that has such a /96 gets one Route: the
-prefix is the /88, the origin is the ID of the relay that holds the slot, and
-`Route.relay` is the `RelayRef` of that relay. The holder is an attachment of
-this relay first, then the lower relay ID, then the lower attachment ID. Each
-session gets the Route of a slot of this relay. Only a session that gets the
+prefix is the /88, and the origin is the ID of the relay that holds the slot.
+The holder is an attachment of this relay first, then the lower relay ID, then
+the lower attachment ID. Each session gets the Route of a slot of this relay. Only a session that gets the
 routes of other relays gets the Route of a slot of another relay.
 
 The first route table of a session comes in `RouteDelta` parts of at most 256
@@ -553,8 +549,7 @@ session that the relay with the higher name dialed. A new session of the two
 relays replaces the session before it: the relay first ends the old session,
 its `Presence` calls and its trunk SAs. The other calls of a session wait for
 the end of `Open`. A relay keeps the `RelayRef` that each member gave in
-`Open`: `Route.relay` of the routes of the member and the alternates of
-`Drain` have it.
+`Open`: the alternates of `Drain` have it.
 
 A relay closes a session with a `MeshCloseCode`: `NOT_MEMBER` (the name of the
 other relay is not in its member set, is not the name that it dialed, or the
@@ -751,11 +746,12 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 22 | `Mesh.Presence` is a bidirectional call, one for each tenant and direction, with `PresenceUpdate{seq, vpcs, end_of_vpcs, parts}`, `PresencePart` and `PresenceControl{ack}`; `PresenceUpdate` fields 1 and 2 (`entries`, `end_of_full_set`) are reserved. `Mesh.SPIRows` and `SPIRowUpdate` are gone. A record lives with its call. Each packet between two relays is a trunk packet. The minimum revision of a relay on a mesh session is 22. | No duty. | No duty. | Opens one `Presence` call for each tenant with attachments on each mesh session, with the flow control and the limits of "Mesh", ends a call that has a message with no ack for 5 s and opens it again, and opens no new call of a tenant whose call ended for a different cause until the next session. Keeps the records of a call until the call ends, and deletes the records and the trunk SAs of a member at once when its session ends. Makes the routes of a member after the first probe result of its trunk. Takes a trunk packet only from the PSP socket that the member gave in `Open`, and refuses a member that gives no PSP port. With a mesh, refuses an `Attach` with more than 64 prefixes, or whose entry does not fit in one `PresenceUpdate`. Closes a mesh session with a relay below revision 22 with `UPGRADE`. |
 | 23 | The `Shard` message is gone, and `Hello` field 3 (`shard`) is reserved. The minimum revision of each side is 23, also on a mesh session. | Opens one QUIC connection for each relay session, and sends all data of the session on it. | No duty. | Sends the data frames of a session only on its session connection. Closes a session below revision 23, and a mesh session with a relay below revision 23, with `UPGRADE`. |
 | 24 | `RemoteAddresses` and `SessionRequest.remote` are gone. The minimum revision of each side is 24. | Sends no addresses of its other relays. | No duty. | Takes a source, and sends traffic for an address, only for the connection that it gave the address to. Closes a session below revision 24, and a mesh session with a relay below revision 24, with `UPGRADE`. |
+| 25 | `Route.relay` is gone. The minimum revision of each side is 25. | Holds only its configured sessions and makes no dial for a relay that a route names. Sends a packet from a session address on that session, and any other packet on its primary session. | No duty. | Sends no `Route.relay`. Closes a session below revision 25, and a mesh session with a relay below revision 25, with `UPGRADE`. |
 
 ### Minimum revision
 
 Each side has a minimum for the revision of the other side. A relay takes an
-agent at revision 24 or later, and another relay of its mesh at revision 24
+agent at revision 25 or later, and another relay of its mesh at revision 25
 or later. It closes a mesh session below that with the `MeshCloseCode`
 `UPGRADE`.
 
@@ -802,8 +798,8 @@ or later. It closes a mesh session below that with the `MeshCloseCode`
 - Relays deploy before an agent release. A rollback of one side is safe only
   within the revisions that both sides accept: the agent sees the lower
   revision in the next `Welcome` and stops the newer behavior. A change that
-  moves the minimum (as revision 24 does: the agent refuses a relay below 24,
-  and a relay refuses a mesh peer below 24) needs agents, VTEP agents and
+  moves the minimum (as revision 25 does: the agent refuses a relay below 25,
+  and a relay refuses a mesh peer below 25) needs agents, VTEP agents and
   relays at the new revision together. A rollback of one side then goes with
   the rollback of the others.
 - When the minimum passes revision N, the code for the revisions below N goes

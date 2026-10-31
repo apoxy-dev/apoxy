@@ -66,18 +66,16 @@ func BenchmarkVirtToPhy(b *testing.B) {
 }
 
 // BenchmarkPrepareLinks reserves the send frame of one inner packet, with its
-// link from its source, or from the visits and the default for an advertised source.
+// link from its source, or the default link for an advertised source.
 func BenchmarkPrepareLinks(b *testing.B) {
 	cases := []struct {
 		name       string
 		links      int
 		advertised bool // The source is an advertised address.
-		visit      bool // The visit table has one entry for the destination.
 	}{
 		{name: "links=1", links: 1},
 		{name: "links=3", links: 3},
-		{name: "links=2/advertised/visits=0", links: 2, advertised: true},
-		{name: "links=2/advertised/visits=1", links: 2, advertised: true, visit: true},
+		{name: "links=2/advertised", links: 2, advertised: true},
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
@@ -101,9 +99,6 @@ func BenchmarkPrepareLinks(b *testing.B) {
 					if tc.advertised {
 						src = netip.MustParseAddr("10.7.0.5")
 						x.b.SetDefault(x.l)
-					}
-					if tc.visit {
-						x.b.SetVisits(map[netip.Prefix]*Link{netip.PrefixFrom(y.v4, 30): x.l})
 					}
 					d, pkt = &driver{b: x.b}, packet(src, y.v4, 6, 1, 2, DefaultMTU)
 					b.StartTimer()

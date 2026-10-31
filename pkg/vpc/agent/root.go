@@ -13,8 +13,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/apoxy-dev/apoxy/pkg/tunnel/ipalloc"
-	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
@@ -37,7 +35,6 @@ type home struct {
 	// id is the relay ID from the Welcome. The session holds it from the dial
 	// result until it ends, so no other connection to that relay attaches.
 	id         string
-	wanted     bool // Dialed for the relay of the last primary, not for Config.Sessions.
 	rank       uint32
 	st         sessState
 	since      time.Time // The attach.
@@ -99,15 +96,6 @@ type root struct {
 	routesOf   *home
 	reported   map[netip.Prefix]routeInfo
 	routeWaits []routeWait
-	// visits is the visit table of the last OnVisits step: each slot that the
-	// primary has no route for, to the session that has it from its own relay.
-	visits map[netip.Prefix]*home
-	// primaryID is the relay of the last primary, and primaryAddr the address
-	// that the agent dialed for it. They stay while no session is live.
-	primaryID, primaryAddr string
-	// relayAddrs are the newest addresses that a route of a session gave for
-	// each relay ID that is wanted or that a session holds.
-	relayAddrs map[string][]string
 	// welcome is the relay ID of the newest Welcome at each dialed address.
 	welcome map[string]string
 
@@ -136,8 +124,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	r := &root{
 		a: a, mb: proc.NewMailbox(0), retryWait: minBackoff,
 		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]routeInfo{},
-		relayAddrs: map[string][]string{}, welcome: map[string]string{},
-		clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
+		welcome: map[string]string{}, clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
 	}
 	r.ctx, r.cancel = context.WithCancel(ctx)
 	defer r.cancel()
@@ -329,8 +316,6 @@ func (r *root) handle(m any) {
 			return
 		}
 		r.dialDone(m)
-	case wantDialed:
-		r.wantDone(m)
 	case relisted:
 		r.relistDone(m)
 		r.plan()
@@ -418,7 +403,7 @@ func (r *root) homeOf(s *session) *home {
 // take starts a session on the connection d, which holds the relay ID of its
 // Welcome from now on. When another session holds that ID, d ends before its
 // Attach, and take returns false.
-func (r *root) take(d *dialed, wanted bool) bool {
+func (r *root) take(d *dialed) bool {
 	if o := r.holder(d.relayID); o != nil {
 		slog.Warn("Closed a second connection to a relay before its attach", "relay", d.relayID, "address", d.ep.addr, "other_address", o.ep.addr)
 		d.close("agent has a connection to this relay")
@@ -430,7 +415,7 @@ func (r *root) take(d *dialed, wanted bool) bool {
 	s := newSession(r.a, r.ctx, r.mb, up, d, k.rank)
 	ctx, unwatch := context.WithCancel(r.ctx)
 	r.homes = append(r.homes, &home{
-		s: s, ep: d.ep, id: d.relayID, wanted: wanted, rank: k.rank, up: up, unwatch: unwatch,
+		s: s, ep: d.ep, id: d.relayID, rank: k.rank, up: up, unwatch: unwatch,
 		routes: map[netip.Prefix]routeInfo{}, held: map[string]heldX{}, pending: map[string]*AttachmentSpec{},
 	})
 	k.rank++
@@ -501,7 +486,6 @@ func (r *root) sessAttached(m sessAttached) {
 	// OnRoutes follows the new session only after its OnAttach.
 	r.usePrimary()
 	r.attachMissing()
-	r.plan()
 }
 
 // drained marks a home session draining: its relay drains. The dial plan
@@ -531,8 +515,6 @@ func (r *root) sessEnded(m sessEnded) {
 	if !r.ending {
 		slog.Info("Relay session ended", "relay", h.ep.addr, "error", m.err)
 	}
-	// The binding and the host stop the use of the addresses before they go.
-	r.visit()
 	if f := r.a.cfg.OnDetach; f != nil && h.st.attached {
 		for _, at := range slices.Backward(r.attachmentsOf(h)) {
 			r.queue(func() { f(at) })
@@ -725,8 +707,8 @@ func (r *root) peerHome(p *psp.Peer) *home {
 	return nil
 }
 
-// prefer deprecates the addresses of each session but the lowest-rank one that does not drain,
-// and prefers that one's again. New connections use its address, except to a slot of OnVisits.
+// prefer deprecates the addresses of each session but the lowest-rank one that does not drain, and prefers that
+// one's again. A new connection that binds no source takes it when it fits; when all drain, none is preferred.
 func (r *root) prefer() {
 	live := r.live()
 	var best *home
@@ -763,21 +745,18 @@ func (r *root) attachmentsOf(h *home) []Attachment {
 }
 
 // usePrimary gives the primary the packets with no session source and its routes
-// to OnRoutes, then computes the visit table. Run it after the change's callbacks.
+// to OnRoutes. Run it after the change's callbacks.
 func (r *root) usePrimary() {
 	if p := r.primary(); p != nil && r.routesOf != p {
 		r.b.SetDefault(p.st.link)
 		r.routesOf = p
-		r.primaryID, r.primaryAddr = p.id, p.ep.addr
 		if p.synced {
 			r.syncRoutes()
 		}
 	}
-	r.visit()
 }
 
-// routes takes a route change of a session. The primary's routes go to OnRoutes,
-// and a route of each session can change the visit table and give relay addresses.
+// routes takes a route change of a session. The primary's routes go to OnRoutes.
 func (r *root) routes(m routesMsg) {
 	h := r.homeOf(m.s)
 	if h == nil {
@@ -786,7 +765,6 @@ func (r *root) routes(m routesMsg) {
 	for _, c := range m.changes {
 		if c.add {
 			h.routes[c.prefix] = c.routeInfo
-			r.learnAddrs(c.routeInfo)
 		} else {
 			delete(h.routes, c.prefix)
 		}
@@ -802,10 +780,6 @@ func (r *root) routes(m routesMsg) {
 	default:
 		queued = r.report(m.changes)
 	}
-	if r.visit() {
-		queued = true
-	}
-	r.plan()
 	if !m.delta {
 		return
 	}
@@ -864,13 +838,6 @@ func (r *root) report(changes []routeChange) bool {
 	return r.onRoutes(add, remove)
 }
 
-// learnAddrs records the newest addresses that a route gave for its relay.
-func (r *root) learnAddrs(info routeInfo) {
-	if info.relay != "" && len(info.addrs) > 0 {
-		r.relayAddrs[info.relay] = info.addrs
-	}
-}
-
 // onRoutes queues OnRoutes for a change of the reported prefixes. It reports
 // whether it queued an event.
 func (r *root) onRoutes(add, remove []netip.Prefix) bool {
@@ -882,65 +849,6 @@ func (r *root) onRoutes(add, remove []netip.Prefix) bool {
 		return false
 	}
 	r.queue(func() { f(add, remove) })
-	return true
-}
-
-// visitTable returns each slot that the primary has no route for, to the live
-// session with the lowest rank that has the slot from its own relay.
-func (r *root) visitTable() map[netip.Prefix]*home {
-	out := map[netip.Prefix]*home{}
-	p := r.primary()
-	if p == nil {
-		return out
-	}
-	for _, h := range r.live() {
-		if h == p {
-			continue
-		}
-		network := tunnet.NetworkPrefixOf(h.st.base.Address)
-		for pfx, info := range h.routes {
-			if info.relay != h.id || pfx != ipalloc.SlotPrefixOf(pfx.Addr()) || !network.Contains(pfx.Addr()) {
-				continue
-			}
-			if _, ok := p.routes[pfx]; ok {
-				continue
-			}
-			if _, ok := out[pfx]; !ok {
-				out[pfx] = h
-			}
-		}
-	}
-	return out
-}
-
-// visit computes the visit table again. On a change it queues SetVisits(old and
-// new), OnVisits(new) and SetVisits(new) as one step, and returns true.
-func (r *root) visit() bool {
-	next := r.visitTable()
-	if maps.Equal(next, r.visits) {
-		return false
-	}
-	both, links, addrs := map[netip.Prefix]*psp.Link{}, map[netip.Prefix]*psp.Link{}, map[netip.Prefix]netip.Addr{}
-	for pfx, h := range r.visits {
-		both[pfx] = h.st.link
-	}
-	for pfx, h := range next {
-		both[pfx], links[pfx], addrs[pfx] = h.st.link, h.st.link, h.st.base.Address
-	}
-	r.visits = next
-	slog.Info("Changed the slots that go on the session of their own relay", "visits", addrs)
-	b, f := r.b, r.a.cfg.OnVisits
-	r.queue(func() {
-		if b != nil {
-			b.SetVisits(both)
-		}
-		if f != nil {
-			f(addrs)
-		}
-		if b != nil {
-			b.SetVisits(links)
-		}
-	})
 	return true
 }
 

@@ -3,14 +3,18 @@
 package agent
 
 import (
+	"context"
 	"net/netip"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -24,20 +28,11 @@ func pfx(ss ...string) []netip.Prefix {
 
 func TestRouteTable(t *testing.T) {
 	rt := func(prefix, origin string) *dp.Route { return &dp.Route{Prefix: prefix, Origin: origin} }
-	// via is a route whose relay is id at addrs.
-	via := func(prefix, origin, id string, addrs ...string) *dp.Route {
-		return &dp.Route{Prefix: prefix, Origin: origin, Relay: &dp.RelayRef{Id: id, Addresses: addrs}}
-	}
 	add := func(prefix, origin string) routeChange {
 		return routeChange{netip.MustParsePrefix(prefix), routeInfo{origin: origin}, true}
 	}
 	rm := func(prefix, origin string) routeChange {
 		return routeChange{netip.MustParsePrefix(prefix), routeInfo{origin: origin}, false}
-	}
-	// on is c with the relay id at addrs.
-	on := func(c routeChange, id string, addrs ...string) routeChange {
-		c.relay, c.addrs = id, addrs
-		return c
 	}
 	type step struct {
 		delta  *dp.RouteDelta
@@ -84,27 +79,6 @@ func TestRouteTable(t *testing.T) {
 		{name: "empty first table", steps: []step{
 			{&dp.RouteDelta{Rev: 1}, nil, true},
 		}},
-		{name: "slot route and its relay", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{via("fd61:706f:7879:1:200::/88", "rb", "rb", "192.0.2.2:443")}},
-				[]routeChange{on(add("fd61:706f:7879:1:200::/88", "rb"), "rb", "192.0.2.2:443")}, false},
-			{&dp.RouteDelta{Add: []*dp.Route{via("fd61:706f:7879:1:200::/88", "rb", "rb", "192.0.2.2:443")}}, nil, false},
-		}},
-		{name: "same origin and another relay", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rb", "192.0.2.2:443")}},
-				[]routeChange{on(add("2001:db8:1::/64", "b"), "rb", "192.0.2.2:443")}, false},
-			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rc", "192.0.2.3:443")}},
-				[]routeChange{on(rm("2001:db8:1::/64", "b"), "rb", "192.0.2.2:443"), on(add("2001:db8:1::/64", "b"), "rc", "192.0.2.3:443")}, false},
-		}},
-		{name: "same relay at other addresses", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rb", "192.0.2.2:443")}},
-				[]routeChange{on(add("2001:db8:1::/64", "b"), "rb", "192.0.2.2:443")}, false},
-			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rb", "192.0.2.9:443")}},
-				[]routeChange{on(rm("2001:db8:1::/64", "b"), "rb", "192.0.2.2:443"), on(add("2001:db8:1::/64", "b"), "rb", "192.0.2.9:443")}, false},
-		}},
-		{name: "remove with no relay", steps: []step{
-			{&dp.RouteDelta{Add: []*dp.Route{via("2001:db8:1::/64", "b", "rb")}}, []routeChange{on(add("2001:db8:1::/64", "b"), "rb")}, false},
-			{&dp.RouteDelta{Remove: []*dp.Route{rt("2001:db8:1::/64", "b")}}, []routeChange{on(rm("2001:db8:1::/64", "b"), "rb")}, false},
-		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,7 +102,6 @@ func TestPrefixChanges(t *testing.T) {
 		{"add", []routeChange{{p, routeInfo{origin: "b"}, true}}, pfx("10.0.0.0/8"), nil},
 		{"remove", []routeChange{{p, routeInfo{origin: "b"}, false}}, nil, pfx("10.0.0.0/8")},
 		{"new origin", []routeChange{{p, routeInfo{origin: "b"}, false}, {p, routeInfo{origin: "c"}, true}}, nil, nil},
-		{"new relay", []routeChange{{p, routeInfo{origin: "b", relay: "rb"}, false}, {p, routeInfo{origin: "b", relay: "rc"}, true}}, nil, nil},
 		{"none", nil, nil, nil},
 	}
 	for _, tc := range cases {
@@ -205,4 +178,123 @@ func TestDNS(t *testing.T) {
 	servers, search := a.a.DNS()
 	assert.Equal(t, w.dns, servers)
 	assert.Equal(t, w.search, search)
+}
+
+// routesWait makes the first OnRoutes after arm wait until release.
+type routesWait struct {
+	armed   atomic.Bool
+	entered chan struct{}
+	done    chan struct{}
+	once    sync.Once
+}
+
+func newRoutesWait() *routesWait {
+	return &routesWait{entered: make(chan struct{}, 1), done: make(chan struct{})}
+}
+
+// onRoutes is the agentOptions.onRoutes of the agent that waits.
+func (w *routesWait) onRoutes(_, _ []netip.Prefix) {
+	if w.armed.CompareAndSwap(true, false) {
+		w.entered <- struct{}{}
+		<-w.done
+	}
+}
+
+func (w *routesWait) arm() { w.armed.Store(true) }
+
+// wait waits until OnRoutes waits.
+func (w *routesWait) wait(t *testing.T, msg string) {
+	t.Helper()
+	select {
+	case <-w.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal(msg)
+	}
+}
+
+func (w *routesWait) release() { w.once.Do(func() { close(w.done) }) }
+
+// attach makes ta attach the extra attachment name with the route p.
+func attach(t *testing.T, ta *testAgent, name string, p netip.Prefix) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := ta.a.Attach(ctx, AttachmentSpec{Name: name, Routes: []netip.Prefix{p}})
+	require.NoError(t, err)
+}
+
+// TestRouteAcks checks that a session sends the Ack of a route change at once, and reads its next change only after
+// the OnRoutes of the last one returned. A session that is not the primary has no OnRoutes, so it reads on.
+func TestRouteAcks(t *testing.T) {
+	cases := []struct {
+		name string
+		// twoSessions gives a a second session, on a relay with a mesh to the relay of the primary.
+		twoSessions bool
+	}{
+		{name: "one session"},
+		{name: "two sessions", twoSessions: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hold := newRoutesWait()
+			defer hold.release()
+			// tapP is the session of the primary of a, tapO its other session. b attaches on peerRelay.
+			var (
+				w          *world
+				a          *testAgent
+				peerRelay  *testRelay
+				tapP, tapO *sessionTap
+			)
+			if tc.twoSessions {
+				var r1, r2 *testRelay
+				w, r1, r2 = meshRelays(t)
+				a = w.agent(t, "a", r1, agentOptions{sessions: 2, relays: []identity.Relay{r1.ref(), r2.ref()}, onRoutes: hold.onRoutes})
+				a.attached(t)
+				a.attached(t)
+				// The agent shuffles its relays, so the primary can be on either.
+				primary, other := r1, r2
+				if a.current().addr == r2.addr {
+					primary, other = r2, r1
+				}
+				from := a.tr.Conn.LocalAddr()
+				tapP, tapO = primary.tapOf(primary.agentConns(from, true)[0]), other.tapOf(other.agentConns(from, true)[0])
+				peerRelay = other
+			} else {
+				w = newWorld(t)
+				peerRelay = w.relay(t, "relay-1")
+				a = w.agent(t, "a", peerRelay, agentOptions{onRoutes: hold.onRoutes})
+				a.attached(t)
+				tapP = peerRelay.tapOf(peerRelay.agentConns(a.tr.Conn.LocalAddr(), true)[0])
+			}
+			b := w.agent(t, "b", peerRelay, agentOptions{})
+			a.hasRoutes(t, b.attached(t).prefixes[0])
+			q1, q2 := netip.MustParsePrefix("fd91::/64"), netip.MustParsePrefix("fd92::/64")
+			eventually := func(cond func() bool, msg string) {
+				t.Helper()
+				require.Eventually(t, cond, 5*time.Second, 10*time.Millisecond, msg)
+			}
+
+			hold.arm()
+			attach(t, b, "q1", q1)
+			hold.wait(t, "no OnRoutes for q1")
+			eventually(func() bool { return acked(tapP, q1) }, "Ack of q1 on the primary while its OnRoutes waits")
+			if tapO != nil {
+				eventually(func() bool { return acked(tapO, q1) }, "Ack of q1 on the other session")
+			}
+			attach(t, b, "q2", q2)
+			eventually(func() bool { _, ok := revOf(tapP, q2); return ok }, "the relay of the primary sends q2")
+			if tapO != nil {
+				// q2 comes after the Ack of q1, in a new delta, so its Ack shows that the other session read on.
+				eventually(func() bool { return acked(tapO, q2) }, "Ack of q2 on the other session while the OnRoutes of the primary waits")
+				rev1, _ := revOf(tapO, q1)
+				rev2, _ := revOf(tapO, q2)
+				require.NotEqual(t, rev1, rev2, "q1 and q2 in one delta on the other session")
+			}
+			require.Never(t, func() bool { return acked(tapP, q2) }, time.Second, 10*time.Millisecond,
+				"Ack of q2 on the primary while the OnRoutes of q1 waits")
+			hold.release()
+			eventually(func() bool { return acked(tapP, q2) }, "Ack of q2 on the primary after the OnRoutes of q1")
+			a.hasRoutes(t, q1, q2)
+		})
+	}
 }

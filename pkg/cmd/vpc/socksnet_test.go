@@ -26,22 +26,21 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/socksproxy"
 )
 
-// TestVisitNetwork checks the sources of SOCKS5 CONNECT, UDP ASSOCIATE and DNS
-// through the netstack: the visit source in a visited slot, else the primary.
-func TestVisitNetwork(t *testing.T) {
+// TestSocksNetwork checks the sources of SOCKS5 CONNECT, UDP ASSOCIATE and DNS through the
+// netstack network: the preferred address, not the deprecated one, also for VPC names.
+func TestSocksNetwork(t *testing.T) {
 	primary := netip.MustParseAddr("fd61:706f:7879:12:3400:200::1")
-	visit := netip.MustParseAddr("fd61:706f:7879:12:3400:100::1")
-	slot := netip.MustParsePrefix("fd61:706f:7879:12:3400:100::/88")
+	backup := netip.MustParseAddr("fd61:706f:7879:12:3400:100::1")
 	inSlot, outside := netip.MustParseAddr("fd61:706f:7879:12:3400:100::9"), netip.MustParseAddr("fd61:706f:7879:12:3400:300::9")
 	dnsAddr := netip.MustParseAddr("fd61:706f:7879:12:3400:100::53")
-	// name is in the visited slot, and local is a VPC name of a host address.
+	// name is in the slot of the backup address, and local is a VPC name of a host address.
 	const name, local = "web.vpc.test.", "local.vpc.test."
 	loop := netip.MustParseAddr("127.0.0.1")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	client := newTestStack(t, primary, visit)
-	require.Nil(t, client.SetAddressLifetimes(client.NICID, tcpip.AddrFromSlice(visit.AsSlice()), stack.AddressLifetimes{Deprecated: true}))
+	client := newTestStack(t, primary, backup)
+	require.Nil(t, client.SetAddressLifetimes(client.NICID, tcpip.AddrFromSlice(backup.AsSlice()), stack.AddressLifetimes{Deprecated: true}))
 	server := newTestStack(t, inSlot, outside, dnsAddr)
 	splice(ctx, client, server)
 	serveSource(t, server, inSlot, outside)
@@ -52,7 +51,8 @@ func TestVisitNetwork(t *testing.T) {
 	go echoSource(host)
 	localDst := net.JoinHostPort(local, strconv.Itoa(host.LocalAddr().(*net.UDPAddr).Port))
 
-	out := newVisitNetwork(client.Stack, client.NICID, &network.ResolveConfig{Nameservers: []string{dnsAddr.String()}})
+	// This is the network of (*netstack.Stack).Network, which the SOCKS proxy of vpc connect uses.
+	out := network.Netstack(client.Stack, client.NICID, &network.ResolveConfig{Nameservers: []string{dnsAddr.String()}})
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	addr := l.Addr().String()
@@ -70,29 +70,18 @@ func TestVisitNetwork(t *testing.T) {
 	socks, err := proxy.SOCKS5("tcp", addr, nil, proxy.Direct)
 	require.NoError(t, err)
 
-	steps := []struct {
-		name   string
-		visits map[netip.Prefix]netip.Addr
-		want   map[netip.Addr]netip.Addr // It maps each destination to its source.
-	}{
-		{name: "visit", visits: map[netip.Prefix]netip.Addr{slot: visit}, want: map[netip.Addr]netip.Addr{inSlot: visit, outside: primary}},
-		{name: "no visit", visits: map[netip.Prefix]netip.Addr{}, want: map[netip.Addr]netip.Addr{inSlot: primary, outside: primary}},
+	for _, dst := range []netip.Addr{inSlot, outside} {
+		require.Equal(t, primary, connectSource(t, socks, net.JoinHostPort(dst.String(), "80")), "CONNECT to %s", dst)
+		require.Equal(t, primary, associateSource(t, addr, net.JoinHostPort(dst.String(), "7")), "UDP ASSOCIATE to %s", dst)
 	}
-	for _, st := range steps {
-		out.setVisits(st.visits)
-		for dst, want := range st.want {
-			require.Equal(t, want, connectSource(t, socks, net.JoinHostPort(dst.String(), "80")), "%s: CONNECT to %s", st.name, dst)
-			require.Equal(t, want, associateSource(t, addr, net.JoinHostPort(dst.String(), "7")), "%s: UDP ASSOCIATE to %s", st.name, dst)
-		}
-		require.Equal(t, st.want[inSlot], associateSource(t, addr, net.JoinHostPort(name, "7")), "%s: UDP ASSOCIATE to the name", st.name)
-		require.Equal(t, loop, associateSource(t, addr, localDst), "%s: UDP ASSOCIATE to a name of a host address", st.name)
-		queries.take()
-		require.Equal(t, st.want[inSlot], connectSource(t, socks, net.JoinHostPort(name, "80")), "%s: CONNECT to the name", st.name)
-		srcs := queries.take()
-		require.NotEmpty(t, srcs, st.name)
-		for _, src := range srcs {
-			require.Equal(t, st.want[inSlot], src, "%s: source of a DNS query", st.name)
-		}
+	require.Equal(t, primary, associateSource(t, addr, net.JoinHostPort(name, "7")), "UDP ASSOCIATE to the name")
+	require.Equal(t, loop, associateSource(t, addr, localDst), "UDP ASSOCIATE to a name of a host address")
+	queries.take()
+	require.Equal(t, primary, connectSource(t, socks, net.JoinHostPort(name, "80")), "CONNECT to the name")
+	srcs := queries.take()
+	require.NotEmpty(t, srcs)
+	for _, src := range srcs {
+		require.Equal(t, primary, src, "source of a DNS query")
 	}
 }
 

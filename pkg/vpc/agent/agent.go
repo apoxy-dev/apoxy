@@ -98,8 +98,8 @@ type Config struct {
 	// OnAttachment gets an extra attachment after it attaches on a relay
 	// session: one call for each session.
 	OnAttachment func(at Attachment)
-	// OnDeprecated gets each attachment of a session that is not the lowest-rank attached session
-	// that does not drain. Only new connections to a slot of OnVisits use its address.
+	// OnDeprecated gets each attachment of a session that is not the lowest-rank attached session that does
+	// not drain. A new connection that binds no source takes such an address only when no preferred one fits.
 	OnDeprecated func(at Attachment)
 	// OnPreferred gets each attachment of OnDeprecated whose session became the
 	// attached session with the lowest rank. New connections use its address again.
@@ -107,9 +107,6 @@ type Config struct {
 	// OnDetach gets each attachment whose address the agent lost, before a next OnAttach of that
 	// address. The callbacks run in order, one at a time, and must not call Attach or Detach.
 	OnDetach func(at Attachment)
-	// OnVisits gets the visit set after each change: the source of new connections to each slot that the
-	// lowest-rank session that does not drain, else that drains, cannot reach. It comes before OnDetach.
-	OnVisits func(visits map[netip.Prefix]netip.Addr)
 	// MTU sets the device MTU, from 1280 to the VPC MTU. Zero means the VPC MTU.
 	// A PSP path that does not carry the device MTU gets a TCP MSS clamp.
 	MTU int

@@ -58,10 +58,10 @@ func TestWrite(t *testing.T) {
 	routeE := withMetadata(route("uid-e/1", "10.60.0.0/16", 2, 61, 1, 62), md) // The only route of uid-e/1.
 	routeF := withMetadata(route("uid-f/1", "10.60.0.0/16", 3, 63, 2, 64), md)
 	src50v4 := withMetadata(source(50, 1, 0, "100.64.50.0/24", dp.NoAction{}), md)
-	src50v4b := withMetadata(source(50, 1, 0, "100.64.50.0/24", dp.LocalOnlyAction{}), md2)
-	src50v4host := withMetadata(source(50, 1, 0, "100.64.50.7/32", dp.LocalOnlyAction{}), md)
+	src50v4b := withMetadata(source(50, 1, 0, "100.64.50.0/24", dp.DropAction{Reason: 31}), md2)
+	src50v4host := withMetadata(source(50, 1, 0, "100.64.50.7/32", dp.DropAction{Reason: 31}), md)
 	src51v4 := withMetadata(source(50, 1, 0, "100.64.51.0/24", dp.NoAction{}), md)
-	src50v6 := withMetadata(source(50, 1, 0, "2001:db8:50::/48", dp.LocalOnlyAction{}), md)
+	src50v6 := withMetadata(source(50, 1, 0, "2001:db8:50::/48", dp.DropAction{Reason: 31}), md)
 	src50v6b := withMetadata(source(50, 1, 0, "2001:db8:50::/48", dp.NoAction{}), md2)
 	dropRoute := func(reason uint8) *p4.TableEntry {
 		return withMetadata(dp.RouteKey{VPC: "uid-c/1", Dst: pfx("2001:db8:1::/64")}.Entry(dp.DropAction{Reason: reason}), md)
@@ -547,8 +547,8 @@ func TestFailedWrite(t *testing.T) {
 		{
 			name: "a failed INSERT and MODIFY in a source table with entries",
 			batch: []*p4.Update{
-				insert(source(1, 1, 0, "100.64.11.0/24", dp.NoAction{})), insert(source(1, 1, 0, "100.64.1.128/25", dp.LocalOnlyAction{})),
-				modify(source(1, 1, 0, "100.64.1.0/24", dp.LocalOnlyAction{})),
+				insert(source(1, 1, 0, "100.64.11.0/24", dp.NoAction{})), insert(source(1, 1, 0, "100.64.1.128/25", dp.DropAction{Reason: 31})),
+				modify(source(1, 1, 0, "100.64.1.0/24", dp.DropAction{Reason: 31})),
 			},
 			sent: []uint32{0, 1}, drops: pass,
 		},

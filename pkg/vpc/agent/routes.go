@@ -4,7 +4,6 @@ package agent
 
 import (
 	"net/netip"
-	"slices"
 
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -16,23 +15,21 @@ func Routable(p, vpc netip.Prefix) bool {
 }
 
 // routeTable is the prefixes of the other attachments on one relay session,
-// to their origin and the relay of the origin. A prefix has one origin in a VPC.
+// to their origin. A prefix has one origin in a VPC.
 type routeTable struct {
 	routes map[netip.Prefix]routeInfo
 	// synced is set at the empty RouteDelta that ends the first table.
 	synced bool
 }
 
-// routeInfo is the origin of a route and the relay that has the origin.
+// routeInfo is the origin of a route.
 type routeInfo struct {
 	origin string
-	relay  string   // Relay ID from Route.relay. Empty when the Route names none.
-	addrs  []string // Addresses of the relay. Empty when the Route gives none.
 }
 
-// same reports whether i and o have the same origin and relay.
+// same reports whether i and o have the same origin.
 func (i routeInfo) same(o routeInfo) bool {
-	return i.origin == o.origin && i.relay == o.relay && slices.Equal(i.addrs, o.addrs)
+	return i.origin == o.origin
 }
 
 // routeChange is a prefix that an origin gets or loses.
@@ -42,9 +39,8 @@ type routeChange struct {
 	add bool
 }
 
-// apply applies d, skips the routes of the attachments of this agent, and
-// returns the changes. A prefix that moves to a new origin or relay is a
-// remove and an add. An empty delta ends the first table.
+// apply applies d with no routes of this agent's attachments, and returns the changes. A prefix
+// that moves to a new origin is a remove and an add; an empty delta ends the first table.
 func (t *routeTable) apply(d *dp.RouteDelta, own func(origin string) bool) []routeChange {
 	if t.routes == nil {
 		t.routes = map[netip.Prefix]routeInfo{}
@@ -66,10 +62,7 @@ func (t *routeTable) apply(d *dp.RouteDelta, own func(origin string) bool) []rou
 		if !ok {
 			continue
 		}
-		info := routeInfo{origin: r.GetOrigin(), relay: r.GetRelay().GetId()}
-		if info.relay != "" {
-			info.addrs = slices.Clone(r.GetRelay().GetAddresses())
-		}
+		info := routeInfo{origin: r.GetOrigin()}
 		old, had := t.routes[p]
 		if had && old.same(info) {
 			continue

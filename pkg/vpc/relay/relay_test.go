@@ -181,7 +181,10 @@ func TestHello(t *testing.T) {
 		// An agent at revision 23 can send the addresses of its other relays.
 		{name: "revision 23", hello: &dpv1.Hello{Mode: dpv1.Mode_MODE_QUIC, Version: &dpv1.Version{Revision: 23, MinRevision: 23}},
 			closeCode: dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE},
+		// An agent at revision 24 can dial a relay that a route names.
 		{name: "revision 24", hello: &dpv1.Hello{Mode: dpv1.Mode_MODE_QUIC, Version: &dpv1.Version{Revision: 24, MinRevision: 24}},
+			closeCode: dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE},
+		{name: "revision 25", hello: &dpv1.Hello{Mode: dpv1.Mode_MODE_QUIC, Version: &dpv1.Version{Revision: 25, MinRevision: 25}},
 			code: rpc.OK, sessions: 1},
 		{name: "second Session call", hello: hello(dpv1.Mode_MODE_QUIC), twice: true, code: rpc.FailedPrecondition, sessions: 1},
 	}
@@ -299,13 +302,11 @@ func TestAttach(t *testing.T) {
 			assert.Equal(t, tc.results, results)
 			// The Attached hook runs after the answer.
 			require.Eventually(t, func() bool { return e.addrs.isAttached(res.GetAttachmentId()) }, wait, 10*time.Millisecond)
-			// The slot Route and the accepted routes name this relay.
-			r := watcher.waitRoute(slot, true)
-			assert.Equal(t, relayID, r.GetRelay().GetId())
-			assert.Equal(t, []string{"192.0.2.1"}, r.GetRelay().GetAddresses())
+			// The watcher gets the slot Route, with this relay as its origin, and each accepted route.
+			assert.Equal(t, relayID, watcher.waitRoute(slot, true).GetOrigin())
 			for i, rs := range res.GetRoutes() {
 				if tc.results[i] == dpv1.RouteResult_ROUTE_RESULT_ACCEPTED {
-					assert.Equal(t, relayID, watcher.waitRoute(rs.GetPrefix(), true).GetRelay().GetId())
+					assert.Equal(t, res.GetAttachmentId(), watcher.waitRoute(rs.GetPrefix(), true).GetOrigin())
 					continue
 				}
 				assert.Nil(t, watcher.route(rs.GetPrefix()))

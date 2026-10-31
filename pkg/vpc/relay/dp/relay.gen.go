@@ -23,14 +23,13 @@ const (
 
 // Action IDs.
 const (
-	ActionNoAction  uint32 = 21257015 // NoAction
-	ActionDrop      uint32 = 16983990 // Relay.drop
-	ActionPort      uint32 = 24992955 // Relay.port
-	ActionContext   uint32 = 25404084 // Relay.context
-	ActionForward   uint32 = 22957411 // Relay.forward
-	ActionLocalOnly uint32 = 24976605 // Relay.local_only
-	ActionDropOut   uint32 = 21608195 // RelayEgress.drop_out
-	ActionOutPort   uint32 = 32296454 // RelayEgress.out_port
+	ActionNoAction uint32 = 21257015 // NoAction
+	ActionDrop     uint32 = 16983990 // Relay.drop
+	ActionPort     uint32 = 24992955 // Relay.port
+	ActionContext  uint32 = 25404084 // Relay.context
+	ActionForward  uint32 = 22957411 // Relay.forward
+	ActionDropOut  uint32 = 21608195 // RelayEgress.drop_out
+	ActionOutPort  uint32 = 32296454 // RelayEgress.out_port
 )
 
 // Counter IDs.
@@ -72,7 +71,6 @@ const (
 	ReasonNoRoute         uint8 = 8
 	ReasonNoTarget        uint8 = 9
 	ReasonTrunkToTrunk    uint8 = 10
-	ReasonLocalOnly       uint8 = 11
 	ReasonMTU             uint8 = 12
 	ReasonNoKeys          uint8 = 13
 	ReasonDatagramFull    uint8 = 14
@@ -403,34 +401,6 @@ func decodeForwardAction(ps []*p4.Action_Param) (ForwardAction, error) {
 	return a, nil
 }
 
-// LocalOnlyAction is the Relay.local_only action.
-type LocalOnlyAction struct{}
-
-// ActionID returns the ID of the Relay.local_only action.
-func (LocalOnlyAction) ActionID() uint32 { return ActionLocalOnly }
-
-func (LocalOnlyAction) params() []*p4.Action_Param { return nil }
-
-func decodeLocalOnlyAction(ps []*p4.Action_Param) (LocalOnlyAction, error) {
-	var a LocalOnlyAction
-	var seen uint64
-	for _, prm := range ps {
-		id := prm.GetParamId()
-		if id == 0 || id > 63 || seen&(1<<id) != 0 {
-			return a, fmt.Errorf("local_only: parameter %d is not valid or repeated", id)
-		}
-		seen |= 1 << id
-		switch id {
-		default:
-			return a, fmt.Errorf("local_only: unknown parameter %d", id)
-		}
-	}
-	if seen != 0x0 {
-		return a, fmt.Errorf("local_only: a parameter is missing")
-	}
-	return a, nil
-}
-
 // DropOutAction is the RelayEgress.drop_out action.
 type DropOutAction struct {
 	Reason uint8 // reason, 8 bits
@@ -572,8 +542,6 @@ func decodeAction(a *p4.Action) (Action, error) {
 		return decodeContextAction(a.GetParams())
 	case ActionForward:
 		return decodeForwardAction(a.GetParams())
-	case ActionLocalOnly:
-		return decodeLocalOnlyAction(a.GetParams())
 	case ActionDropOut:
 		return decodeDropOutAction(a.GetParams())
 	case ActionOutPort:
@@ -821,7 +789,7 @@ func decodeSourceKey(ms []*p4.FieldMatch) (SourceKey, error) {
 // sourceAllows reports whether an entry of Relay.source can have the action id.
 func sourceAllows(id uint32) bool {
 	switch id {
-	case ActionDrop, ActionLocalOnly, ActionNoAction:
+	case ActionDrop, ActionNoAction:
 		return true
 	}
 	return false
@@ -1216,7 +1184,6 @@ type meta struct {
 	lane      uint8          // bit<2>
 	vni       uint32         // bit<24>
 	tag       uint32         // bit<24>
-	localOnly bool           // bool
 	src       netip.Addr     // bit<128>
 	dst       netip.Addr     // bit<128>
 	from      netip.AddrPort // bit<144>
@@ -1644,9 +1611,6 @@ func (x *part) ingress(pkt *packet) {
 	} else {
 		switch a := e.action.(type) {
 		case NoAction:
-		case LocalOnlyAction:
-			// local_only
-			pkt.m.localOnly = true
 		case DropAction:
 			// drop
 			// count_drop
@@ -1710,7 +1674,7 @@ func (x *part) ingress(pkt *packet) {
 			return
 		}
 	}
-	if (pkt.m.p.trunk == 1) || pkt.m.localOnly {
+	if pkt.m.p.trunk == 1 {
 		pkt.m.fwd.port = pkt.m.local.port
 		pkt.m.fwd.cell = pkt.m.local.cell
 	}
@@ -1769,19 +1733,6 @@ func (x *part) egress(pkt *packet) {
 			var i uint32 = p4cond(pkt.m.o.meterIndex != 0, pkt.m.o.meterIndex, pkt.m.p.meterIndex)
 			if i != 0 {
 				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonTrunkToTrunk), pkt)
-			}
-			pkt.sm.egressSpec = p4DropPort
-		}
-		return
-	}
-	if pkt.m.localOnly && (pkt.m.o.trunk == 1) {
-		// drop_out
-		// count_drop
-		{
-			x.countIndex(CounterDrops, uint32(ReasonLocalOnly), pkt)
-			var i uint32 = p4cond(pkt.m.o.meterIndex != 0, pkt.m.o.meterIndex, pkt.m.p.meterIndex)
-			if i != 0 {
-				x.countIndex(CounterPortDrops, (i<<5)|uint32(ReasonLocalOnly), pkt)
 			}
 			pkt.sm.egressSpec = p4DropPort
 		}

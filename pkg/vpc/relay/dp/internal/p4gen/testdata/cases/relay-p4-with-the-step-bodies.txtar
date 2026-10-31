@@ -23,7 +23,6 @@ const bit<8> R_METER = 7;
 const bit<8> R_NO_ROUTE = 8;
 const bit<8> R_NO_TARGET = 9;
 const bit<8> R_TRUNK_TO_TRUNK = 10;
-const bit<8> R_LOCAL_ONLY = 11;
 const bit<8> R_MTU = 12;
 // send_out: no TX keys entry of the out port session.
 const bit<8> R_NO_KEYS = 13;
@@ -116,7 +115,6 @@ struct meta_t {
     bit<2> lane;
     bit<24> vni;
     bit<24> tag;
-    bool local_only;
     bit<128> src;
     bit<128> dst;
     port_t p;
@@ -197,14 +195,10 @@ control Relay(inout headers_t h,
         m.c = {vpc, vni, cell};
     }
     // One entry for each prefix. port, cell: the winner, for a packet from an access port.
-    // local_port, local_cell: the best local candidate, from a trunk port or local_only (0: none).
+    // local_port and local_cell are the best local candidate for a trunk packet (0 is none).
     action forward(bit<64> port, bit<32> cell, bit<64> local_port, bit<32> local_cell) {
         m.fwd = {port, cell};
         m.local = {local_port, local_cell};
-    }
-    // A source entry of a remote address that V accepted. send_out drops it to a trunk port.
-    action local_only() {
-        m.local_only = true;
     }
     table ports {
         key = { m.port: exact; }
@@ -221,7 +215,7 @@ control Relay(inout headers_t h,
         actions = { context; drop; }
         const default_action = drop(R_NO_CONTEXT);
     }
-    // One set: A's attachment prefixes and the remote addresses V accepted, or a tag's records.
+    // The entries of a port are the attachment prefixes of A, or the records of a tag.
     table source {
         key = {
             m.port: exact;
@@ -229,7 +223,7 @@ control Relay(inout headers_t h,
             m.tag: exact;
             m.src: lpm;
         }
-        actions = { NoAction; local_only; drop; }
+        actions = { NoAction; drop; }
         const default_action = drop(R_SOURCE);
     }
     // Writer: V of the VPC.
@@ -252,7 +246,8 @@ control Relay(inout headers_t h,
         ports.apply();
         bit<2> color;
         port_meter.execute_meter(m.p.meter_index, color);
-        if (color == 2 || m.lane > 1 && !m.local_only) {
+        bool trunk = m.p.trunk == 1;
+        if (color == 2 || m.lane > 1 && !trunk) {
             drop(R_METER);
         } else if ((m.p.lanes & 0xff) != 0 && m.lane >= 1) {
             keys.count(m.spi);
@@ -275,12 +270,12 @@ control Relay(inout headers_t h,
         // 4. On access, a VNI in the packet must be m.c.vni. Count. 5. The inner source.
         classify.apply();
         source.apply();
-        // 6. Route: from a trunk port or with local_only, the local target. No entry on an access
-        // port: MISS. No local target: no_route.
+        // 6. A packet from a trunk port goes to the local target. No entry on an access port gives
+        // MISS, and no local target gives no_route.
         route.apply();
         route_end();
-        // 7. ports entry of m.fwd.port (no_target; it sets m.out_meter_index), no trunk to trunk,
-        // no local_only to a trunk, mtu. Then seal on a lane with the outgoing VNI (no_keys), or FRAME out with m.c.vni.
+        // 7. The out port needs a ports entry (no_target; it sets m.out_meter_index), no trunk to
+        // trunk, and the mtu. Then the packet is sealed on a lane (no_keys), or goes out as a FRAME.
         send_out();
     }
 }

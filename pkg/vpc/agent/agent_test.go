@@ -520,8 +520,11 @@ func TestDrain(t *testing.T) {
 		// alternate is of a relay that is not a member).
 		first string
 		dead  bool // The alternate does not answer, so the agent gets no new session.
+		// again restarts the first relay at its addresses after the drain and ends the session on the
+		// alternate: the agent attaches again on the first relay, and does not dial the alternate.
+		again bool
 	}{
-		{name: "alternate that the agent does not know"},
+		{name: "alternate that the agent does not know", again: true},
 		{name: "alternate that the agent knows", known: true},
 		{name: "first alternate drains too", first: "drains"},
 		{name: "first address of the alternate is of another relay", first: "wrong address"},
@@ -598,6 +601,24 @@ func TestDrain(t *testing.T) {
 				sameSession(t, next, ss[0])
 			}
 			assert.Len(t, a.a.Status().Connections, 1)
+			if !tc.again {
+				return
+			}
+
+			// The first relay drains for good, so a new relay takes its addresses.
+			quicAddr, pspAddr := netip.MustParseAddrPort(from.addr), netip.MustParseAddrPort(from.psp)
+			from.stop()
+			quicSock, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(quicAddr))
+			require.NoError(t, err)
+			pspSock, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(pspAddr))
+			require.NoError(t, err)
+			restarted := w.relayOn(t, from.id, quicSock, pspSock)
+			dials := a.dials(to)
+			require.NoError(t, next.qc.CloseWithError(0, "relay closed the session"))
+			a.attached(t)
+			assert.Equal(t, restarted.addr, a.current().addr, "the agent attaches again on the relay of its identity file")
+			require.Never(t, func() bool { return a.dials(to) != dials || len(a.a.Status().Connections) != 1 }, quietWait, 20*time.Millisecond,
+				"the agent dialed the alternate again or has more than one session")
 		})
 	}
 }

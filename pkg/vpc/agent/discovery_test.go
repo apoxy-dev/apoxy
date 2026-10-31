@@ -79,8 +79,8 @@ func TestOwnRelayRoutes(t *testing.T) {
 	}
 }
 
-// TestPrimaryRedial checks that the agent dials the relay of its last primary
-// once when the connection ends, although the routes and the config both name it.
+// TestPrimaryRedial checks that the agent dials its configured relay once when
+// the connection ends.
 func TestPrimaryRedial(t *testing.T) {
 	w := newWorld(t)
 	r := w.relay(t, "relay-1")
@@ -312,46 +312,6 @@ func TestMeshRoutes(t *testing.T) {
 					assert.Equal(t, want, p.ta.dials(r), "dials of %s by %s", r.id, p.name)
 				}
 			}
-		})
-	}
-}
-
-// TestWantedRelayAddresses checks that the dial of the relay of the last primary uses the addresses
-// of its routes, then the address of the last primary, and skips another relay at an address.
-func TestWantedRelayAddresses(t *testing.T) {
-	cases := []struct {
-		name      string
-		wrongOnly bool // The routes of relay-2 give only the address of relay-3.
-	}{
-		{name: "first address has another relay"},
-		{name: "only address has another relay", wrongOnly: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			w := newWorld(t)
-			w.certName = map[string]string{"relay-3": "relay-2"}
-			r3 := w.relay(t, "relay-3")
-			q2 := loopback(t)
-			w.advertise = map[string][]string{"relay-2": {r3.addr, q2.LocalAddr().String()}}
-			if tc.wrongOnly {
-				w.advertise["relay-2"] = []string{r3.addr}
-			}
-			r2 := w.relayOn(t, "relay-2", q2, loopback(t))
-			a := w.agent(t, "a", r2, agentOptions{})
-			a.attached(t)
-			b := w.agent(t, "b", r2, agentOptions{})
-			a.hasRoutes(t, b.attached(t).prefixes[0])
-			a.reconnect()
-			a.attached(t)
-			assert.Equal(t, 2, a.dials(r2), "dials of relay-2")
-			assert.Equal(t, 1, a.dials(r3), "dials of the address of relay-3")
-			for _, qc := range r3.agentConns(a.tr.Conn.LocalAddr(), false) {
-				require.Eventually(t, func() bool { return qc.Context().Err() != nil }, 2*time.Second, 10*time.Millisecond,
-					"the agent closes its connection to relay-3")
-			}
-			require.Never(t, func() bool { return attachments("a", r3) != 0 || a.dials(r3) != 1 }, quietWait, 20*time.Millisecond,
-				"attachment or next dial of a on relay-3")
-			assert.Len(t, a.a.Status().Connections, 1)
 		})
 	}
 }

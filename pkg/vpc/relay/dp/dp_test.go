@@ -157,7 +157,7 @@ func base() []*p4.Update {
 		insert(context_(4, 1, 0, vpcB, vniB, 4)),
 		insert(context_(10, 5, 20, vpcA, vniA, 20)),
 		insert(source(1, 1, 0, "100.64.1.0/24", dp.NoAction{})),
-		insert(source(1, 1, 0, "100.64.77.7/32", dp.LocalOnlyAction{})),
+		insert(source(1, 1, 0, "100.64.77.7/32", dp.DropAction{Reason: 31})),
 		insert(source(2, 1, 0, "100.64.2.0/24", dp.NoAction{})),
 		insert(source(3, 1, 0, "100.64.3.0/24", dp.NoAction{})),
 		insert(source(4, 1, 0, "100.64.1.0/24", dp.NoAction{})),
@@ -399,11 +399,6 @@ func TestPipeline(t *testing.T) {
 			cells: map[int64]int64{40: 1, 2*32 + 1: 1},
 		},
 		{
-			name: "local target for a local_only packet",
-			from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.77.7", "100.64.8.5", 100)),
-			out: &out{to: addrA2, spi: spiA2Out, vni: vniA, nh: psp.NextHdrV4, inner: ipv4("100.64.77.7", "100.64.8.5", 100)},
-		},
-		{
 			name: "DATAGRAM out",
 			from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.3.5", 100)),
 			dgram: &dgramOut{vni: vniA, inner: ipv4("100.64.1.5", "100.64.3.5", 100)},
@@ -545,7 +540,7 @@ func TestPipeline(t *testing.T) {
 			drop: 31, portDrop: pd(1, 31),
 		},
 		{name: "trunk_to_trunk", from: addrT, wire: seal(spiTIn, 20, 1, ipv4("100.64.9.5", "100.64.6.5", 100)), drop: dp.ReasonTrunkToTrunk, portDrop: pd(11, dp.ReasonTrunkToTrunk)},
-		{name: "local_only", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.77.7", "100.64.5.5", 100)), drop: dp.ReasonLocalOnly, portDrop: pd(11, dp.ReasonLocalOnly)},
+		{name: "drop action of a source entry", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.77.7", "100.64.5.5", 100)), drop: 31, portDrop: pd(1, 31)},
 		{name: "mtu", from: addrA1, wire: seal(spiA1In, vniA, 1, ipv4("100.64.1.5", "100.64.2.5", 1401)), drop: dp.ReasonMTU, portDrop: pd(2, dp.ReasonMTU)},
 		{
 			name:  "no_keys",

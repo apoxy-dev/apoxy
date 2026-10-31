@@ -40,8 +40,8 @@ const (
 // errNoRelays is the failure of Run when it has no relay to dial.
 var errNoRelays = errors.New("no relays")
 
-// keeper is the dial plan of the root: it opens the missing sessions on the configured relays and
-// on the relay of the last primary, with a backoff for each relay after its failures.
+// keeper is the dial plan of the root: it opens the missing sessions on the configured relays,
+// with a backoff for each relay after its failures.
 type keeper struct {
 	backoff  time.Duration // The wait after no relay was there to dial.
 	next     int           // The relay to dial first.
@@ -55,9 +55,8 @@ type keeper struct {
 	relist  relister
 	listing bool // The relist task runs.
 
-	waits   map[string]*relayWait // Backoff of each relay key after failed dials.
-	wake    *time.Timer           // The end of the first backoff that a dial waits for.
-	dialing map[string]bool       // Relays of the last primary with a dial task, by relay ID.
+	waits map[string]*relayWait // Backoff of each relay key after failed dials.
+	wake  *time.Timer           // The end of the first backoff that a dial waits for.
 }
 
 // relayWait is the backoff of one relay.
@@ -71,7 +70,6 @@ type relayWait struct {
 type dialRound struct {
 	n      int
 	eps    []endpoint
-	keys   map[string]bool // The relay keys of eps.
 	ctx    context.Context
 	cancel context.CancelFunc
 	got    []*dialed
@@ -113,13 +111,9 @@ func (k *keeper) warnExpired(n int, at time.Time) {
 }
 
 // missing returns the count of sessions to open and the free relays, the alternates of a draining
-// session first. A session dialed for the last primary counts only when its relay is configured.
+// session first.
 func (r *root) missing() (int, []endpoint) {
 	eps := r.endpoints()
-	configured := map[string]bool{}
-	for _, e := range eps {
-		configured[r.keyOf(e)] = true
-	}
 	n := cmp.Or(r.a.cfg.Sessions, defaultSessions)
 	var alts []endpoint
 	busy, live := map[string]bool{}, map[string]bool{}
@@ -130,12 +124,7 @@ func (r *root) missing() (int, []endpoint) {
 			continue
 		}
 		live[h.id] = true
-		if !h.wanted || configured[h.id] {
-			n--
-		}
-	}
-	for id := range r.keep.dialing {
-		busy[id] = true
+		n--
 	}
 	alts = slices.DeleteFunc(alts, func(e endpoint) bool { return live[r.keyOf(e)] })
 	eps = slices.DeleteFunc(eps, func(e endpoint) bool { return busy[r.keyOf(e)] })
@@ -143,15 +132,14 @@ func (r *root) missing() (int, []endpoint) {
 	return max(min(n, len(r.oneEach(free))), 0), free
 }
 
-// plan dials the relay of the last primary and the missing sessions after the backoff of each
-// relay, or ends Run when the cert expired and no session is left.
+// plan dials the missing sessions after the backoff of each relay, or ends Run when the cert
+// expired and no session is left.
 func (r *root) plan() {
 	k := &r.keep
 	if r.ending || k.listing {
 		return
 	}
-	wanted := r.wantedRelay()
-	r.keepAddrs(wanted)
+	r.keepAddrs()
 	none := r.primary() == nil
 	if exp := r.fileExpired(); exp != nil {
 		if none && !r.renewing {
@@ -164,9 +152,6 @@ func (r *root) plan() {
 	}
 	now := time.Now()
 	var next time.Time
-	// The dial of the last primary comes first, so the round does not dial its
-	// relay a second time.
-	r.dialWanted(wanted, now, &next)
 	n, eps := r.missing()
 	if k.round == nil && n > 0 {
 		ready := slices.DeleteFunc(slices.Clone(eps), func(e endpoint) bool { return r.waiting(r.keyOf(e), now, &next) })
@@ -174,7 +159,7 @@ func (r *root) plan() {
 			r.startRound(m, ready)
 		}
 	}
-	if k.round == nil && k.wait == nil && none && len(r.homes) == 0 && len(eps) == 0 && len(k.dialing) == 0 && wanted == "" {
+	if k.round == nil && k.wait == nil && none && len(r.homes) == 0 && len(eps) == 0 {
 		// The agent has no session and no relay to dial.
 		r.retry(nil, errNoRelays)
 	}
@@ -222,10 +207,7 @@ func (r *root) startRound(n int, eps []endpoint) {
 	i := k.next % len(eps)
 	eps = r.oneEach(slices.Concat(eps[i:], eps[:i]))
 	ctx, cancel := context.WithCancel(r.ctx)
-	rd := &dialRound{n: n, eps: eps, keys: map[string]bool{}, ctx: ctx, cancel: cancel, got: make([]*dialed, len(eps)), left: len(eps)}
-	for _, e := range eps {
-		rd.keys[r.keyOf(e)] = true
-	}
+	rd := &dialRound{n: n, eps: eps, ctx: ctx, cancel: cancel, got: make([]*dialed, len(eps)), left: len(eps)}
 	k.round = rd
 	cred := r.a.cfg.Identity.Current()
 	for i, e := range eps {
@@ -285,7 +267,7 @@ func (r *root) closeRound() {
 			d.close("relay was not chosen")
 			continue
 		}
-		if r.take(d, false) {
+		if r.take(d) {
 			started++
 		}
 	}
@@ -296,21 +278,9 @@ func (r *root) closeRound() {
 	r.plan()
 }
 
-// wantedRelay returns the relay of the last primary while no session is the
-// primary, so that the agent dials it first. Else it returns "".
-func (r *root) wantedRelay() string {
-	if r.primary() != nil {
-		return ""
-	}
-	return r.primaryID
-}
-
-// keepAddrs forgets the route addresses of each relay that is not wanted, held or dialed, and the
-// Welcome of each address that is not an address to dial.
-func (r *root) keepAddrs(wanted string) {
-	maps.DeleteFunc(r.relayAddrs, func(id string, _ []string) bool {
-		return id != wanted && r.holder(id) == nil && !r.keep.dialing[id]
-	})
+// keepAddrs forgets the Welcome of each address that is not a configured address, a home address
+// or an alternate.
+func (r *root) keepAddrs() {
 	addrs := map[string]bool{}
 	for _, e := range r.endpoints() {
 		addrs[e.addr] = true
@@ -321,89 +291,7 @@ func (r *root) keepAddrs(wanted string) {
 			addrs[e.addr] = true
 		}
 	}
-	for _, a := range r.addrsOf(wanted) {
-		addrs[a] = true
-	}
 	maps.DeleteFunc(r.welcome, func(addr, _ string) bool { return !addrs[addr] })
-}
-
-// addrsOf returns the addresses to dial for the wanted relay id: the newest addresses that a
-// route gave, then the address that the agent dialed for the last primary.
-func (r *root) addrsOf(id string) []string {
-	a := r.relayAddrs[id]
-	if id == r.primaryID && r.primaryAddr != "" && !slices.Contains(a, r.primaryAddr) {
-		a = append(slices.Clone(a), r.primaryAddr)
-	}
-	return a
-}
-
-// wantDialed is the result of the dial of a wanted relay. others has the
-// relay ID of the Welcome at each address where another relay answered.
-type wantDialed struct {
-	id     string
-	d      *dialed
-	err    error
-	others map[string]string
-}
-
-// dialWanted dials the wanted relay id when it has an address, no session, no dial and no backoff.
-// The task closes a connection to another relay and tries the next address.
-func (r *root) dialWanted(id string, now time.Time, next *time.Time) {
-	k := &r.keep
-	addrs := r.addrsOf(id)
-	if id == "" || r.holder(id) != nil || k.dialing[id] || k.round != nil && k.round.keys[id] || len(addrs) == 0 || r.waiting(id, now, next) {
-		return
-	}
-	if k.dialing == nil {
-		k.dialing = map[string]bool{}
-	}
-	k.dialing[id] = true
-	a, ctx, roots := r.a, r.ctx, r.a.relayRoots(r.a.cfg.Identity.Current())
-	r.task(func() any {
-		var errs []error
-		others := map[string]string{}
-		for _, addr := range addrs {
-			d, err := a.dial(ctx, endpoint{id: id, addr: addr}, roots)
-			switch {
-			case err != nil:
-				errs = append(errs, fmt.Errorf("relay %s at %s: %w", id, addr, err))
-			case d.relayID != id:
-				others[addr] = d.relayID
-				d.close("agent dialed another relay at this address")
-				errs = append(errs, fmt.Errorf("relay %s at %s: relay %s answered", id, addr, d.relayID))
-			default:
-				return wantDialed{id: id, d: d, others: others}
-			}
-		}
-		return wantDialed{id: id, err: errors.Join(errs...), others: others}
-	})
-}
-
-// wantDone takes the result of the dial of a wanted relay.
-func (r *root) wantDone(m wantDialed) {
-	delete(r.keep.dialing, m.id)
-	if r.ending {
-		if m.d != nil {
-			m.d.close("agent stopped")
-		}
-		return
-	}
-	for addr, other := range m.others {
-		r.welcome[addr] = other
-		slog.Warn("Another relay answered at an address of a wanted relay; closed the connection", "relay", m.id, "address", addr, "other_relay", other)
-	}
-	switch {
-	case m.err != nil:
-		slog.Warn("Failed to open relay session", "relay", m.id, "error", m.err)
-		if certRefused(m.err) {
-			r.renew()
-		}
-		r.failRelay(m.id)
-	default:
-		r.welcome[m.d.ep.addr] = m.d.relayID
-		r.take(m.d, true)
-	}
-	r.plan()
 }
 
 // choiceTimer returns the channel of the wait for the other relays of the round, or nil.

@@ -3,10 +3,14 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log"
+	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +37,9 @@ func TestRelayRevision(t *testing.T) {
 		{name: "no relay version against minimum 1", agent: &dp.Version{Revision: 21, MinRevision: 1},
 			want: "relay revision 0 is below the agent minimum 1"},
 		{name: "relay above the minimum", relay: &dp.Version{Revision: 22}, agent: &dp.Version{Revision: 21, MinRevision: 21}},
+		{name: "relay one below the minimum of this build", relay: &dp.Version{Revision: dp.MinRevision - 1}, agent: dp.LocalVersion("test"),
+			want: fmt.Sprintf("relay revision %d is below the agent minimum %d", dp.MinRevision-1, dp.MinRevision)},
+		{name: "relay at the minimum of this build", relay: &dp.Version{Revision: dp.MinRevision}, agent: dp.LocalVersion("test")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -44,6 +51,66 @@ func TestRelayRevision(t *testing.T) {
 			assert.EqualError(t, err, tc.want)
 		})
 	}
+}
+
+// TestOldRelay checks that the agent closes a connection to a relay below its
+// minimum revision before Attach, and attaches on the next relay.
+func TestOldRelay(t *testing.T) {
+	logs := captureLogs(t)
+	w := newWorld(t)
+	w.welcome = map[string]uint32{"relay-1": dp.MinRevision - 1}
+	old, next := w.relay(t, "relay-1"), w.relay(t, "relay-2")
+	// With two sessions, the agent dials the old relay again after each failed
+	// dial, and logs the error of the dial.
+	a := w.agent(t, "a", next, agentOptions{relays: []identity.Relay{old.ref(), next.ref()}, sessions: 2})
+	a.attached(t)
+	assert.Equal(t, next.addr, a.current().addr, "the agent attached on the next relay")
+	select {
+	case ae := <-old.closes:
+		assert.True(t, ae.Remote, "the agent closed the connection")
+		assert.Equal(t, quic.ApplicationErrorCode(0), ae.ErrorCode)
+		assert.Empty(t, ae.ErrorMessage)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the agent did not close its connection to the old relay in 10 s")
+	}
+	want := fmt.Sprintf("relay %s: relay revision %d is below the agent minimum %d", old.addr, dp.MinRevision-1, dp.MinRevision)
+	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), want) }, 10*time.Second, 10*time.Millisecond,
+		"no log line has %q", want)
+	assert.Zero(t, old.attaches.Load(), "Attach calls on the old relay")
+	assert.Len(t, a.a.Status().Connections, 1)
+}
+
+// logBuffer keeps the log lines of a test.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureLogs sends the default log to a buffer until the test ends. The test
+// must not be parallel.
+func captureLogs(t *testing.T) *logBuffer {
+	b := &logBuffer{}
+	// SetDefault changes the output of the log package too.
+	old, out, flags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(b, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+		log.SetOutput(out)
+		log.SetFlags(flags)
+	})
+	return b
 }
 
 // TestRelayRevisions dials relays that refuse the agent as too old, and relays

@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
-	"sync/atomic"
 
 	"github.com/apoxy-dev/softpsp/engine"
 	"github.com/apoxy-dev/softpsp/keys"
-	"github.com/gaissmai/bart"
 )
 
 // Link is the routes of one relay connection. An inner packet uses the link of
@@ -24,11 +22,9 @@ type Link struct {
 	// rx is the state of the reader of the relay session of l in the receive pipe.
 	rx rxReader
 
-	// removed is set under b.mu. The send path reads it with no lock.
-	removed atomic.Bool
-
 	// Guarded by b.mu.
 	sources []netip.Prefix
+	removed bool
 }
 
 // AddLink adds a link with no sources and no relays. While the binding has one
@@ -54,14 +50,13 @@ func (b *Binding) AddLink() (*Link, error) {
 func (b *Binding) RemoveLink(l *Link) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if l.removed.Load() {
+	if l.removed {
 		return
 	}
 	for _, pfx := range l.sources {
 		b.sources.Remove(pfx, l)
 	}
-	l.sources = nil
-	l.removed.Store(true)
+	l.sources, l.removed = nil, true
 	b.def.CompareAndSwap(l, nil)
 	b.links = slices.DeleteFunc(b.links, func(o *Link) bool { return o == l })
 	b.setOnly()
@@ -82,7 +77,7 @@ func (l *Link) AddSource(pfx netip.Prefix) error {
 	pfx = pfx.Masked()
 	l.b.mu.Lock()
 	defer l.b.mu.Unlock()
-	if l.removed.Load() {
+	if l.removed {
 		return ErrClosed
 	}
 	if err := l.b.sources.Add(pfx, l); err != nil {
@@ -104,44 +99,32 @@ func (l *Link) RemoveSource(pfx netip.Prefix) {
 	}
 }
 
-// SetDefault sends the inner packets whose source no link has and that no visit
-// link takes on l, for example from an advertised network. Nil drops them.
+// SetDefault sends the inner packets whose source no link has on l, for example
+// the traffic from a network that the agent advertises. Nil drops them.
 func (b *Binding) SetDefault(l *Link) { b.def.Store(l) }
 
-// SetVisits replaces the visit links: a packet whose source no link has goes on
-// the live link of its destination in visits, else on the default link.
-func (b *Binding) SetVisits(visits map[netip.Prefix]*Link) {
-	if len(visits) == 0 {
-		b.visits.Store(nil)
-		return
-	}
-	t := &bart.Fast[*Link]{}
-	for pfx, l := range visits {
-		t.Insert(pfx.Masked(), l)
-	}
-	b.visits.Store(t)
-}
-
-// linkOf returns the link of an inner packet to dst, or nil when no link sends
-// it. It is small, so that the send path with one link has no call.
-func (b *Binding) linkOf(pkt []byte, dst netip.Addr) *Link {
+// linkOf returns the link of an inner packet, or nil when no link sends it.
+// It is small, so that the send path with one link has no call.
+func (b *Binding) linkOf(pkt []byte) *Link {
 	l := b.only.Load()
 	if l == nil {
-		l = b.sendLink(pkt, dst)
+		l = b.sourceLink(pkt)
 	}
 	return l
 }
 
-// sendLink returns the link that has the source address of an inner packet,
-// else the visit link of its destination dst, else the default link.
-func (b *Binding) sendLink(pkt []byte, dst netip.Addr) *Link {
-	if src, ok := innerSrc(pkt); ok {
-		if l, ok := b.sources.Lookup(src); ok {
-			return l
-		}
-	}
-	if t := b.visits.Load(); t != nil {
-		if l, ok := t.Lookup(dst); ok && !l.removed.Load() {
+// sourceLink returns the link that has the source address of an inner packet,
+// or else the default link.
+func (b *Binding) sourceLink(pkt []byte) *Link {
+	src, _ := innerSrc(pkt)
+	return b.addrLink(src)
+}
+
+// addrLink returns the link that has the address a of this agent, or else the
+// default link.
+func (b *Binding) addrLink(a netip.Addr) *Link {
+	if a.IsValid() {
+		if l, ok := b.sources.Lookup(a); ok {
 			return l
 		}
 	}
@@ -167,7 +150,7 @@ func (l *Link) AddRelay(addr netip.AddrPort) (*Peer, error) {
 	p.SetAddr(addr)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.ctx.Err() != nil || l.removed.Load() {
+	if b.ctx.Err() != nil || l.removed {
 		return nil, ErrClosed
 	}
 	b.peers[rx] = p

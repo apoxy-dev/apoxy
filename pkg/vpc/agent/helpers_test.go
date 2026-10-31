@@ -217,14 +217,14 @@ type world struct {
 	// refuse gives the close reason of each relay that refuses all agents as
 	// too old, by the relay ID. Such a relay opens no session.
 	refuse map[string]string
+	// welcome gives the revision that a relay sends in its Welcome, by the
+	// relay ID. Such a relay sends only the Welcome, and no Config.
+	welcome map[string]uint32
 	// mesh gives each relay a mesh. joinMesh makes the members.
 	mesh bool
 	// advertise gives the addresses that a relay sends to agents and members,
 	// by the relay ID. Else it sends the address of its QUIC socket.
 	advertise map[string][]string
-	// certName gives the name in the cert of a relay, by the relay ID. Else the
-	// cert names the relay ID.
-	certName map[string]string
 	// slots gives the slot of testNetwork that a relay takes the addresses of
 	// its attachments from, by the relay ID. Else it takes them from the pool.
 	slots map[string]int
@@ -280,7 +280,13 @@ type testRelay struct {
 	// stopAccept stops the Accept calls, as a relay host in its lame duck. The
 	// listener still completes handshakes, and no session serves them.
 	stopAccept func()
-	refused    atomic.Int32 // Connections that the relay refused as too old.
+	// halt stops the relay and closes its sockets, one time. stop calls it.
+	halt    func()
+	refused atomic.Int32 // Connections that the relay refused as too old.
+	// closes gets the close of each agent connection to a relay of
+	// world.welcome. attaches counts the Attach calls on such a relay.
+	closes   chan *quic.ApplicationError
+	attaches atomic.Int32
 
 	connsMu sync.Mutex
 	conns   []acceptedConn // Agent connections that the relay accepted, in order.
@@ -622,6 +628,57 @@ func (r *testRelay) refuse(ctx context.Context, qc *quic.Conn, reason string) {
 	_ = qc.CloseWithError(quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE), reason)
 }
 
+// welcomeAt serves qc as a relay at revision rev, and sends the close of qc by
+// the agent to r.closes.
+func (r *testRelay) welcomeAt(ctx context.Context, qc *quic.Conn, rev uint32) {
+	mux := rpc.NewMux()
+	dp.RegisterRelayServer(mux, &oldRelay{r: r, rev: rev})
+	_ = rpc.NewConn(qc, mux).Serve(ctx)
+	// The streams of qc can end before its context has the cause of the close.
+	select {
+	case <-qc.Context().Done():
+	case <-ctx.Done():
+	}
+	var ae *quic.ApplicationError
+	if errors.As(context.Cause(qc.Context()), &ae) {
+		select {
+		case r.closes <- ae:
+		default:
+		}
+	}
+	_ = qc.CloseWithError(0, "")
+}
+
+// oldRelay is the Relay service of a relay at revision rev. Its Session call
+// sends the Welcome and then only reads.
+type oldRelay struct {
+	dp.UnimplementedRelayServer
+	r   *testRelay
+	rev uint32
+}
+
+func (o *oldRelay) Session(_ context.Context, st rpc.BidiStreamServer[dp.SessionRequest, dp.SessionResponse]) error {
+	if _, err := st.Recv(); err != nil {
+		return err
+	}
+	if err := st.Send(&dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{
+		Version: &dp.Version{Revision: o.rev, MinRevision: o.rev}, RelayId: o.r.id,
+		PspPort: uint32(netip.MustParseAddrPort(o.r.psp).Port()),
+	}}}); err != nil {
+		return err
+	}
+	for {
+		if _, err := st.Recv(); err != nil {
+			return err
+		}
+	}
+}
+
+func (o *oldRelay) Attach(context.Context, *dp.AttachRequest) (*dp.AttachResponse, error) {
+	o.r.attaches.Add(1)
+	return nil, rpc.Errorf(rpc.Unavailable, "relay revision %d", o.rev)
+}
+
 func (r *testRelay) ref() identity.Relay {
 	return identity.Relay{ID: r.id, Addresses: []string{r.addr}}
 }
@@ -652,7 +709,7 @@ func (w *world) relay(t testing.TB, id string) *testRelay {
 // pspSock, and closes them at the end of the test.
 func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketConn) *testRelay {
 	t.Helper()
-	cert := w.relayCA.relayCert(t, cmp.Or(w.certName[id], id))
+	cert := w.relayCA.relayCert(t, id)
 	plane := vpctest.NewSocketTarget(pspSock)
 	cfg := w.relayCfg
 	cfg.Relay = &dp.RelayRef{Id: id, Addresses: []string{quicSock.LocalAddr().String()}}
@@ -701,6 +758,10 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 		id: id, srv: srv, r: r, addr: quicSock.LocalAddr().String(), psp: pspSock.LocalAddr().String(), stopAccept: stopAccept,
 	}
 	reason, refuse := w.refuse[id]
+	rev, old := w.welcome[id]
+	if old {
+		out.closes = make(chan *quic.ApplicationError, 16)
+	}
 	w.mu.Lock()
 	w.relays = append(w.relays, out)
 	w.mu.Unlock()
@@ -735,20 +796,31 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 				wg.Go(func() { out.refuse(ctx, qc, reason) })
 				continue
 			}
+			if old {
+				wg.Go(func() { out.welcomeAt(ctx, qc, rev) })
+				continue
+			}
 			sc := out.keep(qc)
 			wg.Go(func() { srv.ServeConn(ctx, qc, rpc.WithStreams(sc)) })
 		}
 	})
-	t.Cleanup(func() {
+	out.halt = sync.OnceFunc(func() {
 		cancel()
 		_ = ln.Close()
 		_ = tr.Close()
 		_ = quicSock.Close()
 		_ = pspSock.Close()
 		wg.Wait()
+		w.mu.Lock()
+		w.relays = slices.DeleteFunc(w.relays, func(o *testRelay) bool { return o == out })
+		w.mu.Unlock()
 	})
+	t.Cleanup(out.stop)
 	return out
 }
+
+// stop stops r and closes its sockets, so that a new relay can take its addresses.
+func (r *testRelay) stop() { r.halt() }
 
 // verifyRelay accepts a relay cert of the relay CA that names the relay.
 func (w *world) verifyRelay(chain []*x509.Certificate, name string, _ netip.AddrPort) error {
@@ -872,14 +944,12 @@ type testAgent struct {
 	ns        *netstack.Stack // Set with vpcStack.
 
 	routesMu sync.Mutex
-	routes   map[netip.Prefix]bool       // OnRoutes sets it.
-	routeLog []string                    // It has "+prefix" or "-prefix" from OnRoutes, in order.
-	visits   map[netip.Prefix]netip.Addr // The last OnVisits sets it.
+	routes   map[netip.Prefix]bool // OnRoutes sets it.
+	routeLog []string              // It has "+prefix" or "-prefix" from OnRoutes, in order.
 
 	extraMu sync.Mutex
 	extras  map[string]netip.Addr // Last address of each extra attachment, from OnAttachment and OnDetach.
-	// log has "attach|deprecate|prefer|detach name address" for each address callback,
-	// and "visits name slot=address,..." for each OnVisits, in order.
+	// log has "attach|deprecate|prefer|detach name address" for each address callback, in order.
 	log []string
 }
 
@@ -938,11 +1008,11 @@ type agentOptions struct {
 	relist [2]time.Duration
 	// lanes sets Config.Lanes.
 	lanes int
-	// onAttach, onAttachment and onVisits run at the start of the OnAttach, the
-	// OnAttachment and the OnVisits callbacks.
+	// onAttach and onAttachment run at the start of the OnAttach and the
+	// OnAttachment callbacks. onRoutes runs at the start of OnRoutes.
 	onAttach     func(addr netip.Addr)
 	onAttachment func(at Attachment)
-	onVisits     func(visits map[netip.Prefix]netip.Addr)
+	onRoutes     func(add, remove []netip.Prefix)
 }
 
 // lossyConn drops the sent packets that are larger than a max that is not zero.
@@ -1160,6 +1230,9 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 			ta.attach <- attachEvent{addr, prefixes}
 		},
 		OnRoutes: func(add, remove []netip.Prefix) {
+			if opts.onRoutes != nil {
+				opts.onRoutes(add, remove)
+			}
 			if len(ta.events(name)) == 0 {
 				t.Errorf("agent %s: OnRoutes before the first OnAttach: add %v, remove %v", name, add, remove)
 			}
@@ -1206,12 +1279,6 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 			ta.extraMu.Unlock()
 			ta.note(t, "detach", at.Name, at.Address)
 			ta.removeAddr(t, at.Address)
-		},
-		OnVisits: func(visits map[netip.Prefix]netip.Addr) {
-			if opts.onVisits != nil {
-				opts.onVisits(visits)
-			}
-			ta.noteVisits(t, name, visits)
 		},
 	}
 	if cfg.Relays == nil && opts.enrolled == nil && !opts.identityFile {
@@ -1347,35 +1414,6 @@ func (ta *testAgent) note(t *testing.T, event, name string, addr netip.Addr) {
 	ta.log = append(ta.log, event+" "+name+" "+addr.String())
 }
 
-// noteVisits keeps the set of an OnVisits call and adds it to the log. It fails
-// t when an address of the set is not on the agent.
-func (ta *testAgent) noteVisits(t *testing.T, name string, visits map[netip.Prefix]netip.Addr) {
-	ta.extraMu.Lock()
-	defer ta.extraMu.Unlock()
-	held := map[netip.Addr]bool{}
-	for _, e := range ta.log {
-		if f := strings.Fields(e); f[0] == "attach" || f[0] == "detach" {
-			held[netip.MustParseAddr(f[2])] = f[0] == "attach"
-		}
-	}
-	var parts []string
-	for _, p := range slices.SortedFunc(maps.Keys(visits), netip.Prefix.Compare) {
-		if !held[visits[p]] {
-			t.Errorf("agent %s: OnVisits gives %s for %s, which the agent does not have: %v", name, visits[p], p, ta.log)
-		}
-		parts = append(parts, p.String()+"="+visits[p].String())
-	}
-	ta.visits = maps.Clone(visits)
-	ta.log = append(ta.log, "visits "+name+" "+cmp.Or(strings.Join(parts, ","), "-"))
-}
-
-// visitSet returns the set of the last OnVisits.
-func (ta *testAgent) visitSet() map[netip.Prefix]netip.Addr {
-	ta.extraMu.Lock()
-	defer ta.extraMu.Unlock()
-	return maps.Clone(ta.visits)
-}
-
 // deprecateAddr makes addr not preferred in the netstack.
 func (ta *testAgent) deprecateAddr(t *testing.T, addr netip.Addr) {
 	var err error
@@ -1402,25 +1440,17 @@ func (ta *testAgent) preferAddr(t *testing.T, addr netip.Addr) {
 	}
 }
 
-// events returns the callbacks for the addresses of the attachment name, with
-// no OnVisits calls.
+// events returns the callbacks for the addresses of the attachment name.
 func (ta *testAgent) events(name string) []string {
 	ta.extraMu.Lock()
 	defer ta.extraMu.Unlock()
 	var out []string
 	for _, e := range ta.log {
-		if f := strings.Fields(e); f[1] == name && f[0] != "visits" {
+		if f := strings.Fields(e); f[1] == name {
 			out = append(out, e)
 		}
 	}
 	return out
-}
-
-// history returns the log of the address callbacks and the OnVisits calls.
-func (ta *testAgent) history() []string {
-	ta.extraMu.Lock()
-	defer ta.extraMu.Unlock()
-	return slices.Clone(ta.log)
 }
 
 // removeAddr removes addr from the netstack, if it is valid.

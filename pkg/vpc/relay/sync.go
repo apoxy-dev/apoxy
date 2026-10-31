@@ -159,7 +159,7 @@ func (w *writer) parts(want map[netip.Prefix]*dpv1.Route) []*dpv1.RouteDelta {
 		case old.GetOrigin() != r.GetOrigin():
 			changes = append(changes, change{prefix: p, remove: old, add: r})
 		case !proto.Equal(old, r):
-			// The route stays, with a new standby list or relay.
+			// The route stays, with a new standby list.
 			changes = append(changes, change{prefix: p, add: r})
 		}
 	}
