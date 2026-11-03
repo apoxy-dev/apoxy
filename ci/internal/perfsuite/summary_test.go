@@ -95,37 +95,110 @@ func TestSummary(t *testing.T) {
 	}
 }
 
-const compareFail = `FAIL c7a.8xlarge vpc-netstack-psp-relay streams=4 duration=30s omit=5s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none
-  gbps                       2.1000  baseline     2.5000   -16.0%  REGRESSION
-NO BASELINE c7a.8xlarge iperf3-tcp streams=1 duration=30s omit=2s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=none window=none
-  gbps=30 packets_per_second=0 client_cores_per_gbps=0 server_cores_per_gbps=0
+// tcpKey is the key of an iperf3-tcp case with the given streams and loss.
+func tcpKey(streams, loss string) string {
+	return "c7a.8xlarge iperf3-tcp streams=" + streams + " duration=30s omit=2s delay=10ms jitter=0ms loss=" + loss +
+		" rate=none queue=100000 mtu=1500 bitrate=none window=none"
+}
+
+var udpKey = "c7a.8xlarge iperf3-udp streams=1 duration=30s omit=2s delay=10ms jitter=0ms loss=0% rate=none queue=100000 mtu=1500 bitrate=2G window=none"
+
+// compareToday is the "perfrig compare" report of Perf run 41680058069, job netns-rig.
+var compareToday = "PASS " + tcpKey("1", "0%") + `
+  gbps                      11.5490  baseline    12.8970   -10.5%  ok
+  client_cores_per_gbps      0.0401  baseline     0.0410    -2.2%  ok
+WARN ` + tcpKey("4", "0.1%") + `
+  gbps                       0.4500  baseline     0.4700    -4.3%  ok
+  client_cores_per_gbps      0.0597  baseline     0.0408   +46.5%  REGRESSION
+  server_cores_per_gbps      0.0574  baseline     0.0414   +38.6%  REGRESSION
+FAIL ` + tcpKey("4", "0%") + `
+  gbps                      67.2900  baseline    84.4790   -20.3%  REGRESSION
+  client_cores_per_gbps      0.0585  baseline     0.0465   +25.7%  REGRESSION
+PASS ` + udpKey + `
+  gbps                       1.7740  baseline     1.8000    -1.4%  ok
 `
 
-func TestSlackText(t *testing.T) {
-	fail := Result{
-		Workload: "vpc-netstack-psp-relay", Retried: true, Throughput: Throughput{Gbps: 2.1},
-		Runs: []Run{{Throughput: Throughput{Gbps: 2}}, {Throughput: Throughput{Gbps: 2.2}}},
+// floorToday are the floor results of compareToday.
+var floorToday = []Result{
+	{Key: tcpKey("1", "0%"), Workload: "iperf3-tcp", Runs: runs(11.167, 11.586, 11.549)},
+	{Key: tcpKey("4", "0.1%"), Workload: "iperf3-tcp", Runs: runs(0.45, 0.44, 0.46)},
+	{Key: tcpKey("4", "0%"), Workload: "iperf3-tcp", Retried: true, Runs: runs(70.59, 63.99, 57.12, 70.81, 63.56, 77.17)},
+	{Key: udpKey, Workload: "iperf3-udp", Runs: runs(1.774, 1.77, 1.78)},
+}
+
+func runs(gbps ...float64) []Run {
+	got := make([]Run, len(gbps))
+	for i, g := range gbps {
+		got[i].Throughput.Gbps = g
 	}
+	return got
+}
+
+func TestSlackText(t *testing.T) {
+	const todayFail = "netns rig FAIL on apoxy@3cd750e (c7a.8xlarge) <https://run|Run>\n" +
+		"• iperf3-tcp streams=4 loss=0%: 67.29 Gbps vs 84.48 (-20.3%), client cores/Gbps 0.0585 vs 0.0465 (+25.7%); " +
+		"runs 70.59 63.99 57.12 70.81 63.56 77.17, retried\n" +
+		"Warnings: 1 case(s), see run."
+	ec2 := Report{}
+	ec2.Host.EC2 = &struct {
+		InstanceID   string `json:"instance_id"`
+		InstanceType string `json:"instance_type"`
+		AZ           string `json:"az"`
+		AMI          string `json:"ami"`
+	}{InstanceType: "c7a.8xlarge"}
 	cases := []struct {
 		name      string
 		floorExit int
 		rep       Report
 		floor     []Result
+		compare   string
 		want      string
 	}{
+		{name: "one fail and one warn", floorExit: 1, floor: floorToday, compare: compareToday, want: todayFail},
 		{
-			name: "fail", floorExit: 1, floor: []Result{fail},
-			want: "VPC perf FAIL on apoxy@abc1234: vpc-netstack-psp-relay median 2.1 Gbps, runs 2 2.2, retried; " +
-				"vpc-netstack-psp-relay gbps 2.1000 (baseline 2.5000, -16.0%). <https://run|Run>",
+			name: "duplicated blocks", floorExit: 1, floor: floorToday,
+			// A failed perfrig compare writes the report to stdout and to stderr.
+			compare: compareToday + compareToday +
+				`time=2026-11-03T06:41:02Z level=ERROR msg="Perf rig failed" error="regression: 1 of 4 results failed" exit_code=1` + "\n",
+			want: todayFail,
 		},
-		{name: "agent infra", floorExit: 3, rep: Report{InfraError: "no subnet has capacity."}, want: "VPC perf INFRA on apoxy@abc1234: no subnet has capacity. <https://run|Run>"},
-		{name: "result infra", floorExit: 3, floor: []Result{{InfraError: "steal 9%"}}, want: "VPC perf INFRA on apoxy@abc1234: steal 9%. <https://run|Run>"},
-		{name: "no result", floorExit: 1, want: "VPC perf ERROR on apoxy@abc1234: no floor result. <https://run|Run>"},
-		{name: "later step", floorExit: 0, floor: []Result{fail}, want: "VPC perf ERROR on apoxy@abc1234: the floor check passed, but a later step failed. <https://run|Run>"},
+		{
+			name: "two fails that differ only by loss", floorExit: 1,
+			floor: []Result{
+				{Key: tcpKey("4", "0%"), Workload: "iperf3-tcp", Runs: runs(60, 61.5)},
+				{Key: tcpKey("4", "1%"), Workload: "iperf3-tcp", Runs: runs(0.3, 0.31)},
+			},
+			compare: "FAIL " + tcpKey("4", "0%") + `
+  gbps                      61.0000  baseline    84.4790   -27.8%  REGRESSION
+FAIL ` + tcpKey("4", "1%") + `
+  gbps                       0.3100  baseline     0.4000   -22.5%  REGRESSION
+  server_cores_per_gbps      0.0600  baseline     0.0414   +44.9%  REGRESSION
+`,
+			want: "netns rig FAIL on apoxy@3cd750e (c7a.8xlarge) <https://run|Run>\n" +
+				"• iperf3-tcp loss=0%: 61 Gbps vs 84.48 (-27.8%); runs 60 61.5\n" +
+				"• iperf3-tcp loss=1%: 0.31 Gbps vs 0.4 (-22.5%), server cores/Gbps 0.06 vs 0.0414 (+44.9%); runs 0.3 0.31",
+		},
+		{
+			name: "agent infra", floorExit: 3, rep: Report{InfraError: "no subnet has capacity."},
+			want: "netns rig INFRA on apoxy@3cd750e <https://run|Run>\nno subnet has capacity.",
+		},
+		{
+			name: "result infra", floorExit: 3, floor: []Result{{Key: tcpKey("1", "0%"), InfraError: "steal 9%"}},
+			compare: "INFRA " + tcpKey("1", "0%") + "\n  steal 9%\n",
+			want:    "netns rig INFRA on apoxy@3cd750e (c7a.8xlarge) <https://run|Run>\nsteal 9%.",
+		},
+		{
+			name: "no floor result", floorExit: 1, rep: ec2,
+			want: "netns rig ERROR on apoxy@3cd750e (c7a.8xlarge) <https://run|Run>\nNo floor result.",
+		},
+		{
+			name: "later step", floorExit: 0, floor: floorToday, compare: compareToday,
+			want: "netns rig ERROR on apoxy@3cd750e (c7a.8xlarge) <https://run|Run>\nThe floor check passed, but a later step failed.",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := SlackText(VPC, tc.floorExit, tc.rep, tc.floor, compareFail, "apoxy@abc1234", "https://run")
+			got := SlackText(Netns, tc.floorExit, tc.rep, tc.floor, tc.compare, "apoxy@3cd750e", "https://run")
 			if got != tc.want {
 				t.Fatalf("SlackText =\n%s\nwant\n%s", got, tc.want)
 			}

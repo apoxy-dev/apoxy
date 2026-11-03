@@ -326,7 +326,8 @@ func (m *ApoxyCli) perfSummarize(ctx context.Context, src *dagger.Directory, s p
 			c.Stdout, _ = run.Stdout(ctx)
 			c.Stderr, _ = run.Stderr(ctx)
 			c.Markdown, _ = run.File(md).Contents(ctx)
-			out = out.WithNewFile("compare-"+g+".txt", c.Stdout+c.Stderr)
+			// A failed perfrig compare writes its report to stderr too. Keep one copy in the file.
+			out = out.WithNewFile("compare-"+g+".txt", c.Stdout+strings.Replace(c.Stderr, c.Stdout, "", 1))
 		}
 		compares = append(compares, c)
 	}
