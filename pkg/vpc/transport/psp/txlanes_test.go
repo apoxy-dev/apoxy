@@ -309,10 +309,10 @@ func TestLaneClock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _ := newPair(t)
 			start := time.Now()
-			_, err := a.b.Tick(start)
+			_, _, err := a.b.Tick(start)
 			require.NoError(t, err)
 			for _, d := range tc.at {
-				_, err := a.b.Tick(start.Add(d))
+				_, _, err := a.b.Tick(start.Add(d))
 				require.NoError(t, err)
 			}
 			assert.Equal(t, tc.want, a.b.load.tick.Load())

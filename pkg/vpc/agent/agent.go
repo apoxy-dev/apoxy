@@ -128,14 +128,23 @@ type Config struct {
 	// Lanes is the number of send lanes to a relay. Zero means the queue
 	// count of the link to the relay.
 	Lanes int
+	// Addresses lists the host addresses for the host candidates. Nil means
+	// no host candidates.
+	Addresses HostAddrs
+	// DirectPaths lets the agent open a channel to each peer agent that it has
+	// traffic for, and accept the channels of its peers. False means none.
+	DirectPaths bool
+	// PairOpenTimeout is the time that a new channel to a peer agent has to
+	// open. Zero means 30 s.
+	PairOpenTimeout time.Duration
 }
 
 // Agent keeps attached relay sessions for one VPC. Run starts its processes;
 // the public calls read a snapshot or send a request to the root process.
 type Agent struct {
 	cfg      Config
-	ver      *dp.Version // Protocol version of the agent.
-	instance uint64
+	ver      *dp.Version  // Protocol version of the agent.
+	instance uint64       // Random number of the process in the Hello of each relay session and channel.
 	seed     maphash.Seed // Orders the relays of this agent.
 	demux    psp.Demux
 	quicCfg  *quic.Config // Config of the relay connections.
@@ -145,6 +154,7 @@ type Agent struct {
 	retryMin, retryMax, retryNext   time.Duration
 	relistMin, relistMax            time.Duration
 	rttBand, rttWaitMin, rttWaitMax time.Duration
+	pairOpen                        time.Duration
 
 	snap atomic.Pointer[snapshot]
 	run  atomic.Pointer[runRef] // The root of the Run that runs, or nil.
@@ -155,6 +165,9 @@ type runRef struct {
 	mb      *proc.Mailbox
 	stopped chan struct{} // Closed when Run returns.
 }
+
+// instanceString returns an instance as 16 lowercase hex digits, the form of each log and status.
+func instanceString(v uint64) string { return fmt.Sprintf("%016x", v) }
 
 // New returns an agent. Call Run to start it.
 func New(cfg Config) *Agent {
@@ -172,6 +185,7 @@ func New(cfg Config) *Agent {
 	a.rttBand = cmp.Or(cfg.RTTBand, defaultRTTBand)
 	a.rttWaitMin = cmp.Or(cfg.RTTWaitMin, defaultRTTWaitMin)
 	a.rttWaitMax = cmp.Or(cfg.RTTWaitMax, defaultRTTWaitMax)
+	a.pairOpen = cmp.Or(cfg.PairOpenTimeout, defaultPairOpenTimeout)
 	a.demux.Probe = a.probes.take
 	a.quicCfg = relayQUIC.Clone()
 	if cfg.Transport != nil {
@@ -218,6 +232,12 @@ type Status struct {
 	RTT time.Duration
 	// Connections has the attached and the draining relay sessions, in rank order.
 	Connections []ConnStatus
+	// Candidates are the addresses that the agent gives its peers for direct
+	// paths: the reflexive ones, then the host ones.
+	Candidates []Candidate
+	// Direct has a pair for each peer agent that the agent has a channel to, or
+	// opens one to, by the address of the peer.
+	Direct []DirectStatus
 }
 
 // ConnStatus is one relay session of the agent with its address.
@@ -245,6 +265,10 @@ func (a *Agent) Status() Status {
 			Relay: c.relay, Address: c.base.Address, Rank: c.rank, Draining: c.draining,
 			Mode: c.mode, Reason: c.reason, RTT: c.liveRTT(),
 		})
+	}
+	st.Candidates = s.cands.list()
+	for _, p := range s.pairs {
+		st.Direct = append(st.Direct, p.status())
 	}
 	return st
 }

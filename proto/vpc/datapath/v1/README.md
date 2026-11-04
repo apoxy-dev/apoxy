@@ -13,7 +13,12 @@ service that each side serves:
 | ALPN           | Between                  | Service | Served by |
 |----------------|--------------------------|---------|-----------|
 | `apoxy-vpc/2`  | agent or VTEP and relay  | `Relay` | relay     |
+| `apoxy-peer/2` | agent and agent          | `Peer`  | both      |
 | `apoxy-mesh/1` | relay and relay          | `Mesh`  | both      |
+
+A peer channel is not on a socket of a relay. It is an inner UDP flow between
+port 1001 at the base addresses of two agents, and it goes on the routes of the
+agents as other inner packets do (see "Peer").
 
 A relay has a second UDP socket, the PSP socket (UDP 1000). It carries the
 PSP packets of agents (first byte `0x04` or `0x29`), which the relay opens
@@ -338,7 +343,7 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 
 | Method          | Kind  | Messages |
 |-----------------|-------|----------|
-| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, version, name, local_routes_only, instance}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version, PSP address, relay ID), `Config`, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, and in PSP mode `RxReport` (only the last one waits). |
+| `Session`       | bidi  | Agent: `Hello{mode, fallback_reason, version, name, local_routes_only, instance}`, then `Ack{rev}` and `Status` (ICV failures; the first one after `Config` also has the time to connect). Relay: `Welcome` (reflexive address, lane port limit, version, PSP address, relay ID), `Config`, then `RouteDelta{rev}`, `NoRoute`, rekey (`KeysRequest`), `Config`, `Drain`, `Revocations{vpc, agents}`, and in PSP mode `RxReport` (only the last one waits). |
 | `Attach`        | unary | `AttachRequest{vpc, name, labels, routes, rank}` -> `AttachResponse{attachment_id, routes, addresses}`. `routes` has one status for each advertised route. `addresses` has the address prefixes that the relay gives the attachment. Errors: `FailedPrecondition` (the session sent no `Hello`), `AlreadyExists` (another session of this relay has the address). |
 | `Rekey`         | unary | `KeysRequest{op, generation}` -> `KeysResponse`: SAs for traffic from the relay to the agent. The first one from a session in QUIC mode changes it to PSP mode (see "Data mode"). Errors: `FailedPrecondition` (no `Session` call), `InvalidArgument` (an SA VNI is not the network ID), `Unavailable` (the relay has no PSP bridge, or it cannot make its relay SAs). |
 | `RegisterLanes` | unary | `{ports, receive}` -> `Empty`: replaces the lane ports of the session. The relay ignores `receive`. Errors: `InvalidArgument` (more ports than `Welcome.max_lanes`, port 0, the session port, a repeated port), `FailedPrecondition` (no PSP address). |
@@ -346,6 +351,16 @@ Addresses and prefixes are text (`fd61::1`, `10.0.0.0/8`, `host:port`).
 `Welcome.relay_id` is the ID of the relay. `KeysRequest.generation` is the
 key attempt of the agent, from 1. The relay copies it from the `Rekey` request
 that changes the mode into its `OfferSAs`, and its own renewals carry 0.
+
+`Revocations` is the full revocation list of the VPC of the agent: one
+`RevokedAgent{name, revoked_at}` for each revoked agent name. It revokes each
+cert of that name with a `NotBefore` at or before `revoked_at`. The relay sends
+it only to an agent at revision 26 or later: after the first attachment of the
+session, and then at each trust change that changes the list. A list replaces
+the last one, and an empty list revokes no agent. A writer can leave out an
+entry with a `revoked_at` before now minus the cert lifetime (24 h) and 10
+minutes, because each cert that it revokes has expired. The agent checks its
+peers with these lists (see "Peer").
 
 A relay with a mesh refuses an `Attach` with more than 64 prefixes, the
 addresses and the advertised routes together, or whose entry does not fit in
@@ -532,6 +547,36 @@ own port. The agent sends the one byte 0x03 from each lane port to the relay
 after `RegisterLanes`, then every 5 s, so that its NAT keeps the ports open.
 New lane ports, and a new session address, need a new keepalive.
 
+### Peer (`apoxy-peer/2`)
+
+| Method       | Kind  | Messages | Deadline |
+|--------------|-------|----------|----------|
+| `Hello`      | unary | `PeerHello{version, prefixes, instance}` -> `PeerHello`. The first call of the dialer. Each side gives its list (at most 16 prefixes) and its instance. | 5 s |
+| `Keys`       | unary | `KeysRequest` -> `KeysResponse`. The receiver of a direction calls the sender. | 5 s |
+| `Candidates` | unary | `Candidates{round, addresses, prefixes}` -> `Empty`. At most 8 addresses in `ip:port` form, and the list. A higher round replaces both. | 5 s |
+
+A pair is the state of one agent for one peer agent. The agent finds the pair
+by the fingerprint of the peer (the SHA-256 of the SubjectPublicKeyInfo of its
+leaf cert) and its instance (the `Hello.instance` of its relay sessions: a
+random 64-bit number that the agent process makes at its start). The list of
+an agent is the set of /96 session prefixes of its relay sessions, at most 16.
+A channel is the one QUIC connection of a pair, and an end of the channel ends
+the pair.
+
+Each side checks the cert of the other side with the CA bundle, the project and
+the VPC of its own cert, and with the revocation lists of its relay sessions
+(see "Relay"). A failed check fails the handshake. A `Hello` whose list does
+not hold the channel address of its sender fails. A side sends at most one call
+of each kind at a time and takes at most 8 incoming streams. A `Keys` or
+`Candidates` timeout ends the channel, and a `Hello` timeout is a failed dial.
+While a `Candidates` call runs, only the newest round waits.
+
+An agent closes a channel with a `PeerCloseCode`: `UPGRADE` (the peer revision
+is below the minimum of the agent; the reason gives the minimum), `DUPLICATE`
+(the agent keeps another channel with the same peer: the one whose QUIC client
+has the lower address) or `CERT` (the cert of the peer is revoked, or the cert
+of one side came to its end).
+
 ### Mesh (`apoxy-mesh/1`)
 
 | Method      | Kind          | Messages |
@@ -714,7 +759,7 @@ constants `Revision` and `MinRevision` are in `version.go`.
 
 The first message of a session and its answer carry a
 `Version{revision, min_revision, build}`: `Hello` and `Welcome` on a relay
-session, `OpenRequest` and `OpenResponse` on a peer session. A build from
+session, and the `PeerHello` of each side on a peer channel. A build from
 before revisions sends no `Version`, and that reads as revision 0. `build` is
 only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 `MeshOpenResponse` carry it.
@@ -747,6 +792,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 23 | The `Shard` message is gone, and `Hello` field 3 (`shard`) is reserved. The minimum revision of each side is 23, also on a mesh session. | Opens one QUIC connection for each relay session, and sends all data of the session on it. | No duty. | Sends the data frames of a session only on its session connection. Closes a session below revision 23, and a mesh session with a relay below revision 23, with `UPGRADE`. |
 | 24 | `RemoteAddresses` and `SessionRequest.remote` are gone. The minimum revision of each side is 24. | Sends no addresses of its other relays. | No duty. | Takes a source, and sends traffic for an address, only for the connection that it gave the address to. Closes a session below revision 24, and a mesh session with a relay below revision 24, with `UPGRADE`. |
 | 25 | `Route.relay` is gone. The minimum revision of each side is 25. | Holds only its configured sessions and makes no dial for a relay that a route names. Sends a packet from a session address on that session, and any other packet on its primary session. | No duty. | Sends no `Route.relay`. Closes a session below revision 25, and a mesh session with a relay below revision 25, with `UPGRADE`. |
+| 26 | `Peer` service on `apoxy-peer/2` between two agents; `Revocations` on `Session`. | Runs the pair protocol of "Peer", with the instance of its relay `Hello` in `PeerHello.instance`. Closes a peer below its minimum with `UPGRADE`. Ends a pair with a revoked peer. | No duty: it sets `local_routes_only` and starts no pair. | Sends `Revocations` to an agent at revision 26 or later. |
 
 ### Minimum revision
 

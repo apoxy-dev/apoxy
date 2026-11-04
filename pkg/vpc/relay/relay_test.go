@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,8 +18,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/testing/protocmp"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp/aead"
@@ -610,6 +614,173 @@ func TestRevocation(t *testing.T) {
 			}
 			assert.True(t, b.openAfter(100*time.Millisecond))
 		})
+	}
+}
+
+// TestRevocationList checks the Revocations messages of the relay. They come after the first
+// attachment and at each change, only at revision 26 or later, with no expired entry.
+func TestRevocationList(t *testing.T) {
+	now := time.Now().UTC().Round(0)
+	old := vpcv1alpha1.RevokedAgent{Name: "agent-old", RevokedAt: metav1.NewTime(now.Add(-time.Hour))}
+	newer := vpcv1alpha1.RevokedAgent{Name: "agent-old", RevokedAt: metav1.NewTime(now.Add(-time.Minute))}
+	c := vpcv1alpha1.RevokedAgent{Name: "agent-c", RevokedAt: metav1.NewTime(now)}
+	// This entry can revoke no cert that is valid now, so the relay leaves it out.
+	gone := vpcv1alpha1.RevokedAgent{Name: "agent-gone", RevokedAt: metav1.NewTime(now.Add(-identity.RevokedKeep - time.Minute))}
+	type list = []vpcv1alpha1.RevokedAgent
+	cases := []struct {
+		name  string
+		rev   uint32
+		first list // The list of the VPC at the attach.
+		next  list // The list of the VPC after the change.
+		other bool // The change is in another VPC.
+		// hold makes a check wait while the list changes: "start" is the check at the start of the
+		// session, and "attach" is the check of the first attachment.
+		hold string
+		want []list
+	}{
+		{name: "revoke", rev: dpv1.Revision, first: list{old, gone}, next: list{old, gone, c}, want: []list{{old}, {old, c}}},
+		{name: "new time of a revoke", rev: dpv1.Revision, first: list{old}, next: list{newer}, want: []list{{old}, {newer}}},
+		{name: "empty first list", rev: dpv1.Revision, next: list{c}, want: []list{{}, {c}}},
+		{name: "empty list after a list", rev: dpv1.Revision, first: list{old}, want: []list{{old}, {}}},
+		{name: "same list", rev: dpv1.Revision, first: list{old, gone}, next: list{gone, old}, want: []list{{old}}},
+		{name: "change in another VPC", rev: dpv1.Revision, first: list{old}, next: list{c}, other: true, want: []list{{old}}},
+		{name: "change during the check of the attach", rev: dpv1.Revision, first: list{old}, next: list{old, c}, hold: "attach",
+			want: []list{{old}, {old, c}}},
+		{name: "change during a check from before the attach", rev: dpv1.Revision, first: list{old}, next: list{old, c}, hold: "start",
+			want: []list{{old}, {old, c}}},
+		{name: "revision 25", rev: 25, first: list{old}, next: list{old, c}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.trust.set(vpcUID, tc.first...)
+			a := e.dial(t, "agent-a")
+			var held *heldCall
+			if tc.hold == "start" {
+				// The handshake and the link make two calls. The next one is the check of the session.
+				require.Eventually(t, func() bool { return e.trust.revokedCalls() >= 2 }, wait, 10*time.Millisecond)
+				held = e.trust.hold()
+			}
+			h := hello(dpv1.Mode_MODE_QUIC)
+			h.Version = &dpv1.Version{Revision: tc.rev, MinRevision: dpv1.MinRevision}
+			_, err := a.session(h)
+			require.NoError(t, err)
+			if held != nil {
+				waitEntered(t, held)
+			}
+			assert.Never(t, func() bool { return len(a.lists()) > 0 }, 300*time.Millisecond, 10*time.Millisecond,
+				"a list before the first attachment")
+			if tc.hold == "attach" {
+				held = e.trust.hold()
+			}
+			a.attach()
+			switch {
+			case tc.hold == "attach":
+				waitEntered(t, held)
+			case held == nil && len(tc.want) > 0:
+				require.Eventually(t, func() bool { return len(a.lists()) == 1 }, wait, 10*time.Millisecond)
+			}
+			vpc := vpcUID
+			if tc.other {
+				vpc = "vpc-b"
+			}
+			e.trust.set(vpc, tc.next...)
+			e.r.Recheck(project)
+			if held != nil {
+				// The next check waits until the agent gets the first list. A newer list can
+				// replace one that the writer did not take.
+				next := e.trust.hold()
+				close(held.release)
+				require.Eventually(t, func() bool { return len(a.lists()) == 1 }, wait, 10*time.Millisecond)
+				close(next.release)
+			}
+			require.Eventually(t, func() bool { return len(a.lists()) == len(tc.want) }, wait, 10*time.Millisecond)
+			// A recheck with no change sends nothing more.
+			e.r.Recheck(project)
+			assert.True(t, a.openAfter(500*time.Millisecond))
+			requireLists(t, tc.want, a.lists())
+		})
+	}
+}
+
+// TestRevocationListWriter checks the lists that wait for a stream writer that cannot send. A
+// newer list replaces one that the writer did not take, and the writer sends the one that it took.
+func TestRevocationListWriter(t *testing.T) {
+	now := time.Now().UTC().Round(0)
+	// The list is larger than the receive window of the stream, so the writer waits in its send.
+	var big []vpcv1alpha1.RevokedAgent
+	for i := range 40_000 {
+		big = append(big, vpcv1alpha1.RevokedAgent{Name: fmt.Sprintf("agent-%06d", i), RevokedAt: metav1.NewTime(now)})
+	}
+	with := func(name string) []vpcv1alpha1.RevokedAgent {
+		return append(slices.Clone(big), vpcv1alpha1.RevokedAgent{Name: name, RevokedAt: metav1.NewTime(now)})
+	}
+	small := []vpcv1alpha1.RevokedAgent{{Name: "agent-p", RevokedAt: metav1.NewTime(now)}}
+	e := newEnv(t)
+	a := e.dial(t, "agent-a")
+	a.open(dpv1.Mode_MODE_QUIC)
+	a.attach()
+	require.Eventually(t, func() bool { return len(a.lists()) == 1 }, wait, 10*time.Millisecond)
+
+	// The reads stop after the small list.
+	resume := a.stopAfter(func(m *dpv1.SessionResponse) bool { return len(m.GetRevocations().GetAgents()) == 1 })
+	e.trust.set(vpcUID, small...)
+	e.r.Recheck(project)
+	require.Eventually(t, func() bool { return len(a.lists()) == 2 }, wait, 10*time.Millisecond)
+	// The writer took the large list when its first bytes come.
+	before := a.qc.ConnectionStats().BytesReceived
+	e.trust.set(vpcUID, big...)
+	e.r.Recheck(project)
+	require.Eventually(t, func() bool { return a.qc.ConnectionStats().BytesReceived > before+256<<10 }, wait, 10*time.Millisecond)
+	// The later lists wait while the writer sends the large list.
+	for _, l := range [][]vpcv1alpha1.RevokedAgent{with("agent-x"), with("agent-y")} {
+		calls := e.trust.revokedCalls()
+		e.trust.set(vpcUID, l...)
+		e.r.Recheck(project)
+		require.Eventually(t, func() bool { return e.trust.revokedCalls() > calls }, wait, 10*time.Millisecond)
+	}
+	// The next check starts only after the connection took the result of the last one.
+	held := e.trust.hold()
+	e.r.Recheck(project)
+	waitEntered(t, held)
+	resume()
+	close(held.release)
+	require.Eventually(t, func() bool { return len(a.lists()) == 4 }, wait, 10*time.Millisecond)
+	assert.True(t, a.openAfter(500*time.Millisecond))
+	requireLists(t, [][]vpcv1alpha1.RevokedAgent{{}, small, big, with("agent-y")}, a.lists())
+}
+
+// waitEntered waits until the held Revoked call read its list.
+func waitEntered(t *testing.T, h *heldCall) {
+	t.Helper()
+	select {
+	case <-h.entered:
+	case <-time.After(wait):
+		t.Fatal("no check of the trust data")
+	}
+}
+
+// requireLists checks that got has the lists of want in order, each in any order.
+func requireLists(t *testing.T, want, got [][]vpcv1alpha1.RevokedAgent) {
+	t.Helper()
+	require.Len(t, got, len(want))
+	sorted := func(l []vpcv1alpha1.RevokedAgent) []vpcv1alpha1.RevokedAgent {
+		l = slices.Clone(l)
+		slices.SortFunc(l, func(x, y vpcv1alpha1.RevokedAgent) int {
+			if x.Name != y.Name {
+				return strings.Compare(x.Name, y.Name)
+			}
+			return x.RevokedAt.Compare(y.RevokedAt.Time)
+		})
+		return l
+	}
+	same := func(x, y vpcv1alpha1.RevokedAgent) bool {
+		return x.Name == y.Name && x.RevokedAt.Time.Equal(y.RevokedAt.Time)
+	}
+	for i := range want {
+		if !slices.EqualFunc(sorted(want[i]), sorted(got[i]), same) {
+			t.Errorf("list %d: got %d entries %v..., want %d entries", i, len(got[i]), got[i][:min(3, len(got[i]))], len(want[i]))
+		}
 	}
 }
 

@@ -48,6 +48,17 @@ type Config struct {
 	// Relay configures the VPC relay.
 	// +optional
 	Relay *RelayConfig `json:"relay,omitempty"`
+	// VPC configures the VPC agent of `apoxy vpc connect`.
+	// +optional
+	VPC *VPCConfig `json:"vpc,omitempty"`
+}
+
+// VPCConfig configures the VPC agent of `apoxy vpc connect`.
+type VPCConfig struct {
+	// DirectPaths lets the agent send the traffic to another agent of the VPC on a direct path
+	// when one works, with the relay path as the backup. Omitted means true.
+	// +optional
+	DirectPaths *bool `json:"directPaths,omitempty"`
 }
 
 // Project is a configuration for a project.

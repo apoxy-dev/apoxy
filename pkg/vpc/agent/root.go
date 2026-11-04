@@ -43,6 +43,10 @@ type home struct {
 	// routes is the copy of the route table of the session.
 	routes map[netip.Prefix]routeInfo
 	synced bool // The first table ended.
+	// reflexive is the agent socket as the relay saw it at the Welcome.
+	reflexive netip.AddrPort
+	// revoked is the last revocation list of the relay of the session, or nil.
+	revoked *revokedList
 	// held are the extra attachments of the session, by name. pending are the
 	// specs of an attachX with no attachedX yet.
 	held       map[string]heldX
@@ -70,6 +74,8 @@ type root struct {
 	mb     *proc.Mailbox
 	ctx    context.Context
 	cancel context.CancelFunc
+	runEnd <-chan struct{} // The end of the context of Run.
+	quit   chan struct{}   // Closed at stop: Run ends with an error of the root.
 	tasks  int
 	ending bool
 	err    error
@@ -102,6 +108,14 @@ type root struct {
 	clamps   map[*psp.Peer]int
 	pspPeers map[*psp.Peer]bool
 
+	// cands are the own candidates, with the last host list hostAddrs.
+	// listing is set while a host list runs.
+	cands                          candidates
+	hostAddrs                      []netip.Addr
+	listing, listAgain, listFailed bool
+
+	pp pairTable
+
 	cb        *proc.Mailbox
 	cbRunning bool
 	cbEnding  bool
@@ -125,8 +139,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		a: a, mb: proc.NewMailbox(0), retryWait: minBackoff,
 		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]routeInfo{},
 		welcome: map[string]string{}, clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
+		pp: newPairTable(a.cfg.DirectPaths),
 	}
-	r.ctx, r.cancel = context.WithCancel(ctx)
+	// The root context ends after the pairs, so that the sessions carry the close of each channel.
+	r.ctx, r.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	r.runEnd = ctx.Done()
 	defer r.cancel()
 	ref := &runRef{mb: r.mb, stopped: make(chan struct{})}
 	if !a.run.CompareAndSwap(nil, ref) {
@@ -171,7 +188,10 @@ func (r *root) run() error {
 	defer tick.Stop()
 	report := time.NewTicker(reportInterval)
 	defer report.Stop()
+	gather := time.NewTicker(gatherInterval)
+	defer gather.Stop()
 	for {
+		r.syncPairs()
 		r.flush()
 		if r.ending && r.idle() {
 			if !r.cbRunning {
@@ -183,16 +203,22 @@ func (r *root) run() error {
 				r.cb.Send(endMsg{})
 			}
 		}
-		var stop <-chan struct{}
+		var stop, quit <-chan struct{}
 		if !r.ending {
-			stop = r.ctx.Done()
+			stop, quit = r.runEnd, r.quit
 		}
 		select {
 		case <-stop:
 			r.shutdown()
+		case <-quit:
+			r.shutdown()
 		case <-r.mb.Wake():
 			for _, m := range r.mb.Take() {
 				r.handle(m)
+			}
+		case <-r.pp.chans.initials.Wake():
+			for _, m := range r.pp.chans.initials.Take() {
+				r.initial(m.(initialMsg))
 			}
 		case now := <-tick.C:
 			r.tick(now)
@@ -200,7 +226,13 @@ func (r *root) run() error {
 			if r.b != nil {
 				r.b.ReportQUIC(now, r.a.quicLost.total())
 			}
+		case <-gather.C:
+			r.gather()
 		case <-r.a.cfg.Identity.Changed():
+			// A pair ends at the renewal of the own cert.
+			for _, rec := range r.pp.recs {
+				r.endPair(rec, identityMsg{})
+			}
 			r.plan()
 		case <-r.keep.choiceTimer():
 			r.closeRound()
@@ -243,7 +275,7 @@ func (r *root) task(f func() any) {
 
 // idle reports whether the root has no child and no task.
 func (r *root) idle() bool {
-	return len(r.homes) == 0 && r.tasks == 0 && !r.idRunning
+	return len(r.homes) == 0 && len(r.pp.recs) == 0 && r.tasks == 0 && !r.idRunning
 }
 
 // stop ends Run with err.
@@ -251,7 +283,10 @@ func (r *root) stop(err error) {
 	if r.err == nil {
 		r.err = err
 	}
-	r.cancel()
+	if r.quit == nil {
+		r.quit = make(chan struct{})
+		close(r.quit)
+	}
 }
 
 // shutdown starts the end of Run: the writes on the socket get a deadline, so
@@ -261,7 +296,6 @@ func (r *root) shutdown() {
 	if t := r.a.cfg.Transport; t != nil && t.Conn != nil {
 		_ = t.Conn.SetWriteDeadline(time.Now().Add(closeWrites))
 	}
-	r.cancel()
 	k := &r.keep
 	if rd := k.round; rd != nil {
 		rd.cancel()
@@ -282,9 +316,11 @@ func (r *root) shutdown() {
 		r.attachRetry.Stop()
 		r.attachRetry = nil
 	}
-	for _, h := range r.homes {
-		h.s.mb.Send(endMsg{})
+	// The sessions end after the pairs, so that the close of each channel goes out.
+	for _, rec := range r.pp.recs {
+		r.endPair(rec, endMsg{})
 	}
+	r.endSessions()
 	for spec, q := range r.attaches {
 		q.reply <- attachReply{err: errNoRelay}
 		delete(r.attaches, spec)
@@ -350,6 +386,12 @@ func (r *root) handle(m any) {
 		r.detached(m)
 	case bindMsg:
 		r.bind(m)
+	case removePeerMsg:
+		r.removeDirect(m)
+	case lingerDone:
+		r.endSessions()
+	case pairEnded:
+		r.pairEnded(m)
 	default:
 		if !r.ending {
 			r.handleLive(m)
@@ -378,16 +420,33 @@ func (r *root) handleLive(m any) {
 		r.routes(m)
 	case offerMsg:
 		req, err := m.peer.Offer(now)
-		m.s.mb.Send(rekeyMsg{peer: m.peer, attempt: m.attempt, req: req, err: err})
+		keyReply(m.s, m.pr, rekeyMsg{peer: m.peer, attempt: m.attempt, req: req, err: err})
 	case refusedMsg:
 		req, err := m.peer.Refused(m.spis, now)
-		m.s.mb.Send(rekeyMsg{peer: m.peer, attempt: m.attempt, req: req, err: err})
+		keyReply(m.s, m.pr, rekeyMsg{peer: m.peer, attempt: m.attempt, req: req, err: err})
 	case applyMsg:
 		refused, err := m.peer.Apply(m.req, now)
-		m.s.mb.Send(appliedMsg{peer: m.peer, attempt: m.attempt, refused: refused, err: err})
+		keyReply(m.s, m.pr, appliedMsg{peer: m.peer, attempt: m.attempt, refused: refused, err: err})
+	case pairOpen:
+		r.pairOpen(m)
+	case peerList:
+		r.peerListMsg(m)
+	case pairStatus:
+		r.pairStatus(m)
 	case drainedMsg:
 		r.drained(m)
+	case hostsListed:
+		r.hostsListed(m)
 	}
+}
+
+// keyReply gives the result of a key operation to the session s, or to the pair pr when it is set.
+func keyReply(s *session, pr *pair, m any) {
+	if pr != nil {
+		pr.mb.Send(m)
+		return
+	}
+	s.mb.Send(m)
 }
 
 // homeOf returns the record of the home session s, or nil.
@@ -415,7 +474,7 @@ func (r *root) take(d *dialed) bool {
 	s := newSession(r.a, r.ctx, r.mb, up, d, k.rank)
 	ctx, unwatch := context.WithCancel(r.ctx)
 	r.homes = append(r.homes, &home{
-		s: s, ep: d.ep, id: d.relayID, rank: k.rank, up: up, unwatch: unwatch,
+		s: s, ep: d.ep, id: d.relayID, rank: k.rank, up: up, unwatch: unwatch, reflexive: d.reflexive,
 		routes: map[netip.Prefix]routeInfo{}, held: map[string]heldX{}, pending: map[string]*AttachmentSpec{},
 	})
 	k.rank++
@@ -486,6 +545,7 @@ func (r *root) sessAttached(m sessAttached) {
 	// OnRoutes follows the new session only after its OnAttach.
 	r.usePrimary()
 	r.attachMissing()
+	r.gather()
 }
 
 // drained marks a home session draining: its relay drains. The dial plan
@@ -512,6 +572,7 @@ func (r *root) sessEnded(m sessEnded) {
 	}
 	r.homes = slices.DeleteFunc(r.homes, func(o *home) bool { return o == h })
 	h.unwatch()
+	r.endPairsOf(h)
 	if !r.ending {
 		slog.Info("Relay session ended", "relay", h.ep.addr, "error", m.err)
 	}
@@ -551,6 +612,7 @@ func (r *root) sessEnded(m sessEnded) {
 		}
 		r.prefer()
 		r.usePrimary()
+		r.gather()
 	} else {
 		r.retry([]string{h.id}, fmt.Errorf("relay %s: %w", h.ep.addr, m.err))
 	}
@@ -561,7 +623,13 @@ func (r *root) sessEnded(m sessEnded) {
 // The snapshot loads the mode itself.
 func (r *root) upChanged(m upChanged, now time.Time) {
 	h := r.homeOf(m.s)
-	if h == nil || !slices.Contains(m.keys, keyReport) {
+	if h == nil {
+		return
+	}
+	if slices.Contains(m.keys, keyRevoked) {
+		h.revoked = proc.Load[*revokedList](h.up, keyRevoked)
+	}
+	if !slices.Contains(m.keys, keyReport) {
 		return
 	}
 	if rep := proc.Load[*rxReport](h.up, keyReport); rep != nil && rep != h.report {
@@ -653,6 +721,7 @@ func (r *root) bound(m bound) {
 	r.binding = false
 	if m.err == nil {
 		r.b = m.b
+		r.b.SetTakeOut(r.pp.chans.take)
 	}
 	for _, s := range r.bindWait {
 		s.mb.Send(bindingMsg{m.b, m.err})
@@ -686,15 +755,22 @@ func (r *root) tick(now time.Time) {
 	if r.b == nil || r.ending {
 		return
 	}
-	ups, err := r.b.Tick(now)
+	ups, heads, err := r.b.Tick(now)
 	if err != nil {
 		slog.Warn("Failed to rekey receive SAs", "error", err)
 	}
 	for _, u := range ups {
 		if h := r.peerHome(u.Peer); h != nil {
 			h.s.mb.Send(rekeyMsg{peer: u.Peer, req: u.Request})
+		} else if rec := r.pairOf(u.Peer); rec != nil {
+			rec.p.mb.Send(rekeyMsg{peer: u.Peer, req: u.Request})
 		}
 	}
+	for _, hd := range heads {
+		r.head(hd, now)
+	}
+	r.uses(now)
+	r.held()
 }
 
 // peerHome returns the home session whose relay peer is p, or nil.
@@ -887,6 +963,10 @@ func (r *root) callbackDone() {
 // publish stores the snapshot of the root state for the public reads.
 func (r *root) publish(running bool) {
 	s := &snapshot{running: running, specs: maps.Clone(r.specs)}
+	if running {
+		s.cands = r.cands
+		s.pairs = r.pairSnaps()
+	}
 	for _, h := range r.live() {
 		mode, reason := h.st.mode, h.st.reason
 		if ms := proc.Load[*modeState](h.up, keyMode); ms != nil {

@@ -159,7 +159,7 @@ func (l *Link) AddRelay(addr netip.AddrPort) (*Peer, error) {
 
 // HandleData takes a data frame of the relay session of l and waits as Binding.read does. One
 // goroutine calls it: set l with (*peerconn.Conn).HandleData.
-func (l *Link) HandleData(frame []byte) { l.b.read(&l.rx, frame) }
+func (l *Link) HandleData(frame []byte) { l.b.read(&l.rx, frame, netip.AddrPort{}) }
 
 // BatchEnd gives the data frames of one read of the relay session to the driver.
 func (l *Link) BatchEnd() { l.b.readEnd(&l.rx) }

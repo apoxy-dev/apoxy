@@ -5,6 +5,7 @@ package psp
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -74,7 +75,7 @@ func TestLaneReadFails(t *testing.T) {
 				// The read loop of lane 1, as ReadLanes makes it.
 				tr := &quic.Transport{
 					Conn:                 c,
-					NonQUICPacketHandler: func(pkt []byte, _ net.Addr) { b.b.receive(&b.b.lanes[1], pkt) },
+					NonQUICPacketHandler: func(pkt []byte, _ net.Addr) { b.b.receive(&b.b.lanes[1], pkt, netip.AddrPort{}) },
 					NonQUICBatchEnd:      func() { b.b.readEnd(&b.b.lanes[1]) },
 				}
 				require.NoError(t, tr.Start())

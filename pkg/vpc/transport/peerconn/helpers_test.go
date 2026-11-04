@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"net"
 	"testing"
@@ -57,6 +58,21 @@ func (f *fakeQC) SendDatagram(b []byte) error {
 	}
 	if f.sent != nil {
 		f.sent <- bytes.Clone(b)
+	}
+	return nil
+}
+
+// TrySendDatagram is SendDatagram that drops the frame when sent is full.
+func (f *fakeQC) TrySendDatagram(b []byte) error {
+	if f.err != nil {
+		return f.err
+	}
+	if f.sent != nil {
+		select {
+		case f.sent <- bytes.Clone(b):
+		default:
+			return errors.New("fake: send queue is full")
+		}
 	}
 	return nil
 }

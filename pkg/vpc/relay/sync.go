@@ -32,6 +32,7 @@ type sessionStream = rpc.BidiStreamServer[dpv1.SessionRequest, dpv1.SessionRespo
 type outbox struct {
 	mu      sync.Mutex
 	msgs    []*dpv1.SessionResponse
+	list    *dpv1.Revocations
 	report  *dpv1.RxReport
 	dropped uint64
 	sig     chan struct{}
@@ -68,6 +69,14 @@ func (o *outbox) setReport(r *dpv1.RxReport) {
 	o.poke()
 }
 
+// setList makes l the next revocation list. A newer one replaces it.
+func (o *outbox) setList(l *dpv1.Revocations) {
+	o.mu.Lock()
+	o.list = l
+	o.mu.Unlock()
+	o.poke()
+}
+
 func (o *outbox) poke() {
 	select {
 	case o.sig <- struct{}{}:
@@ -75,12 +84,12 @@ func (o *outbox) poke() {
 	}
 }
 
-func (o *outbox) take() ([]*dpv1.SessionResponse, *dpv1.RxReport) {
+func (o *outbox) take() ([]*dpv1.SessionResponse, *dpv1.Revocations, *dpv1.RxReport) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	msgs, rep := o.msgs, o.report
-	o.msgs, o.report = nil, nil
-	return msgs, rep
+	msgs, list, rep := o.msgs, o.list, o.report
+	o.msgs, o.list, o.report = nil, nil, nil
+	return msgs, list, rep
 }
 
 // writer is the stream writer task of A. It sends the route changes, in parts, from the route
@@ -116,13 +125,12 @@ func (w *writer) run(ctx context.Context, head []*dpv1.SessionResponse) error {
 	}
 }
 
-// take returns the messages that wait: the route changes as RouteDelta parts, then the queued
-// messages and the receive report. The first take sends one more RouteDelta with no routes, which
-// ends the first table.
+// take returns the route changes as RouteDelta parts, the queued messages, the revocation list
+// and the receive report. The first take adds a RouteDelta with no routes to end the first table.
 func (w *writer) take() []*dpv1.SessionResponse {
 	first := w.rev == 0
 	// The queued messages are taken before the route table, so the table has the routes stored before them.
-	msgs, rep := w.out.take()
+	msgs, list, rep := w.out.take()
 	var out []*dpv1.SessionResponse
 	for _, d := range w.parts(load[*routeTable](w.values, keyRoutes).view(w.s)) {
 		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RouteDelta{RouteDelta: d}})
@@ -132,6 +140,9 @@ func (w *writer) take() []*dpv1.SessionResponse {
 		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RouteDelta{RouteDelta: &dpv1.RouteDelta{Rev: w.rev}}})
 	}
 	out = append(out, msgs...)
+	if list != nil {
+		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_Revocations{Revocations: list}})
+	}
 	if rep != nil {
 		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RxReport{RxReport: rep}})
 	}

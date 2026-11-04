@@ -270,8 +270,10 @@ func (d *driver) Seal(f *netstack.TxFrame, virt, phy []byte) int {
 }
 
 // countTx counts a send frame of virt that failed with err.
-func (d *driver) countTx(virt []byte, err error) {
-	b := d.b
+func (d *driver) countTx(virt []byte, err error) { d.b.countTx(err) }
+
+// countTx counts an inner packet that failed with err.
+func (b *Binding) countTx(err error) {
 	switch err {
 	case ErrNoRoute:
 		b.stats.txNoRoute.Add(1)
@@ -299,18 +301,24 @@ func (b *Binding) prepare(virt []byte, f *netstack.TxFrame) error {
 	if !ok || len(virt) > b.mtu {
 		return errDrop
 	}
-	// A binding with one link has no call here.
-	l := b.only.Load()
-	if l == nil {
-		if l = b.sourceLink(virt); l == nil {
+	var p *Peer
+	direct := false
+	if b.directN.Load() != 0 {
+		p, direct = b.directPeer(virt, dst)
+	}
+	if !direct {
+		// A binding with one link has no call here.
+		l := b.only.Load()
+		if l == nil {
+			if l = b.sourceLink(virt); l == nil {
+				return ErrNoRoute
+			}
+		}
+		if p, ok = l.routes.Lookup(dst); !ok {
 			return ErrNoRoute
 		}
+		b.heads.capture(l, virt, dst)
 	}
-	p, ok := l.routes.Lookup(dst)
-	if !ok {
-		return ErrNoRoute
-	}
-	b.heads.capture(l, virt, dst)
 	slot := p.slot.Load()
 	if mtu := b.pathMTU(slot != 0); len(virt) > mtu {
 		b.tooBig(virt, mtu)
@@ -346,15 +354,21 @@ func (b *Binding) prepareSegs(hdr []byte, n, size, total int, f *netstack.TxFram
 	if !ok || size > b.mtu {
 		return false
 	}
-	l := b.linkOf(hdr)
-	if l == nil {
-		return false
+	var p *Peer
+	direct := false
+	if b.directN.Load() != 0 {
+		p, direct = b.directPeer(hdr, dst)
 	}
-	p, ok := l.routes.Lookup(dst)
-	if !ok {
-		return false
+	if !direct {
+		l := b.linkOf(hdr)
+		if l == nil {
+			return false
+		}
+		if p, ok = l.routes.Lookup(dst); !ok {
+			return false
+		}
+		b.heads.capture(l, hdr, dst)
 	}
-	b.heads.capture(l, hdr, dst)
 	slot := p.slot.Load()
 	if size > b.pathMTU(slot != 0) {
 		return false
@@ -404,8 +418,9 @@ func (b *Binding) seal(f *netstack.TxFrame, virt, phy []byte) (int, error) {
 	return addrLen + n, nil
 }
 
-// Send sends inner packets outside the driver on their routes. It stops at the
-// first packet with ErrNoRoute, and returns the number sent.
+// Send sends inner packets outside the driver on their routes. A data frame drops when the send
+// queue of its relay session is full. It stops at the first packet with ErrNoRoute, and returns the
+// number sent.
 func (b *Binding) Send(pkts [][]byte) (int, error) {
 	if b.ctx.Err() != nil {
 		return 0, ErrClosed
@@ -423,7 +438,7 @@ func (b *Binding) Send(pkts [][]byte) (int, error) {
 			continue
 		}
 		if err == nil {
-			err = b.write(phy[:n], ua)
+			err = b.write(phy[:n], ua, true)
 		}
 		if err != nil {
 			b.stats.txDrops.Add(1)
@@ -508,7 +523,7 @@ func (d *driver) send(frames [][]byte, k *netstack.Kept) error {
 	for _, f := range frames {
 		port := binary.BigEndian.Uint16(f[16:laneOff])
 		if port == 0 || d.tx == nil {
-			if d.b.write(f, &d.ua) != nil {
+			if d.b.write(f, &d.ua, false) != nil {
 				st.txDrops.Add(1)
 			} else {
 				st.txPackets.Add(1)
@@ -799,15 +814,20 @@ func (b *Binding) flush(tx *udpbatch.Batch, lane int) error {
 }
 
 // write sends one frame: a data frame on the relay connection of its flow,
-// or a PSP packet from the socket of its lane. ua needs a 16-byte IP.
-func (b *Binding) write(f []byte, ua *net.UDPAddr) error {
+// or a PSP packet from the socket of its lane. ua needs a 16-byte IP. With
+// try, a full send queue drops a data frame.
+func (b *Binding) write(f []byte, ua *net.UDPAddr, try bool) error {
 	port := binary.BigEndian.Uint16(f[16:laneOff])
 	if port == 0 {
 		pc := b.dataConn(int(binary.BigEndian.Uint16(f[:2])))
 		if pc == nil {
 			return errNoRelay
 		}
-		if err := pc.SendData(f[addrLen:]); err != nil {
+		send := pc.SendData
+		if try {
+			send = pc.TrySendData
+		}
+		if err := send(f[addrLen:]); err != nil {
 			return err
 		}
 		b.stats.txFrames.Add(1)

@@ -38,7 +38,9 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
@@ -235,6 +237,40 @@ type world struct {
 	// keeps the default.
 	streamWindow uint64
 	relays       []*testRelay
+	// revoked is the revocation list that the relays get for the VPC. The relays of noList get no
+	// list, so they keep the sessions of a revoked agent.
+	revoked []vpcv1alpha1.RevokedAgent
+	noList  map[string]bool
+}
+
+// worldTrust is the trust data of a relay: the agent CA of the world and its revocation list.
+type worldTrust struct {
+	w  *world
+	id string
+}
+
+func (t worldTrust) AgentCA(project string) (*x509.CertPool, error) {
+	return t.w.trust.AgentCA(project)
+}
+
+func (t worldTrust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) {
+	t.w.mu.Lock()
+	defer t.w.mu.Unlock()
+	if t.w.noList[t.id] {
+		return nil, nil
+	}
+	return slices.Clone(t.w.revoked), nil
+}
+
+// revoke revokes each cert of the agent name from before now, and makes the relays check again.
+func (w *world) revoke(name string) {
+	w.mu.Lock()
+	w.revoked = append(w.revoked, vpcv1alpha1.RevokedAgent{Name: name, RevokedAt: metav1.Now()})
+	relays := slices.Clone(w.relays)
+	w.mu.Unlock()
+	for _, r := range relays {
+		r.r.Recheck(testProject)
+	}
 }
 
 // relayAt returns the relay with the QUIC address addr, or nil.
@@ -720,7 +756,7 @@ func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketCon
 	if p, ok := w.pools[id]; ok {
 		pool = p
 	}
-	cfg.Trust, cfg.Addresses, cfg.Target = w.trust, pool, plane
+	cfg.Trust, cfg.Addresses, cfg.Target = worldTrust{w, id}, pool, plane
 	if s, ok := w.slots[id]; ok {
 		cfg.Addresses = &slotAddresses{fakeAddresses: pool, slot: s}
 	}
@@ -866,6 +902,27 @@ func joinMesh(t *testing.T, relays ...*testRelay) {
 	}, 10*time.Second, 10*time.Millisecond, "mesh sessions")
 }
 
+// relayProbeDrop drops the path probes to the PSP sockets of the relays of a world, so the relay
+// sessions fall back to QUIC mode.
+type relayProbeDrop struct {
+	net.PacketConn
+	w *world
+}
+
+func (c *relayProbeDrop) WriteTo(p []byte, addr net.Addr) (int, error) {
+	if _, probe := p2p.ProbeSID(p); probe && c.w.relayPSP(addr.String()) {
+		return len(p), nil
+	}
+	return c.PacketConn.WriteTo(p, addr)
+}
+
+// relayPSP reports whether addr is the PSP socket of a relay of w.
+func (w *world) relayPSP(addr string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.ContainsFunc(w.relays, func(r *testRelay) bool { return r.psp == addr })
+}
+
 // countConn counts the PSP packets that a relay socket gets from each address.
 type countConn struct {
 	net.PacketConn
@@ -1008,6 +1065,11 @@ type agentOptions struct {
 	relist [2]time.Duration
 	// lanes sets Config.Lanes.
 	lanes int
+	// hosts sets Config.Addresses.
+	hosts HostAddrs
+	// direct sets Config.DirectPaths, and pairOpen sets Config.PairOpenTimeout.
+	direct   bool
+	pairOpen time.Duration
 	// onAttach and onAttachment run at the start of the OnAttach and the
 	// OnAttachment callbacks. onRoutes runs at the start of OnRoutes.
 	onAttach     func(addr netip.Addr)
@@ -1138,7 +1200,11 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		udp = loopback(t)
 	}
 	var conn net.PacketConn = udp
-	if opts.noPSP {
+	switch {
+	case opts.noPSP && opts.direct:
+		// The probes of the direct paths go out; only the probes to the relays drop.
+		conn = &relayProbeDrop{PacketConn: udp, w: w}
+	case opts.noPSP:
 		conn = vpctest.NoProbeConn{UDPConn: udp}
 	}
 	if opts.conn != nil {
@@ -1212,12 +1278,15 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 
 		LocalRoutesOnly: opts.localRoutesOnly,
 		// A first PSP probe that a loaded host loses must not keep a session in QUIC mode.
-		PSPRetryMin:  cmp.Or(opts.pspRetry[0], 200*time.Millisecond),
-		PSPRetryMax:  opts.pspRetry[1],
-		PSPRetryNext: cmp.Or(opts.pspRetry[2], 100*time.Millisecond),
-		RelistMin:    opts.relist[0],
-		RelistMax:    opts.relist[1],
-		Lanes:        opts.lanes,
+		PSPRetryMin:     cmp.Or(opts.pspRetry[0], 200*time.Millisecond),
+		PSPRetryMax:     opts.pspRetry[1],
+		PSPRetryNext:    cmp.Or(opts.pspRetry[2], 100*time.Millisecond),
+		RelistMin:       opts.relist[0],
+		RelistMax:       opts.relist[1],
+		Lanes:           opts.lanes,
+		Addresses:       opts.hosts,
+		DirectPaths:     opts.direct,
+		PairOpenTimeout: opts.pairOpen,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {
 			if opts.onAttach != nil {
 				opts.onAttach(addr)

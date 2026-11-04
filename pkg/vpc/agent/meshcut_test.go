@@ -43,9 +43,30 @@ func (c cutConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	return c.PacketConn.WriteTo(p, addr)
 }
 
+// meshCut is the cut of the path between relay-1 and relay-2 of cutRelays.
+type meshCut struct {
+	r1, r2 *testRelay
+	c1, c2 *relayCut
+}
+
+// drop drops (true) or passes (false) the packets between the relays. The mesh stays up until its idle
+// timeout.
+func (m *meshCut) drop(on bool) {
+	m.c1.on.Store(on)
+	m.c2.on.Store(on)
+}
+
+// set cuts (true) or heals (false) the path, and waits until the mesh is down or up.
+func (m *meshCut) set(t *testing.T, on bool) {
+	t.Helper()
+	m.drop(on)
+	require.Eventually(t, func() bool { return m.r1.r.Up("relay-2") != on && m.r2.r.Up("relay-1") != on }, meshWait, 10*time.Millisecond,
+		"mesh up %v", !on)
+}
+
 // cutRelays returns relay-1 and relay-2 of one mesh, in slot 1 and slot 2 of testNetwork, relay-1 with
-// its own pool in w.pools, and the function that cuts (true) or heals (false) their path.
-func cutRelays(t *testing.T) (w *world, r1, r2 *testRelay, setCut func(bool)) {
+// its own pool in w.pools, and the cut of their path.
+func cutRelays(t *testing.T) (w *world, r1, r2 *testRelay, cut *meshCut) {
 	t.Helper()
 	w = newWorld(t)
 	w.mesh = true
@@ -58,13 +79,7 @@ func cutRelays(t *testing.T) (w *world, r1, r2 *testRelay, setCut func(bool)) {
 	r1 = w.relayOn(t, "relay-1", cutConn{q1, c1}, cutConn{p1, c1})
 	r2 = w.relayOn(t, "relay-2", cutConn{q2, c2}, cutConn{p2, c2})
 	joinMesh(t, r1, r2)
-	return w, r1, r2, func(on bool) {
-		t.Helper()
-		c1.on.Store(on)
-		c2.on.Store(on)
-		require.Eventually(t, func() bool { return r1.r.Up("relay-2") != on && r2.r.Up("relay-1") != on }, meshWait, 10*time.Millisecond,
-			"mesh up %v", !on)
-	}
+	return w, r1, r2, &meshCut{r1: r1, r2: r2, c1: c1, c2: c2}
 }
 
 // twoSessions gives opts a session on relay-2, with rank 0 as relay-1 answers late, and one on
@@ -118,7 +133,7 @@ func acked(tap *sessionTap, p netip.Prefix) bool {
 // traffic between relay-1 and relay-2 stops until the heal while the traffic on one relay goes on.
 func TestMeshCut(t *testing.T) {
 	t.Parallel()
-	w, r1, r2, setCut := cutRelays(t)
+	w, r1, r2, cut := cutRelays(t)
 	// far is in the network that a advertises.
 	route, far := netip.MustParsePrefix("fd99::/64"), netip.MustParseAddr("fd99::5")
 	c := w.agent(t, "c", r1, agentOptions{})
@@ -147,7 +162,7 @@ func TestMeshCut(t *testing.T) {
 		return a.dials(r1) == dials1 && a.dials(r2) == dials2 && slices.Equal(connsOf(a), conns)
 	}
 
-	setCut(true)
+	cut.set(t, true)
 	require.Eventually(t, func() bool { return !slices.Contains(a.routeSet(), slot1) }, meshWait, 10*time.Millisecond,
 		"the primary of a loses the slot of relay-1")
 	noEcho(t, a, a2, c1, 9000, "a2 to c1 in the cut")
@@ -160,7 +175,7 @@ func TestMeshCut(t *testing.T) {
 	require.Never(t, func() bool { return !same() }, quietWait, 20*time.Millisecond,
 		"a dialed a relay or changed a session in the cut: %v", connsOf(a))
 
-	setCut(false)
+	cut.set(t, false)
 	require.Eventually(t, func() bool { return slices.Contains(a.routeSet(), slot1) }, meshWait, 10*time.Millisecond,
 		"the primary of a has the slot of relay-1 after the heal")
 	ping(t, a.stack, a2, c1, 9000, "a2 to c1 after the heal")

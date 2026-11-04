@@ -14,11 +14,11 @@ import (
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/flow"
 )
 
-// Peer is one relay of a binding. This agent receives from it with the SAs
-// that Offer creates, and sends to it with the SAs that Apply gets.
+// Peer is one relay of a binding, or a direct peer: another agent on no link. This agent
+// receives from it with the SAs that Offer creates, and sends to it with the SAs that Apply gets.
 type Peer struct {
 	b     *Binding
-	l     *Link
+	l     *Link // Nil for a direct peer.
 	rx    *keys.Peer
 	tx    *keys.TxPeer
 	addr  atomic.Pointer[netip.AddrPort]
@@ -31,8 +31,10 @@ type Peer struct {
 	slot atomic.Int32
 	// flows has the lane of each flow slot. txSA reads and writes it.
 	flows [flowSlots]atomic.Uint32
+	// srcs is the receive source check of a direct peer, from SetDirect.
+	srcs atomic.Pointer[prefixSet]
 
-	// Guarded by b.mu.
+	// Guarded by b.mu. routes are the link routes, or the direct routes of a direct peer.
 	routes  []netip.Prefix
 	removed bool
 	rxSPIs  map[uint32]struct{} // Receive SAs. RxReport removes the deleted ones.
@@ -73,11 +75,19 @@ func (p *Peer) Refused(spis []uint32, now time.Time) (keys.Request, error) {
 	return req, err
 }
 
-// addRxSAs adds receive SAs for RxReport. b.mu must be held.
+// addRxSAs adds receive SAs for RxReport and the SPI table. b.mu must be held.
 func (p *Peer) addRxSAs(sas []keys.SA) {
+	if len(sas) == 0 {
+		return
+	}
 	for _, sa := range sas {
 		p.rxSPIs[sa.SPI] = struct{}{}
 	}
+	p.b.editSPIs(func(m map[uint32]*Peer) {
+		for _, sa := range sas {
+			m[sa.SPI] = p
+		}
+	})
 }
 
 // RxReport returns the receive counters of the SAs that the peer sends with.

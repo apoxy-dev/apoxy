@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -65,17 +66,22 @@ func BenchmarkVirtToPhy(b *testing.B) {
 	}
 }
 
-// BenchmarkPrepareLinks reserves the send frame of one inner packet, with its
-// link from its source, or the default link for an advertised source.
+// BenchmarkPrepareLinks reserves the send frame of one inner packet on the link of its source, or
+// on the default link. The IPv6 cases use the relay route, a direct route, or an advertised source.
 func BenchmarkPrepareLinks(b *testing.B) {
 	cases := []struct {
 		name       string
 		links      int
 		advertised bool // The source is an advertised address.
+		ipv6       bool
+		direct     bool // The direct table has the destination.
 	}{
 		{name: "links=1", links: 1},
 		{name: "links=3", links: 3},
 		{name: "links=2/advertised", links: 2, advertised: true},
+		{name: "links=1/ipv6", links: 1, ipv6: true},
+		{name: "links=1/ipv6/direct", links: 1, ipv6: true, direct: true},
+		{name: "links=1/ipv6/direct/advertised", links: 1, ipv6: true, direct: true, advertised: true},
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
@@ -95,12 +101,23 @@ func BenchmarkPrepareLinks(b *testing.B) {
 						require.NoError(b, err)
 						require.NoError(b, l.AddSource(netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 0, byte(n), 1}), 32)))
 					}
-					src := x.v4
+					src, dst := x.v4, y.v4
 					if tc.advertised {
 						src = netip.MustParseAddr("10.7.0.5")
 						x.b.SetDefault(x.l)
 					}
-					d, pkt = &driver{b: x.b}, packet(src, y.v4, 6, 1, 2, DefaultMTU)
+					if tc.ipv6 {
+						src, dst = base(ownA[0]), base(ownB[0])
+						if tc.advertised {
+							src = advertised
+						}
+						require.NoError(b, x.b.AddRoute(netip.MustParsePrefix("::/0"), x.peer))
+						x.b.SetOwn(ownA)
+					}
+					if tc.direct {
+						directSAs(b, x, y)
+					}
+					d, pkt = &driver{b: x.b}, packet(src, dst, 6, 1, 2, DefaultMTU)
 					b.StartTimer()
 				}
 				if !d.Prepare(pkt, &f) {
@@ -108,6 +125,91 @@ func BenchmarkPrepareLinks(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// directSAs gives x a direct peer for the list of b, with a transmit SA from y.
+func directSAs(b *testing.B, x, y *node) {
+	p, err := x.b.AddDirect(addrOf(y.tr))
+	require.NoError(b, err)
+	rx, err := y.b.AddDirect(addrOf(x.tr))
+	require.NoError(b, err)
+	req, err := rx.Offer(time.Now())
+	require.NoError(b, err)
+	_, err = p.Apply(req, time.Now())
+	require.NoError(b, err)
+	require.NoError(b, x.b.SetDirect(p, nil, ownB))
+}
+
+// BenchmarkTakeOut gives reads of 64 IPv6 UDP packets of 1280 B to the demux: data packets with
+// no take-out or with a take-out, and channel packets, which all go to the take-out.
+func BenchmarkTakeOut(b *testing.B) {
+	for _, kind := range []string{"data/take-out=off", "data/take-out=on", "channel"} {
+		for _, opens := range []int{noPipe, 0, 2} {
+			name := fmt.Sprintf("%s/opens=%d", kind, opens)
+			if opens == noPipe {
+				name = kind + "/no pipe"
+			}
+			b.Run(name, func(b *testing.B) {
+				x, y := newPair(b)
+				offer(b, time.Now(), x, y)
+				for _, n := range []*node{x, y} {
+					require.NoError(b, n.b.AddRoute(netip.MustParsePrefix("::/0"), n.peer))
+				}
+				if kind != "data/take-out=off" {
+					y.b.SetOwn(ownB)
+					y.b.SetTakeOut(func([]byte, Source) {})
+				}
+				useNetstack(b, y, channel.New(16, DefaultMTU, ""), 4, opens)
+				dport := uint16(2)
+				if kind == "channel" {
+					dport = ChannelPort
+				}
+				inner := make([][]byte, 64)
+				for i := range inner {
+					inner[i] = packet(base(ownA[0]), base(ownB[0]), 17, uint16(1+i%16), dport, DefaultMTU)
+				}
+				// Without the pipe the read loop opens the packets in place, so the packets
+				// are sealed again after each use, with new sequence numbers.
+				pkts := make([][]byte, 64*pipeSlots)
+				sealAll := func() {
+					for i := range pkts {
+						pkts[i] = seal(x, inner[i%len(inner)])[addrLen:]
+					}
+				}
+				sealAll()
+				from := net.UDPAddrFromAddrPort(addrOf(x.tr))
+				// The timer stops only after the pipe has counted all packets that it got.
+				start, sent := counted(y.b.Stats()), uint64(0)
+				wait := func() {
+					for counted(y.b.Stats())-start < sent {
+						runtime.Gosched()
+					}
+				}
+				b.SetBytes(int64(pipeSlots * DefaultMTU))
+				b.ReportAllocs()
+				b.ResetTimer()
+				i := 0
+				for range b.N {
+					if i == len(pkts) {
+						wait()
+						b.StopTimer()
+						sealAll()
+						i = 0
+						b.StartTimer()
+					}
+					for _, p := range pkts[i : i+pipeSlots] {
+						y.b.demux.Handle(p, from)
+					}
+					y.b.demux.BatchEnd()
+					i += pipeSlots
+					sent += pipeSlots
+				}
+				wait()
+				b.StopTimer()
+				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*pipeSlots), "ns/pkt")
+			})
+		}
 	}
 }
 

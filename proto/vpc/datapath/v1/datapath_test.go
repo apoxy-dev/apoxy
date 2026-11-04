@@ -30,6 +30,7 @@ import (
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -196,6 +197,20 @@ func (r *relayStub) Rekey(ctx context.Context, in *dp.KeysRequest) (*dp.KeysResp
 
 func (r *relayStub) RegisterLanes(ctx context.Context, in *dp.RegisterLanesRequest) (*emptypb.Empty, error) {
 	return answer[*emptypb.Empty](r.stub, "RegisterLanes", in)
+}
+
+type peerStub struct{ *stub }
+
+func (p peerStub) Hello(ctx context.Context, in *dp.PeerHello) (*dp.PeerHello, error) {
+	return answer[*dp.PeerHello](p.stub, "Hello", in)
+}
+
+func (p peerStub) Keys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysResponse, error) {
+	return answer[*dp.KeysResponse](p.stub, "Keys", in)
+}
+
+func (p peerStub) Candidates(ctx context.Context, in *dp.Candidates) (*emptypb.Empty, error) {
+	return answer[*emptypb.Empty](p.stub, "Candidates", in)
 }
 
 type meshStub struct{ *stub }
@@ -367,6 +382,10 @@ func TestRelaySession(t *testing.T) {
 		{Msg: &dp.SessionResponse_Config{Config: &dp.Config{Vpc: vpc, Mtu: 1280, DnsServers: []string{"fd61:a0b:c00::53"}, DnsSearchDomains: []string{"vpc.internal"}}}},
 		{Msg: &dp.SessionResponse_Drain{Drain: &dp.Drain{Alternates: []*dp.RelayRef{relay}}}},
 		{Msg: &dp.SessionResponse_RxReport{RxReport: &dp.RxReport{Sas: []*dp.SAStats{{Spi: 0x80000003, Packets: 70, Seq: 100}}}}},
+		{Msg: &dp.SessionResponse_Revocations{Revocations: &dp.Revocations{Vpc: vpc, Agents: []*dp.RevokedAgent{
+			{Name: "laptop", RevokedAt: timestamppb.New(time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC))},
+		}}}},
+		{Msg: &dp.SessionResponse_Revocations{Revocations: &dp.Revocations{Vpc: vpc}}},
 	}
 	up := []proto.Message{
 		&dp.SessionRequest{Msg: &dp.SessionRequest_Hello{Hello: &dp.Hello{Mode: dp.Mode_MODE_PSP, MaxVpcsPerSession: 1}}},
@@ -417,6 +436,21 @@ func TestRelayCalls(t *testing.T) {
 		unary("RegisterLanes", c, dp.RelayClient.RegisterLanes, &dp.RegisterLanesRequest{Ports: []uint32{40001, 40002}, Receive: true}, &emptypb.Empty{}),
 		unary("RegisterLanes taken", c, dp.RelayClient.RegisterLanes, &dp.RegisterLanesRequest{Ports: []uint32{40003}},
 			rpc.Errorf(rpc.AlreadyExists, "port 40003 is a source of another session")),
+	})
+}
+
+func TestPeerCalls(t *testing.T) {
+	c := dp.NewPeerClient
+	list := []string{"fd61:a0b:c00:1::/96", "fd61:a0b:c01:7::/96"}
+	runBothWays(t, dp.ALPNPeer, func(m *rpc.Mux, s *stub) { dp.RegisterPeerServer(m, peerStub{s}) }, []call{
+		unary("Hello", c, dp.PeerClient.Hello,
+			&dp.PeerHello{Version: dp.LocalVersion("build-a"), Prefixes: list, Instance: 0x6f1c2a8e3b4d4c5e},
+			&dp.PeerHello{Version: dp.LocalVersion("build-b"), Prefixes: []string{"fd61:a0b:c00:2::/96"}, Instance: 0x0e4f5a6b7c8d4e9f}),
+		unary("Keys", c, dp.PeerClient.Keys, offer, &dp.KeysResponse{RefusedSpis: []uint32{sa.Spi}}),
+		unary("Keys rekey", c, dp.PeerClient.Keys, rekey, &dp.KeysResponse{}),
+		unary("Candidates", c, dp.PeerClient.Candidates,
+			&dp.Candidates{Round: 2, Addresses: []string{"198.51.100.7:40000", "[2001:db8::7]:40000"}, Prefixes: list},
+			&emptypb.Empty{}),
 	})
 }
 

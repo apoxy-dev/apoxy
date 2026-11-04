@@ -38,11 +38,22 @@ type head struct {
 type heads struct {
 	mu sync.Mutex
 	m  map[headKey]*head
+	// fresh are the heads that capture kept since the last Tick, at most headSlots.
+	fresh []Head
 }
 
-// capture keeps the start of pkt for dst on l, unless the head of dst is younger
-// than headHold. A full table drops its old entries once, else it keeps nothing.
+// Head is a packet head that the binding kept: the first packet in headHold of a flow to Dst on
+// a relay route.
+type Head struct {
+	Src, Dst netip.Addr
+}
+
+// capture keeps the start of pkt for dst on l, unless the head of dst is younger than headHold
+// or pkt is a channel packet. A full table drops its old entries once, else it keeps nothing.
 func (h *heads) capture(l *Link, pkt []byte, dst netip.Addr) {
+	if isChannel(pkt) {
+		return
+	}
 	now := time.Now()
 	key := headKey{l, dst}
 	h.mu.Lock()
@@ -63,6 +74,9 @@ func (h *heads) capture(l *Link, pkt []byte, dst netip.Addr) {
 	}
 	e.pkt = append(e.pkt[:0], pkt[:min(len(pkt), quoteLen)]...)
 	e.at = now
+	if src, ok := innerSrc(pkt); ok && len(h.fresh) < headSlots {
+		h.fresh = append(h.fresh, Head{Src: src, Dst: dst})
+	}
 }
 
 // dropOld removes the entries whose head and last error are older than
@@ -76,13 +90,13 @@ func (h *heads) dropOld(now time.Time) bool {
 	return len(h.m) < headSlots
 }
 
-// take returns the head of dst on l and clears it, or nil when it has none or
-// when the last head that it gave is younger than headHold.
-func (h *heads) take(l *Link, dst netip.Addr, now time.Time) []byte {
+// take returns the head of dst on l and clears it, or nil when it has none, when skip reports
+// true for it, or when the last head that it gave is younger than headHold.
+func (h *heads) take(l *Link, dst netip.Addr, now time.Time, skip func(pkt []byte) bool) []byte {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	e := h.m[headKey{l, dst}]
-	if e == nil || e.pkt == nil || now.Sub(e.last) < headHold {
+	if e == nil || e.pkt == nil || now.Sub(e.last) < headHold || skip(e.pkt) {
 		return nil
 	}
 	pkt := e.pkt
@@ -101,9 +115,27 @@ func (h *heads) sweep(now time.Time) {
 	}
 }
 
+// takeFresh returns the heads that capture kept since the last call.
+func (h *heads) takeFresh() []Head {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := h.fresh
+	h.fresh = nil
+	return out
+}
+
 // TakeHead returns the start of the first packet to dst on l since the last
 // call that gave one, for an ICMP error after a NoRoute of the relay. It
 // returns nil when it has none, or when it gave one less than headHold ago.
+// It gives no head from the own list to a destination with a direct route: that
+// flow goes direct now, so the NoRoute of the relay is not for it.
 func (b *Binding) TakeHead(l *Link, dst netip.Addr, now time.Time) []byte {
-	return b.heads.take(l, dst.Unmap(), now)
+	dst = dst.Unmap()
+	return b.heads.take(l, dst, now, func(pkt []byte) bool {
+		if b.directN.Load() == 0 {
+			return false
+		}
+		_, direct := b.directPeer(pkt, dst)
+		return direct
+	})
 }

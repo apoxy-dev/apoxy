@@ -89,7 +89,7 @@ func roam(t *testing.T, noRoute time.Duration) {
 	w.relayCfg.LaneSources = relay.MaxLaneSources
 	r := w.relayOn(t, "relay-1", listenIn(t, relayNS, relayIP), tap)
 	b := w.agent(t, "b", r, agentOptions{udp: listenIn(t, relayNS, relayIP)})
-	a := w.agent(t, "a", r, agentOptions{udp: udp, lanes: 4})
+	a := w.agent(t, "a", r, agentOptions{udp: udp, lanes: 4, hosts: hostList(addrs("10.99.0.2", "10.98.0.2"))})
 	ea, eb := a.attached(t), b.attached(t)
 	echo(t, b.stack, eb.addr, 7)
 	ping(t, a.stack, ea.addr, eb.addr, 7, "before the move")

@@ -175,7 +175,7 @@ func give(sender *node, req keys.Request, now time.Time) error {
 func rekey(now time.Time, nodes ...*node) (int, error) {
 	n := 0
 	for _, x := range nodes {
-		ups, err := x.b.Tick(now)
+		ups, _, err := x.b.Tick(now)
 		if err != nil {
 			return n, err
 		}
@@ -227,7 +227,7 @@ func laneRead(b *Binding, lane int, pkt []byte) {
 		b.demux.Handle(pkt, nil)
 		return
 	}
-	b.receive(&b.lanes[lane], pkt)
+	b.receive(&b.lanes[lane], pkt, netip.AddrPort{})
 }
 
 // laneEnd ends a read of the socket of lane.

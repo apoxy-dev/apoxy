@@ -3,6 +3,7 @@
 package relay
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -16,9 +17,13 @@ import (
 	"github.com/apoxy-dev/softpsp/keys"
 	p4 "github.com/p4lang/p4runtime/go/p4/v1"
 	"golang.org/x/time/rate"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
@@ -26,16 +31,21 @@ import (
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// probeRate is the most path probes per second that one connection gets replies to.
-const probeRate = 10
+const (
+	// probeRate is the most path probes per second that one connection gets replies to.
+	probeRate = 10
+	// listRevision is the first agent revision that gets Revocations.
+	listRevision = 26
+)
 
 // Events of A from its tasks and children.
 type (
 	readerDone   struct{ err error }
 	writerDone   struct{}
 	trustChecked struct {
-		t   *trustGen
-		err error
+		t       *trustGen
+		revoked []vpcv1alpha1.RevokedAgent // The list of the check, with no expired entries.
+		err     error
 	}
 	prevExpired struct{ addr netip.AddrPort }
 	checkLost   struct{ c *checkProc }
@@ -89,6 +99,10 @@ type connProc struct {
 
 	trust    *trustGen // The newest trust value.
 	checking bool
+	// listOn is true from the first attachment of an agent that gets Revocations. list is the last
+	// list that A gave the writer.
+	listOn bool
+	list   *dpv1.Revocations
 
 	mode    dpv1.Mode
 	addr    netip.AddrPort // The source of the newest path probe.
@@ -549,6 +563,11 @@ func (a *connProc) attached(e attached) {
 		a.rxBase = a.rx()
 	}
 	a.atts = append(a.atts, ca)
+	if !a.listOn && a.hello.GetVersion().GetRevision() >= listRevision {
+		// The list goes to the agent after the result of the next check.
+		a.listOn = true
+		a.checkTrust(a.trust)
+	}
 	a.vbox.send(vAttachmentStart{port: a.port, att: ca.att})
 	ca.res <- callResult{out: &dpv1.AttachResponse{
 		AttachmentId: ca.att.ID,
@@ -1043,8 +1062,8 @@ func (a *connProc) checkTrust(t *trustGen) {
 	trust, chain, at := a.r.cfg.Trust, a.l.chain, a.l.verified
 	go func() {
 		// The check uses the handshake time, because a connection does not end with its cert.
-		_, err := checkCert(trust, chain, at)
-		a.box.send(trustChecked{t: t, err: err})
+		_, revoked, err := checkCertList(trust, chain, at)
+		a.box.send(trustChecked{t: t, revoked: identity.LiveRevoked(revoked, time.Now()), err: err})
 	}()
 }
 
@@ -1055,9 +1074,29 @@ func (a *connProc) trustChecked(e trustChecked) {
 		a.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_CERT, "agent cert rejected")
 		return
 	}
+	if a.listOn {
+		a.setList(e.revoked)
+	}
 	if a.trust != e.t {
 		a.checkTrust(a.trust)
 	}
+}
+
+// setList gives the writer the revocation list revoked when it differs from the last one.
+func (a *connProc) setList(revoked []vpcv1alpha1.RevokedAgent) {
+	m := &dpv1.Revocations{Vpc: a.ref}
+	for _, r := range revoked {
+		m.Agents = append(m.Agents, &dpv1.RevokedAgent{Name: r.Name, RevokedAt: timestamppb.New(r.RevokedAt.Time)})
+	}
+	// The order of the list has no meaning, so a new order is not a change.
+	slices.SortFunc(m.Agents, func(x, y *dpv1.RevokedAgent) int {
+		return cmp.Or(cmp.Compare(x.GetName(), y.GetName()), x.GetRevokedAt().AsTime().Compare(y.GetRevokedAt().AsTime()))
+	})
+	if a.list != nil && proto.Equal(a.list, m) {
+		return
+	}
+	a.list = m
+	a.out.setList(m)
 }
 
 // tick checks the liveness of the agent and forgets old NoRoute times.

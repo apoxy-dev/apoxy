@@ -4,11 +4,13 @@ package agent
 
 import (
 	"context"
+	"net/netip"
 	"time"
 
 	"github.com/apoxy-dev/softpsp/keys"
 	"github.com/quic-go/quic-go"
 
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -107,19 +109,24 @@ type (
 		delta   bool
 		rev     uint64
 	}
+	// offerMsg, refusedMsg and applyMsg are key operations on the relay peer of
+	// a session, or on the direct peer of a pair when pr is set.
 	offerMsg struct {
 		s       *session
+		pr      *pair
 		peer    *psp.Peer
 		attempt uint64
 	}
 	refusedMsg struct {
 		s       *session
+		pr      *pair
 		peer    *psp.Peer
 		attempt uint64
 		spis    []uint32
 	}
 	applyMsg struct {
 		s       *session
+		pr      *pair
 		peer    *psp.Peer
 		attempt uint64
 		req     keys.Request
@@ -150,11 +157,66 @@ type (
 	}
 )
 
+// Root to a pair. rekeyMsg and appliedMsg also go to a pair, for its direct peer.
+type (
+	// candidatesMsg has the newest own candidates and own list.
+	candidatesMsg struct{ v *candsVal }
+	// revocationsMsg has the last revocation list of each session.
+	revocationsMsg struct{ v *revLists }
+	// openOK opens the channel of a pairOpen, with the direct peer of the pair.
+	openOK struct{ peer *psp.Peer }
+	// dupMsg ends a pair: the root keeps another pair with the same peer.
+	dupMsg struct{}
+	// heldMsg tells a pair that is not open that an open pair holds its peer end. A pair with no
+	// connection ends; a connection waits for its Hello, so that both agents keep one channel.
+	heldMsg struct{}
+	// identityMsg tells that the own cert changed.
+	identityMsg struct{}
+	// peerRemoved tells that the direct peer of the pair is out of the binding.
+	peerRemoved struct{}
+	// evictMsg ends a pair to free a place for a new one.
+	evictMsg struct{}
+	// useMsg tells that the pair had a use: a head to a prefix that it holds or a channel packet.
+	useMsg struct{}
+)
+
+// A pair to the root.
+type (
+	// pairOpen asks to open the channel conn, whose Hello passed.
+	pairOpen struct {
+		p    *pair
+		key  pairKey
+		name string // Agent name of the peer cert.
+		list []netip.Prefix
+		conn connAddrs
+	}
+	// peerList is the newest list of the peer after pairOpen.
+	peerList struct {
+		p    *pair
+		list []netip.Prefix
+	}
+	// pairStatus is the newest state of the pair for Status.
+	pairStatus struct {
+		p  *pair
+		st pairState
+	}
+	// removePeerMsg asks the root to remove the direct peer of the pair, if it has one.
+	removePeerMsg struct{ p *pair }
+	// pairEnded is the last message of a pair.
+	pairEnded struct{ p *pair }
+)
+
 // These keys name the values that a session writes for the root.
 const (
-	keyMode   = "mode"   // The value is a *modeState.
-	keyReport = "report" // The value is an *rxReport.
+	keyMode    = "mode"    // The value is a *modeState.
+	keyReport  = "report"  // The value is an *rxReport.
+	keyRevoked = "revoked" // The value is a *revokedList.
 )
+
+// revokedList is the newest revocation list that the relay of a session sent.
+type revokedList struct {
+	agents []vpcv1alpha1.RevokedAgent
+}
 
 // modeState is the data mode of a session and why it is in QUIC mode.
 type modeState struct {

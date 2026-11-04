@@ -32,6 +32,7 @@ type Attacher interface {
 type Admin interface {
 	Attacher
 	Routes() []Route
+	Status() Status
 }
 
 // AdminHandler serves the admin API of a, with JSON bodies:
@@ -39,6 +40,7 @@ type Admin interface {
 //	GET    /v1/attachments         200 with all attachments.
 //	POST   /v1/attachments         200 with the attachment of an AttachmentSpec.
 //	DELETE /v1/attachments/{name}  204.
+//	GET    /v1/status              200 with the Status of the agent.
 //	GET    /debug/routes           200 with the routes, as text with ?format=text.
 //
 // The errors are 400 for a request that is not valid, 404 for an unknown
@@ -70,6 +72,9 @@ func AdminHandler(a Admin) http.Handler {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.Status())
 	})
 	mux.HandleFunc("GET /debug/routes", func(w http.ResponseWriter, r *http.Request) {
 		writeRoutes(w, r.URL.Query().Get("format"), a.Routes())

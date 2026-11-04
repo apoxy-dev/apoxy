@@ -3,6 +3,7 @@ package identity
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"testing"
 	"time"
 
@@ -130,6 +131,47 @@ func TestNewPool(t *testing.T) {
 				return
 			}
 			assert.NoError(t, err)
+		})
+	}
+}
+
+// TestLiveRevoked checks that LiveRevoked keeps each entry that can revoke a cert valid at now.
+// IsRevoked then gives the same answer with the full list and with the short list.
+func TestLiveRevoked(t *testing.T) {
+	from := testNow.Add(-RevokedKeep)
+	entry := func(name string, at time.Time) vpcv1alpha1.RevokedAgent {
+		return vpcv1alpha1.RevokedAgent{Name: name, RevokedAt: metav1.NewTime(at)}
+	}
+	var many []vpcv1alpha1.RevokedAgent
+	keepMany := 0
+	for d := -2 * CertLifetime; d <= 0; d += 17 * time.Minute {
+		many = append(many, entry(fmt.Sprintf("agent-%d", len(many)), testNow.Add(d)))
+		if d >= -RevokedKeep {
+			keepMany++
+		}
+	}
+	cases := []struct {
+		name string
+		list []vpcv1alpha1.RevokedAgent
+		keep int // The number of entries at the end of list that stay.
+	}{
+		{name: "one second before the bound", list: []vpcv1alpha1.RevokedAgent{entry("laptop", from.Add(-time.Second))}},
+		{name: "at the bound", list: []vpcv1alpha1.RevokedAgent{entry("laptop", from)}, keep: 1},
+		{name: "one second after the bound", list: []vpcv1alpha1.RevokedAgent{entry("laptop", from.Add(time.Second))}, keep: 1},
+		{name: "one name, old and new entries", list: []vpcv1alpha1.RevokedAgent{entry("laptop", testNow.Add(-2*CertLifetime)), entry("laptop", testNow.Add(-time.Hour))}, keep: 1},
+		{name: "many names", list: many, keep: keepMany},
+		{name: "no entries"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			short := LiveRevoked(tc.list, testNow)
+			assert.ElementsMatch(t, tc.list[len(tc.list)-tc.keep:], short)
+			for _, r := range tc.list {
+				for nb := testNow.Add(-CertLifetime); !nb.After(testNow); nb = nb.Add(7 * time.Minute) {
+					cert := &x509.Certificate{NotBefore: nb, NotAfter: nb.Add(CertLifetime)}
+					assert.Equal(t, IsRevoked(cert, r.Name, tc.list), IsRevoked(cert, r.Name, short), "%s, cert from %v", r.Name, nb)
+				}
+			}
 		})
 	}
 }

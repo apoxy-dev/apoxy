@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/apoxy-dev/softpsp/keys"
@@ -278,16 +280,28 @@ func (s *session) advance() {
 }
 
 // registerLanes starts the task that registers the lane ports of the binding
-// at the relay. It reports false when the relay takes none or sees another
-// port than the local one.
+// at the relay. It reports false when the relay takes none or the agent has no
+// host list. The task registers no ports when the relay sees no host address.
 func (s *session) registerLanes() bool {
 	n := min(int(s.d.maxLanes)+1, cmp.Or(s.a.cfg.Lanes, psp.TxLanes(s.d.relayAddr.Addr().Unmap())))
-	if n < 2 || !s.seen.IsValid() || s.seen.Port() != s.a.localPort() {
+	hosts := s.a.cfg.Addresses
+	if n < 2 || !s.seen.IsValid() || hosts == nil {
 		return false
 	}
-	b, c, ctx, addr, attempt := s.b, s.d.client, s.ctx, s.addr(), s.att.n
+	seen := netip.AddrPortFrom(s.seen.Addr().Unmap().WithZone(""), s.seen.Port())
+	b, c, ctx, addr, attempt, tr := s.b, s.d.client, s.ctx, s.addr(), s.att.n, s.a.cfg.Transport
 	s.task(func() any {
 		res := lanesDone{attempt: attempt}
+		// A NAT gives the lane sockets other ports, also when it keeps the port of the agent socket.
+		ips, err := hosts.HostAddrs()
+		if err != nil {
+			slog.Warn("Failed to list the host addresses; the agent sends on one port", "relay", addr, "error", err)
+			return res
+		}
+		if !slices.Contains(hostCandidates(tr, ips), seen) {
+			slog.Info("Relay sees an address that is not a host address; the agent sends on one port", "relay", addr, "seen", seen)
+			return res
+		}
 		ports := b.OpenLanes(n)
 		if len(ports) == 0 {
 			return res
@@ -363,7 +377,7 @@ func (s *session) clamped(m clampedMsg) {
 		s.failAttempt(err)
 		return
 	}
-	c := newCheck(s.mb, keys, s.b, s.seen, s.counter)
+	c := newCheck(s.mb, newProbeRole(keys, true), probeMTU(s.b), s.seen, s.counter)
 	s.checks[c], s.chk = true, c
 	go c.run(&s.a.probes)
 	s.att.timer.Stop()

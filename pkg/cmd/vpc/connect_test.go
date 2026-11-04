@@ -295,6 +295,27 @@ func TestConnectIdentity(t *testing.T) {
 	})
 }
 
+// TestDirectPaths checks that the agent uses direct paths unless the CLI config turns them off.
+func TestDirectPaths(t *testing.T) {
+	on, off := true, false
+	cases := []struct {
+		name string
+		cfg  *configv1alpha1.Config
+		want bool
+	}{
+		{name: "no config", want: true},
+		{name: "no vpc section", cfg: &configv1alpha1.Config{}, want: true},
+		{name: "directPaths omitted", cfg: &configv1alpha1.Config{VPC: &configv1alpha1.VPCConfig{}}, want: true},
+		{name: "directPaths true", cfg: &configv1alpha1.Config{VPC: &configv1alpha1.VPCConfig{DirectPaths: &on}}, want: true},
+		{name: "directPaths false", cfg: &configv1alpha1.Config{VPC: &configv1alpha1.VPCConfig{DirectPaths: &off}}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, directPaths(tc.cfg))
+		})
+	}
+}
+
 func TestSocketFamily(t *testing.T) {
 	cases := []struct {
 		name    string

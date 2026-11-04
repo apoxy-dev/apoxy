@@ -12,5 +12,5 @@ var vpcCmd = &cobra.Command{
 }
 
 func init() {
-	vpcCmd.AddCommand(vpc.ConnectCmd(), vpc.EnrollCmd())
+	vpcCmd.AddCommand(vpc.ConnectCmd(), vpc.EnrollCmd(), vpc.StatusCmd())
 }

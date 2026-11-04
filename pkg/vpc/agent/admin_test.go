@@ -43,6 +43,8 @@ func (f fakeAttacher) Attachments() []Attachment {
 
 func (f fakeAttacher) Routes() []Route { return f.routes }
 
+func (f fakeAttacher) Status() Status { return Status{} }
+
 func metric(m uint32) *uint32 { return &m }
 
 // pageRoutes are the routes of the example of the design.

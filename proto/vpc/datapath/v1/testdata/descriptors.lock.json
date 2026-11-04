@@ -452,11 +452,124 @@
       "syntax": "proto3"
     },
     {
+      "name": "proto/vpc/datapath/v1/peer.proto",
+      "package": "apoxy.vpc.datapath.v1",
+      "dependency": [
+        "google/protobuf/empty.proto",
+        "proto/vpc/datapath/v1/types.proto"
+      ],
+      "messageType": [
+        {
+          "name": "PeerHello",
+          "field": [
+            {
+              "name": "version",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Version",
+              "jsonName": "version"
+            },
+            {
+              "name": "prefixes",
+              "number": 2,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "prefixes"
+            },
+            {
+              "name": "instance",
+              "number": 3,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_FIXED64",
+              "jsonName": "instance"
+            }
+          ]
+        },
+        {
+          "name": "Candidates",
+          "field": [
+            {
+              "name": "round",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_UINT32",
+              "jsonName": "round"
+            },
+            {
+              "name": "addresses",
+              "number": 2,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "addresses"
+            },
+            {
+              "name": "prefixes",
+              "number": 3,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_STRING",
+              "jsonName": "prefixes"
+            }
+          ]
+        }
+      ],
+      "enumType": [
+        {
+          "name": "PeerCloseCode",
+          "value": [
+            {
+              "name": "PEER_CLOSE_CODE_UNSPECIFIED",
+              "number": 0
+            },
+            {
+              "name": "PEER_CLOSE_CODE_UPGRADE",
+              "number": 1
+            },
+            {
+              "name": "PEER_CLOSE_CODE_DUPLICATE",
+              "number": 2
+            },
+            {
+              "name": "PEER_CLOSE_CODE_CERT",
+              "number": 3
+            }
+          ]
+        }
+      ],
+      "service": [
+        {
+          "name": "Peer",
+          "method": [
+            {
+              "name": "Hello",
+              "inputType": ".apoxy.vpc.datapath.v1.PeerHello",
+              "outputType": ".apoxy.vpc.datapath.v1.PeerHello"
+            },
+            {
+              "name": "Keys",
+              "inputType": ".apoxy.vpc.datapath.v1.KeysRequest",
+              "outputType": ".apoxy.vpc.datapath.v1.KeysResponse"
+            },
+            {
+              "name": "Candidates",
+              "inputType": ".apoxy.vpc.datapath.v1.Candidates",
+              "outputType": ".google.protobuf.Empty"
+            }
+          ]
+        }
+      ],
+      "options": {
+        "goPackage": "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1"
+      },
+      "syntax": "proto3"
+    },
+    {
       "name": "proto/vpc/datapath/v1/relay.proto",
       "package": "apoxy.vpc.datapath.v1",
       "dependency": [
         "google/protobuf/duration.proto",
         "google/protobuf/empty.proto",
+        "google/protobuf/timestamp.proto",
         "proto/vpc/datapath/v1/types.proto"
       ],
       "messageType": [
@@ -562,6 +675,15 @@
               "typeName": ".apoxy.vpc.datapath.v1.RxReport",
               "oneofIndex": 0,
               "jsonName": "rxReport"
+            },
+            {
+              "name": "revocations",
+              "number": 8,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.Revocations",
+              "oneofIndex": 0,
+              "jsonName": "revocations"
             }
           ],
           "oneofDecl": [
@@ -997,6 +1119,47 @@
               "type": "TYPE_ENUM",
               "typeName": ".apoxy.vpc.datapath.v1.RouteResult",
               "jsonName": "result"
+            }
+          ]
+        },
+        {
+          "name": "Revocations",
+          "field": [
+            {
+              "name": "vpc",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.VPCRef",
+              "jsonName": "vpc"
+            },
+            {
+              "name": "agents",
+              "number": 2,
+              "label": "LABEL_REPEATED",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".apoxy.vpc.datapath.v1.RevokedAgent",
+              "jsonName": "agents"
+            }
+          ]
+        },
+        {
+          "name": "RevokedAgent",
+          "field": [
+            {
+              "name": "name",
+              "number": 1,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_STRING",
+              "jsonName": "name"
+            },
+            {
+              "name": "revoked_at",
+              "number": 2,
+              "label": "LABEL_OPTIONAL",
+              "type": "TYPE_MESSAGE",
+              "typeName": ".google.protobuf.Timestamp",
+              "jsonName": "revokedAt"
             }
           ]
         }

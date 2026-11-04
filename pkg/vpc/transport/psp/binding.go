@@ -80,7 +80,7 @@ func (m *Demux) Handle(pkt []byte, from net.Addr) {
 		return
 	}
 	if b := m.b.Load(); b != nil {
-		b.receive(&m.rx, pkt)
+		b.receive(&m.rx, pkt, addrPortOf(from))
 		return
 	}
 	// No binding: the set of a read for the old binding counts in its stats.
@@ -137,6 +137,15 @@ type Binding struct {
 	sources engine.Routes[*Link]
 	def     atomic.Pointer[Link]
 	only    atomic.Pointer[Link]
+
+	// direct is the direct table, and directN is its route count, so that an empty table costs one
+	// load. Writers hold mu.
+	direct  engine.Routes[*Peer]
+	directN atomic.Int32
+	own     atomic.Pointer[prefixSet] // The own list. Nil is an empty list.
+	takeOut atomic.Pointer[TakeOut]
+	// spis has the peer of each receive SA. A writer copies it under mu, and readers use no lock.
+	spis atomic.Pointer[map[uint32]*Peer]
 
 	// slots has the relay sessions of Peer.UseQUIC; a free place is nil. UseQUIC
 	// replaces the slice under mu, and the data path reads it. inUse counts them.
@@ -237,6 +246,7 @@ func New(cfg Config) (*Binding, error) {
 	}
 	b.ptb.rate.Store(tooBigRate)
 	b.slots.Store(new([]*peerconn.Conn))
+	b.spis.Store(&map[uint32]*Peer{})
 	for i := range b.lanes {
 		b.lanes[i].lane = i
 	}
@@ -343,8 +353,10 @@ type Update struct {
 
 // Tick rekeys the due receive SAs and removes expired SAs, breaker limits and
 // packet heads. Call it each second, and send each Update to its peer.
-func (b *Binding) Tick(now time.Time) ([]Update, error) {
+// It also returns the heads that the binding kept since the last Tick.
+func (b *Binding) Tick(now time.Time) ([]Update, []Head, error) {
 	b.heads.sweep(now)
+	heads := b.heads.takeFresh()
 	ups, err := b.recv.Tick(now)
 	b.send.Expire(now)
 	b.load.advance(now, &b.stats.txLanes)
@@ -370,14 +382,14 @@ func (b *Binding) Tick(now time.Time) ([]Update, error) {
 	if _, ok := b.quic.expire(now); ok {
 		b.onTrip(nil, Trip{})
 	}
-	return out, err
+	return out, heads, err
 }
 
 // Rotate starts a new master key. It returns keys.ErrBusy while SAs of the previous key
 // are live.
 func (b *Binding) Rotate() error { return b.recv.Rotate() }
 
-// RemovePeer deletes the SAs and routes of p. Send the returned revoke to the peer.
+// RemovePeer deletes the routes and then the SAs of p. Send the returned revoke to the peer.
 func (b *Binding) RemovePeer(p *Peer) keys.Request {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -388,8 +400,25 @@ func (b *Binding) removeLocked(p *Peer) keys.Request {
 	if p.removed {
 		return keys.Request{Op: keys.OpRevoke}
 	}
+	// The routes go first, so that a lookup after this finds the next route and not a peer
+	// with no SA.
+	if p.l != nil {
+		for _, pfx := range p.routes {
+			p.l.routes.Remove(pfx, p)
+		}
+	} else {
+		b.setDirectRoutes(p, nil)
+	}
+	p.freeSlot()
 	req := p.rx.Revoke()
 	clear(p.rxSPIs)
+	b.editSPIs(func(m map[uint32]*Peer) {
+		for spi, q := range m {
+			if q == p {
+				delete(m, spi)
+			}
+		}
+	})
 	var spis []uint32
 	for i := range keys.MaxLanes {
 		if sa := p.tx.SA(i); sa != nil {
@@ -398,10 +427,6 @@ func (b *Binding) removeLocked(p *Peer) keys.Request {
 	}
 	_, _ = p.tx.Apply(keys.Request{Op: keys.OpRevoke, SPIs: spis}, time.Time{})
 	p.updateLanes()
-	for _, pfx := range p.routes {
-		p.l.routes.Remove(pfx, p)
-	}
-	p.freeSlot()
 	p.routes, p.removed = nil, true
 	delete(b.peers, p.rx)
 	return req
@@ -511,7 +536,7 @@ func (b *Binding) ReadLanes() error {
 		tr := &quic.Transport{
 			Conn:                 c,
 			EnableGRO:            b.tr.EnableGRO,
-			NonQUICPacketHandler: func(pkt []byte, _ net.Addr) { b.receive(&b.lanes[i], pkt) },
+			NonQUICPacketHandler: func(pkt []byte, from net.Addr) { b.receive(&b.lanes[i], pkt, addrPortOf(from)) },
 			NonQUICBatchEnd:      func() { b.readEnd(&b.lanes[i]) },
 		}
 		if err := tr.Start(); err != nil {
@@ -576,6 +601,9 @@ func (b *Binding) AddRoute(pfx netip.Prefix, p *Peer) error {
 	if p.removed {
 		return ErrClosed
 	}
+	if p.l == nil {
+		return errDirect
+	}
 	if slices.Contains(p.routes, pfx) {
 		return nil
 	}
@@ -592,7 +620,7 @@ func (b *Binding) RemoveRoute(pfx netip.Prefix, p *Peer) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	i := slices.Index(p.routes, pfx)
-	if i < 0 {
+	if i < 0 || p.l == nil {
 		return false
 	}
 	p.routes = slices.Delete(p.routes, i, i+1)
@@ -674,6 +702,9 @@ func (p *Peer) UseQUIC(pc *peerconn.Conn) error {
 	if p.removed {
 		return ErrClosed
 	}
+	if p.l == nil {
+		return errDirect
+	}
 	slots := slices.Clone(*b.slots.Load())
 	i := slices.Index(slots, nil)
 	if i < 0 {
@@ -720,14 +751,24 @@ func (b *Binding) ReportQUIC(now time.Time, lost uint64) {
 // when there is none.
 func (b *Binding) QUICLimit() int64 { return b.quic.limit() }
 
-// receive gives a PSP packet from the socket of reader r to the driver, on the read loop of that
-// socket, and counts the other packets.
-func (b *Binding) receive(r *rxReader, pkt []byte) {
+// receive gives a PSP packet from the address from to the socket of reader r to the driver, on
+// the read loop of that socket, and counts the other packets.
+func (b *Binding) receive(r *rxReader, pkt []byte, from netip.AddrPort) {
 	if len(pkt) == 0 || (pkt[0] != pspwire.NextHdrV4 && pkt[0] != pspwire.NextHdrV6) {
 		b.stats.rxOther.Add(1)
 		return
 	}
-	b.read(r, pkt)
+	b.read(r, pkt, from)
+}
+
+// addrPortOf returns the address of a UDP source, or the zero address.
+func addrPortOf(a net.Addr) netip.AddrPort {
+	ua, ok := a.(*net.UDPAddr)
+	if !ok {
+		return netip.AddrPort{}
+	}
+	ap := ua.AddrPort()
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
 }
 
 // pipeOf returns the receive pipe of the driver d, or nil.
@@ -738,9 +779,9 @@ func pipeOf(d *driver) *rxPipe {
 	return d.pipe
 }
 
-// read gives a packet of reader r to the driver on the read loop of r: a copy into the receive
-// pipe, or an open. It waits for a free set, or without a pipe for rxMu and the read batch.
-func (b *Binding) read(r *rxReader, pkt []byte) {
+// read gives a packet of reader r from the outer address from to the driver on the read loop of
+// r: a copy into the receive pipe, or an open. It waits for a free set, or for rxMu with no pipe.
+func (b *Binding) read(r *rxReader, pkt []byte, from netip.AddrPort) {
 	d := b.drv.Load()
 	r.retire(pipeOf(d))
 	if d == nil {
@@ -748,7 +789,7 @@ func (b *Binding) read(r *rxReader, pkt []byte) {
 		return
 	}
 	if d.pipe != nil {
-		d.pipe.add(r, pkt)
+		d.pipe.add(r, pkt, from)
 		return
 	}
 	b.rxMu.Lock()
@@ -761,7 +802,7 @@ func (b *Binding) read(r *rxReader, pkt []byte) {
 	if r.lane >= 0 {
 		b.stats.rxLanes[r.lane].Add(1)
 	}
-	b.open(d, r, pkt)
+	b.open(d, r, pkt, from)
 }
 
 // readEnd gives the packets of one read of reader r to the driver.
@@ -779,18 +820,25 @@ func (b *Binding) readEnd(r *rxReader) {
 	}
 }
 
-// open opens a packet of reader r in place and gives it to the driver, with b.rxMu held: a PSP
-// packet on the receive queue, or a data frame of a relay session. A driver with no pipe uses it.
-func (b *Binding) open(d *driver, r *rxReader, pkt []byte) {
+// open opens a PSP packet or a data frame of reader r in place, and gives it to the driver or the
+// take-out. A driver with no pipe uses it, with b.rxMu held.
+func (b *Binding) open(d *driver, r *rxReader, pkt []byte, from netip.AddrPort) {
 	var inner []byte
+	var o engine.Opened
 	var err error
 	if r.link != nil {
 		inner, err = peerconn.OpenData(pkt, b.vni, r.link.routed)
-	} else {
-		inner, _, err = b.rxq.Receive(pkt)
+	} else if inner, o, err = b.rxq.Open(pkt); err == nil {
+		err = b.rxq.Accept(o)
 	}
 	if err != nil {
 		b.stats.rxDrops.Add(1)
+		return
+	}
+	if b.takeOut.Load() != nil && b.takes(inner) {
+		if !b.give(inner, o, r.link, from) {
+			b.stats.rxDrops.Add(1)
+		}
 		return
 	}
 	b.deliver(d, inner)

@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/peerconn"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
@@ -383,11 +385,22 @@ func (s *session) stream(m *dp.SessionResponse) {
 		if s.peer != nil {
 			proc.Store(s.upv, keyReport, &rxReport{peer: s.peer, sas: fromReport(m.RxReport)})
 		}
+	case *dp.SessionResponse_Revocations:
+		proc.Store(s.upv, keyRevoked, &revokedList{agents: fromRevocations(m.Revocations)})
 	case *dp.SessionResponse_Config:
 		if m.Config.GetMtu() != s.d.config.GetMtu() {
 			slog.Info("VPC MTU changed; the new MTU applies after the agent restarts", "mtu", m.Config.GetMtu())
 		}
 	}
+}
+
+// fromRevocations returns the entries of a revocation list of the relay.
+func fromRevocations(m *dp.Revocations) []vpcv1alpha1.RevokedAgent {
+	out := make([]vpcv1alpha1.RevokedAgent, 0, len(m.GetAgents()))
+	for _, r := range m.GetAgents() {
+		out = append(out, vpcv1alpha1.RevokedAgent{Name: r.GetName(), RevokedAt: metav1.NewTime(r.GetRevokedAt().AsTime())})
+	}
+	return out
 }
 
 // routeDelta applies a RouteDelta to the route table. The reader reads on
@@ -626,14 +639,6 @@ func (s *session) applied(m appliedMsg) {
 	}
 	s.att.offerOK = true
 	s.advance()
-}
-
-// localPort returns the port of the agent socket.
-func (a *Agent) localPort() uint16 {
-	if ua, ok := a.cfg.Transport.Conn.LocalAddr().(*net.UDPAddr); ok {
-		return uint16(ua.Port)
-	}
-	return 0
 }
 
 // logRefused logs the advertised routes of the attachment name that the relay

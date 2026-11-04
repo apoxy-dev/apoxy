@@ -31,11 +31,14 @@ type probeRegistry struct {
 	m  map[[8]byte]*probeTaker
 }
 
-// probeTaker gets the probe packets of one SID.
-type probeTaker struct{ f func(pkt []byte) }
+// probeTaker gets the probe packets of one SID with their outer source address. pkt is valid
+// only during the call.
+type probeTaker struct {
+	f func(pkt []byte, from netip.AddrPort)
+}
 
 // add makes f the taker of sid and returns the entry for remove.
-func (r *probeRegistry) add(sid [8]byte, f func([]byte)) *probeTaker {
+func (r *probeRegistry) add(sid [8]byte, f func([]byte, netip.AddrPort)) *probeTaker {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.m == nil {
@@ -56,7 +59,7 @@ func (r *probeRegistry) remove(sid [8]byte, t *probeTaker) {
 }
 
 // take gives a path probe packet to the taker of its SID. It must not block.
-func (r *probeRegistry) take(pkt []byte, _ net.Addr) {
+func (r *probeRegistry) take(pkt []byte, from net.Addr) {
 	sid, ok := p2p.ProbeSID(pkt)
 	if !ok {
 		return
@@ -65,8 +68,18 @@ func (r *probeRegistry) take(pkt []byte, _ net.Addr) {
 	t := r.m[sid]
 	r.mu.Unlock()
 	if t != nil {
-		t.f(pkt)
+		t.f(pkt, udpAddrPort(from))
 	}
+}
+
+// udpAddrPort returns the address of a UDP source, with an IPv4 address in its IPv4 form.
+func udpAddrPort(a net.Addr) netip.AddrPort {
+	ua, ok := a.(*net.UDPAddr)
+	if !ok {
+		return netip.AddrPort{}
+	}
+	ap := ua.AddrPort()
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
 }
 
 // probeResult is the result of a probe task.
@@ -90,7 +103,7 @@ func (a *Agent) probe(ctx context.Context, qc *quic.Conn, to netip.AddrPort, mtu
 	var txid [12]byte
 	_, _ = rand.Read(txid[:])
 	got := make(chan netip.AddrPort, 1)
-	t := a.probes.add(keys.SID, func(pkt []byte) {
+	t := a.probes.add(keys.SID, func(pkt []byte, _ netip.AddrPort) {
 		if len(pkt) != size {
 			return
 		}

@@ -92,6 +92,23 @@ func IsRevoked(cert *x509.Certificate, agent string, list []vpcv1alpha1.RevokedA
 	return false
 }
 
+// RevokedKeep is the cert life and 10 minutes for clock differences. An older entry revokes no
+// valid cert.
+const RevokedKeep = CertLifetime + 10*time.Minute
+
+// LiveRevoked returns the entries of list from now - RevokedKeep on. For a cert valid at now,
+// IsRevoked gives the same answer without the other entries.
+func LiveRevoked(list []vpcv1alpha1.RevokedAgent, now time.Time) []vpcv1alpha1.RevokedAgent {
+	from := now.Add(-RevokedKeep)
+	var out []vpcv1alpha1.RevokedAgent
+	for _, r := range list {
+		if !r.RevokedAt.Time.Before(from) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // NewPool parses a PEM CA bundle. Each block must be a CA cert.
 func NewPool(bundle []byte) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()

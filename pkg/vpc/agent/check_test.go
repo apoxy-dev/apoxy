@@ -5,6 +5,7 @@ package agent
 import (
 	"bytes"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -31,16 +32,45 @@ type blockConn struct {
 	// half drops each second BFD packet to the relay.
 	half   atomic.Bool
 	probes atomic.Int32
+	// keep makes a copy of each probe packet to the relay address while it is set.
+	keep  atomic.Bool
+	mu    sync.Mutex
+	saved [][]byte
 }
 
 func (c *blockConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if addr.String() == c.relay {
 		probe := len(p) > 0 && p[0] == p2p.TypeProbe
+		if probe && c.keep.Load() {
+			c.mu.Lock()
+			c.saved = append(c.saved, bytes.Clone(p))
+			c.mu.Unlock()
+		}
 		if c.out.Load() || (probe && c.half.Load() && c.probes.Add(1)%2 == 0) {
 			return len(p), nil
 		}
 	}
 	return c.PacketConn.WriteTo(p, addr)
+}
+
+// replay sends the saved packets to the relay address again past the blocks, one each wait, until
+// stop closes.
+func (c *blockConn) replay(stop <-chan struct{}, wait time.Duration) {
+	to, err := net.ResolveUDPAddr("udp", c.relay)
+	if err != nil {
+		panic(err)
+	}
+	c.mu.Lock()
+	saved := slices.Clone(c.saved)
+	c.mu.Unlock()
+	for _, p := range saved {
+		_, _ = c.PacketConn.WriteTo(p, to)
+		select {
+		case <-stop:
+			return
+		case <-time.After(wait):
+		}
+	}
 }
 
 func (c *blockConn) ReadFrom(p []byte) (int, net.Addr, error) {

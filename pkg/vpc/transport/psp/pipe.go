@@ -3,6 +3,7 @@
 package psp
 
 import (
+	"net/netip"
 	"sync"
 	"sync/atomic"
 
@@ -97,19 +98,23 @@ func (r *rxReader) retire(p *rxPipe) {
 // data frames of the relay session of link.
 type rxSet struct {
 	slots  [][]byte
+	from   []netip.AddrPort // The outer source of each slot. One read has packets of many sources.
 	n      int
 	link   *Link        // The link of the relay session, or nil for PSP packets. Nil in a free set.
 	res    []openResult // The result of Open for each slot.
+	takes  int          // The slots for the take-out.
 	out    []rxPacket   // The packets for the netstack, in slot order. The first nout are set.
 	nout   int
 	opened chan struct{} // Gets one token when an open worker finished the set.
 }
 
-// openResult is the result of Open for one slot. ok is false when Open failed.
+// openResult is the result of Open for one slot. ok is false when Open failed, and for a packet
+// of the take-out, which has take.
 type openResult struct {
 	o     engine.Opened
 	inner []byte // The inner packet, in the slot.
 	ok    bool
+	take  bool
 }
 
 // newRxPipe starts the consumer of d and workers open workers. They give the packets to
@@ -146,7 +151,10 @@ func newRxPipe(d *driver, j *injectBatch, workers int, done, closed <-chan struc
 
 // newSet makes an empty set.
 func (p *rxPipe) newSet() *rxSet {
-	s := &rxSet{slots: make([][]byte, pipeSlots), res: make([]openResult, pipeSlots), out: make([]rxPacket, pipeSlots)}
+	s := &rxSet{
+		slots: make([][]byte, pipeSlots), from: make([]netip.AddrPort, pipeSlots),
+		res: make([]openResult, pipeSlots), out: make([]rxPacket, pipeSlots),
+	}
 	if p.work != nil {
 		s.opened = make(chan struct{}, 1)
 	}
@@ -157,9 +165,9 @@ func (p *rxPipe) newSet() *rxSet {
 	return s
 }
 
-// add copies pkt into the set of this read of reader r. It drops pkt when the pipe stops. Only
-// the read loop of r calls it, after retire made r read for p.
-func (p *rxPipe) add(r *rxReader, pkt []byte) {
+// add copies pkt from the outer address from into the set of this read of reader r. It drops pkt
+// when the pipe stops. Only the read loop of r calls it, after retire made r read for p.
+func (p *rxPipe) add(r *rxReader, pkt []byte, from netip.AddrPort) {
 	if r.cur == nil {
 		if !r.used && r.lane >= 0 {
 			// The pipe can have more sets from now on. A relay session adds no sets: the
@@ -175,6 +183,7 @@ func (p *rxPipe) add(r *rxReader, pkt []byte) {
 	}
 	s := r.cur
 	s.slots[s.n] = append(s.slots[s.n][:0], pkt...)
+	s.from[s.n] = from
 	if s.n++; s.n == len(s.slots) {
 		p.flush(r)
 	}
@@ -245,7 +254,7 @@ func (p *rxPipe) flush(r *rxReader) {
 func (p *rxPipe) open() {
 	for s := range p.work {
 		if p.stopped() {
-			s.nout = 0
+			s.nout, s.takes = 0, 0
 		} else {
 			p.openSet(s)
 		}
@@ -253,11 +262,13 @@ func (p *rxPipe) open() {
 	}
 }
 
-// openSet opens the packets of s in place: data frames with OpenData, PSP packets on the
-// receive queue. It makes the packets for the netstack from the ones that passed, in s.
+// openSet opens the packets of s in place and marks the packets of the take-out. It makes the
+// packets for the netstack from the others that passed, in s.
 func (p *rxPipe) openSet(s *rxSet) {
 	b := p.d.b
 	quic := b.quicPath()
+	take := b.takeOut.Load() != nil
+	s.takes = 0
 	for i, pkt := range s.slots[:s.n] {
 		var inner []byte
 		var o engine.Opened
@@ -269,6 +280,11 @@ func (p *rxPipe) openSet(s *rxSet) {
 		}
 		if err != nil {
 			s.res[i] = openResult{}
+			continue
+		}
+		if take && b.takes(inner) {
+			s.res[i] = openResult{o: o, inner: inner, take: true}
+			s.takes++
 			continue
 		}
 		b.clampMSS(inner, quic)
@@ -290,8 +306,13 @@ func (p *rxPipe) run() {
 				p.stop(s)
 				return
 			}
-			drops := s.n
+			drops, next := s.n, 0
 			for _, r := range s.out[:s.nout] {
+				// The packets go to the replay window in slot order.
+				if s.takes > 0 {
+					drops -= p.takeOut(s, next, r.first)
+					next = r.first + r.n
+				}
 				// The data frames of a relay session have no replay window: QUIC has its own.
 				if s.link != nil || p.accept(s.res[r.first:r.first+r.n]) {
 					p.j.push(r.pkb, r.w, r.n)
@@ -300,12 +321,15 @@ func (p *rxPipe) run() {
 					r.pkb.DecRef()
 				}
 			}
+			if s.takes > 0 {
+				drops -= p.takeOut(s, next, s.n)
+			}
 			if drops > 0 {
 				b.stats.rxDrops.Add(uint64(drops))
 			}
 			// A free set must hold no packet buffer, because release drops all it holds.
 			clear(s.out[:s.nout])
-			s.n, s.nout, s.link = 0, 0, nil
+			s.n, s.nout, s.takes, s.link = 0, 0, 0, nil
 			p.free <- s
 			// When more sets wait, their packets go in the same inject batches.
 			if len(p.full) == 0 {
@@ -331,6 +355,26 @@ func (p *rxPipe) accept(res []openResult) bool {
 		}
 	}
 	return ok
+}
+
+// takeOut gives the packets of the take-out in the slots first to end-1 of s to the take-out,
+// after the replay window. It returns the number that the take-out took.
+func (p *rxPipe) takeOut(s *rxSet, first, end int) int {
+	b := p.d.b
+	n := 0
+	for i := first; i < end; i++ {
+		res := &s.res[i]
+		if !res.take {
+			continue
+		}
+		if s.link == nil && b.rxq.Accept(res.o) != nil {
+			continue
+		}
+		if b.give(res.inner, res.o, s.link, s.from[i]) {
+			n++
+		}
+	}
+	return n
 }
 
 // wait waits until an open worker finished s. It returns false when the pipe stops first.
@@ -379,7 +423,7 @@ func (p *rxPipe) release(s *rxSet) {
 	}
 	clear(s.out[:s.nout])
 	p.d.b.stats.rxDrops.Add(uint64(s.n))
-	s.n, s.nout, s.link = 0, 0, nil
+	s.n, s.nout, s.takes, s.link = 0, 0, 0, nil
 	p.free <- s
 }
 

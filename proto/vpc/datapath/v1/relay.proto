@@ -6,6 +6,7 @@ package apoxy.vpc.datapath.v1;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
 import "proto/vpc/datapath/v1/types.proto";
 
 option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1";
@@ -67,6 +68,9 @@ message SessionResponse {
     Drain drain = 6;
     // Receive counters of the relay SAs, each second when they change.
     RxReport rx_report = 7;
+    // Revocation list of the VPC of the agent, after the first attachment and
+    // at each change. Only for an agent at revision 26 or later.
+    Revocations revocations = 8;
   }
 }
 
@@ -247,4 +251,19 @@ message RouteStatus {
   // The route of the request, in the masked form.
   string prefix = 1;
   RouteResult result = 2;
+}
+
+// Revocations is the full revocation list of one VPC. It replaces the last
+// list of the session. An empty list revokes no agent.
+message Revocations {
+  VPCRef vpc = 1;
+  repeated RevokedAgent agents = 2;
+}
+
+// RevokedAgent revokes each cert of an agent name with a NotBefore at or
+// before revoked_at.
+message RevokedAgent {
+  // Agent name in the cert SAN.
+  string name = 1;
+  google.protobuf.Timestamp revoked_at = 2;
 }

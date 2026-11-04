@@ -36,6 +36,7 @@ type dialed struct {
 	maxLanes  uint32         // Most lane ports that the relay takes.
 	version   *dp.Version    // Version of the relay, from Welcome.
 	relayID   string         // ID of the relay, from Welcome.
+	reflexive netip.AddrPort // The agent socket as the relay saw it, from Welcome. Zero when not valid.
 	config    *dp.Config     // The first Config.
 	begin     time.Time      // Start of the dial.
 	connect   time.Duration  // From the start of the dial to the first Config.
@@ -139,6 +140,7 @@ func (a *Agent) hello(d *dialed) error {
 		return err
 	}
 	d.maxLanes = w.GetMaxLanes()
+	d.reflexive = reflexiveAddr(w)
 	d.version = w.GetVersion()
 	// The dial fails for a relay that is too old, so the agent dials the next relay.
 	if err := relayRevision(d.version, a.ver); err != nil {

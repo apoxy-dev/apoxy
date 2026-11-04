@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+syntax = "proto3";
+
+package apoxy.vpc.datapath.v1;
+
+import "google/protobuf/empty.proto";
+import "proto/vpc/datapath/v1/types.proto";
+
+option go_package = "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1;datapathv1";
+
+// Peer is the service of an agent on a peer channel (ALPN apoxy-peer/2).
+// Both agents serve it and call it.
+service Peer {
+  // Hello is the first call on a channel. The dialer calls it, and each side
+  // gives its list and its instance.
+  rpc Hello(PeerHello) returns (PeerHello);
+  // Keys gives the peer SAs for traffic to the caller. The receiver of a
+  // direction calls it.
+  rpc Keys(KeysRequest) returns (KeysResponse);
+
+  // The input type has its full name because the method has the same name.
+
+  // Candidates gives the peer the candidate addresses and the list of the
+  // caller.
+  rpc Candidates(apoxy.vpc.datapath.v1.Candidates) returns (google.protobuf.Empty);
+}
+
+// PeerCloseCode is the QUIC application error code when an agent closes a
+// peer channel.
+enum PeerCloseCode {
+  // Normal close.
+  PEER_CLOSE_CODE_UNSPECIFIED = 0;
+  // The revision of the peer is below the minimum of the agent that closes.
+  // The reason gives the minimum.
+  PEER_CLOSE_CODE_UPGRADE = 1;
+  // The agent keeps another channel with the same peer.
+  PEER_CLOSE_CODE_DUPLICATE = 2;
+  // The cert of the peer is revoked, or the cert of one side came to its end.
+  PEER_CLOSE_CODE_CERT = 3;
+}
+
+// PeerHello is the first message of each side of a peer channel.
+message PeerHello {
+  // Revision of the sender.
+  Version version = 1;
+  // List of the sender: the /96 prefixes of its relay sessions, at most 16.
+  repeated string prefixes = 2;
+  // Random number of the agent process, new at each process start. It is the
+  // instance of Hello on the relay sessions of the agent.
+  fixed64 instance = 3;
+}
+
+// Candidates is one round of the candidate addresses of the sender.
+message Candidates {
+  // Round of the sender. It increases with each round on a channel.
+  uint32 round = 1;
+  // Candidate addresses in ip:port form, at most 8.
+  repeated string addresses = 2;
+  // List of the sender, as in PeerHello.prefixes.
+  repeated string prefixes = 3;
+}

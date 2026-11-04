@@ -14,6 +14,8 @@ import (
 const (
 	RoleAgent = "client"
 	RoleRelay = "server"
+	// RolePeer is the check of a direct path between two agents.
+	RolePeer = "peer"
 )
 
 // Check is one end of the BFD session that checks the PSP path of a relay

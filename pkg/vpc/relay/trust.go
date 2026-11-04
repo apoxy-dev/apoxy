@@ -33,32 +33,39 @@ type trustGen struct{ n uint64 }
 // checkCert checks the agent cert chain (leaf first) at now: the agent CA of the SAN project, an
 // agent ID SAN, and no revocation.
 func checkCert(trust Trust, chain []*x509.Certificate, now time.Time) (identity.ID, error) {
+	id, _, err := checkCertList(trust, chain, now)
+	return id, err
+}
+
+// checkCertList is checkCert that also returns the revocation list of the check.
+func checkCertList(trust Trust, chain []*x509.Certificate, now time.Time) (identity.ID, []vpcv1alpha1.RevokedAgent, error) {
 	if trust == nil {
-		return identity.ID{}, errors.New("relay has no trust data")
+		return identity.ID{}, nil, errors.New("relay has no trust data")
 	}
 	if len(chain) == 0 {
-		return identity.ID{}, errors.New("no agent cert")
+		return identity.ID{}, nil, errors.New("no agent cert")
 	}
 	// The SAN only selects the CA and the revocation list here. Verify checks it.
 	san, err := identity.IDFromCert(chain[0])
 	if err != nil {
-		return identity.ID{}, err
+		return identity.ID{}, nil, err
 	}
 	roots, err := trust.AgentCA(san.Project)
 	if err != nil {
-		return identity.ID{}, fmt.Errorf("no agent CA: %w", err)
+		return identity.ID{}, nil, fmt.Errorf("no agent CA: %w", err)
 	}
 	revoked, err := trust.Revoked(san.Project, san.VPC)
 	if err != nil {
-		return identity.ID{}, fmt.Errorf("no revocation list: %w", err)
+		return identity.ID{}, nil, fmt.Errorf("no revocation list: %w", err)
 	}
-	return identity.Verify(chain, identity.VerifyOptions{
+	id, err := identity.Verify(chain, identity.VerifyOptions{
 		Roots:   roots,
 		Project: san.Project,
 		VPC:     san.VPC,
 		Revoked: revoked,
 		Now:     now,
 	})
+	return id, revoked, err
 }
 
 // TLSConfig returns a copy of base whose handshake fails for an agent cert that fails the check.

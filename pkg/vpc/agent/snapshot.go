@@ -21,6 +21,8 @@ type snapshot struct {
 	conns []*connSnap
 	// specs are the extra attachments to keep, by name. They stay after Run.
 	specs map[string]*AttachmentSpec
+	cands candidates // The own candidates while Run runs.
+	pairs []pairSnap // The pairs while Run runs, by flow.
 }
 
 // connSnap is one home session in a snapshot.

@@ -19,6 +19,7 @@ const recvBatch = 64
 // QUICConn is the part of a QUIC connection that Conn uses.
 type QUICConn interface {
 	SendDatagram([]byte) error
+	TrySendDatagram([]byte) error
 	ReceiveDatagrams(ctx context.Context, bufs [][]byte) (int, error)
 }
 
@@ -68,6 +69,14 @@ func (c *Conn) SendData(frame []byte) error {
 		return net.ErrClosed
 	}
 	return c.qc.SendDatagram(frame)
+}
+
+// TrySendData is SendData that does not wait: a full send queue drops the frame.
+func (c *Conn) TrySendData(frame []byte) error {
+	if c.closed.Load() {
+		return net.ErrClosed
+	}
+	return c.qc.TrySendDatagram(frame)
 }
 
 // HandleData gives the data frames of the relay session to h, and nil stops it.

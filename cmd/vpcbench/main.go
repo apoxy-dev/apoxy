@@ -319,6 +319,7 @@ func startAgent(ctx context.Context, fail context.CancelCauseFunc, o options, na
 		Transport:  tr,
 		Name:       name,
 		MTU:        o.MTU,
+		Addresses:  hostAddrs{},
 		OnAttach: func(b *psp.Binding, addr netip.Addr, _ []netip.Prefix) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -386,6 +387,26 @@ func waitMode(ctx context.Context, a *agent.Agent, name, transport string, limit
 		}
 	}
 	return nil
+}
+
+// hostAddrs lists the addresses of the host interfaces. The agent opens lanes
+// only when the relay sees one of them.
+type hostAddrs struct{}
+
+func (hostAddrs) HostAddrs() ([]netip.Addr, error) {
+	ifas, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	var out []netip.Addr
+	for _, a := range ifas {
+		if ipn, ok := a.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(ipn.IP); ok {
+				out = append(out, ip.Unmap())
+			}
+		}
+	}
+	return out, nil
 }
 
 // listenUDPFor opens an agent socket in the address family of addr.

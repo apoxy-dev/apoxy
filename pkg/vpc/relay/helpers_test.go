@@ -19,7 +19,9 @@ import (
 
 	"github.com/apoxy-dev/softpsp/psp"
 	"github.com/quic-go/quic-go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -127,13 +129,18 @@ func (a *addresses) releases() int {
 	return len(a.released)
 }
 
-// trust trusts one agent CA and has a revocation list. A set err makes each call fail.
+// trust trusts one agent CA and has a revocation list for each VPC. A set err makes each call fail.
 type trust struct {
 	mu      sync.Mutex
 	pool    *x509.CertPool
-	revoked []vpcv1alpha1.RevokedAgent
+	revoked map[string][]vpcv1alpha1.RevokedAgent // By VPC UID.
 	err     error
+	calls   int
+	held    *heldCall // The next Revoked call waits for it.
 }
+
+// heldCall is one Revoked call that waits. It closes entered after it read the list.
+type heldCall struct{ entered, release chan struct{} }
 
 func (t *trust) AgentCA(string) (*x509.CertPool, error) {
 	t.mu.Lock()
@@ -141,16 +148,55 @@ func (t *trust) AgentCA(string) (*x509.CertPool, error) {
 	return t.pool, t.err
 }
 
-func (t *trust) Revoked(string, string) ([]vpcv1alpha1.RevokedAgent, error) {
+func (t *trust) Revoked(_, vpc string) ([]vpcv1alpha1.RevokedAgent, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	return slices.Clone(t.revoked), t.err
+	t.calls++
+	list, err, h := slices.Clone(t.revoked[vpc]), t.err, t.held
+	t.held = nil
+	t.mu.Unlock()
+	if h != nil {
+		close(h.entered)
+		<-h.release
+	}
+	return list, err
 }
 
-func (t *trust) revoke(name string) {
+// hold makes the next Revoked call wait until the release channel closes.
+func (t *trust) hold() *heldCall {
+	h := &heldCall{entered: make(chan struct{}), release: make(chan struct{})}
+	t.mu.Lock()
+	t.held = h
+	t.mu.Unlock()
+	return h
+}
+
+// revokedCalls returns the number of Revoked calls.
+func (t *trust) revokedCalls() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.revoked = append(t.revoked, vpcv1alpha1.RevokedAgent{Name: name, RevokedAt: metav1.NewTime(time.Now())})
+	return t.calls
+}
+
+// set replaces the revocation list of vpc.
+func (t *trust) set(vpc string, list ...vpcv1alpha1.RevokedAgent) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.revoked == nil {
+		t.revoked = map[string][]vpcv1alpha1.RevokedAgent{}
+	}
+	t.revoked[vpc] = list
+}
+
+func (t *trust) revoke(name string) { t.revokeAt(vpcUID, name, time.Now()) }
+
+// revokeAt revokes the agent name of vpc at the time at.
+func (t *trust) revokeAt(vpc, name string, at time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.revoked == nil {
+		t.revoked = map[string][]vpcv1alpha1.RevokedAgent{}
+	}
+	t.revoked[vpc] = append(t.revoked[vpc], vpcv1alpha1.RevokedAgent{Name: name, RevokedAt: metav1.NewTime(at)})
 }
 
 func (t *trust) setErr(err error) {
@@ -315,8 +361,12 @@ type agent struct {
 	keys p2p.ProbeKeys
 	st   rpc.BidiStreamClient[dpv1.SessionRequest, dpv1.SessionResponse]
 
-	mu      sync.Mutex
-	msgs    []*dpv1.SessionResponse
+	mu   sync.Mutex
+	msgs []*dpv1.SessionResponse
+	// stop, when set, stops the reads of the Session stream after a message for which it is true,
+	// until resume closes.
+	stop    func(*dpv1.SessionResponse) bool
+	resume  chan struct{}
 	at      []time.Time // The arrival time of each message of msgs.
 	routes  map[string]*dpv1.Route
 	recvErr error
@@ -424,9 +474,52 @@ func (a *agent) begin(h *dpv1.Hello) <-chan first {
 					a.routes[r.GetPrefix()] = r
 				}
 			}
+			var resume chan struct{}
+			if a.stop != nil && a.stop(m) {
+				resume = a.resume
+			}
 			a.mu.Unlock()
+			if resume != nil {
+				<-resume
+			}
 		}
 	}()
+	return out
+}
+
+// stopAfter stops the reads of the Session stream after the next message for which f is true. The
+// reads go on after a call of the returned function.
+func (a *agent) stopAfter(f func(*dpv1.SessionResponse) bool) (resume func()) {
+	ch := make(chan struct{})
+	a.mu.Lock()
+	a.stop, a.resume = f, ch
+	a.mu.Unlock()
+	return func() {
+		a.mu.Lock()
+		a.stop = nil
+		a.mu.Unlock()
+		close(ch)
+	}
+}
+
+// lists returns the entries of each Revocations message that the agent got, in order. Each
+// message must name the VPC of the env.
+func (a *agent) lists() [][]vpcv1alpha1.RevokedAgent {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out [][]vpcv1alpha1.RevokedAgent
+	for _, m := range a.msgs {
+		l := m.GetRevocations()
+		if l == nil {
+			continue
+		}
+		assert.True(a.t, proto.Equal(&dpv1.VPCRef{ProjectId: project, VpcUid: vpcUID, NetworkId: netID}, l.GetVpc()), "VPC %v", l.GetVpc())
+		entries := []vpcv1alpha1.RevokedAgent{}
+		for _, r := range l.GetAgents() {
+			entries = append(entries, vpcv1alpha1.RevokedAgent{Name: r.GetName(), RevokedAt: metav1.NewTime(r.GetRevokedAt().AsTime())})
+		}
+		out = append(out, entries)
+	}
 	return out
 }
 

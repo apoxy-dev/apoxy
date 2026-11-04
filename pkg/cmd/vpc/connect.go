@@ -23,6 +23,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/spf13/cobra"
 
+	configv1alpha1 "github.com/apoxy-dev/apoxy/api/config/v1alpha1"
 	"github.com/apoxy-dev/apoxy/build"
 	apoxyconfig "github.com/apoxy-dev/apoxy/config"
 	"github.com/apoxy-dev/apoxy/pkg/netstack"
@@ -112,7 +113,7 @@ func (o *connectOptions) addFlags(cmd *cobra.Command) {
 	f.StringVar(&o.tunIfname, "tun-ifname", "apoxy0", "Name of the TUN device of the tun driver.")
 	f.IntVar(&o.relays, "relays", 2, "Relay connections to keep, 1 to 3, each on its own relay. Each connection has its own VPC address.")
 	f.IntVar(&o.mtu, "mtu", 0, fmt.Sprintf("Device MTU, %d to %d. 0 uses the VPC MTU when the path to the relay carries it, else %d.", psp.DefaultMTU, psp.MaxMTU, psp.DefaultMTU))
-	f.StringVar(&o.adminAddr, "admin-addr", "", "Unix socket path of a local HTTP API that adds and removes attachments. Only this user and root can use it. Empty disables the API.")
+	f.StringVar(&o.adminAddr, "admin-addr", "", "Unix socket path of a local HTTP API that adds and removes attachments and gives the status for \"apoxy alpha vpc status\". Only this user and root can use it. Empty disables the API.")
 	f.StringVar(&o.identity, "identity", "", "Path of an identity file from \"apoxy alpha vpc enroll\". The host connects with its certificate and makes no API call. Many hosts can use one file, each with its own --name.")
 }
 
@@ -164,6 +165,14 @@ func (o *connectOptions) agentConfig(host string, canTun bool) (agent.Config, st
 	return cfg, driver, nil
 }
 
+// directPaths reports whether the CLI config c lets the agent use direct paths. Omitted means on.
+func directPaths(c *configv1alpha1.Config) bool {
+	if c == nil || c.VPC == nil || c.VPC.DirectPaths == nil {
+		return true
+	}
+	return *c.VPC.DirectPaths
+}
+
 // isSocketPath reports whether s is a file path, not a network address.
 func isSocketPath(s string) bool {
 	if strings.Contains(s, "://") {
@@ -199,6 +208,11 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 		return err
 	}
 	cfg.Identity = ids
+	c, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load the CLI config: %w", err)
+	}
+	cfg.DirectPaths = directPaths(c)
 	// Enroll gives the relays. With a cached cert, the agent starts while the
 	// apiserver is down. An identity file has the relays.
 	target := fmt.Sprintf("VPC %q", vpc)
@@ -218,7 +232,7 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	if len(addrs) == 0 {
 		return fmt.Errorf("no ready relay serves %s", target)
 	}
-	uc, err := listenUDP(addrs)
+	uc, family, err := listenUDP(addrs)
 	if err != nil {
 		return err
 	}
@@ -226,6 +240,7 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	tr := &quic.Transport{Conn: uc}
 	defer tr.Close()
 	cfg.Transport = tr
+	cfg.Addresses = hostAddrs{family: family}
 
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -271,17 +286,18 @@ func connectError(err error) error {
 	return err
 }
 
-// listenUDP opens the agent socket in the address family of the relays.
-func listenUDP(relays []string) (*net.UDPConn, error) {
+// listenUDP opens the agent socket in the address family of the relays, and
+// returns the socket and its network.
+func listenUDP(relays []string) (*net.UDPConn, string, error) {
 	family, err := socketFamily(relays)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	uc, err := net.ListenUDP(family, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open the agent socket: %w", err)
+		return nil, "", fmt.Errorf("failed to open the agent socket: %w", err)
 	}
-	return uc, nil
+	return uc, family, nil
 }
 
 // socketFamily returns udp4 or udp6 when the relays that resolve use one
