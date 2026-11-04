@@ -4,12 +4,21 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/apoxy-dev/apoxy/api/resource/resourcestrategy"
+)
+
+const (
+	// DomainRecordMaxValues is the maximum number of values in one DomainRecord.
+	DomainRecordMaxValues = 64
+	// DomainRecordMaxValueBytes is the maximum length of one value in DNS zone file form.
+	DomainRecordMaxValueBytes = 4096
 )
 
 var _ resourcestrategy.Defaulter = &DomainRecord{}
@@ -49,7 +58,7 @@ var _ resourcestrategy.Validater = &DomainRecord{}
 var _ resourcestrategy.ValidateUpdater = &DomainRecord{}
 
 func (r *DomainRecord) Validate(ctx context.Context) field.ErrorList {
-	return r.validate()
+	return append(r.validate(), r.validateLimits()...)
 }
 
 func (r *DomainRecord) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
@@ -61,6 +70,10 @@ func (r *DomainRecord) ValidateUpdate(ctx context.Context, obj runtime.Object) f
 
 	old := obj.(*DomainRecord)
 	errs := r.validate()
+	// A record stored before the limits keeps its values until they change.
+	if !equality.Semantic.DeepEqual(r.Spec.Target.DNS, old.Spec.Target.DNS) {
+		errs = append(errs, r.validateLimits()...)
+	}
 
 	// Reject changes to spec.name.
 	if r.Spec.Name != old.Spec.Name {
@@ -228,4 +241,74 @@ func (r *DomainRecord) validate() field.ErrorList {
 	}
 
 	return errs
+}
+
+// validateLimits checks the value limits of the DNS servers.
+func (r *DomainRecord) validateLimits() field.ErrorList {
+	dns := r.Spec.Target.DNS
+	if dns == nil {
+		return nil
+	}
+	dnsPath := field.NewPath("spec", "target", "dns")
+	errs := field.ErrorList{}
+	total := 0
+	check := func(key string, values []string, text bool) {
+		total += len(values)
+		for i, v := range values {
+			n := len(v)
+			if text {
+				n = zoneFileTextBytes(v)
+			}
+			if n > DomainRecordMaxValueBytes {
+				e := field.TooLong(dnsPath.Child(key).Index(i), nil, DomainRecordMaxValueBytes)
+				e.Detail = fmt.Sprintf("must have at most %d bytes in DNS zone file form, not %d", DomainRecordMaxValueBytes, n)
+				errs = append(errs, e)
+			}
+		}
+	}
+	check("a", dns.A, false)
+	check("aaaa", dns.AAAA, false)
+	if dns.FQDN != nil {
+		check("fqdn", []string{*dns.FQDN}, false)
+	}
+	check("txt", dns.TXT, true)
+	check("mx", dns.MX, false)
+	check("dkim", dns.DKIM, true)
+	check("spf", dns.SPF, true)
+	check("dmarc", dns.DMARC, true)
+	check("caa", dns.CAA, false)
+	check("srv", dns.SRV, false)
+	check("ns", dns.NS, false)
+	check("ds", dns.DS, false)
+	check("dnskey", dns.DNSKEY, false)
+	if total > DomainRecordMaxValues {
+		errs = append(errs, field.TooMany(dnsPath, total, DomainRecordMaxValues))
+	}
+	return errs
+}
+
+// zoneFileTextBytes returns the length of a TXT value in zone file form: the
+// Go-quoted value in quoted strings of 255 bytes, with zone file escapes.
+func zoneFileTextBytes(v string) int {
+	q := strconv.Quote(v)
+	q = q[1 : len(q)-1]
+	parsed, n := 0, 0
+	for i := 0; i < len(q); i++ {
+		b := q[i]
+		if b == '\\' {
+			// The zone file reads a backslash and the next byte as that byte.
+			i++
+			b = q[i]
+		}
+		parsed++
+		switch {
+		case b == '"' || b == '\\':
+			n += 2
+		case b < ' ' || b > '~':
+			n += 4
+		default:
+			n++
+		}
+	}
+	return n + 3*max(1, (parsed+254)/255) - 1
 }

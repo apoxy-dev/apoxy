@@ -2,6 +2,8 @@ package v1alpha3
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -466,3 +468,81 @@ func TestValidate_TLSDisabled(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func manyIPv4(n int) []string {
+	ips := make([]string, n)
+	for i := range ips {
+		ips[i] = fmt.Sprintf("192.0.2.%d", i+1)
+	}
+	return ips
+}
+
+func dnsDomainRecord(key string, target DomainRecordTargetDNS) *DomainRecord {
+	return &DomainRecord{
+		ObjectMeta: metav1.ObjectMeta{Name: "example--" + key},
+		Spec:       DomainRecordSpec{Name: "example", TTL: int32Ptr(60), Target: DomainRecordTarget{DNS: &target}},
+		Status:     DomainRecordStatus{Type: strings.ToUpper(key)},
+	}
+}
+
+func TestValidate_ValueLimits(t *testing.T) {
+	tests := []struct {
+		name   string
+		key    string
+		target DomainRecordTargetDNS
+		// wantErr is the field of the expected error; empty means valid.
+		wantErr string
+	}{
+		{name: "64 A values", key: "a", target: DomainRecordTargetDNS{A: manyIPv4(64)}},
+		{name: "65 A values", key: "a", target: DomainRecordTargetDNS{A: manyIPv4(65)}, wantErr: "spec.target.dns"},
+		// 4049 bytes in 16 quoted strings with a space between them are 4096 bytes.
+		{name: "TXT value of 4096 bytes in zone file form", key: "txt", target: DomainRecordTargetDNS{TXT: []string{strings.Repeat("x", 4049)}}},
+		{name: "TXT value of 4097 bytes in zone file form", key: "txt", target: DomainRecordTargetDNS{TXT: []string{"a", strings.Repeat("x", 4050)}}, wantErr: "spec.target.dns.txt[1]"},
+		{name: "DKIM value with escaped quotes", key: "dkim", target: DomainRecordTargetDNS{DKIM: []string{strings.Repeat(`"`, 2040)}}, wantErr: "spec.target.dns.dkim[0]"},
+		{name: "SPF value with bytes that are not ASCII", key: "spf", target: DomainRecordTargetDNS{SPF: []string{strings.Repeat("é", 512)}}, wantErr: "spec.target.dns.spf[0]"},
+		// The quoted form of U+200B is the 6 bytes \u200b, and 5 of them stay.
+		{name: "TXT value with a rune that is not printable", key: "txt", target: DomainRecordTargetDNS{TXT: []string{strings.Repeat("x", 4040) + "\u200b"}}},
+		{name: "TXT value with a new line", key: "txt", target: DomainRecordTargetDNS{TXT: []string{strings.Repeat("x", 4048) + "\n"}}},
+		{name: "DMARC value of 4096 bytes in zone file form", key: "dmarc", target: DomainRecordTargetDNS{DMARC: []string{strings.Repeat("x", 4049)}}},
+		{name: "MX value of 4096 bytes", key: "mx", target: DomainRecordTargetDNS{MX: []string{"10 " + strings.Repeat("m", 4093)}}},
+		{name: "MX value of 4097 bytes", key: "mx", target: DomainRecordTargetDNS{MX: []string{"10 " + strings.Repeat("m", 4094)}}, wantErr: "spec.target.dns.mx[0]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := dnsDomainRecord(tt.key, tt.target).Validate(context.Background())
+			if tt.wantErr == "" {
+				assert.Empty(t, errs)
+				return
+			}
+			require.Len(t, errs, 1, "errors: %v", errs)
+			assert.Equal(t, tt.wantErr, errs[0].Field)
+		})
+	}
+}
+
+func TestValidateUpdate_ValueLimits(t *testing.T) {
+	tests := []struct {
+		name     string
+		old, new DomainRecordTargetDNS
+		ttl      int32
+		wantErr  bool
+	}{
+		{name: "record over the limit with the same values", old: DomainRecordTargetDNS{A: manyIPv4(65)}, new: DomainRecordTargetDNS{A: manyIPv4(65)}, ttl: 300},
+		{name: "record over the limit with fewer values that are still over", old: DomainRecordTargetDNS{A: manyIPv4(66)}, new: DomainRecordTargetDNS{A: manyIPv4(65)}, ttl: 60, wantErr: true},
+		{name: "record over the limit with values under the limit", old: DomainRecordTargetDNS{A: manyIPv4(66)}, new: DomainRecordTargetDNS{A: manyIPv4(64)}, ttl: 60},
+		{name: "record under the limit with values over the limit", old: DomainRecordTargetDNS{A: manyIPv4(1)}, new: DomainRecordTargetDNS{A: manyIPv4(65)}, ttl: 60, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			updated := dnsDomainRecord("a", tt.new)
+			updated.Spec.TTL = int32Ptr(tt.ttl)
+			errs := updated.ValidateUpdate(context.Background(), dnsDomainRecord("a", tt.old))
+			if !tt.wantErr {
+				assert.Empty(t, errs)
+				return
+			}
+			require.Len(t, errs, 1, "errors: %v", errs)
+			assert.Equal(t, "spec.target.dns", errs[0].Field)
+		})
+	}
+}

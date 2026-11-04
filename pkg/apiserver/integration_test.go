@@ -226,6 +226,44 @@ func TestAPIServerIntegrationDomainRecordDefaultingAndValidation(t *testing.T) {
 	require.Contains(t, err.Error(), "field is immutable after creation")
 }
 
+func TestAPIServerIntegrationDomainRecordValueLimits(t *testing.T) {
+	srv := startTestServer(t)
+	t.Cleanup(srv.cancel)
+
+	records := newClientset(t, srv.addr).CoreV1alpha3().DomainRecords()
+	ips := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("192.0.2.%d", i+1)
+		}
+		return out
+	}
+	tests := []struct {
+		name        string
+		target      corev1alpha3.DomainRecordTargetDNS
+		wantInvalid bool
+	}{
+		{name: "64 A values", target: corev1alpha3.DomainRecordTargetDNS{A: ips(64)}},
+		{name: "65 A values", target: corev1alpha3.DomainRecordTargetDNS{A: ips(65)}, wantInvalid: true},
+		{name: "TXT value over 4 KiB", target: corev1alpha3.DomainRecordTargetDNS{TXT: []string{strings.Repeat("x", 4097)}}, wantInvalid: true},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := records.Create(context.Background(), &corev1alpha3.DomainRecord{
+				Spec: corev1alpha3.DomainRecordSpec{
+					Name:   fmt.Sprintf("limits%d.example.com", i),
+					Target: corev1alpha3.DomainRecordTarget{DNS: &tt.target},
+				},
+			}, metav1.CreateOptions{})
+			if !tt.wantInvalid {
+				require.NoError(t, err)
+				return
+			}
+			require.True(t, apierrors.IsInvalid(err), "expected the create to be invalid, got %v", err)
+		})
+	}
+}
+
 func TestAPIServerIntegrationNamespaceWatch(t *testing.T) {
 	srv := startTestServer(t, WithResource(&coordinationv1.Lease{}))
 	t.Cleanup(srv.cancel)
