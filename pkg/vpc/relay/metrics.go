@@ -246,7 +246,7 @@ func (r *Router) trunkStats(e trunkAsk) {
 // session.
 func (r *Router) collectTrunk(ctx context.Context, ch chan<- prometheus.Metric) {
 	reply := make(chan []*trunkStat, 1)
-	if r.mesh == nil || !r.box.send(trunkAsk{reply: reply}) {
+	if r.mesh == nil || !r.box.Send(trunkAsk{reply: reply}) {
 		return
 	}
 	for _, st := range <-reply {

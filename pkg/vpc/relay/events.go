@@ -15,6 +15,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -53,7 +54,7 @@ type link struct {
 	// session is true after the first Session call.
 	session atomic.Bool
 	// a is the mailbox of the A of the connection, set before the root answers the Session call.
-	a atomic.Pointer[mailbox]
+	a atomic.Pointer[proc.Mailbox]
 	// owned is true after the root took the connection: finished then closes.
 	owned    atomic.Bool
 	finished chan struct{} // Closed when the process of the connection and its hook tasks ended.
@@ -188,7 +189,7 @@ type (
 		l     *link
 		st    sessionStream
 		hello *dpv1.Hello
-		box   *mailbox
+		box   *proc.Mailbox
 		port  uint64
 		tag   uint32
 		cell  uint32

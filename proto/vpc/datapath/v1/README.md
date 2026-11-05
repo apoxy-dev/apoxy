@@ -567,8 +567,9 @@ Each side checks the cert of the other side with the CA bundle, the project and
 the VPC of its own cert, and with the revocation lists of its relay sessions
 (see "Relay"). A failed check fails the handshake. A `Hello` whose list does
 not hold the channel address of its sender fails. A side sends at most one call
-of each kind at a time and takes at most 8 incoming streams. A `Keys` or
-`Candidates` timeout ends the channel, and a `Hello` timeout is a failed dial.
+of each kind at a time and takes at most 8 incoming streams. The called side
+ends a call 5 s after its stream opens. A `Keys` or `Candidates` timeout ends
+the channel on the side of the caller, and a `Hello` timeout is a failed dial.
 While a `Candidates` call runs, only the newest round waits.
 
 An agent closes a channel with a `PeerCloseCode`: `UPGRADE` (the peer revision

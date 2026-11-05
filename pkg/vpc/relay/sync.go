@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -96,7 +97,7 @@ func (o *outbox) take() ([]*dpv1.SessionResponse, *dpv1.Revocations, *dpv1.RxRep
 // table value of A, then the queued messages.
 type writer struct {
 	st     sessionStream
-	values *valueMap // The down map of A, with the route table.
+	values *proc.Values // The down map of A, with the route table.
 	s      session
 	out    *outbox
 	sent   map[netip.Prefix]*dpv1.Route
@@ -132,7 +133,7 @@ func (w *writer) take() []*dpv1.SessionResponse {
 	// The queued messages are taken before the route table, so the table has the routes stored before them.
 	msgs, list, rep := w.out.take()
 	var out []*dpv1.SessionResponse
-	for _, d := range w.parts(load[*routeTable](w.values, keyRoutes).view(w.s)) {
+	for _, d := range w.parts(proc.Load[*routeTable](w.values, keyRoutes).view(w.s)) {
 		out = append(out, &dpv1.SessionResponse{Msg: &dpv1.SessionResponse_RouteDelta{RouteDelta: d}})
 	}
 	if first {

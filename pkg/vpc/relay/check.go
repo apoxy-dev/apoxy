@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/apoxy-dev/apoxy/pkg/tunnel/bfdl"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 )
@@ -23,8 +24,8 @@ type (
 // checkProc is the process check of A: the relay end of the BFD session of the PSP path. Its
 // packets go to the PSP address of A in path probes.
 type checkProc struct {
-	box  *mailbox
-	abox *mailbox
+	box  *proc.Mailbox
+	abox *proc.Mailbox
 	t    dp.Target
 	keys *p2p.ProbeKeys
 	bfd  *p2p.Check
@@ -32,8 +33,8 @@ type checkProc struct {
 }
 
 // startCheck starts a check that sends to addr and tells abox when the path is lost.
-func startCheck(t dp.Target, abox *mailbox, keys *p2p.ProbeKeys, addr netip.AddrPort) *checkProc {
-	c := &checkProc{box: newMailbox(0), abox: abox, t: t, keys: keys, bfd: p2p.NewCheck(p2p.RoleRelay, checkTx), addr: addr}
+func startCheck(t dp.Target, abox *proc.Mailbox, keys *p2p.ProbeKeys, addr netip.AddrPort) *checkProc {
+	c := &checkProc{box: proc.NewMailbox(0), abox: abox, t: t, keys: keys, bfd: p2p.NewCheck(p2p.RoleRelay, checkTx), addr: addr}
 	go c.run()
 	return c
 }
@@ -41,7 +42,7 @@ func startCheck(t dp.Target, abox *mailbox, keys *p2p.ProbeKeys, addr netip.Addr
 func (c *checkProc) run() {
 	t := time.NewTicker(checkTx)
 	defer t.Stop()
-	defer c.box.close()
+	defer c.box.Close()
 	defer c.bfd.Close()
 	for {
 		select {
@@ -51,8 +52,8 @@ func (c *checkProc) run() {
 				return
 			}
 			c.send()
-		case <-c.box.sig:
-			for _, e := range c.box.take() {
+		case <-c.box.Wake():
+			for _, e := range c.box.Take() {
 				switch e := e.(type) {
 				case checkProbe:
 					// The relay pads its packets to the size of the packets of the agent, so that
@@ -80,7 +81,7 @@ func (c *checkProc) run() {
 // lost tells the agent that the relay end is Down, and tells A.
 func (c *checkProc) lost() {
 	c.send()
-	c.abox.send(checkLost{c: c})
+	c.abox.Send(checkLost{c: c})
 }
 
 // send sends one BFD packet with the state of the relay end to the PSP address. The agent reads

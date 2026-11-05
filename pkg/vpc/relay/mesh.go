@@ -20,6 +20,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp/keyproto"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -228,7 +229,7 @@ func (r *Router) SetMembers(members []MeshMember) {
 		l = append(l, m)
 	}
 	r.members.Store(&l)
-	r.box.send(membersChanged{})
+	r.box.Send(membersChanged{})
 }
 
 // OnMeshChange sets fn, which gets each up and down change of a member, in order. It runs as a
@@ -253,7 +254,7 @@ func (r *Router) Session(name string) *MeshSession {
 
 func (r *Router) ask(name string) (askAnswer, bool) {
 	reply := make(chan askAnswer, 1)
-	if !r.box.send(askEv{name: name, reply: reply}) {
+	if !r.box.Send(askEv{name: name, reply: reply}) {
 		return askAnswer{}, false
 	}
 	return <-reply, true
@@ -263,7 +264,7 @@ func (r *Router) ask(name string) (askAnswer, bool) {
 // snapshot and the name of its member. With none, the error code is NotFound.
 func (r *Router) FetchSnapshot(ctx context.Context) (data []byte, from string, err error) {
 	reply := make(chan fetchResult, 1)
-	if !r.box.send(fetchEv{reply: reply}) {
+	if !r.box.Send(fetchEv{reply: reply}) {
 		return nil, "", rpc.Errorf(rpc.Unavailable, "relay stopped")
 	}
 	select {
@@ -289,7 +290,7 @@ type meshConn struct {
 type meshConnKey struct{}
 
 func newMeshConn(qc *quic.Conn, mux *rpc.Mux, dialer bool) *meshConn {
-	conn := rpc.NewConn(qc, mux)
+	conn := rpc.NewConn(qc, mux, rpc.WithCallTimeout(callTimeout))
 	return &meshConn{qc: qc, conn: conn, client: dpv1.NewMeshClient(conn), dialer: dialer, ready: make(chan struct{})}
 }
 
@@ -343,10 +344,7 @@ func (r *Router) serveMesh(ctx context.Context, qc *quic.Conn) {
 // checkRevision refuses a relay whose revision is below the mesh revision or the minimum of this
 // relay.
 func (r *Router) checkRevision(v *dpv1.Version) error {
-	if got, least := v.GetRevision(), max(r.ver.GetMinRevision(), meshRevision); got < least {
-		return fmt.Errorf("relay revision %d is below the minimum %d", got, least)
-	}
-	return nil
+	return dpv1.CheckRevision("relay", v, max(r.ver.GetMinRevision(), meshRevision))
 }
 
 // pspSocket returns the data port that a member gave in Open: host, or the address dialed when
@@ -363,17 +361,6 @@ func pspSocket(host string, port uint32, dialed netip.Addr) (netip.AddrPort, err
 		return netip.AddrPort{}, fmt.Errorf("data host %q is not an IP address", host)
 	}
 	return netip.AddrPortFrom(ip.Unmap(), uint16(port)), nil
-}
-
-// remoteClose returns the code and the reason with which the other relay closed qc. err is the
-// error of a call on qc, or nil.
-func remoteClose(qc *quic.Conn, err error) (dpv1.MeshCloseCode, string, bool) {
-	var ae *quic.ApplicationError
-	// quic-go ends the call streams before it sets the close cause.
-	if !errors.As(err, &ae) && !errors.As(context.Cause(qc.Context()), &ae) {
-		return 0, "", false
-	}
-	return dpv1.MeshCloseCode(ae.ErrorCode), ae.ErrorMessage, ae.Remote
 }
 
 // meshServer serves the Mesh service of a router on mesh connections.
@@ -417,7 +404,7 @@ func (s meshServer) Open(ctx context.Context, req *dpv1.MeshOpenRequest) (*dpv1.
 		return nil, refuse(dpv1.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED, rpc.InvalidArgument, err.Error())
 	}
 	res := make(chan error, 1)
-	if !r.box.send(meshOpened{c: c, open: msOpen{name: name, ref: req.GetRelay(), ver: req.GetVersion(), psp: psp}, res: res}) {
+	if !r.box.Send(meshOpened{c: c, open: msOpen{name: name, ref: req.GetRelay(), ver: req.GetVersion(), psp: psp}, res: res}) {
 		return nil, refuse(dpv1.MeshCloseCode_MESH_CLOSE_CODE_RESTART, rpc.Unavailable, "relay stops")
 	}
 	if err := <-res; err != nil {
@@ -466,7 +453,7 @@ func (s meshServer) Presence(ctx context.Context, st presenceServer) error {
 		return rpc.Errorf(rpc.InvalidArgument, "first Presence message names no VPC of a tenant")
 	}
 	done := make(chan error, 1)
-	if !ms.box.send(msIncoming{st: st, tenant: tenant[0].GetProjectId(), first: first, done: done}) {
+	if !ms.box.Send(msIncoming{st: st, tenant: tenant[0].GetProjectId(), first: first, done: done}) {
 		return rpc.Errorf(rpc.Unavailable, "mesh session ended")
 	}
 	return <-done
@@ -493,7 +480,7 @@ func (s meshServer) TrunkKeys(ctx context.Context, in *dpv1.KeysRequest) (*dpv1.
 		}
 	}
 	res := make(chan callResult, 1)
-	if !ms.box.send(msTrunkKeys{req: req, res: res}) {
+	if !ms.box.Send(msTrunkKeys{req: req, res: res}) {
 		return nil, rpc.Errorf(rpc.Unavailable, "mesh session ended")
 	}
 	select {
@@ -650,15 +637,15 @@ func (r *Router) startM(w MeshMember) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &mChild{
 		name: w.Name, addr: w.Addr, inc: r.inc, port: r.lastPort, cell: cell, meter: meter,
-		box: newMailbox(0), down: &valueMap{}, up: &valueMap{}, cancel: cancel, parts: map[VPCKey]*recordSet{},
+		box: proc.NewMailbox(0), down: &proc.Values{}, up: &proc.Values{}, cancel: cancel, parts: map[VPCKey]*recordSet{},
 	}
 	for key, set := range r.sets {
-		store(c.down, setKey(keySet, key), set)
+		proc.Store(c.down, setKey(keySet, key), set)
 	}
 	r.ms[c.name] = c
 	r.mall[c] = struct{}{}
 	r.trunks[c.port] = c
-	watch(ctx, c.up, func(keys []string) { r.box.send(mUpChanged{m: c, keys: keys}) })
+	proc.Watch(ctx, c.up, func(keys []string) { r.box.Send(mUpChanged{m: c, keys: keys}) })
 	startMember(r, c)
 }
 
@@ -668,7 +655,7 @@ func (r *Router) endMember(c *mChild, code dpv1.MeshCloseCode, msg string, down 
 		return
 	}
 	c.ending = true
-	c.box.send(toMEnd{code: code, msg: msg, down: down})
+	c.box.Send(toMEnd{code: code, msg: msg, down: down})
 }
 
 // meshOpened gives a session that a member dialed to its M.
@@ -679,7 +666,7 @@ func (r *Router) meshOpened(e meshOpened) {
 		e.res <- errMeshStopped
 	case c == nil || c.ending:
 		e.res <- fmt.Errorf("%w: %q", errNotMember, e.open.name)
-	case !c.box.send(toMConn{c: e.c, open: e.open, res: e.res}):
+	case !c.box.Send(toMConn{c: e.c, open: e.open, res: e.res}):
 		e.res <- fmt.Errorf("%w: %q", errNotMember, e.open.name)
 	}
 }
@@ -689,7 +676,7 @@ func (r *Router) fromM(c *mChild, msg any) {
 	case mKeys:
 		r.runTrunkKeys(c, m)
 	case mTables:
-		r.addTables(m.b, false, func(err error) { c.box.send(toTablesDone{err: err}) })
+		r.addTables(m.b, false, func(err error) { c.box.Send(toTablesDone{err: err}) })
 	case mChange:
 		c.isUp = m.c.Up
 		if !m.c.Up {
@@ -763,7 +750,7 @@ func (r *Router) runTrunkKeys(c *mChild, m mKeys) {
 		if m.op == opApply {
 			done.tx = r.keys.hasTx(c.port)
 		}
-		c.box.send(done)
+		c.box.Send(done)
 	})
 }
 
@@ -784,7 +771,7 @@ func (r *Router) memberChanged(c *mChild, keys []string) {
 	for _, k := range keys {
 		switch {
 		case k == keyValues:
-			c.values = load[*memberValues](c.up, keyValues)
+			c.values = proc.Load[*memberValues](c.up, keyValues)
 			for key := range c.parts {
 				r.storeView(c, key)
 			}
@@ -793,7 +780,7 @@ func (r *Router) memberChanged(c *mChild, keys []string) {
 			if !ok {
 				continue
 			}
-			if rs := load[*recordSet](c.up, k); rs != nil {
+			if rs := proc.Load[*recordSet](c.up, k); rs != nil {
 				c.parts[key] = rs
 			} else {
 				delete(c.parts, key)
@@ -814,7 +801,7 @@ func (r *Router) storeView(c *mChild, key VPCKey) {
 		v.down.Delete(viewKey(c))
 		return
 	}
-	store(v.down, viewKey(c), &memberView{inc: c.inc, values: c.values, part: part})
+	proc.Store(v.down, viewKey(c), &memberView{inc: c.inc, values: c.values, part: part})
 }
 
 // publishSet gives the announcement set of the V of key to each M. A nil set deletes it.
@@ -834,7 +821,7 @@ func (r *Router) publishSet(key VPCKey, set *annSet) {
 		if set == nil {
 			c.down.Delete(k)
 		} else {
-			store(c.down, k, set)
+			proc.Store(c.down, k, set)
 		}
 	}
 }
@@ -857,7 +844,7 @@ func (r *Router) startFetch(reply chan fetchResult) {
 func (r *Router) nextFetch(n uint64) {
 	run := r.fetches[n]
 	for len(run.names) > 0 {
-		if c := r.ms[run.names[0]]; c != nil && !c.ending && c.box.send(toFetch{n: n}) {
+		if c := r.ms[run.names[0]]; c != nil && !c.ending && c.box.Send(toFetch{n: n}) {
 			return
 		}
 		run.names = run.names[1:]

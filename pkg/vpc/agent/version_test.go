@@ -23,36 +23,6 @@ import (
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
-// TestRelayRevision checks the relay revision against the minimum of the agent.
-func TestRelayRevision(t *testing.T) {
-	cases := []struct {
-		name         string
-		relay, agent *dp.Version
-		want         string // Error text. Empty means no error.
-	}{
-		{name: "equal revisions", relay: &dp.Version{Revision: 21}, agent: &dp.Version{Revision: 21, MinRevision: 21}},
-		{name: "relay one below the minimum", relay: &dp.Version{Revision: 20}, agent: &dp.Version{Revision: 21, MinRevision: 21},
-			want: "relay revision 20 is below the agent minimum 21"},
-		{name: "no relay version against minimum 0", agent: &dp.Version{Revision: 21}},
-		{name: "no relay version against minimum 1", agent: &dp.Version{Revision: 21, MinRevision: 1},
-			want: "relay revision 0 is below the agent minimum 1"},
-		{name: "relay above the minimum", relay: &dp.Version{Revision: 22}, agent: &dp.Version{Revision: 21, MinRevision: 21}},
-		{name: "relay one below the minimum of this build", relay: &dp.Version{Revision: dp.MinRevision - 1}, agent: dp.LocalVersion("test"),
-			want: fmt.Sprintf("relay revision %d is below the agent minimum %d", dp.MinRevision-1, dp.MinRevision)},
-		{name: "relay at the minimum of this build", relay: &dp.Version{Revision: dp.MinRevision}, agent: dp.LocalVersion("test")},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := relayRevision(tc.relay, tc.agent)
-			if tc.want == "" {
-				assert.NoError(t, err)
-				return
-			}
-			assert.EqualError(t, err, tc.want)
-		})
-	}
-}
-
 // TestOldRelay checks that the agent closes a connection to a relay below its
 // minimum revision before Attach, and attaches on the next relay.
 func TestOldRelay(t *testing.T) {
@@ -73,7 +43,7 @@ func TestOldRelay(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the agent did not close its connection to the old relay in 10 s")
 	}
-	want := fmt.Sprintf("relay %s: relay revision %d is below the agent minimum %d", old.addr, dp.MinRevision-1, dp.MinRevision)
+	want := fmt.Sprintf("relay %s: relay revision %d is below the minimum %d", old.addr, dp.MinRevision-1, dp.MinRevision)
 	assert.Eventually(t, func() bool { return strings.Contains(logs.String(), want) }, 10*time.Second, 10*time.Millisecond,
 		"no log line has %q", want)
 	assert.Zero(t, old.attaches.Load(), "Attach calls on the old relay")

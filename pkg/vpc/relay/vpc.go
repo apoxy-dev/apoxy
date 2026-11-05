@@ -14,6 +14,7 @@ import (
 
 	"github.com/gaissmai/bart"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
@@ -74,9 +75,9 @@ type aChild struct {
 	port   uint64
 	tag    uint32
 	l      *link
-	box    *mailbox
-	down   *valueMap
-	up     *valueMap
+	box    *proc.Mailbox
+	down   *proc.Values
+	up     *proc.Values
 	cancel context.CancelFunc
 	s      session
 	state  dpv1.AnnouncerState
@@ -106,8 +107,8 @@ func startVPC(r *Router, c *vChild) {
 		unsynced: map[netip.Prefix]struct{}{},
 	}
 	v.shown = v.table()
-	v.trust = load[*trustGen](c.down, keyTrust)
-	watch(ctx, c.down, func(keys []string) { c.box.send(valuesChanged{keys: keys}) })
+	v.trust = proc.Load[*trustGen](c.down, keyTrust)
+	proc.Watch(ctx, c.down, func(keys []string) { c.box.Send(valuesChanged{keys: keys}) })
 	go v.run()
 }
 
@@ -115,7 +116,7 @@ type holdEv struct{}
 
 func (v *vpcProc) run() {
 	for {
-		for _, e := range v.c.box.take() {
+		for _, e := range v.c.box.Take() {
 			v.handle(e)
 		}
 		if !v.final && v.ending && len(v.as) == 0 {
@@ -126,12 +127,12 @@ func (v *vpcProc) run() {
 			v.finish()
 			return
 		}
-		<-v.c.box.sig
+		<-v.c.box.Wake()
 	}
 }
 
 // up sends msg to the root.
-func (v *vpcProc) up(msg any) { v.r.box.send(fromV{v: v.c, msg: msg}) }
+func (v *vpcProc) up(msg any) { v.r.box.Send(fromV{v: v.c, msg: msg}) }
 
 func (v *vpcProc) handle(e any) {
 	if v.final {
@@ -160,7 +161,7 @@ func (v *vpcProc) handle(e any) {
 	case toPacketIn:
 		v.toA(e.port, e)
 	case toSlotLost:
-		if a := v.as[e.port]; a == nil || !a.box.send(e) {
+		if a := v.as[e.port]; a == nil || !a.box.Send(e) {
 			close(e.done)
 		}
 	case toStats:
@@ -169,12 +170,12 @@ func (v *vpcProc) handle(e any) {
 		v.drain(e)
 	case toEndConn:
 		for _, a := range v.as {
-			a.box.send(e)
+			a.box.Send(e)
 		}
 	case toEnd:
 		v.ending = true
 		for _, a := range v.as {
-			a.box.send(e)
+			a.box.Send(e)
 		}
 	case vAssign, vKeys, vTables, vAttachmentStart, vAttachmentEnd, vLanes:
 		v.up(e)
@@ -194,7 +195,7 @@ func (v *vpcProc) handle(e any) {
 // toA sends a message of the root to the A of port.
 func (v *vpcProc) toA(port uint64, m any) {
 	if a := v.as[port]; a != nil {
-		a.box.send(m)
+		a.box.Send(m)
 	}
 }
 
@@ -203,7 +204,7 @@ func (v *vpcProc) startConn(e toConn) {
 	if v.ending {
 		e.l.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "relay does not serve the VPC")
 		e.l.streamEnd()
-		e.box.close()
+		e.box.Close()
 		v.up(vConnEnded{port: e.port})
 		return
 	}
@@ -213,8 +214,8 @@ func (v *vpcProc) startConn(e toConn) {
 		tag:      e.tag,
 		l:        e.l,
 		box:      e.box,
-		down:     &valueMap{},
-		up:       &valueMap{},
+		down:     &proc.Values{},
+		up:       &proc.Values{},
 		cancel:   cancel,
 		s:        session{agent: agentKey{id: e.l.subject, name: e.hello.GetName(), instance: e.hello.GetInstance()}, meshRoutes: !e.hello.GetLocalRoutesOnly()},
 		state:    stateNormal,
@@ -226,13 +227,13 @@ func (v *vpcProc) startConn(e toConn) {
 	}
 	v.as[a.port] = a
 	n := v.net
-	store(a.down, keyNetwork, &n)
-	store(a.down, keyTrust, v.trust)
-	store(a.down, keyRoutes, v.shown)
-	if rx := load[*rxValue](v.c.down, rxKey(a.port)); rx != nil {
-		store(a.down, keyRx, rx)
+	proc.Store(a.down, keyNetwork, &n)
+	proc.Store(a.down, keyTrust, v.trust)
+	proc.Store(a.down, keyRoutes, v.shown)
+	if rx := proc.Load[*rxValue](v.c.down, rxKey(a.port)); rx != nil {
+		proc.Store(a.down, keyRx, rx)
 	}
-	watch(ctx, a.up, func([]string) { v.c.box.send(aStateChanged{port: a.port}) })
+	proc.Watch(ctx, a.up, func([]string) { v.c.box.Send(aStateChanged{port: a.port}) })
 	startConn(v.r, v.c.box, e, a.down, a.up, v.draining, v.alts)
 }
 
@@ -241,18 +242,18 @@ func (v *vpcProc) changed(keys []string) {
 	for _, k := range keys {
 		switch {
 		case k == keyNetwork:
-			if n := load[*Network](v.c.down, keyNetwork); n != nil {
+			if n := proc.Load[*Network](v.c.down, keyNetwork); n != nil {
 				v.net = *n
 				for _, a := range v.as {
 					c := *n
-					store(a.down, keyNetwork, &c)
+					proc.Store(a.down, keyNetwork, &c)
 				}
 			}
 		case k == keyTrust:
-			if t := load[*trustGen](v.c.down, keyTrust); t != v.trust {
+			if t := proc.Load[*trustGen](v.c.down, keyTrust); t != v.trust {
 				v.trust = t
 				for _, a := range v.as {
-					store(a.down, keyTrust, t)
+					proc.Store(a.down, keyTrust, t)
 				}
 			}
 		case strings.HasPrefix(k, keyMember):
@@ -263,8 +264,8 @@ func (v *vpcProc) changed(keys []string) {
 			if err != nil || a == nil {
 				continue
 			}
-			if rx := load[*rxValue](v.c.down, k); rx != nil {
-				store(a.down, keyRx, rx)
+			if rx := proc.Load[*rxValue](v.c.down, k); rx != nil {
+				proc.Store(a.down, keyRx, rx)
 			} else {
 				a.down.Delete(keyRx)
 			}
@@ -285,7 +286,7 @@ func (v *vpcProc) attach(e aAttach) {
 	if a == nil {
 		return
 	}
-	reply := func(err error) { a.box.send(attached{id: e.att.ID, err: err}) }
+	reply := func(err error) { a.box.Send(attached{id: e.att.ID, err: err}) }
 	if v.ending {
 		v.answerCall(func() { reply(rpc.Errorf(rpc.Unavailable, "relay does not serve the VPC")) })
 		return
@@ -352,7 +353,7 @@ func (v *vpcProc) detach(e aDetach) {
 		return
 	}
 	v.drop(a, e.id, time.Now())
-	v.answerCall(func() { a.box.send(detached{id: e.id}) })
+	v.answerCall(func() { a.box.Send(detached{id: e.id}) })
 }
 
 // drop removes the candidates of attachment id of a, and writes the route entries of their
@@ -476,12 +477,12 @@ func (v *vpcProc) sendTables() {
 			}
 		}
 		if set != nil {
-			store(v.c.up, keyAnnounce, set)
+			proc.Store(v.c.up, keyAnnounce, set)
 		}
 		if t != nil {
 			v.shown = t
 			for _, a := range v.as {
-				store(a.down, keyRoutes, t)
+				proc.Store(a.down, keyRoutes, t)
 			}
 		}
 	}, func(b batch, chain bool) { v.up(vTables{b: b, chain: chain}) })
@@ -524,7 +525,7 @@ func (v *vpcProc) arm() {
 	v.timerAt = first
 	d := time.Until(first)
 	if v.timer == nil {
-		v.timer = time.AfterFunc(d, func() { v.c.box.send(holdEv{}) })
+		v.timer = time.AfterFunc(d, func() { v.c.box.Send(holdEv{}) })
 		return
 	}
 	v.timer.Reset(d)
@@ -551,7 +552,7 @@ func (v *vpcProc) restate(port uint64) {
 	if a == nil {
 		return
 	}
-	sv := load[*stateValue](a.up, keyState)
+	sv := proc.Load[*stateValue](a.up, keyState)
 	if sv == nil {
 		return
 	}
@@ -593,7 +594,7 @@ func (v *vpcProc) drain(e toDrain) {
 	// The root writes the Draining routes at once. Drain goes after them, so each agent gets them first.
 	v.answerCall(func() {
 		for _, a := range as {
-			a.box.send(e)
+			a.box.Send(e)
 		}
 	})
 }
@@ -621,7 +622,7 @@ func (v *vpcProc) connEnded(e aEnded) {
 func (v *vpcProc) stats(ask uint64) {
 	wait := map[uint64]struct{}{}
 	for port, a := range v.as {
-		if a.box.send(toStats{ask: ask}) {
+		if a.box.Send(toStats{ask: ask}) {
 			wait[port] = struct{}{}
 		}
 	}
@@ -702,7 +703,7 @@ func (v *vpcProc) finish() {
 		v.timer.Stop()
 	}
 	v.cancel()
-	for _, e := range v.c.box.close() {
+	for _, e := range v.c.box.Close() {
 		v.refuse(e)
 	}
 	v.up(vEnded{})
@@ -714,7 +715,7 @@ func (v *vpcProc) refuse(e any) {
 	case toConn:
 		e.l.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "relay does not serve the VPC")
 		e.l.streamEnd()
-		e.box.close()
+		e.box.Close()
 		v.up(vConnEnded{port: e.port})
 	case toSlotLost:
 		close(e.done)
@@ -731,7 +732,7 @@ func (v *vpcProc) refuse(e any) {
 // candidates on its trunk port, after its trunk is up. Only a record with the network ID of the
 // VPC is a candidate.
 func (v *vpcProc) memberChanged(k string, now time.Time) {
-	view := load[*memberView](v.c.down, k)
+	view := proc.Load[*memberView](v.c.down, k)
 	var vals *memberValues
 	var want map[string]*record
 	if view != nil && view.values != nil && view.part != nil {

@@ -128,8 +128,9 @@ func recvRequest(s *ServerStream, m proto.Message) error {
 	return nil
 }
 
-// HandleUnary adds a unary handler to m.
+// HandleUnary adds a unary handler to m. WithCallTimeout limits its calls.
 func HandleUnary[Req, Res any](m *Mux, method string, h func(context.Context, *Req) (*Res, error)) {
+	m.unary[method] = true
 	m.Handle(method, func(ctx context.Context, s *ServerStream) error {
 		in := new(Req)
 		if err := recvRequest(s, msg(in)); err != nil {

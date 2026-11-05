@@ -21,6 +21,10 @@ import (
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
+// callTimeout limits each unary call of an agent or of another relay, from the accept of its
+// stream. The callers use deadlines of at most this time.
+const callTimeout = 10 * time.Second
+
 // Server serves the Relay service on agent connections (ALPN apoxy-vpc/2) for the Router R. Set
 // R before Serve.
 type Server struct {
@@ -87,7 +91,7 @@ func (srv *Server) leave() {
 
 // ServeConn serves one agent connection until it closes and its process and hook tasks ended, or
 // one mesh session. A host that shares its listener calls it for apoxy-vpc/2 and apoxy-mesh/1.
-// opts are the options of the calls of an agent connection.
+// opts are the options of the calls of an agent connection, after the call timeout of the relay.
 func (srv *Server) ServeConn(ctx context.Context, qc *quic.Conn, opts ...rpc.Option) {
 	// A mesh session is not an agent connection: it stays up while the relay drains.
 	if qc.ConnectionState().TLS.NegotiatedProtocol == dpv1.ALPNMesh {
@@ -109,6 +113,7 @@ func (srv *Server) ServeConn(ctx context.Context, qc *quic.Conn, opts ...rpc.Opt
 		_ = qc.CloseWithError(quic.ApplicationErrorCode(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_CERT), "agent cert rejected")
 		return
 	}
+	opts = append([]rpc.Option{rpc.WithCallTimeout(callTimeout)}, opts...)
 	_ = rpc.NewConn(qc, srv.mux, opts...).Serve(context.WithValue(ctx, linkKey{}, l))
 	_ = qc.CloseWithError(quic.ApplicationErrorCode(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED), "")
 	if l.owned.Load() {
@@ -156,11 +161,11 @@ func (srv *Server) Drain(ctx context.Context) {
 		srv.idle = idle
 	}
 	srv.mu.Unlock()
-	srv.R.box.send(drainEv{})
+	srv.R.box.Send(drainEv{})
 	select {
 	case <-idle:
 	case <-ctx.Done():
-		srv.R.box.send(endAllEv{code: dpv1.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN, msg: "relay stopped"})
+		srv.R.box.Send(endAllEv{code: dpv1.RelayCloseCode_RELAY_CLOSE_CODE_DRAIN, msg: "relay stopped"})
 		<-idle
 	}
 }
@@ -183,18 +188,17 @@ func (srv *Server) Session(ctx context.Context, st sessionStream) error {
 	if hello == nil {
 		return rpc.Errorf(rpc.InvalidArgument, "first message is not Hello")
 	}
-	if got, least := hello.GetVersion().GetRevision(), srv.R.ver.GetMinRevision(); got < least {
-		msg := fmt.Sprintf("agent revision %d is below the relay minimum %d", got, least)
-		slog.Info("Refused the Session call of an old agent", "agent", l.subject,
-			"revision", got, "min_revision", least, "build", buildLabel(hello.GetVersion().GetBuild()))
-		l.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE, msg)
-		return rpc.Errorf(rpc.FailedPrecondition, "%s", msg)
+	if err := dpv1.CheckRevision("agent", hello.GetVersion(), srv.R.ver.GetMinRevision()); err != nil {
+		slog.Info("Refused the Session call of an old agent", "agent", l.subject, "revision", hello.GetVersion().GetRevision(),
+			"min_revision", srv.R.ver.GetMinRevision(), "build", buildLabel(hello.GetVersion().GetBuild()))
+		l.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE, err.Error())
+		return rpc.Errorf(rpc.FailedPrecondition, "%v", err)
 	}
 	if m := hello.GetMode(); m != dpv1.Mode_MODE_PSP && m != dpv1.Mode_MODE_QUIC {
 		return rpc.Errorf(rpc.InvalidArgument, "Hello needs a mode")
 	}
 	res := make(chan error, 1)
-	if !srv.R.box.send(accepted{l: l, st: st, hello: hello, res: res}) {
+	if !srv.R.box.Send(accepted{l: l, st: st, hello: hello, res: res}) {
 		return rpc.Errorf(rpc.Unavailable, "relay stopped")
 	}
 	// The root answers each accepted call, also at its end.
@@ -257,7 +261,7 @@ func call(ctx context.Context, kind callKind, in proto.Message, noA string) (pro
 		return nil, rpc.Errorf(rpc.FailedPrecondition, "%s", noA)
 	}
 	res := make(chan callResult, 1)
-	if !box.send(aCall{kind: kind, in: in, res: res}) {
+	if !box.Send(aCall{kind: kind, in: in, res: res}) {
 		return nil, rpc.Errorf(rpc.Unavailable, "relay connection closed")
 	}
 	select {

@@ -369,6 +369,33 @@ func runBothWays(t *testing.T, alpn string, register func(*rpc.Mux, *stub), call
 	t.Run("listener calls dialer", func(t *testing.T) { runCalls(t, listener, a, calls) })
 }
 
+// TestCheckRevision checks a revision against the minimum of the other side.
+func TestCheckRevision(t *testing.T) {
+	cases := []struct {
+		name  string
+		v     *dp.Version
+		least uint32
+		want  string // Error text. Empty means no error.
+	}{
+		{name: "equal", v: &dp.Version{Revision: 21}, least: 21},
+		{name: "above", v: &dp.Version{Revision: 22}, least: 21},
+		{name: "one below", v: &dp.Version{Revision: 20}, least: 21, want: "relay revision 20 is below the minimum 21"},
+		{name: "no version against minimum 0", least: 0},
+		{name: "no version against minimum 1", least: 1, want: "relay revision 0 is below the minimum 1"},
+		{name: "this build against its own minimum", v: dp.LocalVersion("test"), least: dp.MinRevision},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dp.CheckRevision("relay", tc.v, tc.least)
+			if tc.want == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.EqualError(t, err, tc.want)
+		})
+	}
+}
+
 func TestRelaySession(t *testing.T) {
 	welcome := &dp.SessionResponse{Msg: &dp.SessionResponse_Welcome{Welcome: &dp.Welcome{ReflexiveAddress: "203.0.113.7:40000", MaxLanes: 15}}}
 	pushes := []*dp.SessionResponse{

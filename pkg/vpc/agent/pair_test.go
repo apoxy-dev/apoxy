@@ -3,17 +3,24 @@
 package agent
 
 import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
 	"net/netip"
 	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay"
+	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
 // pairWait is the most time for a pair to open or to end.
@@ -430,6 +437,75 @@ func TestPairIdentity(t *testing.T) {
 			} else {
 				assert.NotEqual(t, d[0].Key, d[1].Key, "two keys")
 			}
+		})
+	}
+}
+
+// idleConn returns a dialed QUIC connection that ended at its idle timeout.
+func idleConn(t *testing.T) *quic.Conn {
+	ca := newCA(t)
+	ln, err := quic.Listen(loopback(t), &tls.Config{Certificates: []tls.Certificate{*ca.relayCert(t, "r1")}, NextProtos: []string{"t"}}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	mc := &muteConn{PacketConn: loopback(t)}
+	tr := &quic.Transport{Conn: mc}
+	t.Cleanup(func() { _ = tr.Close() })
+	qc, err := tr.Dial(context.Background(), ln.Addr(), &tls.Config{RootCAs: ca.Pool(), ServerName: "r1", NextProtos: []string{"t"}},
+		&quic.Config{MaxIdleTimeout: 300 * time.Millisecond})
+	require.NoError(t, err)
+	mc.mute.Store(true)
+	select {
+	case <-qc.Context().Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection did not end")
+	}
+	require.ErrorAs(t, context.Cause(qc.Context()), new(*quic.IdleTimeoutError))
+	return qc
+}
+
+// TestDialFailed checks the status and the next dial of a pair after a dial of its channel fails.
+func TestDialFailed(t *testing.T) {
+	duplicate := &quic.ApplicationError{Remote: true, ErrorCode: quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE)}
+	cases := []struct {
+		name     string
+		qc       func(t *testing.T) *quic.Conn // Nil for no connection.
+		err      error
+		noAnswer bool
+		retry    bool
+	}{
+		{"dial deadline", nil, fmt.Errorf("dial: %w", context.DeadlineExceeded), true, true},
+		{"handshake timeout", nil, &quic.HandshakeTimeoutError{}, true, true},
+		{"call ends after the idle timeout of the connection", idleConn, context.Canceled, true, true},
+		{"peer keeps another connection", nil, fmt.Errorf("hello: %w", duplicate), false, false},
+		{"other error", nil, errors.New("connection refused"), false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var qc *quic.Conn
+			if tc.qc != nil {
+				qc = tc.qc(t)
+			}
+			up := proc.NewMailbox(0)
+			p := newPair(&Agent{}, up, pairStart{dial: true})
+			p.dialFailed(qc, tc.err)
+
+			var sent []pairStatus
+			for _, m := range up.Take() {
+				sent = append(sent, m.(pairStatus))
+			}
+			if tc.noAnswer {
+				require.Len(t, sent, 1)
+				assert.True(t, sent[0].st.noAnswer)
+			} else {
+				assert.Empty(t, sent)
+			}
+			if !tc.retry {
+				assert.Nil(t, p.retry)
+				return
+			}
+			require.NotNil(t, p.retry)
+			p.retry.Stop()
+			assert.Equal(t, 2*minBackoff, p.wait, "the next wait doubles")
 		})
 	}
 }

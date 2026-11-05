@@ -22,6 +22,7 @@ import (
 	"golang.org/x/time/rate"
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp/keyproto"
@@ -220,9 +221,9 @@ type mChild struct {
 	port   uint64
 	cell   uint32
 	meter  uint32
-	box    *mailbox
-	down   *valueMap
-	up     *valueMap
+	box    *proc.Mailbox
+	down   *proc.Values
+	up     *proc.Values
 	cancel context.CancelFunc
 	ending bool
 	// isUp is true between the up change and the down change of the member.
@@ -242,7 +243,7 @@ type mChild struct {
 type mProc struct {
 	r      *Router
 	c      *mChild
-	box    *mailbox
+	box    *proc.Mailbox
 	ctx    context.Context
 	cancel context.CancelFunc
 	dialer bool
@@ -323,15 +324,15 @@ func startMember(r *Router, c *mChild) {
 		failed: map[string]bool{}, ps: map[*pProc]context.CancelFunc{}, parts: map[VPCKey]*recordSet{}, tags: map[uint32]*tagState{},
 		later: map[VPCKey]*recordSet{}, touched: map[uint32]bool{},
 	}
-	watch(ctx, c.down, func(keys []string) { m.box.send(valuesChanged{keys: keys}) })
+	proc.Watch(ctx, c.down, func(keys []string) { m.box.Send(valuesChanged{keys: keys}) })
 	go m.loop()
 }
 
 func (m *mProc) loop() {
 	m.startDial()
 	for !m.over {
-		<-m.box.sig
-		for _, e := range m.box.take() {
+		<-m.box.Wake()
+		for _, e := range m.box.Take() {
 			m.handle(e)
 		}
 		// The key jobs go up after the table changes of the same step.
@@ -342,7 +343,7 @@ func (m *mProc) loop() {
 		}
 	}
 	m.cancel()
-	for _, e := range m.box.close() {
+	for _, e := range m.box.Close() {
 		m.refuse(e)
 	}
 	if m.everUp && m.endDown != 0 {
@@ -376,7 +377,7 @@ func (m *mProc) finish() {
 }
 
 // toRoot sends msg to the root.
-func (m *mProc) toRoot(msg any) { m.r.box.send(fromM{m: m.c, msg: msg}) }
+func (m *mProc) toRoot(msg any) { m.r.box.Send(fromM{m: m.c, msg: msg}) }
 
 func (m *mProc) handle(e any) {
 	if m.final {
@@ -452,7 +453,7 @@ func (m *mProc) handle(e any) {
 	case pChanged:
 		if m.receivers[e.p.tenant] == e.p {
 			for _, k := range e.keys {
-				if rs := load[*recordSet](e.p.up, k); rs != nil {
+				if rs := proc.Load[*recordSet](e.p.up, k); rs != nil {
 					m.records(rs.vpc, rs)
 				}
 			}
@@ -488,7 +489,7 @@ func (m *mProc) refuse(e any) {
 }
 
 // up returns the up map of M.
-func (m *mProc) up() *valueMap { return m.c.up }
+func (m *mProc) up() *proc.Values { return m.c.up }
 
 // Dials and sessions.
 
@@ -503,7 +504,7 @@ func (m *mProc) startDial() {
 		ctx, cancel := context.WithTimeout(m.ctx, meshOpenTimeout)
 		defer cancel()
 		qc, err := cfg.tr.Dial(ctx, net.UDPAddrFromAddrPort(addr), cfg.tls, cfg.quic)
-		m.box.send(dialed{qc: qc, err: err})
+		m.box.Send(dialed{qc: qc, err: err})
 	}()
 }
 
@@ -534,7 +535,7 @@ func (m *mProc) dialFailed(err error) {
 	} else {
 		slog.Debug("Failed to open mesh session", "relay", m.c.name, "addr", m.c.addr, "error", err)
 	}
-	m.redialT = time.AfterFunc(m.wait.next(), func() { m.box.send(redialEv{}) })
+	m.redialT = time.AfterFunc(m.wait.next(), func() { m.box.Send(redialEv{}) })
 }
 
 // accepted takes a session that the member dialed and that passed Open.
@@ -551,14 +552,14 @@ func (m *mProc) accepted(e toMConn) {
 // msUp makes ms the session of the member. It replaces the session before, as Mesh.admit did.
 func (m *mProc) msUp(ms *msProc) {
 	if m.ending || (ms.c.dialer && ms != m.opening) || (m.ms != nil && ms.n < m.ms.n) {
-		ms.box.send(msEnd{code: dpv1.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED, msg: "mesh session is not the session of the member"})
+		ms.box.Send(msEnd{code: dpv1.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED, msg: "mesh session is not the session of the member"})
 		return
 	}
 	if m.opening == ms {
 		m.opening = nil
 	}
 	if old := m.ms; old != nil {
-		old.box.send(msEnd{code: dpv1.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED, msg: "a new session replaced this one"})
+		old.box.Send(msEnd{code: dpv1.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED, msg: "a new session replaced this one"})
 		m.drop()
 		m.job(mJob{op: opClose, ms: old})
 	}
@@ -609,10 +610,10 @@ func (m *mProc) msEnded(e msEnded) {
 // records and the member values: the routes go to other candidates.
 func (m *mProc) drop() {
 	for _, p := range m.senders {
-		p.box.send(toEnd{})
+		p.box.Send(toEnd{})
 	}
 	for _, p := range m.receivers {
-		p.box.send(toEnd{})
+		p.box.Send(toEnd{})
 		m.stopWatch(p)
 	}
 	clear(m.senders)
@@ -740,7 +741,7 @@ func (m *mProc) end(e toMEnd) {
 	}
 	for _, ms := range []*msProc{m.ms, m.opening} {
 		if ms != nil {
-			ms.box.send(msEnd{code: e.code, msg: e.msg})
+			ms.box.Send(msEnd{code: e.code, msg: e.msg})
 		}
 	}
 	m.drop()
@@ -848,7 +849,7 @@ func (m *mProc) call(req keys.Request) {
 		ctx, cancel := context.WithTimeout(ms.ctx, trunkKeysTimeout)
 		defer cancel()
 		res, err := ms.c.client.TrunkKeys(ctx, keyproto.ToProto(req))
-		m.box.send(keysCalled{ms: ms, refused: res.GetRefusedSpis(), err: err})
+		m.box.Send(keysCalled{ms: ms, refused: res.GetRefusedSpis(), err: err})
 	}()
 }
 
@@ -900,7 +901,7 @@ func (m *mProc) keysFailed(err error) {
 	}
 	m.kst, m.fresh = kWaiting, true
 	ms := m.ms
-	m.kT = time.AfterFunc(m.kwait.next(), func() { m.box.send(keysRetry{ms: ms}) })
+	m.kT = time.AfterFunc(m.kwait.next(), func() { m.box.Send(keysRetry{ms: ms}) })
 }
 
 // Probes.
@@ -919,7 +920,7 @@ func (m *mProc) startProbe() {
 	run := &probeRun{ms: m.ms}
 	_, _ = rand.Read(run.id[:])
 	m.run = run
-	run.wait = time.AfterFunc(trunkProbeWait, func() { m.box.send(probeWait{run: run}) })
+	run.wait = time.AfterFunc(trunkProbeWait, func() { m.box.Send(probeWait{run: run}) })
 	m.probeTick(run)
 }
 
@@ -933,7 +934,7 @@ func (m *mProc) probeTick(run *probeRun) {
 	copy(msg[1:], run.id[:])
 	m.seal(msg)
 	if run.round < trunkProbeRounds {
-		run.tick = time.AfterFunc(trunkProbeInterval, func() { m.box.send(probeTick{run: run}) })
+		run.tick = time.AfterFunc(trunkProbeInterval, func() { m.box.Send(probeTick{run: run}) })
 	}
 }
 
@@ -969,14 +970,14 @@ func (m *mProc) probed(ok bool) {
 	m.writePort()
 	if !ok {
 		run := m.run
-		m.retryT = time.AfterFunc(trunkProbeRetry, func() { m.box.send(probeAgain{run: run}) })
+		m.retryT = time.AfterFunc(trunkProbeRetry, func() { m.box.Send(probeAgain{run: run}) })
 	}
 	m.ver++
 	ms, vals := m.ms, &memberValues{inc: m.c.inc, ver: m.ver, ref: m.ms.open.ref, port: m.c.port, cell: m.c.cell, mtu: m.mtu()}
 	// V gets the member values after the write of the ports entry.
 	m.w.then(func(error) {
 		if m.ms == ms && m.sub != subKeying && m.ver == vals.ver {
-			store(m.up(), keyValues, vals)
+			proc.Store(m.up(), keyValues, vals)
 		}
 	})
 }
@@ -1020,8 +1021,8 @@ func (m *mProc) setsChanged(keys []string) {
 			continue
 		}
 		if p := m.senders[project]; p != nil {
-			if set := load[*annSet](m.c.down, k); set != nil {
-				store(p.down, k, set)
+			if set := proc.Load[*annSet](m.c.down, k); set != nil {
+				proc.Store(p.down, k, set)
 			} else {
 				p.down.Delete(k)
 			}
@@ -1034,7 +1035,7 @@ func (m *mProc) setsChanged(keys []string) {
 func (m *mProc) tenants() map[string]bool {
 	out := map[string]bool{}
 	for _, v := range m.c.down.LoadAll() {
-		if set, _ := v.p.(*annSet); set != nil && len(set.entries) > 0 {
+		if set := proc.As[*annSet](v); set != nil && len(set.entries) > 0 {
 			out[set.vpc.Project] = true
 		}
 	}
@@ -1049,7 +1050,7 @@ func (m *mProc) syncSenders() {
 	want := m.tenants()
 	for tenant, p := range m.senders {
 		if !want[tenant] {
-			p.box.send(toEnd{})
+			p.box.Send(toEnd{})
 			delete(m.senders, tenant)
 		}
 	}
@@ -1057,9 +1058,9 @@ func (m *mProc) syncSenders() {
 		if m.senders[tenant] != nil || m.failed[tenant] {
 			continue
 		}
-		down := &valueMap{}
+		down := &proc.Values{}
 		for k, v := range m.c.down.LoadAll() {
-			if set, _ := v.p.(*annSet); set != nil && set.vpc.Project == tenant {
+			if set := proc.As[*annSet](v); set != nil && set.vpc.Project == tenant {
 				down.Store(k, v)
 			}
 		}
@@ -1076,7 +1077,7 @@ func (m *mProc) incoming(e mIncoming) {
 		return
 	}
 	if old := m.receivers[e.tenant]; old != nil {
-		old.box.send(toEnd{})
+		old.box.Send(toEnd{})
 		m.stopWatch(old)
 		m.dropTenant(e.tenant)
 	}
@@ -1084,7 +1085,7 @@ func (m *mProc) incoming(e mIncoming) {
 	m.receivers[e.tenant] = p
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.ps[p] = cancel
-	watch(ctx, p.up, func(keys []string) { m.box.send(pChanged{p: p, keys: keys}) })
+	proc.Watch(ctx, p.up, func(keys []string) { m.box.Send(pChanged{p: p, keys: keys}) })
 }
 
 // dropTenant deletes the records of each VPC of tenant.
@@ -1170,7 +1171,7 @@ func (m *mProc) records(vpc VPCKey, rs *recordSet) {
 			m.up().Delete(key)
 			return
 		}
-		store(m.up(), key, rs)
+		proc.Store(m.up(), key, rs)
 	})
 }
 
@@ -1329,7 +1330,7 @@ func (m *mProc) fetch(n uint64) {
 	client := m.ms.c.client
 	go func() {
 		data, err := fetchSnapshot(m.ctx, client)
-		m.box.send(fetchDone{n: n, data: data, err: err})
+		m.box.Send(fetchDone{n: n, data: data, err: err})
 	}()
 }
 

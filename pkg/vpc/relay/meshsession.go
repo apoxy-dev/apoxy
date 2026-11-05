@@ -10,6 +10,7 @@ import (
 
 	"github.com/apoxy-dev/softpsp/keys"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -71,8 +72,8 @@ type (
 // msProc is the process MS of one mesh session: the QUIC connection and its handlers.
 type msProc struct {
 	r      *Router
-	mbox   *mailbox // The mailbox of M.
-	box    *mailbox
+	mbox   *proc.Mailbox // The mailbox of M.
+	box    *proc.Mailbox
 	c      *meshConn
 	name   string
 	n      uint64 // The MS number: the session of the trunk port.
@@ -86,9 +87,9 @@ type msProc struct {
 
 // startMS starts the MS of the connection c with the member name. A connection that this relay
 // accepted passed Open, and open has its data.
-func startMS(r *Router, mbox *mailbox, c *meshConn, name string, n uint64, open msOpen) *msProc {
+func startMS(r *Router, mbox *proc.Mailbox, c *meshConn, name string, n uint64, open msOpen) *msProc {
 	ctx, cancel := context.WithCancel(context.Background())
-	ms := &msProc{r: r, mbox: mbox, box: newMailbox(0), c: c, name: name, n: n, ctx: ctx, cancel: cancel, open: open, served: !c.dialer}
+	ms := &msProc{r: r, mbox: mbox, box: proc.NewMailbox(0), c: c, name: name, n: n, ctx: ctx, cancel: cancel, open: open, served: !c.dialer}
 	c.ms.Store(ms)
 	go ms.run()
 	return ms
@@ -99,11 +100,11 @@ func (ms *msProc) run() {
 	if c.dialer {
 		go func() {
 			c.serve(ms.ctx)
-			ms.box.send(msServed{})
+			ms.box.Send(msServed{})
 		}()
 		go func() {
 			open, err := ms.dialOpen()
-			ms.box.send(msOpened{open: open, err: err})
+			ms.box.Send(msOpened{open: open, err: err})
 		}()
 	} else {
 		ms.setUp()
@@ -111,8 +112,8 @@ func (ms *msProc) run() {
 	closed := c.qc.Context().Done()
 	for closed != nil || !ms.served {
 		select {
-		case <-ms.box.sig:
-			for _, e := range ms.box.take() {
+		case <-ms.box.Wake():
+			for _, e := range ms.box.Take() {
 				ms.handle(e)
 			}
 		case <-closed:
@@ -121,20 +122,20 @@ func (ms *msProc) run() {
 		}
 	}
 	ms.cancel()
-	for _, e := range ms.box.close() {
+	for _, e := range ms.box.Close() {
 		ms.refuse(e)
 	}
 	restart := false
-	if code, msg, remote := remoteClose(c.qc, nil); remote {
-		restart = code == dpv1.MeshCloseCode_MESH_CLOSE_CODE_RESTART
+	if code, msg, remote := rpc.RemoteClose(c.qc, nil); remote {
+		restart = dpv1.MeshCloseCode(code) == dpv1.MeshCloseCode_MESH_CLOSE_CODE_RESTART
 		if ms.err == nil {
-			ms.err = fmt.Errorf("relay closed the session with %v: %s", code, msg)
+			ms.err = fmt.Errorf("relay closed the session with %v: %s", dpv1.MeshCloseCode(code), msg)
 		}
 	}
 	if ms.up {
 		slog.Info("Closed mesh session", "relay", ms.name, "reason", context.Cause(c.qc.Context()))
 	}
-	ms.mbox.send(msEnded{ms: ms, up: ms.up, restart: restart, err: ms.err})
+	ms.mbox.Send(msEnded{ms: ms, up: ms.up, restart: restart, err: ms.err})
 }
 
 // setUp opens the session for the handlers and tells M.
@@ -144,7 +145,7 @@ func (ms *msProc) setUp() {
 	v := ms.open.ver
 	slog.Info("Opened mesh session", "relay", ms.name, "remote", ms.c.qc.RemoteAddr(), "dialer", ms.c.dialer,
 		"revision", v.GetRevision(), "build", buildLabel(v.GetBuild()))
-	ms.mbox.send(msUp{ms: ms})
+	ms.mbox.Send(msUp{ms: ms})
 }
 
 func (ms *msProc) handle(e any) {
@@ -161,11 +162,11 @@ func (ms *msProc) handle(e any) {
 	case msEnd:
 		ms.c.close(e.code, e.msg)
 	case msIncoming:
-		if !ms.up || !ms.mbox.send(mIncoming{ms: ms, msIncoming: e}) {
+		if !ms.up || !ms.mbox.Send(mIncoming{ms: ms, msIncoming: e}) {
 			e.done <- rpc.Errorf(rpc.Unavailable, "mesh session ended")
 		}
 	case msTrunkKeys:
-		if !ms.up || !ms.mbox.send(mTrunkApply{ms: ms, msTrunkKeys: e}) {
+		if !ms.up || !ms.mbox.Send(mTrunkApply{ms: ms, msTrunkKeys: e}) {
 			e.res <- callResult{err: rpc.Errorf(rpc.Unavailable, "mesh session ended")}
 		}
 	}
@@ -194,8 +195,8 @@ func (ms *msProc) dialOpen() (msOpen, error) {
 	}
 	res, err := c.client.Open(ctx, r.openRequest())
 	if err != nil {
-		if code, reason, ok := remoteClose(c.qc, err); ok {
-			err = fmt.Errorf("relay closed the session with %v: %s", code, reason)
+		if code, reason, ok := rpc.RemoteClose(c.qc, err); ok {
+			err = fmt.Errorf("relay closed the session with %v: %s", dpv1.MeshCloseCode(code), reason)
 		}
 		c.close(dpv1.MeshCloseCode_MESH_CLOSE_CODE_UNSPECIFIED, "")
 		return msOpen{}, fmt.Errorf("open: %w", err)

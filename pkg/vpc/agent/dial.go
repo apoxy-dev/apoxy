@@ -143,7 +143,7 @@ func (a *Agent) hello(d *dialed) error {
 	d.reflexive = reflexiveAddr(w)
 	d.version = w.GetVersion()
 	// The dial fails for a relay that is too old, so the agent dials the next relay.
-	if err := relayRevision(d.version, a.ver); err != nil {
+	if err := dp.CheckRevision("relay", d.version, a.ver.GetMinRevision()); err != nil {
 		return err
 	}
 	// The connection has the key of its relay from the Welcome.

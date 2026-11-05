@@ -24,6 +24,7 @@ import (
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
@@ -78,10 +79,10 @@ type connAtt struct {
 type connProc struct {
 	r      *Router
 	t      dp.Target
-	vbox   *mailbox
-	box    *mailbox
-	down   *valueMap
-	up     *valueMap
+	vbox   *proc.Mailbox
+	box    *proc.Mailbox
+	down   *proc.Values
+	up     *proc.Values
 	l      *link
 	st     sessionStream
 	hello  *dpv1.Hello
@@ -160,9 +161,9 @@ type connProc struct {
 }
 
 // startConn starts the A of e. V owns down and up.
-func startConn(r *Router, vbox *mailbox, e toConn, down, up *valueMap, draining bool, alts []*dpv1.RelayRef) {
+func startConn(r *Router, vbox *proc.Mailbox, e toConn, down, up *proc.Values, draining bool, alts []*dpv1.RelayRef) {
 	ctx, cancel := context.WithCancel(context.Background())
-	n := *load[*Network](down, keyNetwork)
+	n := *proc.Load[*Network](down, keyNetwork)
 	a := &connProc{
 		r:       r,
 		t:       r.cfg.Target,
@@ -194,7 +195,7 @@ func startConn(r *Router, vbox *mailbox, e toConn, down, up *valueMap, draining 
 		told:    vLanes{port: e.port},
 	}
 	// The first change has each key: A checks the cert with the trust data of now.
-	watch(ctx, down, func(keys []string) { a.box.send(valuesChanged{keys: keys}) })
+	proc.Watch(ctx, down, func(keys []string) { a.box.Send(valuesChanged{keys: keys}) })
 	go a.run()
 }
 
@@ -209,8 +210,8 @@ func (a *connProc) run() {
 	defer tick.Stop()
 	for !a.finished() {
 		select {
-		case <-a.box.sig:
-			for _, e := range a.box.take() {
+		case <-a.box.Wake():
+			for _, e := range a.box.Take() {
 				a.handle(e)
 			}
 		case now := <-tick.C:
@@ -220,10 +221,10 @@ func (a *connProc) run() {
 		a.runJobs()
 	}
 	a.cancel()
-	for _, e := range a.box.close() {
+	for _, e := range a.box.Close() {
 		a.refuse(e)
 	}
-	a.vbox.send(aEnded{port: a.port, ends: a.ends})
+	a.vbox.Send(aEnded{port: a.port, ends: a.ends})
 	a.l.streamEnd()
 }
 
@@ -300,9 +301,9 @@ func (a *connProc) open() {
 	a.readerOn, a.writerOn = true, true
 	go func() {
 		_ = w.run(a.ctx, head)
-		a.box.send(writerDone{})
+		a.box.Send(writerDone{})
 	}()
-	go func() { a.box.send(readerDone{err: a.read()}) }()
+	go func() { a.box.Send(readerDone{err: a.read()}) }()
 	calls := a.calls
 	a.calls = nil
 	for _, c := range calls {
@@ -377,7 +378,7 @@ func (a *connProc) handle(e any) {
 	case toPacketIn:
 		a.packetIn(e.pin, time.Now())
 	case toStats:
-		a.vbox.send(aStatsAnswer{port: a.port, ask: e.ask, stats: a.stats()})
+		a.vbox.Send(aStatsAnswer{port: a.port, ask: e.ask, stats: a.stats()})
 	case toSlotLost:
 		a.close(dpv1.RelayCloseCode_RELAY_CLOSE_CODE_UNSPECIFIED, "attachment address lease ended")
 		a.whenPortGone(e.done)
@@ -424,7 +425,7 @@ func (a *connProc) refuse(e any) {
 	case toSlotLost:
 		a.whenPortGone(e.done)
 	case toStats:
-		a.vbox.send(aStatsAnswer{port: a.port, ask: e.ask})
+		a.vbox.Send(aStatsAnswer{port: a.port, ask: e.ask})
 	case toKeysDone:
 		a.keysDone(e)
 	case toTablesDone:
@@ -472,7 +473,7 @@ func (a *connProc) attach(in *dpv1.AttachRequest, res chan callResult) {
 	ca.att.NetworkID, ca.att.Network = a.net.ID, a.net.Name
 	ca.res = res
 	a.pend[ca.att.ID] = ca
-	a.vbox.send(vAssign{port: a.port, att: ca.att})
+	a.vbox.Send(vAssign{port: a.port, att: ca.att})
 }
 
 // newAttachment returns an attachment with no routes, and the advertised routes of the request in
@@ -531,7 +532,7 @@ func (a *connProc) assigned(e toAssigned) {
 			a.fail(ca, rpc.Errorf(rpc.Unavailable, "failed to write source entries: %v", err))
 			return
 		}
-		a.vbox.send(aAttach{port: a.port, att: ca.att, cell: ca.cell})
+		a.vbox.Send(aAttach{port: a.port, att: ca.att, cell: ca.cell})
 	})
 }
 
@@ -541,7 +542,7 @@ func (a *connProc) fail(ca *connAtt, err error) {
 	a.srcDirty = true
 	a.next.zeroCell(ca.cell)
 	a.w.chainThen(func(error) {
-		a.vbox.send(vAttachmentEnd{port: a.port, att: ca.att, cell: ca.cell})
+		a.vbox.Send(vAttachmentEnd{port: a.port, att: ca.att, cell: ca.cell})
 		ca.res <- callResult{err: err}
 	})
 }
@@ -568,7 +569,7 @@ func (a *connProc) attached(e attached) {
 		a.listOn = true
 		a.checkTrust(a.trust)
 	}
-	a.vbox.send(vAttachmentStart{port: a.port, att: ca.att})
+	a.vbox.Send(vAttachmentStart{port: a.port, att: ca.att})
 	ca.res <- callResult{out: &dpv1.AttachResponse{
 		AttachmentId: ca.att.ID,
 		Routes:       ca.statuses,
@@ -624,7 +625,7 @@ func (a *connProc) detach(id string, res chan callResult) {
 		return
 	}
 	a.atts[i].detach = res
-	a.vbox.send(aDetach{port: a.port, id: id})
+	a.vbox.Send(aDetach{port: a.port, id: id})
 }
 
 // detached ends an attachment after V deleted its route entries: its source entries go, then A
@@ -653,7 +654,7 @@ func (a *connProc) detached(e detached) {
 			if err != nil {
 				slog.Error("Failed to reset a counter cell", "vpc", a.l.vpc.UID, "error", err)
 			}
-			a.vbox.send(vAttachmentEnd{port: a.port, att: ca.att, cell: ca.cell, stats: &st})
+			a.vbox.Send(vAttachmentEnd{port: a.port, att: ca.att, cell: ca.cell, stats: &st})
 			ca.detach <- callResult{out: &emptypb.Empty{}}
 		})
 	})
@@ -731,7 +732,7 @@ func (a *connProc) sendTables() {
 				a.sources = want
 			}
 		}
-	}, func(b batch, chain bool) { a.vbox.send(vTables{port: a.port, b: b, chain: chain}) })
+	}, func(b batch, chain bool) { a.vbox.Send(vTables{port: a.port, b: b, chain: chain}) })
 }
 
 // tablesWait reports whether table changes of A wait for the next event.
@@ -782,7 +783,7 @@ func (a *connProc) runJobs() {
 			j.op = opOffer
 		}
 		a.cur = &j
-		a.vbox.send(vKeys{port: a.port, op: j.op, req: j.req, vni: a.net.ID, mtu: int(a.net.MTU), chain: j.res != nil})
+		a.vbox.Send(vKeys{port: a.port, op: j.op, req: j.req, vni: a.net.ID, mtu: int(a.net.MTU), chain: j.res != nil})
 	}
 }
 
@@ -879,7 +880,7 @@ func (a *connProc) tellLanes(pa dp.PortAction) {
 	}
 	if m != a.told {
 		a.told = m
-		a.vbox.send(m)
+		a.vbox.Send(m)
 	}
 }
 
@@ -936,7 +937,7 @@ func (a *connProc) probe(b []byte, src netip.AddrPort, now time.Time) {
 		if pr.BFD != nil {
 			// The relay end of the check sends its own packets: no reply.
 			if a.check != nil {
-				a.check.box.send(checkProbe{pr: pr})
+				a.check.box.Send(checkProbe{pr: pr})
 			}
 			return
 		}
@@ -963,11 +964,11 @@ func (a *connProc) setAddr(src netip.AddrPort) {
 		if a.prevT != nil {
 			a.prevT.Stop()
 		}
-		a.prevT = time.AfterFunc(rebindOverlap, func() { a.box.send(prevExpired{addr: prev}) })
+		a.prevT = time.AfterFunc(rebindOverlap, func() { a.box.Send(prevExpired{addr: prev}) })
 	}
 	a.addr, a.lanes, a.receive, a.seen = src, nil, false, 0
 	if a.check != nil {
-		a.check.box.send(checkAddr{addr: src})
+		a.check.box.Send(checkAddr{addr: src})
 	}
 	if a.mode == dpv1.Mode_MODE_PSP {
 		a.writePort()
@@ -998,7 +999,7 @@ func (a *connProc) startCheck() {
 
 func (a *connProc) stopCheck() {
 	if a.check != nil {
-		a.check.box.send(toEnd{})
+		a.check.box.Send(toEnd{})
 		a.check = nil
 	}
 }
@@ -1027,13 +1028,13 @@ func (a *connProc) changed(keys []string) {
 			a.out.poke()
 		case keyNetwork:
 			// The VNI and the MTU stay as they were at Welcome for the life of the connection, as today.
-			if n := load[*Network](a.down, keyNetwork); n != nil {
+			if n := proc.Load[*Network](a.down, keyNetwork); n != nil {
 				id, mtu := a.net.ID, a.net.MTU
 				a.net = *n
 				a.net.ID, a.net.MTU = id, mtu
 			}
 		case keyTrust:
-			a.checkTrust(load[*trustGen](a.down, keyTrust))
+			a.checkTrust(proc.Load[*trustGen](a.down, keyTrust))
 		case keyRx:
 			a.reportRx()
 		}
@@ -1043,7 +1044,7 @@ func (a *connProc) changed(keys []string) {
 // reportRx sends the agent the receive counts of the relay SAs when they changed. The agent gives
 // them to its breaker.
 func (a *connProc) reportRx() {
-	v := load[*rxValue](a.down, keyRx)
+	v := proc.Load[*rxValue](a.down, keyRx)
 	if v == nil || v.packets == a.rxSum {
 		return
 	}
@@ -1063,7 +1064,7 @@ func (a *connProc) checkTrust(t *trustGen) {
 	go func() {
 		// The check uses the handshake time, because a connection does not end with its cert.
 		_, revoked, err := checkCertList(trust, chain, at)
-		a.box.send(trustChecked{t: t, revoked: identity.LiveRevoked(revoked, time.Now()), err: err})
+		a.box.Send(trustChecked{t: t, revoked: identity.LiveRevoked(revoked, time.Now()), err: err})
 	}()
 }
 
@@ -1131,11 +1132,11 @@ func (a *connProc) stateNow() dpv1.AnnouncerState {
 
 // setState stores a new state for V.
 func (a *connProc) setState(state dpv1.AnnouncerState, reason string) {
-	if state == a.state && load[*stateValue](a.up, keyState) != nil {
+	if state == a.state && proc.Load[*stateValue](a.up, keyState) != nil {
 		return
 	}
 	a.state = state
-	store(a.up, keyState, &stateValue{state: state, reason: reason})
+	proc.Store(a.up, keyState, &stateValue{state: state, reason: reason})
 }
 
 func (a *connProc) drainMsg() *dpv1.SessionResponse {

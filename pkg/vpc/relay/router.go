@@ -20,6 +20,7 @@ import (
 
 	vpcv1alpha1 "github.com/apoxy-dev/apoxy/api/vpc/v1alpha1"
 	"github.com/apoxy-dev/apoxy/build"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/relay/dp"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
@@ -52,8 +53,8 @@ type desiredState struct {
 type Router struct {
 	cfg  Config
 	ver  *dpv1.Version
-	box  *mailbox
-	pins *mailbox
+	box  *proc.Mailbox
+	pins *proc.Mailbox
 	// stateChanges counts the state changes of the connections with routes, by the new state.
 	stateChanges [numAnnouncerStates]atomic.Uint64
 	onEnd        atomic.Pointer[func(AttachmentStats)]
@@ -127,9 +128,9 @@ type memberKey string
 type vChild struct {
 	key    VPCKey
 	net    Network
-	box    *mailbox
-	down   *valueMap
-	up     *valueMap
+	box    *proc.Mailbox
+	down   *proc.Values
+	up     *proc.Values
 	cancel context.CancelFunc // Ends the watch of up.
 	ending bool
 }
@@ -204,8 +205,8 @@ func NewRouter(cfg Config) (*Router, error) {
 	r := &Router{
 		cfg:      cfg,
 		ver:      dpv1.LocalVersion(build.BuildVersion),
-		box:      newMailbox(0),
-		pins:     newMailbox(maxPacketIns),
+		box:      proc.NewMailbox(0),
+		pins:     proc.NewMailbox(maxPacketIns),
 		keys:     k,
 		vs:       map[VPCKey]*vChild{},
 		conns:    map[uint64]*rootConn{},
@@ -259,12 +260,12 @@ func (r *Router) change(key any, fn func(*desiredState)) {
 	fn(d)
 	r.desired.Store(d)
 	r.desiredMu.Unlock()
-	r.box.send(desiredChanged{key: key})
+	r.box.Send(desiredChanged{key: key})
 }
 
 // Recheck checks the agent certs of the open connections of project again, with the trust data of
 // now. A connection whose cert fails closes with CERT.
-func (r *Router) Recheck(project string) { r.box.send(recheckEv{project: project}) }
+func (r *Router) Recheck(project string) { r.box.Send(recheckEv{project: project}) }
 
 // OnAttachmentEnd sets the function that gets the final counters of each attachment that ends. It
 // runs as a hook task. Set it before Run.
@@ -274,7 +275,7 @@ func (r *Router) OnAttachmentEnd(fn func(AttachmentStats)) { r.onEnd.Store(&fn) 
 // the router does not run.
 func (r *Router) AttachmentStats() []AttachmentStats {
 	reply := make(chan []AttachmentStats, 1)
-	if !r.box.send(statsAsk{reply: reply}) {
+	if !r.box.Send(statsAsk{reply: reply}) {
 		return nil
 	}
 	return <-reply
@@ -284,7 +285,7 @@ func (r *Router) AttachmentStats() []AttachmentStats {
 func (r *Router) Run(ctx context.Context) error {
 	r.cfg.Target.OnPacketIn(func(p *p4.PacketIn) bool {
 		pin, ok := pinOf(p)
-		return !ok || r.pins.send(pin)
+		return !ok || r.pins.Send(pin)
 	})
 	defer r.cfg.Target.OnPacketIn(nil)
 	tick := time.NewTicker(tickInterval)
@@ -296,10 +297,10 @@ func (r *Router) Run(ctx context.Context) error {
 	}()
 	done := ctx.Done()
 	for {
-		for _, e := range r.box.take() {
+		for _, e := range r.box.Take() {
 			r.turns.add(r.keyOf(e), e)
 		}
-		for _, e := range r.pins.take() {
+		for _, e := range r.pins.Take() {
 			pin := e.(packetIn)
 			r.turns.add(r.pinKey(pin), pin)
 		}
@@ -314,15 +315,15 @@ func (r *Router) Run(ctx context.Context) error {
 			r.writeTables()
 		}
 		if r.stopping && len(r.vs) == 0 && len(r.mall) == 0 && !r.hookOn && len(r.hooks) == 0 && len(r.pending) == 0 {
-			r.pins.close()
-			for _, e := range r.box.close() {
+			r.pins.Close()
+			for _, e := range r.box.Close() {
 				r.refuse(e)
 			}
 			return nil
 		}
 		select {
-		case <-r.box.sig:
-		case <-r.pins.sig:
+		case <-r.box.Wake():
+		case <-r.pins.Wake():
 		case now := <-tick.C:
 			if !r.stopping {
 				r.tick(now)
@@ -449,11 +450,11 @@ func (r *Router) handle(e any) {
 	case drainEv:
 		r.draining, r.alts = true, r.alternates()
 		for _, v := range r.vs {
-			v.box.send(toDrain{alternates: r.alts})
+			v.box.Send(toDrain{alternates: r.alts})
 		}
 	case endAllEv:
 		for _, v := range r.vs {
-			v.box.send(toEndConn{code: e.code, msg: e.msg})
+			v.box.Send(toEndConn{code: e.code, msg: e.msg})
 		}
 	case statsAsk:
 		r.askStats(e)
@@ -477,14 +478,14 @@ func (r *Router) handle(e any) {
 		r.fromV(e.v, e.msg)
 	case vUpChanged:
 		if r.vs[e.v.key] == e.v {
-			r.publishSet(e.v.key, load[*annSet](e.v.up, keyAnnounce))
+			r.publishSet(e.v.key, proc.Load[*annSet](e.v.up, keyAnnounce))
 		}
 	case membersChanged:
 		r.syncMembers()
 	case meshOpened:
 		r.meshOpened(e)
 	case askEv:
-		if c := r.ms[e.name]; c == nil || c.ending || !c.box.send(toAsk{reply: e.reply}) {
+		if c := r.ms[e.name]; c == nil || c.ending || !c.box.Send(toAsk{reply: e.reply}) {
 			e.reply <- askAnswer{}
 		}
 	case fetchEv:
@@ -515,9 +516,9 @@ func (r *Router) nextHook() {
 	go func() {
 		h.run()
 		if h.port != 0 {
-			r.box.send(hookPortDone{port: h.port})
+			r.box.Send(hookPortDone{port: h.port})
 		} else {
-			r.box.send(hookDone{})
+			r.box.Send(hookDone{})
 		}
 	}()
 }
@@ -571,10 +572,10 @@ func (r *Router) reconcile(key VPCKey) {
 	case !want || n.ID != v.net.ID:
 		// A new network ID is a new VPC in the data plane: V ends, and a new one starts at its end.
 		v.ending = true
-		v.box.send(toEnd{})
+		v.box.Send(toEnd{})
 	case !equalNetwork(n, v.net):
 		v.net = n
-		store(v.down, keyNetwork, &n)
+		proc.Store(v.down, keyNetwork, &n)
 	}
 }
 
@@ -585,19 +586,19 @@ func equalNetwork(a, b Network) bool {
 
 func (r *Router) startV(key VPCKey, n Network) {
 	ctx, cancel := context.WithCancel(context.Background())
-	v := &vChild{key: key, net: n, box: newMailbox(0), down: &valueMap{}, up: &valueMap{}, cancel: cancel}
-	store(v.down, keyNetwork, &n)
-	store(v.down, keyTrust, r.trustOf(key.Project))
+	v := &vChild{key: key, net: n, box: proc.NewMailbox(0), down: &proc.Values{}, up: &proc.Values{}, cancel: cancel}
+	proc.Store(v.down, keyNetwork, &n)
+	proc.Store(v.down, keyTrust, r.trustOf(key.Project))
 	for c := range r.mall {
 		if !c.ending && c.parts[key] != nil {
 			r.storeView(c, key)
 		}
 	}
 	r.vs[key] = v
-	watch(ctx, v.up, func([]string) { r.box.send(vUpChanged{v: v}) })
+	proc.Watch(ctx, v.up, func([]string) { r.box.Send(vUpChanged{v: v}) })
 	startVPC(r, v)
 	if r.draining {
-		v.box.send(toDrain{alternates: r.alts})
+		v.box.Send(toDrain{alternates: r.alts})
 	}
 }
 
@@ -616,7 +617,7 @@ func (r *Router) recheck(project string) {
 	r.trust[project] = t
 	for key, v := range r.vs {
 		if key.Project == project {
-			store(v.down, keyTrust, t)
+			proc.Store(v.down, keyTrust, t)
 		}
 	}
 }
@@ -627,7 +628,7 @@ func (r *Router) stop() {
 	for _, v := range r.vs {
 		if !v.ending {
 			v.ending = true
-			v.box.send(toEnd{})
+			v.box.Send(toEnd{})
 		}
 	}
 	for c := range r.mall {
@@ -666,9 +667,9 @@ func (r *Router) accept(e accepted) {
 	r.sids[e.l.probe.SID] = c.port
 	e.l.owned.Store(true)
 	// The calls of the agent wait in the mailbox of A until A starts.
-	box := newMailbox(0)
+	box := proc.NewMailbox(0)
 	e.l.a.Store(box)
-	if !v.box.send(toConn{l: e.l, st: e.st, hello: e.hello, box: box, port: c.port, tag: tag, cell: cell, meter: meter}) {
+	if !v.box.Send(toConn{l: e.l, st: e.st, hello: e.hello, box: box, port: c.port, tag: tag, cell: cell, meter: meter}) {
 		c.ended = true
 		e.l.streamEnd()
 		r.maybeForget(c)
@@ -711,7 +712,7 @@ func (r *Router) maybeForget(c *rootConn) {
 
 func (r *Router) slotLost(e slotLost) {
 	c := r.conns[e.port]
-	if c == nil || c.ended || !c.v.box.send(toSlotLost{port: e.port, done: e.done}) {
+	if c == nil || c.ended || !c.v.box.Send(toSlotLost{port: e.port, done: e.done}) {
 		close(e.done)
 	}
 }
@@ -726,11 +727,11 @@ func (r *Router) packetIn(pin packetIn) {
 		port = r.puntPort(pin)
 	}
 	if c := r.conns[port]; c != nil && !c.ended {
-		c.v.box.send(toPacketIn{port: port, pin: pin})
+		c.v.box.Send(toPacketIn{port: port, pin: pin})
 		return
 	}
 	if m := r.trunks[port]; m != nil && pin.md.kind == dp.KindPunt {
-		m.box.send(toPacketIn{port: port, pin: pin})
+		m.box.Send(toPacketIn{port: port, pin: pin})
 	}
 }
 
@@ -743,7 +744,7 @@ func (r *Router) askStats(e statsAsk) {
 	run := &statsRun{reply: e.reply, wait: map[*vChild]struct{}{}}
 	r.asks[r.lastAsk] = run
 	for _, v := range r.vs {
-		if v.box.send(toStats{ask: r.lastAsk}) {
+		if v.box.Send(toStats{ask: r.lastAsk}) {
 			run.wait[v] = struct{}{}
 		}
 	}
@@ -774,20 +775,20 @@ func (r *Router) tick(now time.Time) {
 			}
 			if kt.rekey != nil {
 				if c := r.conns[kt.port]; c != nil && !c.ended {
-					c.v.box.send(toRekeyed{port: kt.port, session: kt.session, req: *kt.rekey})
+					c.v.box.Send(toRekeyed{port: kt.port, session: kt.session, req: *kt.rekey})
 				} else if m := r.trunks[kt.port]; m != nil {
-					m.box.send(toRekeyed{port: kt.port, session: kt.session, req: *kt.rekey})
+					m.box.Send(toRekeyed{port: kt.port, session: kt.session, req: *kt.rekey})
 				}
 			}
 			if m := r.trunks[kt.port]; m != nil && kt.expired {
-				m.box.send(toTxExpired{session: kt.session})
+				m.box.Send(toTxExpired{session: kt.session})
 			}
 		})
 	}
 	for port, v := range rx {
 		if c := r.conns[port]; c != nil && !c.ended && int64(v.packets) != c.rx {
 			c.rx = int64(v.packets)
-			store(c.v.down, rxKey(port), v)
+			proc.Store(c.v.down, rxKey(port), v)
 		}
 	}
 }
@@ -815,7 +816,7 @@ func (r *Router) assigned(e assignDone) {
 			res.addrs, res.cell, res.instance = e.addrs, cell, r.attaches
 		}
 	}
-	c.v.box.send(res)
+	c.v.box.Send(res)
 }
 
 func (r *Router) fromV(v *vChild, msg any) {
@@ -825,7 +826,7 @@ func (r *Router) fromV(v *vChild, msg any) {
 	case vKeys:
 		r.runKeys(v, m)
 	case vTables:
-		r.addTables(m.b, m.chain, func(err error) { v.box.send(toTablesDone{port: m.port, err: err}) })
+		r.addTables(m.b, m.chain, func(err error) { v.box.Send(toTablesDone{port: m.port, err: err}) })
 	case vAttachmentStart:
 		r.hook(m.port, func() { r.cfg.Addresses.Attached(m.att) })
 	case vAttachmentEnd:
@@ -869,14 +870,14 @@ func (r *Router) assign(m vAssign) {
 	r.hook(port, func() {
 		addrs, err := r.cfg.Addresses.Assign(ctx, att, func() {
 			done := make(chan struct{})
-			if r.box.send(slotLost{port: port, att: att.ID, done: done}) {
+			if r.box.Send(slotLost{port: port, att: att.ID, done: done}) {
 				<-done
 			}
 		})
 		if err != nil && rpc.CodeOf(err) == rpc.Unknown {
 			err = rpc.Errorf(rpc.Unavailable, "no addresses: %v", err)
 		}
-		r.box.send(assignDone{port: port, att: att, addrs: addrs, err: err})
+		r.box.Send(assignDone{port: port, att: att, addrs: addrs, err: err})
 	})
 }
 
@@ -914,7 +915,7 @@ func (r *Router) runKeys(v *vChild, m vKeys) {
 			done.offer, done.ok = keys.Request{}, false
 			done.err = rpc.Errorf(rpc.Unavailable, "failed to write keys entries: %v", err)
 		}
-		v.box.send(done)
+		v.box.Send(done)
 	})
 }
 
@@ -1001,7 +1002,7 @@ func (r *Router) connEnded(m vConnEnded) {
 		return
 	}
 	if r.vs[c.v.key] == c.v {
-		r.publishSet(c.v.key, load[*annSet](c.v.up, keyAnnounce))
+		r.publishSet(c.v.key, proc.Load[*annSet](c.v.up, keyAnnounce))
 	}
 	c.ended = true
 	for _, a := range c.lanes {

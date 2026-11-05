@@ -357,7 +357,7 @@ func (r *ppRaw) read(wait time.Duration) (replies, requests []p2p.Probe, sizes [
 	}
 }
 
-// TestPathProbeReplyLimit checks that one source gets at most 10 replies each second.
+// TestPathProbeReplyLimit checks that one source gets a burst of at most 10 replies.
 func TestPathProbeReplyLimit(t *testing.T) {
 	_, b := newPPPair(t, ppTimes)
 	raw := newPPRaw(t, b.other.role)

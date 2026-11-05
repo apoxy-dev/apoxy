@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -32,7 +31,7 @@ import (
 )
 
 const (
-	// peerCallTimeout limits a dial, a Hello, a Keys and a Candidates call of a pair.
+	// peerCallTimeout limits a dial, a Hello, a Keys and a Candidates call of a pair, on both sides.
 	peerCallTimeout = 5 * time.Second
 	// defaultPairOpenTimeout is the time that a new pair has to open its channel.
 	defaultPairOpenTimeout = 30 * time.Second
@@ -188,8 +187,6 @@ type (
 	candsDone struct{ err error }
 	closeDone struct{}
 	helloLate struct{ c *chConn }
-	// callLate is a call of the peer that did not end in peerCallTimeout.
-	callLate struct{ c *chConn }
 
 	helloIn struct {
 		c     *chConn
@@ -445,13 +442,6 @@ func (p *pair) handle(m any) {
 		p.helloDone(m)
 	case helloIn:
 		p.helloIn(m)
-	case callLate:
-		if m.c == p.cur && p.committed {
-			p.end(dp.PeerCloseCode_PEER_CLOSE_CODE_UNSPECIFIED, "peer call did not end in time")
-		} else {
-			// The end of the connection gives its close error to connEnded, which retries a dial.
-			p.closeConn(m.c.qc, dp.PeerCloseCode_PEER_CLOSE_CODE_UNSPECIFIED, "peer call did not end in time")
-		}
 	case helloLate:
 		if m.c == p.cur && !m.c.hello {
 			p.drop(m.c, dp.PeerCloseCode_PEER_CLOSE_CODE_UNSPECIFIED, "no Hello in time")
@@ -557,16 +547,22 @@ func (p *pair) startDial() {
 }
 
 // dialFailed waits for the next dial: 1, 2, 4 ... s. A dial with no answer goes in the status.
-func (p *pair) dialFailed(err error) {
+// qc is the connection of the dial, or nil.
+func (p *pair) dialFailed(qc *quic.Conn, err error) {
 	if !p.dial || p.ending || p.committed {
 		return
 	}
-	if ae := new(quic.ApplicationError); errors.As(err, &ae) && ae.Remote && ae.ErrorCode == quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE) {
+	if code, _, ok := rpc.RemoteClose(qc, err); ok && code == quic.ApplicationErrorCode(dp.PeerCloseCode_PEER_CLOSE_CODE_DUPLICATE) {
 		// The peer keeps another connection. Its dial on this flow, or the open deadline, ends the wait.
 		slog.Debug("Peer channel dial ends: the peer keeps another connection", "peer", p.flow.peer)
 		return
 	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, new(*quic.HandshakeTimeoutError)) || errors.As(err, new(*quic.IdleTimeoutError)) {
+	// A call can end with a context error before the close cause of the connection is set.
+	var closed error
+	if qc != nil {
+		closed = context.Cause(qc.Context())
+	}
+	if timedOut(err) || timedOut(closed) {
 		p.st.noAnswer = true
 		p.status()
 	}
@@ -583,7 +579,7 @@ func (p *pair) dialed(m dialDone) {
 	}
 	if m.err != nil {
 		if current {
-			p.dialFailed(m.err)
+			p.dialFailed(nil, m.err)
 		}
 		return
 	}
@@ -593,7 +589,7 @@ func (p *pair) dialed(m dialDone) {
 	}
 	c := p.newConn(m.qc, true)
 	if c == nil {
-		p.dialFailed(errors.New("peer cert is revoked"))
+		p.dialFailed(nil, errors.New("peer cert is revoked"))
 		return
 	}
 	p.cur = c
@@ -665,7 +661,7 @@ func (p *pair) newConn(qc *quic.Conn, dialed bool) *chConn {
 func (p *pair) serve(c *chConn) {
 	mux := rpc.NewMux()
 	dp.RegisterPeerServer(mux, &peerServer{mb: p.mb, c: c})
-	c.rc = rpc.NewConn(c.qc, mux, rpc.WithHeaderTimeout(peerCallTimeout), rpc.WithStreams(callStreams{c.qc, p.mb, c}))
+	c.rc = rpc.NewConn(c.qc, mux, rpc.WithCallTimeout(peerCallTimeout))
 	rc, ctx := c.rc, p.ctx
 	p.task(func() any {
 		return serveDone{c, rc.Serve(ctx)}
@@ -694,14 +690,13 @@ func (p *pair) helloDone(m helloDone) {
 		return
 	}
 	if m.err != nil {
-		err := connErr(c, m.err)
 		p.drop(c, dp.PeerCloseCode_PEER_CLOSE_CODE_UNSPECIFIED, "Hello failed")
-		p.dialFailed(err)
+		p.dialFailed(c.qc, m.err)
 		return
 	}
 	if code, err := p.takeHello(c, m.h); err != nil {
 		p.drop(c, code, err.Error())
-		p.dialFailed(err)
+		p.dialFailed(nil, err)
 		return
 	}
 	p.commit(c)
@@ -725,8 +720,8 @@ func (p *pair) helloIn(m helloIn) {
 
 // takeHello checks the Hello of the peer on c and keeps its list and instance.
 func (p *pair) takeHello(c *chConn, h *dp.PeerHello) (dp.PeerCloseCode, error) {
-	if rev := h.GetVersion().GetRevision(); rev < dp.MinRevision {
-		return dp.PeerCloseCode_PEER_CLOSE_CODE_UPGRADE, fmt.Errorf("peer revision %d is below the minimum %d", rev, dp.MinRevision)
+	if err := dp.CheckRevision("peer", h.GetVersion(), dp.MinRevision); err != nil {
+		return dp.PeerCloseCode_PEER_CLOSE_CODE_UPGRADE, err
 	}
 	list, err := parseList(h.GetPrefixes())
 	if err != nil {
@@ -812,17 +807,13 @@ func (p *pair) connEnded(m serveDone) {
 		c.late.Stop()
 	}
 	if c.dialed {
-		p.dialFailed(connErr(c, m.err))
+		p.dialFailed(c.qc, m.err)
 	}
 }
 
-// connErr returns the close error of c when it is closed, else err. A call or the accept can end
-// with a context error before the close error of the connection.
-func connErr(c *chConn, err error) error {
-	if ctx := c.qc.Context(); ctx.Err() != nil {
-		return context.Cause(ctx)
-	}
-	return err
+// timedOut reports whether err is the end of a dial or a connection with no answer of the peer.
+func timedOut(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, new(*quic.HandshakeTimeoutError)) || errors.As(err, new(*quic.IdleTimeoutError))
 }
 
 // drop closes c, which the pair does not keep.
@@ -860,7 +851,7 @@ func (p *pair) revocations(v *revLists) {
 	}
 	p.drop(c, dp.PeerCloseCode_PEER_CLOSE_CODE_CERT, "peer cert is revoked")
 	if c.dialed {
-		p.dialFailed(identity.ErrRevoked)
+		p.dialFailed(nil, identity.ErrRevoked)
 	}
 }
 
@@ -1208,7 +1199,8 @@ func (p *pair) end(code dp.PeerCloseCode, reason string) {
 	})
 }
 
-// peerServer serves the Peer calls of one connection of a pair. Each call goes to the pair.
+// peerServer serves the Peer calls of one connection of a pair. Each call goes to the pair. The
+// rpc call timeout ends a call that the pair does not answer in peerCallTimeout.
 type peerServer struct {
 	dp.UnimplementedPeerServer
 	mb *proc.Mailbox
@@ -1216,8 +1208,6 @@ type peerServer struct {
 }
 
 func (s *peerServer) Hello(ctx context.Context, in *dp.PeerHello) (*dp.PeerHello, error) {
-	ctx, cancel := context.WithTimeout(ctx, peerCallTimeout)
-	defer cancel()
 	reply := make(chan helloOut, 1)
 	if !s.mb.Send(helloIn{s.c, in, reply}) {
 		return nil, rpc.Errorf(rpc.Unavailable, "pair ended")
@@ -1226,14 +1216,11 @@ func (s *peerServer) Hello(ctx context.Context, in *dp.PeerHello) (*dp.PeerHello
 	case r := <-reply:
 		return r.h, r.err
 	case <-ctx.Done():
-		s.mb.Send(callLate{s.c})
 		return nil, ctx.Err()
 	}
 }
 
 func (s *peerServer) Keys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, peerCallTimeout)
-	defer cancel()
 	reply := make(chan keysOut, 1)
 	if !s.mb.Send(keysIn{s.c, in, reply}) {
 		return nil, rpc.Errorf(rpc.Unavailable, "pair ended")
@@ -1245,14 +1232,11 @@ func (s *peerServer) Keys(ctx context.Context, in *dp.KeysRequest) (*dp.KeysResp
 		}
 		return &dp.KeysResponse{RefusedSpis: r.refused}, nil
 	case <-ctx.Done():
-		s.mb.Send(callLate{s.c})
 		return nil, ctx.Err()
 	}
 }
 
 func (s *peerServer) Candidates(ctx context.Context, in *dp.Candidates) (*emptypb.Empty, error) {
-	ctx, cancel := context.WithTimeout(ctx, peerCallTimeout)
-	defer cancel()
 	reply := make(chan error, 1)
 	if !s.mb.Send(candsIn{s.c, in, reply}) {
 		return nil, rpc.Errorf(rpc.Unavailable, "pair ended")
@@ -1264,71 +1248,8 @@ func (s *peerServer) Candidates(ctx context.Context, in *dp.Candidates) (*emptyp
 		}
 		return &emptypb.Empty{}, nil
 	case <-ctx.Done():
-		s.mb.Send(callLate{s.c})
 		return nil, ctx.Err()
 	}
-}
-
-// callStreams gives each call stream of the peer a deadline of peerCallTimeout from its accept for
-// the request and the answer. A call that does not end in time ends the connection.
-type callStreams struct {
-	qc *quic.Conn
-	mb *proc.Mailbox // The pair.
-	c  *chConn
-}
-
-func (q callStreams) AcceptStream(ctx context.Context) (rpc.Stream, error) {
-	str, err := q.qc.AcceptStream(ctx)
-	if err != nil {
-		return nil, err
-	}
-	end := time.Now().Add(peerCallTimeout)
-	_ = str.SetReadDeadline(end)
-	_ = str.SetWriteDeadline(end)
-	return &peerStream{Stream: str, end: end, late: func() { q.mb.Send(callLate{q.c}) }}, nil
-}
-
-func (q callStreams) OpenStreamSync(ctx context.Context) (rpc.Stream, error) {
-	str, err := q.qc.OpenStreamSync(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return str, nil
-}
-
-// peerStream is an accepted call stream whose deadlines are never after end.
-type peerStream struct {
-	*quic.Stream
-	end  time.Time
-	late func() // Tells the pair that the deadline came.
-}
-
-func (s *peerStream) Read(b []byte) (int, error) {
-	n, err := s.Stream.Read(b)
-	s.check(err)
-	return n, err
-}
-
-func (s *peerStream) Write(b []byte) (int, error) {
-	n, err := s.Stream.Write(b)
-	s.check(err)
-	return n, err
-}
-
-// check tells the pair about a call that did not end in time: the deadline came, or this side
-// reset the stream at the end of the call context.
-func (s *peerStream) check(err error) {
-	var se *quic.StreamError
-	if errors.Is(err, os.ErrDeadlineExceeded) || (errors.As(err, &se) && !se.Remote) {
-		s.late()
-	}
-}
-
-func (s *peerStream) SetReadDeadline(t time.Time) error {
-	if t.IsZero() || t.After(s.end) {
-		t = s.end
-	}
-	return s.Stream.SetReadDeadline(t)
 }
 
 // stopLate stops the Hello timer of c, if it has one.

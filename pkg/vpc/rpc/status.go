@@ -129,6 +129,20 @@ func ctxStreamCode(ctx context.Context) quic.StreamErrorCode {
 	return StreamCanceled
 }
 
+// RemoteClose returns the code and the reason of an application close of qc by the peer, from err
+// (the error of a dial or a call on qc, or nil) or the close cause of qc. qc can be nil.
+func RemoteClose(qc *quic.Conn, err error) (code quic.ApplicationErrorCode, reason string, ok bool) {
+	var ae *quic.ApplicationError
+	// quic-go ends the call streams before it sets the close cause, so look at both.
+	if !errors.As(err, &ae) && (qc == nil || !errors.As(context.Cause(qc.Context()), &ae)) {
+		return 0, "", false
+	}
+	if !ae.Remote {
+		return 0, "", false
+	}
+	return ae.ErrorCode, ae.ErrorMessage, true
+}
+
 // transportError converts an error from a QUIC stream or connection to an *Error.
 func transportError(err error) error {
 	var se *quic.StreamError

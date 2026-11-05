@@ -852,6 +852,139 @@ func TestDeadlines(t *testing.T) {
 	}
 }
 
+// TestCallTimeout checks that WithCallTimeout ends a unary call at its time from the stream
+// accept, or at the earlier deadline of the caller, and does not end a streaming call.
+func TestCallTimeout(t *testing.T) {
+	const limit = 300 * time.Millisecond
+	p := newPair(t, pairConfig{opts: []rpc.Option{rpc.WithCallTimeout(limit)}})
+	c := testpb.NewEchoClient(p.dialer)
+	// raw sends data on a new stream, and reads the stream to its end.
+	raw := func(data []byte) func(t *testing.T) error {
+		return func(t *testing.T) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			str, err := p.dq.OpenStreamSync(ctx)
+			require.NoError(t, err)
+			_, err = str.Write(data)
+			require.NoError(t, err)
+			_, err = io.ReadAll(str)
+			return err
+		}
+	}
+	unary := func(timeout time.Duration, text string) func(t *testing.T) error {
+		return func(t *testing.T) error {
+			ctx := context.Background()
+			if timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
+			_, err := c.Unary(ctx, &testpb.EchoRequest{Text: text})
+			return err
+		}
+	}
+	cases := []struct {
+		name      string
+		call      func(t *testing.T) error
+		wantReset quic.StreamErrorCode // The reset of a raw call, or 0.
+		wantCode  rpc.Code
+		took      time.Duration // The time of the call.
+	}{
+		{"header and no request", raw(rawCallStart(testpb.Echo_Unary_FullMethodName, 0)), rpc.StreamDeadlineExceeded, 0, limit},
+		{"no header", raw([]byte{0x01}), rpc.StreamProtocolError, 0, limit},
+		{"handler does not end", unary(0, "block"), 0, rpc.DeadlineExceeded, limit},
+		{"caller deadline before the call timeout", unary(100*time.Millisecond, "block"), 0, rpc.DeadlineExceeded, 100 * time.Millisecond},
+		{"call in time", unary(0, "ok"), 0, rpc.OK, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			err := tc.call(t)
+			took := time.Since(start)
+			if tc.wantReset != 0 {
+				requireStreamError(t, err, tc.wantReset)
+			} else {
+				assert.Equal(t, tc.wantCode, rpc.CodeOf(err), "error: %v", err)
+			}
+			assert.GreaterOrEqual(t, took, tc.took-20*time.Millisecond)
+			assert.Less(t, took, tc.took+time.Second)
+		})
+	}
+
+	t.Run("handler deadline", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		start := time.Now()
+		out, err := c.Unary(ctx, &testpb.EchoRequest{Text: "deadline"})
+		require.NoError(t, err)
+		got := time.Unix(0, int64(binary.BigEndian.Uint64(out.Payload)))
+		assert.WithinDuration(t, start.Add(limit), got, 250*time.Millisecond)
+	})
+
+	t.Run("streaming call", func(t *testing.T) {
+		st, err := c.Bidi(context.Background())
+		require.NoError(t, err)
+		for _, text := range []string{"a", "b"} {
+			require.NoError(t, st.Send(&testpb.EchoRequest{Text: text}))
+			out, err := st.Recv()
+			require.NoError(t, err)
+			assert.Equal(t, text, out.Text)
+			time.Sleep(2 * limit)
+		}
+		require.NoError(t, st.CloseSend())
+		_, err = st.Recv()
+		assert.Equal(t, io.EOF, err)
+	})
+}
+
+// TestRemoteClose checks that RemoteClose finds a close of the peer in the call error or in the
+// close cause of the connection, and no local close.
+func TestRemoteClose(t *testing.T) {
+	// closed returns the dialer connection of a new pair after one end closed it.
+	closed := func(byPeer bool) func(t *testing.T) *quic.Conn {
+		return func(t *testing.T) *quic.Conn {
+			p := newPair(t, pairConfig{})
+			c := p.dq
+			if byPeer {
+				c = p.lq
+			}
+			require.NoError(t, c.CloseWithError(9, "gone"))
+			select {
+			case <-p.dq.Context().Done():
+			case <-time.After(5 * time.Second):
+				t.Fatal("the connection did not close")
+			}
+			return p.dq
+		}
+	}
+	cases := []struct {
+		name       string
+		qc         func(t *testing.T) *quic.Conn // Nil for no connection.
+		err        error
+		wantCode   quic.ApplicationErrorCode
+		wantReason string
+		wantOK     bool
+	}{
+		{"remote close in the error", nil, fmt.Errorf("call: %w", &quic.ApplicationError{Remote: true, ErrorCode: 7, ErrorMessage: "bye"}), 7, "bye", true},
+		{"local close in the error", nil, &quic.ApplicationError{ErrorCode: 7, ErrorMessage: "bye"}, 0, "", false},
+		{"other error", nil, errors.New("stream reset"), 0, "", false},
+		{"remote close of the connection", closed(true), errors.New("stream reset"), 9, "gone", true},
+		{"local close of the connection", closed(false), nil, 0, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var qc *quic.Conn
+			if tc.qc != nil {
+				qc = tc.qc(t)
+			}
+			code, reason, ok := rpc.RemoteClose(qc, tc.err)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantCode, code)
+			assert.Equal(t, tc.wantReason, reason)
+		})
+	}
+}
+
 func TestMetadataAndPeer(t *testing.T) {
 	p := newPair(t, pairConfig{})
 	ctx := rpc.NewOutgoingContext(context.Background(), rpc.MD{"k": "v"})

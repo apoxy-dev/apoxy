@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/apoxy-dev/apoxy/pkg/vpc/identity"
+	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dpv1 "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
@@ -193,15 +194,15 @@ type (
 
 // pProc is the process P of one Presence call: one tenant, one direction, one MS.
 type pProc struct {
-	mbox   *mailbox // The mailbox of M.
-	box    *mailbox
+	mbox   *proc.Mailbox // The mailbox of M.
+	box    *proc.Mailbox
 	ms     *msProc
 	tenant string
 	send   bool
 	ctx    context.Context
 	cancel context.CancelFunc
-	down   *valueMap // Sending: the announcement sets of the VPCs of the tenant, from M.
-	up     *valueMap // Receiving: the records of each VPC, to M.
+	down   *proc.Values // Sending: the announcement sets of the VPCs of the tenant, from M.
+	up     *proc.Values // Receiving: the records of each VPC, to M.
 
 	readerOn, writerOn bool
 	ending             bool
@@ -264,23 +265,23 @@ type pChanged struct {
 }
 
 // startSend starts a sending P for tenant on the session ms. down has the announcement sets.
-func startSend(mbox *mailbox, ms *msProc, tenant string, down *valueMap) *pProc {
+func startSend(mbox *proc.Mailbox, ms *msProc, tenant string, down *proc.Values) *pProc {
 	ctx, cancel := context.WithCancel(ms.ctx)
 	p := &pProc{
-		mbox: mbox, box: newMailbox(0), ms: ms, tenant: tenant, send: true, ctx: ctx, cancel: cancel,
+		mbox: mbox, box: proc.NewMailbox(0), ms: ms, tenant: tenant, send: true, ctx: ctx, cancel: cancel,
 		down: down, client: ms.c.client, vpcs: map[VPCKey]*outVPC{},
 	}
-	watch(ctx, down, func(keys []string) { p.box.send(valuesChanged{keys: keys}) })
+	proc.Watch(ctx, down, func(keys []string) { p.box.Send(valuesChanged{keys: keys}) })
 	go p.run()
 	return p
 }
 
 // startReceive starts a receiving P for the incoming call st of tenant, whose first message is
 // first. done gets the status of the call at the end of P.
-func startReceive(mbox *mailbox, ms *msProc, tenant string, st presenceServer, first *dpv1.PresenceUpdate, done chan error) *pProc {
+func startReceive(mbox *proc.Mailbox, ms *msProc, tenant string, st presenceServer, first *dpv1.PresenceUpdate, done chan error) *pProc {
 	ctx, cancel := context.WithCancel(ms.ctx)
 	p := &pProc{
-		mbox: mbox, box: newMailbox(0), ms: ms, tenant: tenant, ctx: ctx, cancel: cancel, up: &valueMap{},
+		mbox: mbox, box: proc.NewMailbox(0), ms: ms, tenant: tenant, ctx: ctx, cancel: cancel, up: &proc.Values{},
 		st: st, first: first, done: done, sem: make(chan struct{}, maxNotTaken),
 		recs: map[VPCKey]map[string]*record{}, ackOut: make(chan uint64, 1),
 	}
@@ -293,17 +294,17 @@ func (p *pProc) run() {
 		p.opening = true
 		go func() {
 			st, err := p.client.Presence(p.ctx)
-			p.box.send(callOpened{st: st, err: err})
+			p.box.Send(callOpened{st: st, err: err})
 		}()
 	} else {
 		p.readerOn, p.writerOn = true, true
 		p.sem <- struct{}{}
-		p.box.send(updateIn{u: p.first})
+		p.box.Send(updateIn{u: p.first})
 		go p.read()
 		go p.writeAcks(p.ackOut)
 	}
 	for {
-		for _, e := range p.box.take() {
+		for _, e := range p.box.Take() {
 			p.handle(e)
 		}
 		if !p.ending && p.send {
@@ -323,7 +324,7 @@ func (p *pProc) run() {
 			stop = p.ctx.Done()
 		}
 		select {
-		case <-p.box.sig:
+		case <-p.box.Wake():
 		case <-stop:
 			p.end(nil)
 		}
@@ -331,8 +332,8 @@ func (p *pProc) run() {
 	if p.stall != nil {
 		p.stall.Stop()
 	}
-	p.box.close()
-	p.mbox.send(pEnded{p: p, err: p.err, stalled: p.stalled})
+	p.box.Close()
+	p.mbox.Send(pEnded{p: p, err: p.err, stalled: p.stalled})
 }
 
 // end ends the call: the context of the call ends, and P waits for its tasks.
@@ -446,7 +447,7 @@ func (p *pProc) setsChanged(keys []string) {
 		}
 	}
 	for _, k := range keys {
-		set := load[*annSet](p.down, k)
+		set := proc.Load[*annSet](p.down, k)
 		if set == nil {
 			// A deleted set is an empty set: its announcements go.
 			vpc, ok := keyVPC(keySet, k)
@@ -573,7 +574,7 @@ func (p *pProc) next() *dpv1.PresenceUpdate {
 func (p *pProc) armStall(now time.Time) {
 	d := p.unacked[0].at.Add(presenceStall).Sub(now)
 	if p.stall == nil {
-		p.stall = time.AfterFunc(d, func() { p.box.send(stallEv{}) })
+		p.stall = time.AfterFunc(d, func() { p.box.Send(stallEv{}) })
 		return
 	}
 	p.stall.Reset(d)
@@ -601,10 +602,10 @@ func (p *pProc) readAcks(st rpc.BidiStreamClient[dpv1.PresenceUpdate, dpv1.Prese
 	for {
 		c, err := st.Recv()
 		if err != nil {
-			p.box.send(pReaderDone{err: err})
+			p.box.Send(pReaderDone{err: err})
 			return
 		}
-		p.box.send(acked{seq: c.GetAck()})
+		p.box.Send(acked{seq: c.GetAck()})
 	}
 }
 
@@ -612,15 +613,15 @@ func (p *pProc) readAcks(st rpc.BidiStreamClient[dpv1.PresenceUpdate, dpv1.Prese
 func (p *pProc) writeUpdates(st rpc.BidiStreamClient[dpv1.PresenceUpdate, dpv1.PresenceControl], out chan *dpv1.PresenceUpdate) {
 	for u := range out {
 		if err := st.Send(u); err != nil {
-			p.box.send(pWriterDone{err: err})
+			p.box.Send(pWriterDone{err: err})
 			for range out {
 			}
 			return
 		}
-		p.box.send(written{})
+		p.box.Send(written{})
 	}
 	_ = st.CloseSend()
-	p.box.send(pWriterDone{})
+	p.box.Send(pWriterDone{})
 }
 
 // Receiving P.
@@ -631,16 +632,16 @@ func (p *pProc) read() {
 		select {
 		case p.sem <- struct{}{}:
 		case <-p.ctx.Done():
-			p.box.send(pReaderDone{})
+			p.box.Send(pReaderDone{})
 			return
 		}
 		u, err := p.st.Recv()
 		if err != nil {
 			<-p.sem
-			p.box.send(pReaderDone{err: err})
+			p.box.Send(pReaderDone{err: err})
 			return
 		}
-		p.box.send(updateIn{u: u})
+		p.box.Send(updateIn{u: u})
 	}
 }
 
@@ -648,14 +649,14 @@ func (p *pProc) read() {
 func (p *pProc) writeAcks(acks chan uint64) {
 	for seq := range acks {
 		if err := p.st.Send(&dpv1.PresenceControl{Ack: seq}); err != nil {
-			p.box.send(pWriterDone{err: err})
+			p.box.Send(pWriterDone{err: err})
 			for range acks {
 			}
 			return
 		}
-		p.box.send(ackWritten{})
+		p.box.Send(ackWritten{})
 	}
-	p.box.send(pWriterDone{})
+	p.box.Send(pWriterDone{})
 }
 
 // sendAck gives the writer the newest ack when it has no ack in flight.
@@ -761,5 +762,5 @@ func (p *pProc) apply(vpc VPCKey, entries []*dpv1.Presence) {
 	} else {
 		p.recs[vpc] = next
 	}
-	store(p.up, setKey(keyRecords, vpc), &recordSet{vpc: vpc, recs: next})
+	proc.Store(p.up, setKey(keyRecords, vpc), &recordSet{vpc: vpc, recs: next})
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 
+	"github.com/apoxy-dev/apoxy/pkg/vpc/rpc"
 	dp "github.com/apoxy-dev/apoxy/proto/vpc/datapath/v1"
 )
 
@@ -24,18 +25,8 @@ func (e *upgradeError) Unwrap() error { return ErrUpgrade }
 // relayUpgrade returns err as an ErrUpgrade when the relay at addr closed the
 // session with UPGRADE.
 func relayUpgrade(addr string, err error) error {
-	var ae *quic.ApplicationError
-	if errors.As(err, &ae) && ae.Remote && ae.ErrorCode == quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE) {
-		return &upgradeError{fmt.Sprintf("relay %s: %s", addr, ae.ErrorMessage)}
+	if code, reason, ok := rpc.RemoteClose(nil, err); ok && code == quic.ApplicationErrorCode(dp.RelayCloseCode_RELAY_CLOSE_CODE_UPGRADE) {
+		return &upgradeError{fmt.Sprintf("relay %s: %s", addr, reason)}
 	}
 	return err
-}
-
-// relayRevision returns an error when the relay revision is below the
-// minimum of the agent. Nil is revision 0.
-func relayRevision(relay, agent *dp.Version) error {
-	if got, least := relay.GetRevision(), agent.GetMinRevision(); got < least {
-		return fmt.Errorf("relay revision %d is below the agent minimum %d", got, least)
-	}
-	return nil
 }

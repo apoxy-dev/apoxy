@@ -26,6 +26,7 @@ type options struct {
 	maxHeaderSize  int
 	maxMessageSize int
 	headerTimeout  time.Duration
+	callTimeout    time.Duration
 	streams        Streams
 }
 
@@ -74,6 +75,10 @@ func WithMaxMessageSize(n int) Option { return func(o *options) { o.maxMessageSi
 
 // WithHeaderTimeout sets the time that a peer has to send the call header on a new stream.
 func WithHeaderTimeout(d time.Duration) Option { return func(o *options) { o.headerTimeout = d } }
+
+// WithCallTimeout ends each unary call that the Conn serves d after its stream accept, or at the
+// earlier deadline of the caller. Each call header must come in d; a streaming call has no limit.
+func WithCallTimeout(d time.Duration) Option { return func(o *options) { o.callTimeout = d } }
 
 // WithStreams makes the Conn open and accept its call streams with s, which must use the
 // streams of the QUIC connection. A test uses it to watch the calls.
@@ -139,10 +144,11 @@ type HandlerFunc func(ctx context.Context, s *ServerStream) error
 // Mux maps full method names to handlers. Add all handlers before Serve.
 type Mux struct {
 	handlers map[string]HandlerFunc
+	unary    map[string]bool // The methods of HandleUnary.
 }
 
 // NewMux returns an empty Mux.
-func NewMux() *Mux { return &Mux{handlers: map[string]HandlerFunc{}} }
+func NewMux() *Mux { return &Mux{handlers: map[string]HandlerFunc{}, unary: map[string]bool{}} }
 
 // Handle adds h for method. It panics if method already has a handler.
 func (m *Mux) Handle(method string, h HandlerFunc) {
@@ -232,7 +238,11 @@ func (c *Conn) serveStream(ctx context.Context, str Stream) {
 	s.fr.init(str)
 	defer s.release()
 
-	_ = str.SetReadDeadline(time.Now().Add(c.opts.headerTimeout))
+	accepted, headerTimeout := time.Now(), c.opts.headerTimeout
+	if d := c.opts.callTimeout; d > 0 {
+		headerTimeout = min(headerTimeout, d)
+	}
+	_ = str.SetReadDeadline(accepted.Add(headerTimeout))
 	h, err := readCallStart(&s.fr, c.opts.maxHeaderSize)
 	s.readEOF.Store(s.fr.atEOF())
 	if err != nil {
@@ -248,8 +258,12 @@ func (c *Conn) serveStream(ctx context.Context, str Stream) {
 	s.method = h.Method
 
 	var handler HandlerFunc
+	var deadline time.Time
 	if c.mux != nil {
 		handler = c.mux.handlers[h.Method]
+		if c.opts.callTimeout > 0 && c.mux.unary[h.Method] {
+			deadline = accepted.Add(c.opts.callTimeout)
+		}
 	}
 	if handler == nil {
 		s.finish(ctx, Errorf(Unimplemented, "unknown method %s", h.Method))
@@ -259,8 +273,14 @@ func (c *Conn) serveStream(ctx context.Context, str Stream) {
 	hctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	if h.TimeoutNs > 0 {
+		if d := time.Now().Add(time.Duration(h.TimeoutNs)); deadline.IsZero() || d.Before(deadline) {
+			deadline = d
+		}
+	}
+	if !deadline.IsZero() {
+		// The end of the handler context resets the stream, which ends a read or a write of the call.
 		var cancelDeadline context.CancelFunc
-		hctx, cancelDeadline = context.WithDeadline(hctx, time.Now().Add(time.Duration(h.TimeoutNs)))
+		hctx, cancelDeadline = context.WithDeadline(hctx, deadline)
 		defer cancelDeadline()
 	}
 	if len(h.Metadata) > 0 {

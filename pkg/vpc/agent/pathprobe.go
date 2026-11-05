@@ -13,6 +13,7 @@ import (
 	"time"
 
 	pspwire "github.com/apoxy-dev/softpsp/psp"
+	"golang.org/x/time/rate"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 
 	tunnet "github.com/apoxy-dev/apoxy/pkg/tunnel/net"
@@ -22,7 +23,7 @@ import (
 )
 
 const (
-	// replyRate is the most replies to one source each second.
+	// replyRate is the most replies to one source each second, after a burst of replyRate.
 	replyRate = 10
 	// maxChallenges is the most challenges that a pair starts in one challenge window.
 	maxChallenges = 8
@@ -254,25 +255,6 @@ func (w *replayWin) accept(c uint64) bool {
 	return true
 }
 
-// replyLimit keeps the times of the last replyRate replies to one source.
-type replyLimit struct {
-	at [replyRate]time.Time
-	i  int
-}
-
-// allow reports whether a reply can go at now, and counts it.
-func (l *replyLimit) allow(now time.Time) bool {
-	if old := l.at[l.i]; !old.IsZero() && now.Sub(old) < time.Second {
-		return false
-	}
-	l.at[l.i] = now
-	l.i = (l.i + 1) % replyRate
-	return true
-}
-
-// last returns the time of the last reply.
-func (l *replyLimit) last() time.Time { return l.at[(l.i+replyRate-1)%replyRate] }
-
 // discovery finds the direct paths of a pair, as a child process of the pair. It is the one taker
 // of the SID of the pair: it answers the probes of the peer and gives the BFD packets to the pair.
 type discovery struct {
@@ -294,7 +276,7 @@ type discovery struct {
 
 	main  *discRun // The run of the round, or nil.
 	runs  []*discRun
-	limit map[netip.AddrPort]*replyLimit
+	limit map[netip.AddrPort]*rate.Limiter
 	chal  map[netip.AddrPort]time.Time // The last challenge of each source.
 	chals []time.Time                  // The challenges of the last window.
 
@@ -309,7 +291,7 @@ type discovery struct {
 func newDiscovery(up *proc.Mailbox, role probeRole, io discIO, t discTimes) *discovery {
 	return &discovery{
 		mb: proc.NewMailbox(0), pkts: proc.NewMailbox(discPkts), up: up, role: role, io: io,
-		t: t.withDefaults(), txs: map[[12]byte]txEntry{}, limit: map[netip.AddrPort]*replyLimit{},
+		t: t.withDefaults(), txs: map[[12]byte]txEntry{}, limit: map[netip.AddrPort]*rate.Limiter{},
 		chal: map[netip.AddrPort]time.Time{}, lastUse: time.Now(),
 	}
 }
@@ -440,7 +422,8 @@ func (d *discovery) prune(now time.Time) {
 		}
 	}
 	for a, l := range d.limit {
-		if now.Sub(l.last()) >= time.Second {
+		// A full limiter is the same as a new one.
+		if l.TokensAt(now) >= replyRate {
 			delete(d.limit, a)
 		}
 	}
@@ -634,17 +617,17 @@ func (d *discovery) requestIn(p p2p.Probe, m discPkt, now time.Time) {
 	}
 }
 
-// allowReply reports whether a reply to from can go at now: at most replyRate each second.
+// allowReply reports whether a reply to from can go at now: a burst of replyRate, then replyRate each second.
 func (d *discovery) allowReply(from netip.AddrPort, now time.Time) bool {
 	l := d.limit[from]
 	if l == nil {
 		if len(d.limit) >= maxReplySources {
 			return false
 		}
-		l = &replyLimit{}
+		l = rate.NewLimiter(replyRate, replyRate)
 		d.limit[from] = l
 	}
-	return l.allow(now)
+	return l.AllowN(now, 1)
 }
 
 // learn takes the source of a valid outer request. A source that is not a candidate of the round
