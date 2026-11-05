@@ -1937,6 +1937,10 @@
       "com.github.apoxy-dev.apoxy.api.core.v1alpha.DomainZoneStatus": {
         "type": "object",
         "properties": {
+          "claim": {
+            "description": "Claim shows the claim of the zone name by this project. Apoxy serves the zone only while the project holds the claim.",
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha.ZoneClaimStatus"
+          },
           "conditions": {
             "description": "Conditions of the domain zone.",
             "type": "array",
@@ -2392,6 +2396,24 @@
           }
         }
       },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha.ZoneClaimStatus": {
+        "description": "ZoneClaimStatus shows how a project proves that it controls a zone name.",
+        "type": "object",
+        "properties": {
+          "held": {
+            "description": "Held is true while this project holds the claim of the zone name.",
+            "type": "boolean"
+          },
+          "txtName": {
+            "description": "TXTName is the name of the TXT record that proves control of the zone.",
+            "type": "string"
+          },
+          "txtValue": {
+            "description": "TXTValue is the value that the TXT record must have.",
+            "type": "string"
+          }
+        }
+      },
       "com.github.apoxy-dev.apoxy.api.core.v1alpha2.APIKey": {
         "type": "object",
         "properties": {
@@ -2755,6 +2777,10 @@
       "com.github.apoxy-dev.apoxy.api.core.v1alpha2.DomainZoneStatus": {
         "type": "object",
         "properties": {
+          "claim": {
+            "description": "Claim shows the claim of the zone name by this project. Apoxy serves the zone only while the project holds the claim.",
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha2.ZoneClaimStatus"
+          },
           "conditions": {
             "description": "Conditions of the domain zone.",
             "type": "array",
@@ -3325,6 +3351,24 @@
           }
         }
       },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha2.ZoneClaimStatus": {
+        "description": "ZoneClaimStatus shows how a project proves that it controls a zone name.",
+        "type": "object",
+        "properties": {
+          "held": {
+            "description": "Held is true while this project holds the claim of the zone name.",
+            "type": "boolean"
+          },
+          "txtName": {
+            "description": "TXTName is the name of the TXT record that proves control of the zone.",
+            "type": "string"
+          },
+          "txtValue": {
+            "description": "TXTValue is the value that the TXT record must have.",
+            "type": "string"
+          }
+        }
+      },
       "com.github.apoxy-dev.apoxy.api.core.v1alpha3.Address": {
         "description": "Address contains postal address information.",
         "type": "object",
@@ -3651,6 +3695,10 @@
       "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainZoneStatus": {
         "type": "object",
         "properties": {
+          "claim": {
+            "description": "Claim shows the claim of the zone name by this project. Apoxy serves the zone only while the project holds the claim.",
+            "$ref": "#/components/schemas/com.github.apoxy-dev.apoxy.api.core.v1alpha3.ZoneClaimStatus"
+          },
           "conditions": {
             "description": "Conditions of the domain zone.",
             "type": "array",
@@ -3800,6 +3848,24 @@
           },
           "registrationID": {
             "description": "RegistrationID is the unique identifier for the registration.",
+            "type": "string"
+          }
+        }
+      },
+      "com.github.apoxy-dev.apoxy.api.core.v1alpha3.ZoneClaimStatus": {
+        "description": "ZoneClaimStatus shows how a project proves that it controls a zone name.",
+        "type": "object",
+        "properties": {
+          "held": {
+            "description": "Held is true while this project holds the claim of the zone name.",
+            "type": "boolean"
+          },
+          "txtName": {
+            "description": "TXTName is the name of the TXT record that proves control of the zone.",
+            "type": "string"
+          },
+          "txtValue": {
+            "description": "TXTValue is the value that the TXT record must have.",
             "type": "string"
           }
         }

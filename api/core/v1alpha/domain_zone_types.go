@@ -139,6 +139,11 @@ type DomainZoneStatus struct {
 	// +optional
 	Nameservers *NameserverStatus `json:"nameservers,omitempty"`
 
+	// Claim shows the claim of the zone name by this project. Apoxy serves the
+	// zone only while the project holds the claim.
+	// +optional
+	Claim *ZoneClaimStatus `json:"claim,omitempty"`
+
 	// Conditions of the domain zone.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -185,6 +190,21 @@ type NameserverStatus struct {
 	// set that the delegation should use.
 	// +optional
 	Sets []string `json:"sets,omitempty"`
+}
+
+// ZoneClaimStatus shows how a project proves that it controls a zone name.
+type ZoneClaimStatus struct {
+	// TXTName is the name of the TXT record that proves control of the zone.
+	// +optional
+	TXTName string `json:"txtName,omitempty"`
+
+	// TXTValue is the value that the TXT record must have.
+	// +optional
+	TXTValue string `json:"txtValue,omitempty"`
+
+	// Held is true while this project holds the claim of the zone name.
+	// +optional
+	Held bool `json:"held,omitempty"`
 }
 
 var _ resource.StatusSubResource = &DomainZoneStatus{}
@@ -302,6 +322,13 @@ func (a *DomainZone) ConvertToStorageVersion(storageObj runtime.Object) error {
 			Sets:     a.Status.Nameservers.Sets,
 		}
 	}
+	if a.Status.Claim != nil {
+		obj.Status.Claim = &v1alpha3.ZoneClaimStatus{
+			TXTName:  a.Status.Claim.TXTName,
+			TXTValue: a.Status.Claim.TXTValue,
+			Held:     a.Status.Claim.Held,
+		}
+	}
 
 	return nil
 }
@@ -359,6 +386,13 @@ func (a *DomainZone) ConvertFromStorageVersion(storageObj runtime.Object) error 
 			Required: obj.Status.Nameservers.Required,
 			Current:  obj.Status.Nameservers.Current,
 			Sets:     obj.Status.Nameservers.Sets,
+		}
+	}
+	if obj.Status.Claim != nil {
+		a.Status.Claim = &ZoneClaimStatus{
+			TXTName:  obj.Status.Claim.TXTName,
+			TXTValue: obj.Status.Claim.TXTValue,
+			Held:     obj.Status.Claim.Held,
 		}
 	}
 

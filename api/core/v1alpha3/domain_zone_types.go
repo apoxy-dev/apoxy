@@ -139,6 +139,11 @@ type DomainZoneStatus struct {
 	// +optional
 	Nameservers *NameserverStatus `json:"nameservers,omitempty"`
 
+	// Claim shows the claim of the zone name by this project. Apoxy serves the
+	// zone only while the project holds the claim.
+	// +optional
+	Claim *ZoneClaimStatus `json:"claim,omitempty"`
+
 	// Conditions of the domain zone.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
@@ -187,6 +192,21 @@ type NameserverStatus struct {
 	Sets []string `json:"sets,omitempty"`
 }
 
+// ZoneClaimStatus shows how a project proves that it controls a zone name.
+type ZoneClaimStatus struct {
+	// TXTName is the name of the TXT record that proves control of the zone.
+	// +optional
+	TXTName string `json:"txtName,omitempty"`
+
+	// TXTValue is the value that the TXT record must have.
+	// +optional
+	TXTValue string `json:"txtValue,omitempty"`
+
+	// Held is true while this project holds the claim of the zone name.
+	// +optional
+	Held bool `json:"held,omitempty"`
+}
+
 var _ resource.StatusSubResource = &DomainZoneStatus{}
 
 func (as *DomainZoneStatus) SubResourceName() string {
@@ -206,7 +226,14 @@ var (
 	_ resource.ObjectWithStatusSubResource = &DomainZone{}
 	_ rest.SingularNameProvider            = &DomainZone{}
 	_ resourcestrategy.TableConverter      = &DomainZone{}
+	_ resourcestrategy.PrepareForCreater   = &DomainZone{}
 )
+
+// PrepareForCreate drops the status of a new zone: only the controller writes
+// it, and the status says if the registration of the domain succeeded.
+func (a *DomainZone) PrepareForCreate(ctx context.Context) {
+	a.Status = DomainZoneStatus{}
+}
 
 func (a *DomainZone) GetObjectMeta() *metav1.ObjectMeta {
 	return &a.ObjectMeta

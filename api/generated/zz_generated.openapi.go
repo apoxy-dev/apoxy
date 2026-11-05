@@ -135,6 +135,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeList":                       schema_apoxy_api_core_v1alpha_TunnelNodeList(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeSpec":                       schema_apoxy_api_core_v1alpha_TunnelNodeSpec(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha.TunnelNodeStatus":                     schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha.ZoneClaimStatus":                      schema_apoxy_api_core_v1alpha_ZoneClaimStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.APIKey":                              schema_apoxy_api_core_v1alpha2_APIKey(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.Address":                             schema_apoxy_api_core_v1alpha2_Address(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.AxiomCredentials":                    schema_apoxy_api_core_v1alpha2_AxiomCredentials(ref),
@@ -176,6 +177,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ReplicaAddress":                      schema_apoxy_api_core_v1alpha2_ReplicaAddress(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ShutdownConfig":                      schema_apoxy_api_core_v1alpha2_ShutdownConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ThirdPartySinks":                     schema_apoxy_api_core_v1alpha2_ThirdPartySinks(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha2.ZoneClaimStatus":                     schema_apoxy_api_core_v1alpha2_ZoneClaimStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.Address":                             schema_apoxy_api_core_v1alpha3_Address(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecord":                        schema_apoxy_api_core_v1alpha3_DomainRecord(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.DomainRecordList":                    schema_apoxy_api_core_v1alpha3_DomainRecordList(ref),
@@ -193,6 +195,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.Registrant":                          schema_apoxy_api_core_v1alpha3_Registrant(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.RegistrationConfig":                  schema_apoxy_api_core_v1alpha3_RegistrationConfig(ref),
 		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.RegistrationStatus":                  schema_apoxy_api_core_v1alpha3_RegistrationStatus(ref),
+		"github.com/apoxy-dev/apoxy/api/core/v1alpha3.ZoneClaimStatus":                     schema_apoxy_api_core_v1alpha3_ZoneClaimStatus(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EdgeFunction":                  schema_apoxy_api_extensions_v1alpha1_EdgeFunction(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EdgeFunctionCodeSource":        schema_apoxy_api_extensions_v1alpha1_EdgeFunctionCodeSource(ref),
 		"github.com/apoxy-dev/apoxy/api/extensions/v1alpha1.EdgeFunctionList":              schema_apoxy_api_extensions_v1alpha1_EdgeFunctionList(ref),
@@ -4179,6 +4182,12 @@ func schema_apoxy_api_core_v1alpha_DomainZoneStatus(ref common.ReferenceCallback
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.NameserverStatus"),
 						},
 					},
+					"claim": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Claim shows the claim of the zone name by this project. Apoxy serves the zone only while the project holds the claim.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha.ZoneClaimStatus"),
+						},
+					},
 					"conditions": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Conditions of the domain zone.",
@@ -4196,7 +4205,7 @@ func schema_apoxy_api_core_v1alpha_DomainZoneStatus(ref common.ReferenceCallback
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha.NameserverStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha.NameserverStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha.RegistrationStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha.ZoneClaimStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 
@@ -5004,6 +5013,40 @@ func schema_apoxy_api_core_v1alpha_TunnelNodeStatus(ref common.ReferenceCallback
 	}
 }
 
+func schema_apoxy_api_core_v1alpha_ZoneClaimStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ZoneClaimStatus shows how a project proves that it controls a zone name.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"txtName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TXTName is the name of the TXT record that proves control of the zone.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"txtValue": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TXTValue is the value that the TXT record must have.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"held": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Held is true while this project holds the claim of the zone name.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha2_APIKey(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -5675,6 +5718,12 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneStatus(ref common.ReferenceCallbac
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.NameserverStatus"),
 						},
 					},
+					"claim": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Claim shows the claim of the zone name by this project. Apoxy serves the zone only while the project holds the claim.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha2.ZoneClaimStatus"),
+						},
+					},
 					"conditions": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Conditions of the domain zone.",
@@ -5692,7 +5741,7 @@ func schema_apoxy_api_core_v1alpha2_DomainZoneStatus(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.NameserverStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha2.NameserverStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.RegistrationStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha2.ZoneClaimStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 
@@ -6666,6 +6715,40 @@ func schema_apoxy_api_core_v1alpha2_ThirdPartySinks(ref common.ReferenceCallback
 	}
 }
 
+func schema_apoxy_api_core_v1alpha2_ZoneClaimStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ZoneClaimStatus shows how a project proves that it controls a zone name.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"txtName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TXTName is the name of the TXT record that proves control of the zone.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"txtValue": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TXTValue is the value that the TXT record must have.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"held": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Held is true while this project holds the claim of the zone name.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_apoxy_api_core_v1alpha3_Address(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -7300,6 +7383,12 @@ func schema_apoxy_api_core_v1alpha3_DomainZoneStatus(ref common.ReferenceCallbac
 							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.NameserverStatus"),
 						},
 					},
+					"claim": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Claim shows the claim of the zone name by this project. Apoxy serves the zone only while the project holds the claim.",
+							Ref:         ref("github.com/apoxy-dev/apoxy/api/core/v1alpha3.ZoneClaimStatus"),
+						},
+					},
 					"conditions": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Conditions of the domain zone.",
@@ -7317,7 +7406,7 @@ func schema_apoxy_api_core_v1alpha3_DomainZoneStatus(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.NameserverStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.RegistrationStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
+			"github.com/apoxy-dev/apoxy/api/core/v1alpha3.NameserverStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.RegistrationStatus", "github.com/apoxy-dev/apoxy/api/core/v1alpha3.ZoneClaimStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.Condition"},
 	}
 }
 
@@ -7557,6 +7646,40 @@ func schema_apoxy_api_core_v1alpha3_RegistrationStatus(ref common.ReferenceCallb
 		},
 		Dependencies: []string{
 			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_apoxy_api_core_v1alpha3_ZoneClaimStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ZoneClaimStatus shows how a project proves that it controls a zone name.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"txtName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TXTName is the name of the TXT record that proves control of the zone.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"txtValue": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TXTValue is the value that the TXT record must have.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"held": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Held is true while this project holds the claim of the zone name.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 

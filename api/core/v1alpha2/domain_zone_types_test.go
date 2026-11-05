@@ -51,3 +51,49 @@ func TestDomainZoneNameserverStatusConversion(t *testing.T) {
 		})
 	}
 }
+
+func TestDomainZoneClaimStatusConversion(t *testing.T) {
+	cases := []struct {
+		name string
+		in   *ZoneClaimStatus
+	}{
+		{name: "no claim status"},
+		{name: "empty claim status", in: &ZoneClaimStatus{}},
+		{
+			name: "TXT record, claim not held",
+			in: &ZoneClaimStatus{
+				TXTName:  "_apoxy-zone-challenge.example.org",
+				TXTValue: "apoxy-zone-claim=0123456789abcdef",
+			},
+		},
+		{
+			name: "claim held",
+			in: &ZoneClaimStatus{
+				TXTName:  "_apoxy-zone-challenge.example.org",
+				TXTValue: "apoxy-zone-claim=0123456789abcdef",
+				Held:     true,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := &DomainZone{Status: DomainZoneStatus{Claim: tc.in}}
+
+			var stored v1alpha3.DomainZone
+			require.NoError(t, in.ConvertToStorageVersion(&stored))
+			if tc.in == nil {
+				require.Nil(t, stored.Status.Claim)
+			} else {
+				require.Equal(t, &v1alpha3.ZoneClaimStatus{
+					TXTName:  tc.in.TXTName,
+					TXTValue: tc.in.TXTValue,
+					Held:     tc.in.Held,
+				}, stored.Status.Claim)
+			}
+
+			var out DomainZone
+			require.NoError(t, out.ConvertFromStorageVersion(&stored))
+			require.Equal(t, tc.in, out.Status.Claim)
+		})
+	}
+}

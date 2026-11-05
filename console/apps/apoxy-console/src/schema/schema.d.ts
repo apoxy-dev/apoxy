@@ -970,6 +970,8 @@ export interface components {
             registrationConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha.RegistrationConfig"];
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha.DomainZoneStatus": {
+            /** @description Claim shows the claim of the zone name by this project. Apoxy serves the zone only while the project holds the claim. */
+            claim?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha.ZoneClaimStatus"];
             /** @description Conditions of the domain zone. */
             conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
             /** @description Nameservers contains information about nameserver configuration. */
@@ -1189,6 +1191,15 @@ export interface components {
             /** @description Credentials for the tunnel node proxy. */
             credentials?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha.TunnelNodeCredentials"];
         };
+        /** @description ZoneClaimStatus shows how a project proves that it controls a zone name. */
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha.ZoneClaimStatus": {
+            /** @description Held is true while this project holds the claim of the zone name. */
+            held?: boolean;
+            /** @description TXTName is the name of the TXT record that proves control of the zone. */
+            txtName?: string;
+            /** @description TXTValue is the value that the TXT record must have. */
+            txtValue?: string;
+        };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.APIKey": {
             /** @description Key is the API key. */
             key?: string;
@@ -1364,6 +1375,8 @@ export interface components {
             registrationConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.RegistrationConfig"];
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha2.DomainZoneStatus": {
+            /** @description Claim shows the claim of the zone name by this project. Apoxy serves the zone only while the project holds the claim. */
+            claim?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.ZoneClaimStatus"];
             /** @description Conditions of the domain zone. */
             conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
             /** @description Nameservers contains information about nameserver configuration. */
@@ -1660,6 +1673,15 @@ export interface components {
             /** @description OpenTelemetrySink is the OpenTelemetry sink. */
             openTelemetrySinks?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha2.OpenTelemetrySink"][];
         };
+        /** @description ZoneClaimStatus shows how a project proves that it controls a zone name. */
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha2.ZoneClaimStatus": {
+            /** @description Held is true while this project holds the claim of the zone name. */
+            held?: boolean;
+            /** @description TXTName is the name of the TXT record that proves control of the zone. */
+            txtName?: string;
+            /** @description TXTValue is the value that the TXT record must have. */
+            txtValue?: string;
+        };
         /** @description Address contains postal address information. */
         "com.github.apoxy-dev.apoxy.api.core.v1alpha3.Address": {
             /** @description Address line 1. */
@@ -1803,6 +1825,8 @@ export interface components {
             registrationConfig?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha3.RegistrationConfig"];
         };
         "com.github.apoxy-dev.apoxy.api.core.v1alpha3.DomainZoneStatus": {
+            /** @description Claim shows the claim of the zone name by this project. Apoxy serves the zone only while the project holds the claim. */
+            claim?: components["schemas"]["com.github.apoxy-dev.apoxy.api.core.v1alpha3.ZoneClaimStatus"];
             /** @description Conditions of the domain zone. */
             conditions?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Condition"][];
             /** @description Nameservers contains information about nameserver configuration. */
@@ -1880,6 +1904,15 @@ export interface components {
             registeredAt?: components["schemas"]["io.k8s.apimachinery.pkg.apis.meta.v1.Time"];
             /** @description RegistrationID is the unique identifier for the registration. */
             registrationID?: string;
+        };
+        /** @description ZoneClaimStatus shows how a project proves that it controls a zone name. */
+        "com.github.apoxy-dev.apoxy.api.core.v1alpha3.ZoneClaimStatus": {
+            /** @description Held is true while this project holds the claim of the zone name. */
+            held?: boolean;
+            /** @description TXTName is the name of the TXT record that proves control of the zone. */
+            txtName?: string;
+            /** @description TXTValue is the value that the TXT record must have. */
+            txtValue?: string;
         };
         "com.github.apoxy-dev.apoxy.api.extensions.v1alpha1.EdgeFunction": {
             /** @description APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources */
