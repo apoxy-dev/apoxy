@@ -241,6 +241,8 @@ type world struct {
 	// list, so they keep the sessions of a revoked agent.
 	revoked []vpcv1alpha1.RevokedAgent
 	noList  map[string]bool
+	// certNames gives the DNS name of the cert of a relay, by the relay ID. Else the cert names the relay ID.
+	certNames map[string]string
 }
 
 // worldTrust is the trust data of a relay: the agent CA of the world and its revocation list.
@@ -745,7 +747,7 @@ func (w *world) relay(t testing.TB, id string) *testRelay {
 // pspSock, and closes them at the end of the test.
 func (w *world) relayOn(t testing.TB, id string, quicSock, pspSock net.PacketConn) *testRelay {
 	t.Helper()
-	cert := w.relayCA.relayCert(t, id)
+	cert := w.relayCA.relayCert(t, cmp.Or(w.certNames[id], id))
 	plane := vpctest.NewSocketTarget(pspSock)
 	cfg := w.relayCfg
 	cfg.Relay = &dp.RelayRef{Id: id, Addresses: []string{quicSock.LocalAddr().String()}}
@@ -1067,6 +1069,8 @@ type agentOptions struct {
 	lanes int
 	// hosts sets Config.Addresses.
 	hosts HostAddrs
+	// resolver sets Config.Resolver.
+	resolver Resolver
 	// direct sets Config.DirectPaths, and pairOpen sets Config.PairOpenTimeout.
 	direct   bool
 	pairOpen time.Duration
@@ -1285,6 +1289,7 @@ func (w *world) agent(t *testing.T, name string, r *testRelay, opts agentOptions
 		RelistMax:       opts.relist[1],
 		Lanes:           opts.lanes,
 		Addresses:       opts.hosts,
+		Resolver:        opts.resolver,
 		DirectPaths:     opts.direct,
 		PairOpenTimeout: opts.pairOpen,
 		OnAttach: func(b *psp.Binding, addr netip.Addr, prefixes []netip.Prefix) {

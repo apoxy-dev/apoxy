@@ -103,18 +103,23 @@ func (c *writeCountClient) Update(ctx context.Context, obj client.Object, opts .
 	return c.Client.Update(ctx, obj, opts...)
 }
 
-// TestRelayRegistrarEnsureRelay: the Relay object gets the ID, the addresses
+// TestRelayRegistrarEnsureRelay: the Relay object gets the ID, the addresses, the hostname
 // and the selector of the relay process. An equal object gets no write.
 func TestRelayRegistrarEnsureRelay(t *testing.T) {
 	addrs := []string{"relay.example:6081", "1.2.3.4:6081"}
 	selector := &metav1.LabelSelector{MatchLabels: map[string]string{"region": "west"}}
-	const id = "relay.example"
+	const id, hostname = "relay.example", "us-west-2-30f95c08.relay.example"
 	object := func(addrs []string, sel *metav1.LabelSelector) *vpcv1alpha1.Relay {
 		return &vpcv1alpha1.Relay{
 			ObjectMeta: metav1.ObjectMeta{Name: "r0"},
-			Spec:       vpcv1alpha1.RelaySpec{ID: id, Addresses: addrs, NetworkSelector: sel},
+			Spec:       vpcv1alpha1.RelaySpec{ID: id, Addresses: addrs, Hostname: hostname, NetworkSelector: sel},
 			Status:     vpcv1alpha1.RelayStatus{Ready: true},
 		}
+	}
+	withHostname := func(h string) *vpcv1alpha1.Relay {
+		relay := object(addrs, selector)
+		relay.Spec.Hostname = h
+		return relay
 	}
 	withID := func(id string) *vpcv1alpha1.Relay {
 		relay := object(addrs, selector)
@@ -135,6 +140,8 @@ func TestRelayRegistrarEnsureRelay(t *testing.T) {
 		{name: "object equal", existing: object(addrs, selector), calls: 2},
 		{name: "ID differs", existing: withID("other.example"), calls: 2, updates: 1},
 		{name: "object has no ID", existing: withID(""), calls: 1, updates: 1},
+		{name: "hostname differs", existing: withHostname("eu-west-1-30f95c08.relay.example"), calls: 2, updates: 1},
+		{name: "object has no hostname", existing: withHostname(""), calls: 1, updates: 1},
 		{name: "addresses differ", existing: object([]string{"dev:6081"}, selector), calls: 2, updates: 1},
 		{name: "addresses in a different order", existing: object([]string{"1.2.3.4:6081", "relay.example:6081"}, selector), calls: 1, updates: 1},
 		{name: "selector differs", existing: object(addrs, &metav1.LabelSelector{MatchLabels: map[string]string{"region": "east"}}), calls: 1, updates: 1},
@@ -150,7 +157,7 @@ func TestRelayRegistrarEnsureRelay(t *testing.T) {
 			}
 			_, base := newRegistrar(t, time.Unix(1_700_000_000, 0), objs...)
 			c := &writeCountClient{Client: base, failUpdates: tc.failUpdates}
-			r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, id, addrs, selector)
+			r := NewRelayRegistrar(c, c, stubRelay{name: "r0"}, id, addrs, selector, WithHostname(hostname))
 
 			var created bool
 			var err error
@@ -172,6 +179,7 @@ func TestRelayRegistrarEnsureRelay(t *testing.T) {
 			require.NoError(t, base.Get(ctx, client.ObjectKey{Name: "r0"}, &got))
 			require.Equal(t, id, got.Spec.ID)
 			require.Equal(t, addrs, got.Spec.Addresses)
+			require.Equal(t, hostname, got.Spec.Hostname)
 			require.Equal(t, selector, got.Spec.NetworkSelector)
 			if tc.existing != nil {
 				require.True(t, got.Status.Ready, "an update keeps the status")

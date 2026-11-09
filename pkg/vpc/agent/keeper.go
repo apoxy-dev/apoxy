@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"math/rand/v2"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -81,10 +82,11 @@ type dialRound struct {
 
 // dialResult is the result of one dial of a round.
 type dialResult struct {
-	round *dialRound
-	i     int
-	d     *dialed
-	err   error
+	round   *dialRound
+	i       int
+	d       *dialed
+	answers []netip.Addr // The answers of a good lookup of the relay name. Nil for an IP or a failed lookup.
+	err     error
 }
 
 // relister enrolls again for a new relay list after all relays failed. With
@@ -211,9 +213,10 @@ func (r *root) startRound(n int, eps []endpoint) {
 	k.round = rd
 	cred := r.a.cfg.Identity.Current()
 	for i, e := range eps {
+		last := r.answers[e.addr]
 		r.task(func() any {
-			d, err := r.a.dial(ctx, e, r.a.relayRoots(cred))
-			return dialResult{round: rd, i: i, d: d, err: err}
+			d, answers, err := r.a.dial(ctx, e, r.a.relayRoots(cred), last)
+			return dialResult{round: rd, i: i, d: d, answers: answers, err: err}
 		})
 	}
 }
@@ -224,6 +227,10 @@ func (r *root) dialDone(m dialResult) {
 	rd := r.keep.round
 	if m.d != nil {
 		r.welcome[m.d.ep.addr] = m.d.relayID
+	}
+	// A closed round keeps no answers: a newer round can have newer ones.
+	if m.answers != nil && rd == m.round {
+		r.answers[rd.eps[m.i].addr] = m.answers
 	}
 	if rd != m.round {
 		if m.d != nil {
@@ -278,8 +285,8 @@ func (r *root) closeRound() {
 	r.plan()
 }
 
-// keepAddrs forgets the Welcome of each address that is not a configured address, a home address
-// or an alternate.
+// keepAddrs forgets the Welcome and the lookup answers of each address that is not a configured
+// address, a home address or an alternate.
 func (r *root) keepAddrs() {
 	addrs := map[string]bool{}
 	for _, e := range r.endpoints() {
@@ -292,6 +299,7 @@ func (r *root) keepAddrs() {
 		}
 	}
 	maps.DeleteFunc(r.welcome, func(addr, _ string) bool { return !addrs[addr] })
+	maps.DeleteFunc(r.answers, func(addr string, _ []netip.Addr) bool { return !addrs[addr] })
 }
 
 // choiceTimer returns the channel of the wait for the other relays of the round, or nil.

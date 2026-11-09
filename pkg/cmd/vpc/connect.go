@@ -240,6 +240,7 @@ func runConnect(ctx context.Context, out io.Writer, vpc string, o *connectOption
 	tr := &quic.Transport{Conn: uc}
 	defer tr.Close()
 	cfg.Transport = tr
+	cfg.Network = family
 	cfg.Addresses = hostAddrs{family: family}
 
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -289,10 +290,7 @@ func connectError(err error) error {
 // listenUDP opens the agent socket in the address family of the relays, and
 // returns the socket and its network.
 func listenUDP(relays []string) (*net.UDPConn, string, error) {
-	family, err := socketFamily(relays)
-	if err != nil {
-		return nil, "", err
-	}
+	family := socketFamily(relays)
 	uc, err := net.ListenUDP(family, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to open the agent socket: %w", err)
@@ -300,9 +298,9 @@ func listenUDP(relays []string) (*net.UDPConn, string, error) {
 	return uc, family, nil
 }
 
-// socketFamily returns udp4 or udp6 when the relays that resolve use one
-// address family, and udp, a dual-stack socket, when they use both.
-func socketFamily(relays []string) (string, error) {
+// socketFamily returns udp4 or udp6 when the relays that resolve use one address family,
+// else udp, a dual-stack socket. The agent looks up the relays again at each dial.
+func socketFamily(relays []string) string {
 	var has4, has6 bool
 	var errs []error
 	for _, r := range relays {
@@ -319,13 +317,16 @@ func socketFamily(relays []string) (string, error) {
 	}
 	switch {
 	case has4 && has6:
-		return "udp", nil
+		return "udp"
 	case has4:
-		return "udp4", nil
+		return "udp4"
 	case has6:
-		return "udp6", nil
+		return "udp6"
 	}
-	return "", fmt.Errorf("failed to resolve the relays: %w", errors.Join(errs...))
+	if len(errs) > 0 {
+		slog.Warn("Failed to resolve the relays; the agent tries again at each dial", "error", errors.Join(errs...))
+	}
+	return "udp"
 }
 
 // credentialPath is the disk cache of the agent cert.

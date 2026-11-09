@@ -34,18 +34,20 @@ type AgentEnrollmentStatus struct {
 	// +optional
 	Relays []EnrollmentRelay `json:"relays,omitempty"`
 
-	// PEM CA certs that relay certs and relay grants chain to. Empty means
-	// the system roots.
+	// PEM CA certs that relay certs chain to. Empty means the system roots.
 	// +optional
 	RelayRoots string `json:"relayRoots,omitempty"`
 }
 
-// EnrollmentRelay is one relay that an agent can dial.
+// EnrollmentRelay is one relay, or one group of relays, that an agent can
+// dial.
 type EnrollmentRelay struct {
-	// Name in the relay cert. Grants of the relay carry it as the relay ID.
+	// Name in the relay cert. It is the relay ID, or the hostname of a relay
+	// group.
 	ID string `json:"id"`
 
-	// Underlay host:port addresses of the relay.
+	// The host:port addresses of the relay. A group has one address with its
+	// hostname.
 	Addresses []string `json:"addresses"`
 }
 

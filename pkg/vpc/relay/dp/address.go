@@ -33,6 +33,8 @@ type Interface struct {
 	Public []netip.Addr
 	// Gateways are the next-hop routers of the link.
 	Gateways []netip.Addr
+	// Region is the cloud region of the instance. Empty when the source does not give one.
+	Region string
 	// ZeroCopy is the zero-copy setting of the config: true demands zero-copy, false uses copy.
 	ZeroCopy bool
 	// CPUs is the CPU set of the relay threads and the queue interrupts (relay.cpus of the config,
@@ -150,11 +152,18 @@ func fromIMDS(ctx context.Context, c *imds.Client, device string) (Interface, er
 	if err != nil || !subnet.Contains(local) {
 		return Interface{}, fmt.Errorf("IMDS subnet %q of MAC %s does not contain %s", subnets[0], mac, local)
 	}
+	region, err := metadata(ctx, c, "placement/region")
+	if err != nil && !notFound(err) {
+		return Interface{}, err
+	}
 	ifc := Interface{
 		MAC: hw,
 		Own: []netip.Prefix{netip.PrefixFrom(local, subnet.Bits())},
 		// The IPv4 gateway of an AWS subnet is the subnet base + 1.
 		Gateways: []netip.Addr{subnet.Masked().Addr().Next()},
+	}
+	if len(region) > 0 {
+		ifc.Region = region[0]
 	}
 	if len(publics) > 0 {
 		pub, err := netip.ParseAddr(publics[0])

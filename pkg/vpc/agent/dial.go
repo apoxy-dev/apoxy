@@ -9,8 +9,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -62,18 +65,103 @@ func (d *dialed) choiceRTT() time.Duration {
 	return low
 }
 
-// dial runs the handshake with the relay at e and the Session call up to
-// Config. ctx ends the dial; the Session call of the result lives until its cancel.
-func (a *Agent) dial(ctx context.Context, e endpoint, roots *x509.CertPool) (*dialed, error) {
+// Resolver looks up relay names. *net.Resolver is one.
+type Resolver interface {
+	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
+}
+
+// resolveRelay returns the address to dial for the host:port addr, and the answers of a good lookup (nil for an IP).
+// network is ip4, ip6 or ip, as in lookupNetwork. A failed lookup uses last, the answers of the last good lookup.
+func resolveRelay(ctx context.Context, res Resolver, network, addr string, last []netip.Addr) (netip.AddrPort, []netip.Addr, error) {
+	host, ps, err := net.SplitHostPort(addr)
+	if err != nil {
+		return netip.AddrPort{}, nil, err
+	}
+	p, err := net.DefaultResolver.LookupPort(ctx, "udp", ps)
+	if err != nil {
+		return netip.AddrPort{}, nil, err
+	}
+	port := uint16(p)
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return netip.AddrPortFrom(ip.Unmap(), port), nil, nil
+	}
+	answers, err := res.LookupNetIP(ctx, network, host)
+	var usable []netip.Addr
+	for _, ip := range answers {
+		ip = ip.Unmap()
+		if network == "ip4" && !ip.Is4() || network == "ip6" && ip.Is4() {
+			continue
+		}
+		usable = append(usable, ip)
+	}
+	if err == nil && len(usable) == 0 {
+		err = fmt.Errorf("no %s address for %s", network, host)
+	}
+	if err != nil {
+		if len(last) == 0 || ctx.Err() != nil {
+			return netip.AddrPort{}, nil, err
+		}
+		slog.Warn("Failed to look up the relay name; using the last answers", "relay", host, "addresses", last, "error", err)
+		return pickRelay(last, port), nil, nil
+	}
+	return pickRelay(usable, port), usable, nil
+}
+
+// pickRelay returns one of addrs at random, IPv4 first, with port.
+func pickRelay(addrs []netip.Addr, port uint16) netip.AddrPort {
+	pick := slices.DeleteFunc(slices.Clone(addrs), func(ip netip.Addr) bool { return !ip.Is4() })
+	if len(pick) == 0 {
+		pick = addrs
+	}
+	return netip.AddrPortFrom(pick[rand.N(len(pick))], port)
+}
+
+// lookupNetwork returns the lookup network of the socket pc of the network family (see Config.Network):
+// ip4 for an IPv4 socket, ip6 for an IPv6 socket, else ip.
+func lookupNetwork(family string, pc net.PacketConn) string {
+	switch family {
+	case "udp4":
+		return "ip4"
+	case "udp6":
+		return "ip6"
+	case "udp":
+		return "ip"
+	}
+	ua, ok := pc.LocalAddr().(*net.UDPAddr)
+	switch {
+	case !ok || len(ua.IP) == 0:
+		return "ip"
+	case ua.IP.To4() != nil:
+		return "ip4"
+	case ua.IP.IsUnspecified():
+		// A wildcard IPv6 address does not tell an IPv6 socket from a dual-stack socket.
+		return "ip"
+	}
+	return "ip6"
+}
+
+// dial runs the handshake with the relay at e and the Session call up to Config, with last as in resolveRelay.
+// It returns the answers of a good lookup. ctx ends the dial; the Session call lives until its cancel.
+func (a *Agent) dial(ctx context.Context, e endpoint, roots *x509.CertPool, last []netip.Addr) (*dialed, []netip.Addr, error) {
 	host, _, err := net.SplitHostPort(e.addr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	ua, err := net.ResolveUDPAddr("udp", e.addr)
+	var res Resolver = net.DefaultResolver
+	if a.cfg.Resolver != nil {
+		res = a.cfg.Resolver
+	}
+	ap, answers, err := resolveRelay(ctx, res, lookupNetwork(a.cfg.Network, a.cfg.Transport.Conn), e.addr, last)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	d := &dialed{ep: e, name: cmp.Or(e.id, host), roots: roots, begin: time.Now()}
+	d, err := a.dialAddr(ctx, e, cmp.Or(e.id, host), net.UDPAddrFromAddrPort(ap), roots)
+	return d, answers, err
+}
+
+// dialAddr runs the dial of e on the address ua, with the TLS name name.
+func (a *Agent) dialAddr(ctx context.Context, e endpoint, name string, ua *net.UDPAddr, roots *x509.CertPool) (*dialed, error) {
+	d := &dialed{ep: e, name: name, roots: roots, begin: time.Now()}
 	dctx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
 	qc, err := a.cfg.Transport.Dial(dctx, ua, &tls.Config{

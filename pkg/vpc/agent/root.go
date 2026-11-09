@@ -104,6 +104,9 @@ type root struct {
 	routeWaits []routeWait
 	// welcome is the relay ID of the newest Welcome at each dialed address.
 	welcome map[string]string
+	// answers are the answers of the last good lookup of each relay name, for
+	// a dial when a lookup fails.
+	answers map[string][]netip.Addr
 
 	clamps   map[*psp.Peer]int
 	pspPeers map[*psp.Peer]bool
@@ -138,7 +141,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	r := &root{
 		a: a, mb: proc.NewMailbox(0), retryWait: minBackoff,
 		attaches: map[*AttachmentSpec]*attachReq{}, reported: map[netip.Prefix]routeInfo{},
-		welcome: map[string]string{}, clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
+		welcome: map[string]string{}, answers: map[string][]netip.Addr{},
+		clamps: map[*psp.Peer]int{}, pspPeers: map[*psp.Peer]bool{},
 		pp: newPairTable(a.cfg.DirectPaths),
 	}
 	// The root context ends after the pairs, so that the sessions carry the close of each channel.

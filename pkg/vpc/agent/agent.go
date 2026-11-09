@@ -82,6 +82,9 @@ type Config struct {
 	// not be in use yet, and its port must not have an XDP program. At the end
 	// of Run the agent sets a write deadline on its Conn.
 	Transport *quic.Transport
+	// Network is the network of the Transport socket: udp4, udp6 or udp (dual-stack). The agent looks up relay
+	// names in its address family. Empty means the family of its local address; a wildcard IPv6 address is udp.
+	Network string
 	// Name and labels of the attachment.
 	Name   string
 	Labels map[string]string
@@ -131,6 +134,8 @@ type Config struct {
 	// Addresses lists the host addresses for the host candidates. Nil means
 	// no host candidates.
 	Addresses HostAddrs
+	// Resolver looks up the relay names at each dial. Nil means net.DefaultResolver.
+	Resolver Resolver
 	// DirectPaths lets the agent open a channel to each peer agent that it has
 	// traffic for, and accept the channels of its peers. False means none.
 	DirectPaths bool

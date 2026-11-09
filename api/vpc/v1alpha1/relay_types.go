@@ -18,13 +18,18 @@ import (
 // in the relay's Lease, not here.
 type RelaySpec struct {
 	// TLS name of the relay. The relay certificate names it, and sessions
-	// and grants carry it as the relay ID.
+	// carry it as the relay ID.
 	// +required
 	ID string `json:"id"`
 
 	// The host:port endpoints that agents dial for QUIC.
 	// +required
 	Addresses []string `json:"addresses"`
+
+	// DNS name of the relay group, which the relay cert also names. It resolves to the
+	// live relays of the group and does not change when a relay moves.
+	// +optional
+	Hostname string `json:"hostname,omitempty"`
 
 	// Scopes which networks this relay serves. Empty selects all networks.
 	// +optional

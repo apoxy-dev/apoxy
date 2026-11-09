@@ -12838,7 +12838,7 @@ func schema_apoxy_api_vpc_v1alpha1_AgentEnrollmentStatus(ref common.ReferenceCal
 					},
 					"relayRoots": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PEM CA certs that relay certs and relay grants chain to. Empty means the system roots.",
+							Description: "PEM CA certs that relay certs chain to. Empty means the system roots.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -12966,12 +12966,12 @@ func schema_apoxy_api_vpc_v1alpha1_EnrollmentRelay(ref common.ReferenceCallback)
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "EnrollmentRelay is one relay that an agent can dial.",
+				Description: "EnrollmentRelay is one relay, or one group of relays, that an agent can dial.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"id": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Name in the relay cert. Grants of the relay carry it as the relay ID.",
+							Description: "Name in the relay cert. It is the relay ID, or the hostname of a relay group.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -12979,7 +12979,7 @@ func schema_apoxy_api_vpc_v1alpha1_EnrollmentRelay(ref common.ReferenceCallback)
 					},
 					"addresses": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Underlay host:port addresses of the relay.",
+							Description: "The host:port addresses of the relay. A group has one address with its hostname.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -13127,7 +13127,7 @@ func schema_apoxy_api_vpc_v1alpha1_RelaySpec(ref common.ReferenceCallback) commo
 				Properties: map[string]spec.Schema{
 					"id": {
 						SchemaProps: spec.SchemaProps{
-							Description: "TLS name of the relay. The relay certificate names it, and sessions and grants carry it as the relay ID.",
+							Description: "TLS name of the relay. The relay certificate names it, and sessions carry it as the relay ID.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -13145,6 +13145,13 @@ func schema_apoxy_api_vpc_v1alpha1_RelaySpec(ref common.ReferenceCallback) commo
 									},
 								},
 							},
+						},
+					},
+					"hostname": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DNS name of the relay group, which the relay cert also names. It resolves to the live relays of the group and does not change when a relay moves.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"networkSelector": {

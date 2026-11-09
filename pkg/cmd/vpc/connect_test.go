@@ -318,26 +318,21 @@ func TestDirectPaths(t *testing.T) {
 
 func TestSocketFamily(t *testing.T) {
 	cases := []struct {
-		name    string
-		relays  []string
-		want    string
-		wantErr bool
+		name   string
+		relays []string
+		want   string
 	}{
 		{name: "IPv4", relays: []string{"192.0.2.1:443", "192.0.2.2:443"}, want: "udp4"},
 		{name: "IPv6", relays: []string{"[2001:db8::1]:443"}, want: "udp6"},
 		{name: "both families", relays: []string{"192.0.2.1:443", "[2001:db8::1]:443"}, want: "udp"},
 		{name: "one relay does not resolve", relays: []string{"no-port", "[2001:db8::1]:443"}, want: "udp6"},
-		{name: "no relay resolves", relays: []string{"no-port"}, wantErr: true},
+		// The agent looks up the relays again at each dial, on a dual-stack socket.
+		{name: "no relay resolves", relays: []string{"no-port"}, want: "udp"},
+		{name: "no relays", want: "udp"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := socketFamily(tc.relays)
-			if tc.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			require.Equal(t, tc.want, got)
+			require.Equal(t, tc.want, socketFamily(tc.relays))
 		})
 	}
 }

@@ -60,6 +60,7 @@ type RelayRegistrar struct {
 	relay           Relay
 	id              string
 	addresses       []string
+	hostname        string
 	networkSelector *metav1.LabelSelector
 
 	leaseNamespace string
@@ -91,6 +92,11 @@ func WithOnRenew(fn func(restored bool)) RegistrarOption {
 // WithLeaseDuration overrides the advertised lease duration.
 func WithLeaseDuration(d time.Duration) RegistrarOption {
 	return func(r *RelayRegistrar) { r.leaseDuration = d }
+}
+
+// WithHostname sets the DNS name of the relay group in the Relay object.
+func WithHostname(h string) RegistrarOption {
+	return func(r *RelayRegistrar) { r.hostname = h }
 }
 
 // NewRelayRegistrar creates a RelayRegistrar. id is the TLS name of the
@@ -199,13 +205,14 @@ func (r *RelayRegistrar) ensureRelay(ctx context.Context) (bool, error) {
 	}
 	if existing.Spec.ID == r.id &&
 		slices.Equal(existing.Spec.Addresses, r.addresses) &&
+		existing.Spec.Hostname == r.hostname &&
 		equality.Semantic.DeepEqual(existing.Spec.NetworkSelector, r.networkSelector) {
 		return false, nil
 	}
 	// A relay that stopped with no drain leaves its object, and agents dial the
 	// addresses in it. The status and the Lease stay as they are.
 	oldID, old := existing.Spec.ID, existing.Spec.Addresses
-	existing.Spec.ID = r.id
+	existing.Spec.ID, existing.Spec.Hostname = r.id, r.hostname
 	existing.Spec.Addresses, existing.Spec.NetworkSelector = r.addresses, r.networkSelector
 	if err := r.relayClient.Update(ctx, existing); err != nil {
 		return false, fmt.Errorf("failed to update relay: %w", err)
@@ -222,6 +229,7 @@ func (r *RelayRegistrar) createRelay(ctx context.Context) error {
 		Spec: vpcv1alpha1.RelaySpec{
 			ID:              r.id,
 			Addresses:       r.addresses,
+			Hostname:        r.hostname,
 			NetworkSelector: r.networkSelector,
 		},
 	}

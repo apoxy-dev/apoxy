@@ -75,6 +75,7 @@ func TestFindInterface(t *testing.T) {
 			macs + mac + "/subnet-ipv4-cidr-block":            "10.0.1.0/24",
 			macs + "0a:00:00:00:00:01/local-ipv4s":            "10.0.0.5",
 			macs + "0a:00:00:00:00:01/subnet-ipv4-cidr-block": "10.0.0.0/24",
+			"placement/region":                                "us-west-2",
 		}
 		if public {
 			m[macs+mac+"/public-ipv4s"] = "54.1.2.3"
@@ -103,8 +104,13 @@ func TestFindInterface(t *testing.T) {
 		Own:      []netip.Prefix{netip.MustParsePrefix("10.0.1.25/24")},
 		Public:   []netip.Addr{netip.MustParseAddr("54.1.2.3")},
 		Gateways: []netip.Addr{netip.MustParseAddr("10.0.1.1")},
+		Region:   "us-west-2",
 		Mode:     shared,
 	}
+	noRegion := eni(true, "0", "1")
+	delete(noRegion, "placement/region")
+	primaryNoRegion := primaryENI
+	primaryNoRegion.Region = ""
 	for _, tc := range []struct {
 		name  string
 		cfg   *configv1alpha1.RelayInterface
@@ -117,6 +123,7 @@ func TestFindInterface(t *testing.T) {
 	}{
 		{name: "IMDS, no mode: Shared, the primary ENI", cfg: imdsCfg, v2: true, data: eni(true, "0", "1"), want: primaryENI},
 		{name: "IMDS, Shared: the primary ENI", cfg: imdsShared, v2: true, data: eni(true, "0", "1"), want: primaryENI},
+		{name: "IMDS: no region", cfg: imdsShared, v2: true, data: noRegion, want: primaryNoRegion},
 		{name: "IMDS, Shared: no ENI with device number 0", cfg: imdsShared, v2: true, data: eni(true, "2", "1"), err: "device number 0"},
 		{
 			name: "IMDS, Dedicated: the ENI with device number 1",
@@ -126,6 +133,7 @@ func TestFindInterface(t *testing.T) {
 				Own:      []netip.Prefix{netip.MustParsePrefix("10.0.1.25/24")},
 				Public:   []netip.Addr{netip.MustParseAddr("54.1.2.3")},
 				Gateways: []netip.Addr{netip.MustParseAddr("10.0.1.1")},
+				Region:   "us-west-2",
 				Mode:     dedicated,
 			},
 		},
@@ -136,6 +144,7 @@ func TestFindInterface(t *testing.T) {
 				Name: link.Name, MAC: link.HardwareAddr,
 				Own:      []netip.Prefix{netip.MustParsePrefix("10.0.1.25/24")},
 				Gateways: []netip.Addr{netip.MustParseAddr("10.0.1.1")},
+				Region:   "us-west-2",
 				Mode:     dedicated,
 			},
 		},
@@ -146,6 +155,7 @@ func TestFindInterface(t *testing.T) {
 				Name: link.Name, MAC: link.HardwareAddr,
 				Own:      []netip.Prefix{netip.MustParsePrefix("10.0.1.25/24")},
 				Gateways: []netip.Addr{netip.MustParseAddr("10.0.1.1")},
+				Region:   "us-west-2",
 				ZeroCopy: true,
 				Mode:     dedicated,
 			},
