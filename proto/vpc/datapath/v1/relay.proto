@@ -125,10 +125,6 @@ message Route {
   // attachment announces the prefix, it is the active announcer. For the route
   // of a /88 slot, it is the ID of the relay that holds the slot.
   string origin = 3;
-  // The other attachments that announce the prefix, in the order in which
-  // they become the active announcer. Only in an added route, for an agent at
-  // revision 16 or later. An added route that the agent has gives a new list.
-  repeated string standby = 4;
 }
 
 // RouteDelta changes the routes of the agent. The first route table of a

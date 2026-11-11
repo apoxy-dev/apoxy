@@ -214,18 +214,6 @@ func (s session) sees(order []viewEntry) *viewEntry {
 	return nil
 }
 
-// standby returns the IDs of the standby candidates of order that s can reach, in the order of
-// selection.
-func (s session) standby(order []viewEntry) []string {
-	var ids []string
-	for i, e := range order {
-		if i > 0 && (e.own || s.meshRoutes) {
-			ids = append(ids, e.origin)
-		}
-	}
-	return ids
-}
-
 // gets reports whether s gets the slot Route that e names: an own candidate gives the slot to
 // each session, another one only to a session with meshRoutes.
 func (s session) gets(e *viewEntry) bool { return e != nil && (e.own || s.meshRoutes) }
@@ -265,7 +253,7 @@ func (t *routeTable) view(s session) map[netip.Prefix]*dpv1.Route {
 			continue
 		}
 		if e := s.sees(order); e != nil {
-			out[p] = &dpv1.Route{Vpc: t.vpc, Prefix: p.String(), Origin: e.origin, Standby: s.standby(order)}
+			out[p] = &dpv1.Route{Vpc: t.vpc, Prefix: p.String(), Origin: e.origin}
 		}
 	}
 	for slot, h := range holders {

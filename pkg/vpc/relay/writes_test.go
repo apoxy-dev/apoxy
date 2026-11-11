@@ -689,12 +689,14 @@ func TestTableWriteChain(t *testing.T) {
 				idA := a.attach(drainPrefix).GetAttachmentId()
 				b := other.dial(t, "agent-b")
 				b.open(dpv1.Mode_MODE_QUIC)
-				idB = b.attach(drainPrefix).GetAttachmentId()
+				// Only agent-b announces markPrefix. Its route on the member shows that this relay
+				// has the entry of agent-b, with drainPrefix too.
+				const markPrefix = "fd00:4::/64"
+				idB = b.attach(drainPrefix, markPrefix).GetAttachmentId()
 				member = e.dial(t, "member")
 				member.open(dpv1.Mode_MODE_QUIC)
 				require.Eventually(t, func() bool {
-					r := member.route(drainPrefix)
-					return r.GetOrigin() == idA && slices.Contains(r.GetStandby(), idB)
+					return member.route(drainPrefix).GetOrigin() == idA && member.route(markPrefix).GetOrigin() == idB
 				}, wait, 10*time.Millisecond)
 				// The Welcome comes after a write, so the interval is not over at the call.
 				e.dial(t, "agent-h").open(dpv1.Mode_MODE_QUIC)

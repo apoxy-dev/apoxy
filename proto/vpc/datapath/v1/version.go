@@ -9,7 +9,7 @@ import "fmt"
 const (
 	// Revision is the protocol revision of this build. Each change to the proto
 	// files or to a packet format adds 1.
-	Revision uint32 = 26
+	Revision uint32 = 27
 	// MinRevision is the oldest revision of the other side that this build
 	// works with.
 	MinRevision uint32 = 25

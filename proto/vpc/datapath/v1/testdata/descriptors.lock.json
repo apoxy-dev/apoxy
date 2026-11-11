@@ -821,13 +821,6 @@
               "label": "LABEL_OPTIONAL",
               "type": "TYPE_STRING",
               "jsonName": "origin"
-            },
-            {
-              "name": "standby",
-              "number": 4,
-              "label": "LABEL_REPEATED",
-              "type": "TYPE_STRING",
-              "jsonName": "standby"
             }
           ]
         },

@@ -465,13 +465,9 @@ Each relay reads its own clock, so two relays can select different announcers
 only for the time by which their clocks differ.
 
 `RouteDelta` gives the active announcer of a prefix as the origin of its
-route. A session at revision 16 or later also gets `Route.standby`: the
-attachment IDs of the standby announcers that it can reach, in the order in
-which they become active. When the active announcer changes, the relay
-removes the route with the old origin and adds the route with the new one.
-When only the standby list changes, a session at revision 16 or later gets
-the route again as an add. A state change, or the end of a hold time, that
-changes neither the active announcer nor the standby list sends nothing.
+route. When the active announcer changes, the relay removes the route with
+the old origin and adds the route with the new one. A change that does not
+change the active announcer sends nothing.
 
 - A session gets no route for a prefix that its own agent process announces.
   It gets the routes of the other agents of its SPIFFE ID.
@@ -794,6 +790,7 @@ only for logs and metrics. On a mesh session, `MeshOpenRequest` and
 | 24 | `RemoteAddresses` and `SessionRequest.remote` are gone. The minimum revision of each side is 24. | Sends no addresses of its other relays. | No duty. | Takes a source, and sends traffic for an address, only for the connection that it gave the address to. Closes a session below revision 24, and a mesh session with a relay below revision 24, with `UPGRADE`. |
 | 25 | `Route.relay` is gone. The minimum revision of each side is 25. | Holds only its configured sessions and makes no dial for a relay that a route names. Sends a packet from a session address on that session, and any other packet on its primary session. | No duty. | Sends no `Route.relay`. Closes a session below revision 25, and a mesh session with a relay below revision 25, with `UPGRADE`. |
 | 26 | `Peer` service on `apoxy-peer/2` between two agents; `Revocations` on `Session`. | Runs the pair protocol of "Peer", with the instance of its relay `Hello` in `PeerHello.instance`. Closes a peer below its minimum with `UPGRADE`. Ends a pair with a revoked peer. | No duty: it sets `local_routes_only` and starts no pair. | Sends `Revocations` to an agent at revision 26 or later. |
+| 27 | `Route.standby` is gone. No agent read it, so the minimum revision of each side stays 25. | No duty. | No duty. | Sends no `Route.standby`. Sends no route again when the active announcer of its prefix does not change. |
 
 ### Minimum revision
 
