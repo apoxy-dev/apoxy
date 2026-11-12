@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"capnproto.org/go/capnp/v3"
 	computev1alpha1 "github.com/apoxy-dev/apoxy/api/compute/v1alpha1"
@@ -57,11 +59,11 @@ const (
 	dispatcherCompatDate = "2025-06-01"
 	// experimentalFlag is required to enable the workerLoader binding.
 	experimentalFlag = "experimental"
-	// globalOutboundServiceName is the workerd Network service that backs every
-	// isolate's globalOutbound (the dispatcher passes the GLOBAL_OUTBOUND binding
-	// to each WorkerLoader isolate). A `network` service means workerd runs its
-	// own getaddrinfo + socket()/connect() for fetch() — a real, structural egress
-	// the in-Sentry forwarder catches with the true (src,dst) and the host egress
+	// globalOutboundServiceName is the workerd Network service that backs the
+	// globalOutbound of each isolate whose Service allows egress (the dispatcher
+	// passes it the GLOBAL_OUTBOUND binding). A `network` service means workerd
+	// runs its own getaddrinfo + socket()/connect() for fetch() — a real socket
+	// egress the in-Sentry forwarder catches with the true (src,dst) and the host egress
 	// bridge mediates. It must NEVER be an `external` service (one carrying an
 	// address workerd dials directly): that flattens every destination to a single
 	// endpoint before any syscall, blinding the forwarder. See
@@ -263,6 +265,9 @@ type WorkerDefinition struct {
 	MainModule         string                   `json:"mainModule"`
 	Modules            map[string]moduleContent `json:"modules"`
 	Env                map[string]string        `json:"env,omitempty"`
+	// EgressDisabled makes the dispatcher give this isolate a null
+	// globalOutbound, so workerd blocks all of its outbound traffic.
+	EgressDisabled bool `json:"egressDisabled,omitempty"`
 }
 
 // moduleContent marshals to the WorkerLoader runtime module shape — a single-key
@@ -311,6 +316,16 @@ func workerLoaderModuleKey(t computev1alpha1.ModuleType) (string, bool) {
 
 var errAssetsUnsupportedInDispatcher = errors.New("workerd-host: static assets are not yet supported in the dispatcher WorkerLoader path")
 
+var errPythonWithEgressDisabled = errors.New("workerd-host: python workers need a runtime download, which egress.disabled does not allow")
+
+// usesPython reports a definition that makes workerd turn on Python workers:
+// a Python flag, or a main module name that ends in ".py".
+func usesPython(def WorkerDefinition) bool {
+	return strings.HasSuffix(def.MainModule, ".py") ||
+		slices.Contains(def.CompatibilityFlags, "python_workers") ||
+		slices.Contains(def.CompatibilityFlags, "python_workers_development")
+}
+
 // BuildWorkerDefinition renders the WorkerCode payload for one ServiceRevision.
 // source maps each Module.Name to its raw bytes (read from the extracted bundle
 // by the manager); BuildWorkerDefinition stays pure and filesystem-free so it is
@@ -349,6 +364,12 @@ func BuildWorkerDefinition(
 		MainModule:         modules[0].Name,
 		Modules:            make(map[string]moduleContent, len(modules)),
 		Env:                env,
+		EgressDisabled:     cfg.Egress != nil && cfg.Egress.Disabled,
+	}
+	// For Python, workerd downloads its runtime itself, not through globalOutbound,
+	// so a null globalOutbound does not stop that download.
+	if out.EgressDisabled && usesPython(out) {
+		return WorkerDefinition{}, errPythonWithEgressDisabled
 	}
 	for _, m := range modules {
 		body, ok := source[m.Name]

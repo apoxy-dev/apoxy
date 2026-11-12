@@ -148,8 +148,11 @@ export default {
         mainModule: def.mainModule,
         modules: def.modules,
         env: def.env || {},
-        // Structural egress: every fetch() leaves through the GLOBAL_OUTBOUND
-        // Network service (real getaddrinfo + socket/connect), which the in-Sentry
+        // A Service with egress disabled gets null, so workerd throws on its fetch(),
+        // connect() and WebSocket. The host egress bridge cannot tell Services apart.
+        //
+        // Otherwise every fetch() leaves through the GLOBAL_OUTBOUND Network
+        // service (real getaddrinfo + socket/connect), which the in-Sentry
         // forwarder catches and the host egress bridge mediates (allow / deny /
         // SSRF / gateway / direct). It is a Network service, never an external/
         // unixSocket/loopback one — those would flatten the destination before any
@@ -159,9 +162,9 @@ export default {
         // env.GLOBAL_OUTBOUND is `undefined`, which workerd treats as its DEFAULT
         // outbound (fetch egresses directly, bypassing the forwarder + all
         // mediation). Coalescing to null restores the explicit deny the config
-        // used to carry. BuildResidentConfig structurally binds this to a typed
-        // Network service; this is defense in depth on the JS side.
-        globalOutbound: env.GLOBAL_OUTBOUND ?? null,
+        // used to carry. BuildResidentConfig binds this to a typed Network
+        // service; this is defense in depth on the JS side.
+        globalOutbound: def.egressDisabled ? null : (env.GLOBAL_OUTBOUND ?? null),
       };
     });
 

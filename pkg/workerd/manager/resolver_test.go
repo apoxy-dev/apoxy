@@ -112,6 +112,24 @@ func TestResolver_Resolve(t *testing.T) {
 		}
 	})
 
+	t.Run("egress disabled on the revision reaches the definition", func(t *testing.T) {
+		closed := revision("closed-abc", "closed", "sha256:c")
+		closed.Spec.Egress = &computev1alpha1.ServiceEgress{Disabled: true}
+		c := newFakeClient(t, revision("open-abc", "open", "sha256:o"), closed)
+		f := &fakeFetcher{manifest: esManifest(), modules: map[string][]byte{"index.js": []byte("export default {}")}}
+		r := newResolverWithFetcher(c, f)
+
+		for id, want := range map[string]bool{"open:open-abc": false, "closed:closed-abc": true} {
+			def, err := r.Resolve(context.Background(), id)
+			if err != nil {
+				t.Fatalf("Resolve(%q): %v", id, err)
+			}
+			if def.EgressDisabled != want {
+				t.Errorf("Resolve(%q).EgressDisabled = %v, want %v", id, def.EgressDisabled, want)
+			}
+		}
+	})
+
 	t.Run("invalid id", func(t *testing.T) {
 		r := newResolverWithFetcher(newFakeClient(t), &fakeFetcher{})
 		if _, err := r.Resolve(context.Background(), "noseparator"); err == nil {

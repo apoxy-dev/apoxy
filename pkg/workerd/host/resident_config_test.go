@@ -307,6 +307,50 @@ func TestBuildWorkerDefinition(t *testing.T) {
 			},
 		},
 		{
+			name:       "python flag with egress disabled",
+			manifest:   computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01", CompatibilityFlags: []string{"python_workers"}},
+			cfg:        computev1alpha1.ServiceConfigSpec{Egress: &computev1alpha1.ServiceEgress{Disabled: true}},
+			source:     src("index.js", "x"),
+			wantErrSub: "python workers need a runtime download",
+		},
+		{
+			name:     "python runtime flag with egress disabled",
+			manifest: computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01"},
+			cfg: computev1alpha1.ServiceConfigSpec{
+				Runtime: &computev1alpha1.ServiceRuntime{CompatibilityFlags: []string{"python_workers_development"}},
+				Egress:  &computev1alpha1.ServiceEgress{Disabled: true},
+			},
+			source:     src("index.js", "x"),
+			wantErrSub: "python workers need a runtime download",
+		},
+		{
+			name:       "python main module name with egress disabled",
+			manifest:   computev1alpha1.BundleManifest{Modules: []computev1alpha1.Module{mod("main.py", computev1alpha1.ESModule, "main.py")}, CompatibilityDate: "2024-01-01"},
+			cfg:        computev1alpha1.ServiceConfigSpec{Egress: &computev1alpha1.ServiceEgress{Disabled: true}},
+			source:     src("main.py", "export default {}"),
+			wantErrSub: "python workers need a runtime download",
+		},
+		{
+			name:     "python main module name with egress on",
+			manifest: computev1alpha1.BundleManifest{Modules: []computev1alpha1.Module{mod("main.py", computev1alpha1.ESModule, "main.py")}, CompatibilityDate: "2024-01-01"},
+			source:   src("main.py", "export default {}"),
+			assert: func(t *testing.T, def WorkerDefinition) {
+				if def.MainModule != "main.py" {
+					t.Errorf("mainModule = %q, want main.py", def.MainModule)
+				}
+			},
+		},
+		{
+			name:     "python flag with egress on",
+			manifest: computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01", CompatibilityFlags: []string{"python_workers"}},
+			source:   src("index.js", "x"),
+			assert: func(t *testing.T, def WorkerDefinition) {
+				if def.EgressDisabled || strings.Join(def.CompatibilityFlags, ",") != "python_workers" {
+					t.Errorf("def = egressDisabled %v flags %v", def.EgressDisabled, def.CompatibilityFlags)
+				}
+			},
+		},
+		{
 			name:       "missing compatibility date",
 			manifest:   computev1alpha1.BundleManifest{Modules: esOnly},
 			source:     src("index.js", "x"),
@@ -470,5 +514,46 @@ func TestWorkerDefinition_JSONShape(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("JSON missing %s:\n%s", want, got)
 		}
+	}
+}
+
+// TestWorkerDefinition_EgressJSON locks the key dispatcher.js reads to give a
+// Service a null globalOutbound.
+func TestWorkerDefinition_EgressJSON(t *testing.T) {
+	cases := []struct {
+		name   string
+		egress *computev1alpha1.ServiceEgress
+		want   string
+	}{
+		{name: "no egress block", egress: nil, want: ""},
+		{name: "egress gateway", egress: &computev1alpha1.ServiceEgress{GatewayRef: "gw"}, want: ""},
+		{name: "egress disabled", egress: &computev1alpha1.ServiceEgress{Disabled: true}, want: `"egressDisabled":true`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			def, err := BuildWorkerDefinition(
+				computev1alpha1.BundleManifest{
+					Modules:           []computev1alpha1.Module{mod("index.js", computev1alpha1.ESModule, "index.js")},
+					CompatibilityDate: "2025-06-01",
+				},
+				computev1alpha1.ServiceConfigSpec{Egress: tc.egress},
+				src("index.js", "export default {}"),
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("BuildWorkerDefinition: %v", err)
+			}
+			b, err := json.Marshal(def)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(b)
+			if tc.want == "" && strings.Contains(got, "egressDisabled") {
+				t.Errorf("JSON has egressDisabled, want none:\n%s", got)
+			}
+			if tc.want != "" && !strings.Contains(got, tc.want) {
+				t.Errorf("JSON missing %s:\n%s", tc.want, got)
+			}
+		})
 	}
 }

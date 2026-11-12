@@ -95,18 +95,13 @@ type ServiceRuntime struct {
 // ServiceEgress selects how the service's outbound network traffic
 // ("egress") is mediated. Egress is transparent to worker code: there is no
 // binding and no fetch wrapper — a plain fetch() works, subject to the
-// selected gateway's routes and default policy. Enforcement is host-side
-// (sandbox netstack + egress gateway), never inside workerd.
+// selected gateway's routes and default policy. The host applies gateway
+// policy per project: it allows a flow that any service in the project allows.
 //
 // Egress is ON by default: an absent block (or an empty gatewayRef) resolves
 // to the project "default" gateway, which is a built-in allow-all unless an
 // EgressGateway named "default" exists (see DefaultEgressGatewayName). Set
 // disabled: true to hard-deny all egress for this service.
-//
-// NOT YET ENFORCED: the egress control/data planes are still landing, and
-// until they do the runtime denies all worker egress regardless of this
-// block. The API is stable; the described semantics take effect when
-// enforcement ships.
 type ServiceEgress struct {
 	// GatewayRef names the compute.apoxy.dev EgressGateway that mediates
 	// this service's outbound traffic. Empty means the project "default"
@@ -115,9 +110,9 @@ type ServiceEgress struct {
 	// +optional
 	GatewayRef corev1alpha.ObjectName `json:"gatewayRef,omitempty"`
 
-	// Disabled hard-denies all egress for this service (globalOutbound is
-	// unset in workerd and the sandbox netstack resets any outbound
-	// attempt). Mutually exclusive with a non-empty gatewayRef.
+	// Disabled blocks all egress for this service, even when other services in
+	// the project allow egress: fetch(), connect() and WebSocket throw.
+	// Mutually exclusive with a non-empty gatewayRef.
 	// +optional
 	Disabled bool `json:"disabled,omitempty"`
 }
