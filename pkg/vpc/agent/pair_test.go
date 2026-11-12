@@ -286,6 +286,43 @@ func TestPairHeld(t *testing.T) {
 	openPairs(t, b, 1, "b")
 }
 
+// TestPairHeldServerInitial ends a dial of a to the second address of b while b answers it: the pair
+// to the first address opens first. The late server Initials of b start no second pair at a.
+func TestPairHeldServerInitial(t *testing.T) {
+	t.Parallel()
+	w, r1, r2, _ := cutRelays(t)
+	a := w.agent(t, "a", r1, agentOptions{direct: true})
+	ea := a.attached(t)
+	block := &blockConn{relay: r2.psp}
+	b := w.agent(t, "b", r1, agentOptions{direct: true, sessions: 2, relays: r1.refs(r2), block: block})
+	b1, b2 := b.attached(t), b.attached(t)
+	_, slot2 := slotAddr(2)
+	if slotOf(b1.addr) == slot2 {
+		b1, b2 = b2, b1
+	}
+	require.Equal(t, slot2, slotOf(b2.addr), "b has a session on relay-2")
+	echo(t, b.stack, b1.addr, 9000)
+	a.hasRoutes(t, slot2)
+
+	// The answers of b on relay-2 drop, so the dial of a to b2 waits while b has its Initial.
+	block.out.Store(true)
+	send(t, a.stack, ea.addr, b2.addr, 9000, "a to b2")
+	require.Eventually(t, func() bool { return len(pairsOf(b)) == 1 }, 5*time.Second, 10*time.Millisecond, "b accepts the dial of a to b2")
+	ping(t, a.stack, ea.addr, b1.addr, 9000, "a to b1")
+	var pa []pairSnap
+	require.Eventually(t, func() bool {
+		pa = pairsOf(a)
+		return len(pa) == 1 && pa[0].open
+	}, 5*time.Second, 10*time.Millisecond, "the pair to b2 ends at the open of the pair to b1")
+	require.Equal(t, channelOf(b1.addr), pa[0].flow.peer)
+	want := []pairID{{pa[0].flow, true, pa[0].inst}}
+	// The server of b sends its Initial again until its handshake ends.
+	block.out.Store(false)
+	for end := time.Now().Add(peerCallTimeout); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		require.Equal(t, want, pairIDs(a), "a keeps one pair")
+	}
+}
+
 // TestPairClaims gives two peers of a one prefix: the first pair holds it until it ends. The path to
 // the first peer is blocked, because its route would take the channel of the second one too.
 func TestPairClaims(t *testing.T) {

@@ -17,6 +17,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/checksum"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 
+	"github.com/quic-go/quic-go/quicvarint"
+
 	"github.com/apoxy-dev/apoxy/pkg/vpc/internal/proc"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/p2p"
 	"github.com/apoxy-dev/apoxy/pkg/vpc/transport/psp"
@@ -89,8 +91,8 @@ func newChanTable(on bool) *chanTable {
 }
 
 // take gets each channel packet to the own list from the binding. It must not block. A packet of a
-// known flow goes to its pair; a QUIC Initial of no known flow that came from a relay goes to the
-// root. Each other packet drops.
+// known flow goes to its pair; a QUIC Initial of no known flow that came from a relay and can start
+// a connection goes to the root. Each other packet drops.
 func (t *chanTable) take(pkt []byte, src psp.Source) {
 	if len(pkt) < header.IPv6MinimumSize+udpHdr || header.IPv6(pkt).NextHeader() != uint8(header.UDPProtocolNumber) {
 		return
@@ -123,7 +125,7 @@ func (t *chanTable) take(pkt []byte, src psp.Source) {
 		return
 	}
 	own := t.own.Load()
-	if !t.on || !initial || !relayed || !own.vpc.Contains(from) || inPrefixes(own.all, from) || !inPrefixes(own.list, to) {
+	if !t.on || !newConnInitial(data) || !relayed || !own.vpc.Contains(from) || inPrefixes(own.all, from) || !inPrefixes(own.list, to) {
 		return
 	}
 	t.initials.Send(initialMsg{flow: f, pkt: chanPkt{data: slices.Clone(data), src: src}})
@@ -132,6 +134,24 @@ func (t *chanTable) take(pkt []byte, src psp.Source) {
 // isInitial reports whether b is a QUIC version 1 Initial packet.
 func isInitial(b []byte) bool {
 	return len(b) >= 5 && b[0]&0x80 != 0 && b[0]&0x30 == 0 && binary.BigEndian.Uint32(b[1:5]) == 1
+}
+
+// newConnInitial reports whether b is an Initial that a QUIC server takes as a new connection: it has a
+// token, or a destination ID of 8 bytes or more (RFC 9000 7.2). A server Initial to a pair dial has neither.
+func newConnInitial(b []byte) bool {
+	if !isInitial(b) || len(b) < 6 {
+		return false
+	}
+	dcid := int(b[5])
+	if len(b) < 7+dcid {
+		return false
+	}
+	off := 7 + dcid + int(b[6+dcid])
+	if off > len(b) {
+		return false
+	}
+	token, _, err := quicvarint.Parse(b[off:])
+	return err == nil && (token > 0 || dcid >= 8)
 }
 
 // inPrefixes reports whether a prefix of ps holds a.
