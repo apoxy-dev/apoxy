@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/opencontainers/go-digest"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -28,17 +29,23 @@ var (
 // =============================================================================
 
 func (w *Service) Validate(_ context.Context) field.ErrorList {
-	return validateServiceSpec(&w.Spec, field.NewPath("spec"))
+	errs := validateServiceSpec(&w.Spec, field.NewPath("spec"))
+	return append(errs, validateNoPython(w.Spec.Template.Spec.Runtime, field.NewPath("spec", "template", "spec", "runtime"))...)
 }
 
 // ValidateUpdate runs full validation on the new object and additionally
 // enforces that the runtime mode is immutable. The receiver is the new object;
 // old is the stored one.
 func (w *Service) ValidateUpdate(ctx context.Context, old runtime.Object) field.ErrorList {
-	errs := w.Validate(ctx)
 	oldW, ok := old.(*Service)
 	if !ok {
-		return errs
+		return w.Validate(ctx)
+	}
+	errs := validateServiceSpec(&w.Spec, field.NewPath("spec"))
+	// Status writes also run this hook. Refuse Python only on a spec change, so a
+	// Service stored before this rule can still report its status.
+	if !apiequality.Semantic.DeepEqual(oldW.Spec, w.Spec) {
+		errs = append(errs, validateNoPython(w.Spec.Template.Spec.Runtime, field.NewPath("spec", "template", "spec", "runtime"))...)
 	}
 	if oldW.Spec.Template.Spec.Mode() != w.Spec.Template.Spec.Mode() {
 		errs = append(errs, field.Forbidden(
@@ -187,6 +194,23 @@ func validateRevisionSpec(s *ServiceRevisionSpec, p *field.Path) field.ErrorList
 	// A minted revision is digest-addressed and immutable (minted=true).
 	errs := validateBundle(&s.Bundle, p.Child("bundle"), true)
 	errs = append(errs, validateConfigSpec(&s.ServiceConfigSpec, p)...)
+	errs = append(errs, validateNoPython(s.Runtime, p.Child("runtime"))...)
+	return errs
+}
+
+// validateNoPython refuses each compatibility flag with "python" in its name.
+// Python workers are not supported: workerd downloads their runtime outside egress control.
+func validateNoPython(r *ServiceRuntime, p *field.Path) field.ErrorList {
+	if r == nil {
+		return nil
+	}
+	errs := field.ErrorList{}
+	for i, f := range r.CompatibilityFlags {
+		if strings.Contains(f, "python") {
+			errs = append(errs, field.Forbidden(p.Child("compatibilityFlags").Index(i),
+				"python workers are not supported"))
+		}
+	}
 	return errs
 }
 

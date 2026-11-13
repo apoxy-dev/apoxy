@@ -316,14 +316,13 @@ func workerLoaderModuleKey(t computev1alpha1.ModuleType) (string, bool) {
 
 var errAssetsUnsupportedInDispatcher = errors.New("workerd-host: static assets are not yet supported in the dispatcher WorkerLoader path")
 
-var errPythonWithEgressDisabled = errors.New("workerd-host: python workers need a runtime download, which egress.disabled does not allow")
+var errPythonUnsupported = errors.New("workerd-host: python workers are not supported")
 
-// usesPython reports a definition that makes workerd turn on Python workers:
-// a Python flag, or a main module name that ends in ".py".
+// usesPython reports a definition that can turn on Python workers in workerd: a
+// flag with "python" in its name, or a main module name that ends in ".py".
 func usesPython(def WorkerDefinition) bool {
 	return strings.HasSuffix(def.MainModule, ".py") ||
-		slices.Contains(def.CompatibilityFlags, "python_workers") ||
-		slices.Contains(def.CompatibilityFlags, "python_workers_development")
+		slices.ContainsFunc(def.CompatibilityFlags, func(f string) bool { return strings.Contains(f, "python") })
 }
 
 // BuildWorkerDefinition renders the WorkerCode payload for one ServiceRevision.
@@ -366,10 +365,9 @@ func BuildWorkerDefinition(
 		Env:                env,
 		EgressDisabled:     cfg.Egress != nil && cfg.Egress.Disabled,
 	}
-	// For Python, workerd downloads its runtime itself, not through globalOutbound,
-	// so a null globalOutbound does not stop that download.
-	if out.EgressDisabled && usesPython(out) {
-		return WorkerDefinition{}, errPythonWithEgressDisabled
+	// For Python, workerd downloads its runtime itself, outside egress control.
+	if usesPython(out) {
+		return WorkerDefinition{}, errPythonUnsupported
 	}
 	for _, m := range modules {
 		body, ok := source[m.Name]

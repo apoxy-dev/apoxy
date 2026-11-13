@@ -307,50 +307,6 @@ func TestBuildWorkerDefinition(t *testing.T) {
 			},
 		},
 		{
-			name:       "python flag with egress disabled",
-			manifest:   computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01", CompatibilityFlags: []string{"python_workers"}},
-			cfg:        computev1alpha1.ServiceConfigSpec{Egress: &computev1alpha1.ServiceEgress{Disabled: true}},
-			source:     src("index.js", "x"),
-			wantErrSub: "python workers need a runtime download",
-		},
-		{
-			name:     "python runtime flag with egress disabled",
-			manifest: computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01"},
-			cfg: computev1alpha1.ServiceConfigSpec{
-				Runtime: &computev1alpha1.ServiceRuntime{CompatibilityFlags: []string{"python_workers_development"}},
-				Egress:  &computev1alpha1.ServiceEgress{Disabled: true},
-			},
-			source:     src("index.js", "x"),
-			wantErrSub: "python workers need a runtime download",
-		},
-		{
-			name:       "python main module name with egress disabled",
-			manifest:   computev1alpha1.BundleManifest{Modules: []computev1alpha1.Module{mod("main.py", computev1alpha1.ESModule, "main.py")}, CompatibilityDate: "2024-01-01"},
-			cfg:        computev1alpha1.ServiceConfigSpec{Egress: &computev1alpha1.ServiceEgress{Disabled: true}},
-			source:     src("main.py", "export default {}"),
-			wantErrSub: "python workers need a runtime download",
-		},
-		{
-			name:     "python main module name with egress on",
-			manifest: computev1alpha1.BundleManifest{Modules: []computev1alpha1.Module{mod("main.py", computev1alpha1.ESModule, "main.py")}, CompatibilityDate: "2024-01-01"},
-			source:   src("main.py", "export default {}"),
-			assert: func(t *testing.T, def WorkerDefinition) {
-				if def.MainModule != "main.py" {
-					t.Errorf("mainModule = %q, want main.py", def.MainModule)
-				}
-			},
-		},
-		{
-			name:     "python flag with egress on",
-			manifest: computev1alpha1.BundleManifest{Modules: esOnly, CompatibilityDate: "2024-01-01", CompatibilityFlags: []string{"python_workers"}},
-			source:   src("index.js", "x"),
-			assert: func(t *testing.T, def WorkerDefinition) {
-				if def.EgressDisabled || strings.Join(def.CompatibilityFlags, ",") != "python_workers" {
-					t.Errorf("def = egressDisabled %v flags %v", def.EgressDisabled, def.CompatibilityFlags)
-				}
-			},
-		},
-		{
 			name:       "missing compatibility date",
 			manifest:   computev1alpha1.BundleManifest{Modules: esOnly},
 			source:     src("index.js", "x"),
@@ -452,6 +408,60 @@ func TestBuildWorkerDefinition(t *testing.T) {
 				tc.assert(t, def)
 			}
 		})
+	}
+}
+
+// TestBuildWorkerDefinition_Python checks that each way to turn on Python is
+// refused, with egress on and off, and that a plain JS Service is accepted.
+func TestBuildWorkerDefinition_Python(t *testing.T) {
+	js := []computev1alpha1.Module{mod("index.js", computev1alpha1.ESModule, "index.js")}
+	py := []computev1alpha1.Module{mod("main.py", computev1alpha1.ESModule, "main.py")}
+	triggers := []struct {
+		name         string
+		modules      []computev1alpha1.Module
+		bundleFlags  []string
+		runtimeFlags []string
+		wantErr      bool
+	}{
+		{name: "plain js", modules: js, bundleFlags: []string{"nodejs_compat"}},
+		{name: "bundle python_workers", modules: js, bundleFlags: []string{"python_workers"}, wantErr: true},
+		{name: "bundle python_workers_development", modules: js, bundleFlags: []string{"python_workers_development"}, wantErr: true},
+		{name: "bundle python_workflows", modules: js, bundleFlags: []string{"python_workflows"}, wantErr: true},
+		{name: "runtime python_workers", modules: js, runtimeFlags: []string{"python_workers"}, wantErr: true},
+		{name: "runtime python_workers_development", modules: js, runtimeFlags: []string{"python_workers_development"}, wantErr: true},
+		{name: "main module .py", modules: py, wantErr: true},
+	}
+	egress := []struct {
+		name string
+		e    *computev1alpha1.ServiceEgress
+	}{
+		{name: "egress on", e: nil},
+		{name: "egress disabled", e: &computev1alpha1.ServiceEgress{Disabled: true}},
+	}
+	for _, tr := range triggers {
+		for _, eg := range egress {
+			t.Run(tr.name+"/"+eg.name, func(t *testing.T) {
+				cfg := computev1alpha1.ServiceConfigSpec{Egress: eg.e}
+				if tr.runtimeFlags != nil {
+					cfg.Runtime = &computev1alpha1.ServiceRuntime{CompatibilityDate: "2024-01-01", CompatibilityFlags: tr.runtimeFlags}
+				}
+				_, err := BuildWorkerDefinition(
+					computev1alpha1.BundleManifest{Modules: tr.modules, CompatibilityDate: "2024-01-01", CompatibilityFlags: tr.bundleFlags},
+					cfg,
+					src(tr.modules[0].Name, "export default {}"),
+					nil,
+				)
+				if !tr.wantErr {
+					if err != nil {
+						t.Fatalf("unexpected error: %v", err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), "python workers are not supported") {
+					t.Fatalf("err = %v, want python workers are not supported", err)
+				}
+			})
+		}
 	}
 }
 

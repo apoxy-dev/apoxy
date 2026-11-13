@@ -685,6 +685,16 @@ func TestValidateUpdateImmutability(t *testing.T) {
 		w.Spec.Template.Spec.Backend = &BackendConfig{Protocol: HTTP1, Port: ptr.To(int32(8080))}
 		return w
 	}
+	pythonService := func() *Service {
+		w := validOCIService()
+		w.Spec.Template.Spec.Runtime.CompatibilityFlags = []string{"python_workers"}
+		return w
+	}
+	pythonHTTP2Service := func() *Service {
+		w := pythonService()
+		w.Spec.Template.Spec.Backend = &BackendConfig{Protocol: HTTP2}
+		return w
+	}
 	http2Revision := func() *ServiceRevision {
 		r := validRevision()
 		r.Spec.Backend = &BackendConfig{Protocol: HTTP2}
@@ -738,6 +748,25 @@ func TestValidateUpdateImmutability(t *testing.T) {
 			count: 1,
 		},
 		{
+			name:  "service python flag added rejected",
+			neu:   pythonService(),
+			old:   validOCIService(),
+			want:  []string{"spec.template.spec.runtime.compatibilityFlags[0]"},
+			count: 1,
+		},
+		{
+			name: "service stored with python flag and same spec accepted",
+			neu:  pythonService(),
+			old:  pythonService(),
+		},
+		{
+			name:  "service stored with python flag and other spec edit rejected",
+			neu:   pythonHTTP2Service(),
+			old:   pythonService(),
+			want:  []string{"spec.template.spec.runtime.compatibilityFlags[0]"},
+			count: 1,
+		},
+		{
 			name:  "revision spec change rejected",
 			neu:   http2Revision(),
 			old:   validRevision(),
@@ -776,5 +805,47 @@ func TestValidateUpdateImmutability(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assertErrs(t, tc.neu.ValidateUpdate(ctx, tc.old), tc.want, tc.count)
 		})
+	}
+}
+
+// Python flags are refused on a Service and a ServiceRevision, egress on or off.
+func TestValidatePythonFlags(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		flags   []string
+		refused bool
+	}{
+		{name: "plain js", flags: []string{"nodejs_compat"}},
+		{name: "python_workers", flags: []string{"python_workers"}, refused: true},
+		{name: "python_workers_development", flags: []string{"python_workers_development"}, refused: true},
+		{name: "python_workflows", flags: []string{"python_workflows"}, refused: true},
+	}
+	egress := []struct {
+		name string
+		e    *ServiceEgress
+	}{
+		{name: "egress on", e: nil},
+		{name: "egress disabled", e: &ServiceEgress{Disabled: true}},
+	}
+	for _, tc := range cases {
+		for _, eg := range egress {
+			t.Run(tc.name+"/"+eg.name, func(t *testing.T) {
+				w := validOCIService()
+				w.Spec.Template.Spec.Runtime.CompatibilityFlags = tc.flags
+				w.Spec.Template.Spec.Egress = eg.e
+				r := validRevision()
+				r.Spec.Runtime.CompatibilityFlags = tc.flags
+				r.Spec.Egress = eg.e
+
+				var wantSvc, wantRev []string
+				if tc.refused {
+					wantSvc = []string{"spec.template.spec.runtime.compatibilityFlags[0]"}
+					wantRev = []string{"spec.runtime.compatibilityFlags[0]"}
+				}
+				assertErrs(t, w.Validate(ctx), wantSvc, len(wantSvc))
+				assertErrs(t, r.Validate(ctx), wantRev, len(wantRev))
+			})
+		}
 	}
 }
